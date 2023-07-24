@@ -65,7 +65,7 @@ We use this method a lot in `tmrl`, it enables partially initializing the kwargs
 Import this method into your script:
 
 ```python
-from tmrl.util import partial
+from custom_tmrl.util import partial
 ```
 
 The method can then be used as:
@@ -86,8 +86,9 @@ my_object = my_partially_instantiated_class(missing_kwargs)
 ### Constants
 In case you need them, you can access the constants defined in the `config.json` file via the [config_constants](https://github.com/trackmania-rl/tmrl/blob/master/tmrl/config/config_constants.py) module.
 This module can be imported into your script as follows:
+
 ```python
-import tmrl.config.config_constants as cfg
+import custom_tmrl.config.config_constants as cfg
 ```
 You can then use the constants in your script, e.g.:
 
@@ -146,7 +147,7 @@ _(NB: the `Server` does not know this, it listens to any incoming connection)_.
 Instantiating a `Server` object is straightforward:
 
 ```python
-from tmrl.networking import Server
+from custom_tmrl.networking import Server
 
 # tmrl Server
 
@@ -289,7 +290,8 @@ One to several `RolloutWorkers` can coexist in `tmrl`, each one typically encaps
 The prototype of the `RolloutWorker` class is:
 
 ```python
-import tmrl.config.config_constants as cfg  # constants from the config.json file
+import custom_tmrl.config.config_constants as cfg  # constants from the config.json file
+
 
 class RolloutWorker:
     def __init__(
@@ -326,10 +328,10 @@ Furthermore, this Gymnasium environment needs to be wrapped in the `GenericGymEn
 With our dummy drone environment, this translates to:
 
 ```python
-from tmrl.util import partial
-from tmrl.envs import GenericGymEnv
+from custom_tmrl.util import partial
+from custom_tmrl.envs import GenericGymEnv
 
-env_cls=partial(GenericGymEnv, id="real-time-gym-ts-v1", gym_kwargs={"config": my_config})
+env_cls = partial(GenericGymEnv, id="real-time-gym-ts-v1", gym_kwargs={"config": my_config})
 ```
 
 We can create a dummy environment to retrieve the action and observation spaces:
@@ -373,11 +375,10 @@ Let us implement this module for our dummy drone environment.
 Here, we basically copy-paste the implementation of the SAC MLP actor from [OpenAI Spinup](https://github.com/openai/spinningup/blob/038665d62d569055401d91856abb287263096178/spinup/algos/pytorch/sac/core.py#L29) and adapt it to the `TorchActorModule` interface:
 
 ```python
-from tmrl.actor import TorchActorModule
-from tmrl.util import prod
+from custom_tmrl.actor import TorchActorModule
+from custom_tmrl.util import prod
 import torch
 import torch.nn.functional as F
-
 
 LOG_STD_MAX = 2
 LOG_STD_MIN = -20
@@ -395,6 +396,7 @@ class MyActorModule(TorchActorModule):
     """
     Directly adapted from the Spinup implementation of SAC
     """
+
     def __init__(self, observation_space, action_space, hidden_sizes=(256, 256), activation=torch.nn.ReLU):
         super().__init__(observation_space, action_space)
         dim_obs = sum(prod(s for s in space.shape) for space in observation_space)
@@ -533,7 +535,7 @@ At the moment, we recommend not setting these parameters and changing the value 
 However, if you do not want to modify the `config.json` file, you can use these kwargs as follows:
 
 ```python
-import tmrl.config.config_constants as cfg
+import custom_tmrl.config.config_constants as cfg
 
 my_run_name = "tutorial"
 weights_folder = cfg.WEIGHTS_FOLDER  # path to the weights folder
@@ -570,7 +572,7 @@ We will see how to use it at the end of this tutorial, you can ignore it for now
 Now we can instantiate a `RolloutWorker`:
 
 ```python
-from tmrl.networking import RolloutWorker
+from custom_tmrl.networking import RolloutWorker
 
 my_worker = RolloutWorker(
     env_cls=env_cls,
@@ -639,8 +641,9 @@ The decompressed samples are then used by the `TrainingAgent` object to optimize
 The prototype of the `Trainer` class is:
 
 ```python
-import tmrl.config.config_constants as cfg
-import tmrl.config.config_objects as cfg_obj
+import custom_tmrl.config.config_constants as cfg
+import custom_tmrl.config.config_objects as cfg_obj
+
 
 class Trainer:
     def __init__(self,
@@ -672,7 +675,7 @@ But again, if you do not wish to use `"config.json"`, you can set these argument
 **CAUTION: do not set the exact same path as the one of the `RolloutWorker` when running on the same machine** (here, we use _t to differentiate both).
 
 ```python
-import tmrl.config.config_constants as cfg
+import custom_tmrl.config.config_constants as cfg
 
 weights_folder = cfg.WEIGHTS_FOLDER  # path to the weights folder
 checkpoints_folder = cfg.CHECKPOINTS_FOLDER
@@ -726,8 +729,8 @@ _(Note: be careful when pairing `max_training_steps_per_env_step` with a similar
 `env_cls`: Most of the time, the dummy environment class that you need to pass here is the same class as for the `RolloutWorker` Gymnasium environment:
 
 ```python
-from tmrl.util import partial
-from tmrl.envs import GenericGymEnv
+from custom_tmrl.util import partial
+from custom_tmrl.envs import GenericGymEnv
 
 env_cls = partial(GenericGymEnv, id="real-time-gym-ts-v1", gym_kwargs={"config": my_config})
 ```
@@ -820,7 +823,7 @@ Let us implement our own `TorchMemory`.
 
 ```python
 import random
-from tmrl.memory import TorchMemory
+from custom_tmrl.memory import TorchMemory
 
 
 class MyMemory(TorchMemory):
@@ -1110,9 +1113,9 @@ Our custom `TrainingAgent` subclass must take the aforementioned args/kwargs, an
 Again, here, we simply adapt the SAC implementation from Spinup, but of course you can implement whatever you want instead:
 
 ```python
-from tmrl.training import TrainingAgent
-from tmrl.custom.utils.nn import copy_shared, no_grad
-from tmrl.util import cached_property
+from custom_tmrl.training import TrainingAgent
+from custom_tmrl.custom.utils.nn import copy_shared, no_grad
+from custom_tmrl.util import cached_property
 from torch.optim import Adam
 from copy import deepcopy
 import itertools
@@ -1304,7 +1307,7 @@ In particular, `profiling` enables profiling training (but this doesn't work wel
 We finally have our training class:
 
 ```python
-from tmrl.training_offline import TorchTrainingOffline
+from custom_tmrl.training_offline import TorchTrainingOffline
 
 training_cls = partial(
     TorchTrainingOffline,
@@ -1326,7 +1329,7 @@ training_cls = partial(
 We can now instantiate our `Trainer`.
 
 ```python
-from tmrl.networking import Trainer
+from custom_tmrl.networking import Trainer
 
 my_trainer = Trainer(
     training_cls=training_cls,
