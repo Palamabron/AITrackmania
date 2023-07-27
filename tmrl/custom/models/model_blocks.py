@@ -1,3 +1,4 @@
+import torch
 from torch.distributions import Normal
 
 import config.config_constants as cfg

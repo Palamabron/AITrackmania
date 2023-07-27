@@ -213,7 +213,7 @@ env_cls = partial(GenericGymEnv, id="real-time-gym-ts-v1", gym_kwargs={"config":
 
 # Memory:
 
-from custom_tmrl.memory import TorchMemory
+from memory import TorchMemory
 
 
 def last_true_in_list(li):
