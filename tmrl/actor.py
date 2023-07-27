@@ -2,7 +2,7 @@ from abc import ABC, abstractmethod
 import torch
 import pickle
 
-from tmrl.util import collate_torch
+from util import collate_torch
 
 
 __docformat__ = "google"

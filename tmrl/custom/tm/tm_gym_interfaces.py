@@ -1,18 +1,26 @@
+<<<<<<<< HEAD:tmrl/custom/tm/tm_gym_interfaces.py
 # rtgym interfaces for Trackmania
 
 # standard library imports
+========
+>>>>>>>> dcce2fa (does it work?):tmrl/custom/interfaces/TM2020Interface.py
 import logging
 import time
 from collections import deque
 
-# third-party imports
 import cv2
-import gymnasium.spaces as spaces
 import numpy as np
+<<<<<<<< HEAD:tmrl/custom/tm/tm_gym_interfaces.py
 
 # third-party imports
+========
+from gymnasium import spaces
+>>>>>>>> dcce2fa (does it work?):tmrl/custom/interfaces/TM2020Interface.py
 from rtgym import RealTimeGymInterface
+import config.config_constants as cfg
+import platform
 
+<<<<<<<< HEAD:tmrl/custom/tm/tm_gym_interfaces.py
 # local imports
 import tmrl.config.config_constants as cfg
 from tmrl.custom.tm.utils.compute_reward import RewardFunction
@@ -28,11 +36,21 @@ CHECK_FORWARD = 500  # this allows (and rewards) 50m cuts
 
 
 # Interface for Trackmania 2020 ========================================================================================
+========
+from custom.interfaces.interface_constants import NB_OBS_FORWARD
+from custom.utils.compute_reward import RewardFunction
+from custom.utils.control_gamepad import control_gamepad, gamepad_reset, gamepad_close_finish_pop_up_tm20
+from custom.utils.control_keyboard import keyres, apply_control
+from custom.utils.control_mouse import mouse_close_finish_pop_up_tm20, mouse_save_replay_tm20
+from custom.utils.tools import TM2020OpenPlanetClient, save_ghost
+from custom.utils.window import WindowInterface
+>>>>>>>> dcce2fa (does it work?):tmrl/custom/interfaces/TM2020Interface.py
 
 class TM2020Interface(RealTimeGymInterface):
     """
     This is the API needed for the algorithm to control TrackMania 2020
     """
+
     def __init__(self,
                  img_hist_len: int = 4,
                  gamepad: bool = True,
@@ -62,9 +80,15 @@ class TM2020Interface(RealTimeGymInterface):
         self.save_replays = save_replays
         self.grayscale = grayscale
         self.resize_to = resize_to
+<<<<<<<< HEAD:tmrl/custom/tm/tm_gym_interfaces.py
         self.finish_reward = cfg.REWARD_CONFIG['END_OF_TRACK']
         self.constant_penalty = cfg.REWARD_CONFIG['CONSTANT_PENALTY']
 
+========
+        self.finish_reward = finish_reward
+        self.constant_penalty = constant_penalty
+        self.isFirstTime = True
+>>>>>>>> dcce2fa (does it work?):tmrl/custom/interfaces/TM2020Interface.py
         self.initialized = False
 
     def initialize_common(self):
@@ -196,7 +220,8 @@ class TM2020Interface(RealTimeGymInterface):
         rpm = np.array([
             data[10],
         ], dtype='float32')
-        rew, terminated = self.reward_function.compute_reward(pos=np.array([data[2], data[3], data[4]]))
+        rew, terminated, failure_counter = self.reward_function.compute_reward(
+            pos=np.array([data[2], data[3], data[4]]))
         self.img_hist.append(img)
         imgs = np.array(list(self.img_hist))
         obs = [speed, gear, rpm, imgs]
@@ -205,6 +230,8 @@ class TM2020Interface(RealTimeGymInterface):
         if end_of_track:
             terminated = True
             rew += self.finish_reward
+            if self.save_replays:
+                mouse_save_replay_tm20(True)
         rew += self.constant_penalty
         rew = np.float32(rew)
         return obs, rew, terminated, info
@@ -213,9 +240,9 @@ class TM2020Interface(RealTimeGymInterface):
         """
         must be a Tuple
         """
-        speed = spaces.Box(low=0.0, high=1000.0, shape=(1, ))
-        gear = spaces.Box(low=0.0, high=6, shape=(1, ))
-        rpm = spaces.Box(low=0.0, high=np.inf, shape=(1, ))
+        speed = spaces.Box(low=0.0, high=1000.0, shape=(1,))
+        gear = spaces.Box(low=0.0, high=6, shape=(1,))
+        rpm = spaces.Box(low=0.0, high=np.inf, shape=(1,))
         if self.resize_to is not None:
             w, h = self.resize_to
         else:
@@ -230,13 +257,14 @@ class TM2020Interface(RealTimeGymInterface):
         """
         must return a Box
         """
-        return spaces.Box(low=-1.0, high=1.0, shape=(3, ))
+        return spaces.Box(low=-1.0, high=1.0, shape=(3,))
 
     def get_default_action(self):
         """
         initial action at episode start
         """
         return np.array([0.0, 0.0, 0.0], dtype='float32')
+<<<<<<<< HEAD:tmrl/custom/tm/tm_gym_interfaces.py
 
 
 class TM2020InterfaceLidar(TM2020Interface):
@@ -355,3 +383,5 @@ class TM2020InterfaceLidarProgress(TM2020InterfaceLidar):
 
 if __name__ == "__main__":
     pass
+========
+>>>>>>>> dcce2fa (does it work?):tmrl/custom/interfaces/TM2020Interface.py

@@ -7,7 +7,7 @@ import torch
 from pandas import DataFrame
 
 # local imports
-from tmrl.util import pandas_dict
+from util import pandas_dict
 
 import logging
 
@@ -15,7 +15,7 @@ import logging
 __docformat__ = "google"
 
 
-@dataclass(eq=0)
+@dataclass(eq=False)
 class TrainingOffline:
     """
     Training wrapper for off-policy algorithms.

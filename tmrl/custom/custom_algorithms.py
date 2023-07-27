@@ -9,11 +9,11 @@ import torch
 from torch.optim import Adam, AdamW, SGD
 
 # local imports
-import tmrl.custom.custom_models as core
-from tmrl.custom.utils.nn import copy_shared, no_grad
-from tmrl.util import cached_property
-from tmrl.training import TrainingAgent
-import tmrl.config.config_constants as cfg
+from custom.models import MLPActorCritic, REDQMLPActorCritic
+from custom.utils.nn import copy_shared, no_grad
+from util import cached_property
+from training import TrainingAgent
+import config.config_constants as cfg
 
 import logging
 
@@ -26,7 +26,7 @@ class SpinupSacAgent(TrainingAgent):  # Adapted from Spinup
     observation_space: type
     action_space: type
     device: str = None  # device where the model will live (None for auto)
-    model_cls: type = core.MLPActorCritic
+    model_cls: type = MLPActorCritic
     gamma: float = 0.99
     polyak: float = 0.995
     alpha: float = 0.2  # fixed (v1) or initial (v2) value of the entropy coefficient
@@ -295,12 +295,12 @@ class SpinupSacAgent(TrainingAgent):  # Adapted from Spinup
 
 # REDQ-SAC =============================================================================================================
 
-@dataclass(eq=0)
+@dataclass(eq=False)
 class REDQSACAgent(TrainingAgent):
     observation_space: type
     action_space: type
     device: str = None  # device where the model will live (None for auto)
-    model_cls: type = core.REDQMLPActorCritic
+    model_cls: type = REDQMLPActorCritic
     gamma: float = 0.99
     polyak: float = 0.995
     alpha: float = 0.2  # fixed (v1) or initial (v2) value of the entropy coefficient

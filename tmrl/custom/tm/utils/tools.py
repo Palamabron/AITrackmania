@@ -12,11 +12,13 @@ import cv2
 import numpy as np
 
 # local imports
-from tmrl.config.config_constants import LIDAR_BLACK_THRESHOLD
+from config.config_constants import LIDAR_BLACK_THRESHOLD
 
 
 class TM2020OpenPlanetClient:
-    def __init__(self, host='127.0.0.1', port=9000, struct_str='<' + 'f' * 11):
+    # 25 floats instead of 11 to accommodate for yaw, pitch, and roll and camera position and other stuff.
+    # Script attributes:
+    def __init__(self, host='127.0.0.1', port=9000, struct_str='<' + 'f' * 25):
         self._struct_str = struct_str
         self.nb_floats = self._struct_str.count('f')
         self.nb_uint64 = self._struct_str.count('Q')
@@ -142,7 +144,10 @@ class Lidar:
         for axis_x, axis_y in zip(self.list_axis_x, self.list_axis_y):
             index = armin(np.all(img[axis_x, axis_y] < self.black_threshold, axis=1))
             if show:
-                img = cv2.line(img, (self.road_point[1], self.road_point[0]), (axis_y[index], axis_x[index]), color, thickness)
+                img = cv2.line(
+                    img, (self.road_point[1], self.road_point[0]),
+                    (axis_y[index], axis_x[index]), color, thickness
+                )
             index = np.float32(index)
             distances.append(index)
         res = np.array(distances, dtype=np.float32)

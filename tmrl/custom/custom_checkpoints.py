@@ -7,8 +7,8 @@ from torch.optim import Adam
 import numpy as np
 import torch
 
-from tmrl.config import config_constants as cfg
-from tmrl.util import dump, load
+from config import config_constants as cfg
+from util import dump, load
 import logging
 
 

@@ -12,7 +12,7 @@ import numpy as np
 # from torch.utils.data import DataLoader, Dataset, Sampler
 
 # local imports
-from tmrl.util import collate_torch
+from util import collate_torch
 
 
 __docformat__ = "google"

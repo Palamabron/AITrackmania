@@ -11,7 +11,7 @@ from torch.nn.init import calculate_gain, kaiming_uniform_, xavier_uniform_
 from torch.nn.parameter import Parameter
 
 # local imports
-from tmrl.util import partial
+from util import partial
 
 
 def detach(x):

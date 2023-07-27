@@ -5,7 +5,7 @@ from dataclasses import InitVar, dataclass
 import gymnasium
 
 # local imports
-from tmrl.wrappers import (AffineObservationWrapper, Float64ToFloat32)
+from wrappers import (AffineObservationWrapper, Float64ToFloat32)
 
 
 __docformat__ = "google"

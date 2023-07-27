@@ -4,11 +4,11 @@ from argparse import ArgumentParser
 import numpy as np
 
 # local imports
-import tmrl.config.config_constants as cfg
-import tmrl.config.config_objects as cfg_obj
-from tmrl.envs import GenericGymEnv
-from tmrl.networking import RolloutWorker
-from tmrl.util import partial
+import config.config_constants as cfg
+import config.config_objects as cfg_obj
+from envs import GenericGymEnv
+from networking import RolloutWorker
+from util import partial
 
 
 def save_replays(nb_replays=np.inf):
