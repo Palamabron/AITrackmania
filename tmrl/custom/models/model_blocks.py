@@ -7,6 +7,7 @@ import numpy as np
 from math import floor
 from torch import nn
 from torch.nn import Conv2d, Module
+import torch
 
 from actor import TorchActorModule
 from custom.models.model_constants import LOG_STD_MIN, LOG_STD_MAX, effnetv2_s
