@@ -9,7 +9,7 @@ import pickle
 import signal
 import subprocess
 import weakref
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 
 # from contextlib import contextmanager
 # from dataclasses import Field, dataclass, fields, is_dataclass, make_dataclass
@@ -17,7 +17,7 @@ from importlib import import_module
 from pathlib import Path
 
 # from itertools import chain
-from typing import Any, Callable, TypeVar, cast
+from typing import Any, TypeVar, cast
 
 # from weakref import WeakKeyDictionary
 # third-party imports
@@ -114,7 +114,9 @@ def default():
     raise ValueError("This is a dummy function and not meant to be called.")
 
 
-def partial[T](func: type[T] | Callable[..., Any] = default, *args: Any, **kwargs: Any) -> functools.partial[Any]:
+def partial[T](
+    func: type[T] | Callable[..., Any] = default, *args: Any, **kwargs: Any
+) -> functools.partial[Any]:
     """
     Like `functools.partial`, except if used as a keyword argument for another `partial`
     and no function is supplied. Then, the outer `partial` will insert the appropriate
@@ -155,9 +157,7 @@ def get_class_or_function(func):
 
 
 def partial_from_args(func: str | Callable[..., Any], kwargs: dict[str, str]):
-    resolved: Callable[..., Any] = (
-        get_class_or_function(func) if isinstance(func, str) else func
-    )
+    resolved: Callable[..., Any] = get_class_or_function(func) if isinstance(func, str) else func
     func = cast(Callable[..., Any], resolved)
     keys = {k.split(".")[0] for k in kwargs}
     keywords = {}

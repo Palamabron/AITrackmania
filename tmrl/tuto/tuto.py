@@ -1,8 +1,9 @@
 import itertools
 import random
+from collections.abc import Callable
 from copy import deepcopy
 from threading import Thread
-from typing import Any, Callable
+from typing import Any
 
 import numpy as np
 import torch
