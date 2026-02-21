@@ -10,29 +10,31 @@ from scipy.interpolate import CubicSpline
 from scipy.ndimage import gaussian_filter1d
 
 # local imports
-import config.config_constants as cfg
-from custom.utils.tools import TM2020OpenPlanetClient
+import tmrl.config.config_constants as cfg
+from tmrl.custom.tm.utils.tools import TM2020OpenPlanetClient
 import logging
 
 PATH_REWARD = cfg.REWARD_PATH
 DATASET_PATH = cfg.DATASET_PATH
 
 
-def record_reward_dist(path_reward=PATH_REWARD):
+def record_reward_dist(path_reward=PATH_REWARD, use_keyboard=False):
     positions = []
     client = TM2020OpenPlanetClient()
     path = path_reward
 
     is_recording = False
-    print("Press \'e\' to start recording")
+    if use_keyboard:
+        print("Press 'e' to start recording, 'q' to stop")
     while True:
-        if keyboard.is_pressed('e'):
+        if not is_recording and (not use_keyboard or keyboard.is_pressed('e')):
             logging.info(f"start recording")
             is_recording = True
         if is_recording:
             data = client.retrieve_data(sleep_if_empty=0.01)  # we need many points to build a smooth curve
-            terminated = bool(data[9])
-            if keyboard.is_pressed('q') or terminated:
+            terminated = bool(data[8])
+            early_stop = use_keyboard and keyboard.is_pressed('q')
+            if early_stop or terminated:
                 logging.info(f"Computing reward function checkpoints from captured positions...")
                 logging.info(f"Initial number of captured positions: {len(positions)}")
                 positions = np.array(positions)
@@ -68,7 +70,8 @@ def record_reward_dist(path_reward=PATH_REWARD):
             else:
                 positions.append([data[3], data[4], data[5]])
         else:
-            time.sleep(0.05)  # waiting for user to press E
+            if use_keyboard:
+                time.sleep(0.05)  # waiting for user to press E
 
 
 def space_points(points):
