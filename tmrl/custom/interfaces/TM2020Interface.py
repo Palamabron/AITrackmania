@@ -1,12 +1,12 @@
 # rtgym interfaces for Trackmania
 
-import logging
 import time
 from collections import deque
 
 import cv2
 import numpy as np
 from gymnasium import spaces
+from loguru import logger
 from rtgym import RealTimeGymInterface
 
 import tmrl.config.config_constants as cfg
@@ -24,12 +24,12 @@ from tmrl.custom.tm.utils.control_mouse import (
 from tmrl.custom.tm.utils.tools import Lidar, TM2020OpenPlanetClient, save_ghost
 from tmrl.custom.tm.utils.window import WindowInterface
 
-# Globals ==============================================================================================================
+# Globals ==========================================================================
 
 CHECK_FORWARD = 500  # this allows (and rewards) 50m cuts
 
 
-# Interface for Trackmania 2020 ========================================================================================
+# Interface for Trackmania 2020 ====================================================
 
 
 class TM2020Interface(RealTimeGymInterface):
@@ -84,7 +84,7 @@ class TM2020Interface(RealTimeGymInterface):
 
             self.j = vg.VX360Gamepad()
             self.j.register_notification(callback_function=self.crash_callback)
-            logging.debug(" virtual joystick in use")
+            logger.debug(" virtual joystick in use")
         self.window_interface = WindowInterface("Trackmania")
         self.window_interface.move_and_resize()
         self.last_time = time.time()

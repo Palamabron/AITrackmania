@@ -1,6 +1,7 @@
-import logging
 import platform
 from pathlib import Path
+
+from loguru import logger
 
 
 def rmdir(directory):
@@ -122,8 +123,8 @@ def init_tmrl_data():
 TMRL_FOLDER = Path.home() / "TmrlData"
 
 if not TMRL_FOLDER.exists():
-    logging.warning("The TMRL folder was not found on your machine. Attempting download...")
+    logger.warning("The TMRL folder was not found on your machine. Attempting download...")
     init_tmrl_data()
-    logging.info(
+    logger.info(
         "TMRL folder successfully downloaded, please wait for initialization to complete..."
     )

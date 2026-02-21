@@ -1,4 +1,6 @@
 import random
+from collections.abc import Callable
+from typing import Any
 
 import numpy as np
 
@@ -10,14 +12,14 @@ from tmrl.memory import R2D2Memory, TorchMemory
 def get_local_buffer_sample_lidar(prev_act, obs, rew, terminated, truncated, info):
     """
     Input:
-        prev_act: action computed from a previous observation and applied to yield obs in the transition
+        prev_act: action from a previous observation, applied to yield obs in the transition
         (but not influencing the unaugmented observation in real-time envs)
         obs, rew, terminated, truncated, info: outcome of the transition
-    this function creates the object that will actually be stored in local buffers for networking
-    this is to compress the sample before sending it over the Internet/local network
-    buffers of such samples will be given as input to the append() method of the memory
-    the user must define both this function and the append() method of the memory
-    CAUTION: prev_act is the action that comes BEFORE obs (i.e. prev_obs, prev_act(prev_obs), obs(prev_act))
+    Creates the object stored in local buffers for networking (compression before send).
+    Buffers of such samples are given to the append() method of the memory.
+    The user must define both this function and the append() method of the memory.
+    CAUTION: prev_act is the action that comes BEFORE obs
+        (i.e. prev_obs, prev_act(prev_obs), obs(prev_act))
     """
     obs_mod = (obs[0], obs[1][-19:])  # speed and most recent LIDAR only
     rew_mod = np.float32(rew)
@@ -29,14 +31,14 @@ def get_local_buffer_sample_lidar(prev_act, obs, rew, terminated, truncated, inf
 def get_local_buffer_sample_lidar_progress(prev_act, obs, rew, terminated, truncated, info):
     """
     Input:
-        prev_act: action computed from a previous observation and applied to yield obs in the transition
+        prev_act: action from a previous observation, applied to yield obs in the transition
         (but not influencing the unaugmented observation in real-time envs)
         obs, rew, terminated, truncated, info: outcome of the transition
-    this function creates the object that will actually be stored in local buffers for networking
-    this is to compress the sample before sending it over the Internet/local network
-    buffers of such samples will be given as input to the append() method of the memory
-    the user must define both this function and the append() method of the memory
-    CAUTION: prev_act is the action that comes BEFORE obs (i.e. prev_obs, prev_act(prev_obs), obs(prev_act))
+    Creates the object stored in local buffers for networking (compression before send).
+    Buffers of such samples are given to the append() method of the memory.
+    The user must define both this function and the append() method of the memory.
+    CAUTION: prev_act is the action that comes BEFORE obs
+        (i.e. prev_obs, prev_act(prev_obs), obs(prev_act))
     """
     obs_mod = (obs[0], obs[1], obs[2][-19:])  # speed and most recent LIDAR only
     rew_mod = np.float32(rew)
@@ -47,11 +49,11 @@ def get_local_buffer_sample_lidar_progress(prev_act, obs, rew, terminated, trunc
 
 def get_local_buffer_sample_mobilenet(prev_act, obs, rew, terminated, truncated, info):
     """
-    Prepares received data for storage in a local buffer
+    Prepares received data for storage in a local buffer.
     Returns:
-    A tuple containing modified versions of the received data (prev_act, obs, rew, terminated, truncated, info).
+        A tuple (prev_act, obs, rew, terminated, truncated, info) of modified data.
     Functionality:
-    The function converts the reward rew into a NumPy float32 (rew_mod = np.float32(rew)).
+        Converts the reward rew into a NumPy float32 (rew_mod = np.float32(rew)).
     """
     obs_mod = obs
     rew_mod = np.float32(rew)
@@ -64,13 +66,14 @@ def get_local_buffer_sample_tm20_imgs(prev_act, obs, rew, terminated, truncated,
     """
     Sample compressor for MemoryTMFull
     Input:
-        prev_act: action computed from a previous observation and applied to yield obs in the transition
+        prev_act: action from a previous observation, applied to yield obs in the transition
         obs, rew, terminated, truncated, info: outcome of the transition
     this function creates the object that will actually be stored in local buffers for networking
     this is to compress the sample before sending it over the Internet/local network
     buffers of such samples will be given as input to the append() method of the memory
     the user must define both this function and the append() method of the memory
-    CAUTION: prev_act is the action that comes BEFORE obs (i.e. prev_obs, prev_act(prev_obs), obs(prev_act))
+    CAUTION: prev_act is the action that comes BEFORE obs
+        (i.e. prev_obs, prev_act(prev_obs), obs(prev_act))
     """
     prev_act_mod = prev_act
     obs_mod = (obs[0], obs[1], obs[2], (obs[3][-1] * 256.0).astype(np.uint8))
@@ -107,7 +110,7 @@ def replace_hist_before_eoe(hist, eoe_idx_in_hist):
                 hist[i] = hist[i + 1]
 
 
-# SUPPORTED CUSTOM MEMORIES ============================================================================================
+# SUPPORTED CUSTOM MEMORIES ================================================================
 
 
 class GenericTorchMemory(TorchMemory):
@@ -117,7 +120,7 @@ class GenericTorchMemory(TorchMemory):
         batch_size=1,
         dataset_path="",
         nb_steps=1,
-        sample_preprocessor: callable = None,
+        sample_preprocessor: Callable[..., Any] | None = None,
         crc_debug=False,
         device="cpu",
     ):
@@ -210,7 +213,7 @@ class MemoryTM(TorchMemory):
         imgs_obs=4,
         act_buf_len=1,
         nb_steps=1,
-        sample_preprocessor: callable = None,
+        sample_preprocessor: Callable[..., Any] | None = None,
         crc_debug=False,
         device="cpu",
     ):
@@ -244,15 +247,15 @@ class MemoryTM(TorchMemory):
 
     def append_buffer(self, buffer):
         """
-        This function is intended to be implemented in subclasses but is not implemented in the MemoryTM class itself.
-        Raises a NotImplementedError, prompting subclasses to implement this method based on specific requirements.
+        Intended to be implemented in subclasses, not in MemoryTM itself.
+        Raises NotImplementedError; subclasses must implement based on their requirements.
         """
         raise NotImplementedError
 
     def __len__(self):
         """
-        Calculates the length of the memory buffer by considering the number of samples stored in the memory.
-        If there is no data in the memory buffer, returns 0. Otherwise, returns the length of the data minus min_samples minus 1.
+        Length of the memory buffer (number of samples).
+        Returns 0 if no data; else length of data minus min_samples minus 1.
         """
         if len(self.data) == 0:
             return 0
@@ -264,8 +267,8 @@ class MemoryTM(TorchMemory):
 
     def get_transition(self, item):
         """
-        Similar to append_buffer, this function is intended to be implemented in subclasses but is not implemented in the MemoryTM class itself.
-        Raises a NotImplementedError, prompting subclasses to implement this method based on specific requirements.
+        Similar to append_buffer; to be implemented in subclasses, not in MemoryTM itself.
+        Raises NotImplementedError; subclasses must implement based on their requirements.
         """
         raise NotImplementedError
 
@@ -273,10 +276,10 @@ class MemoryTM(TorchMemory):
 class MemoryTMLidar(MemoryTM):
     def get_transition(self, item):
         """
-        CAUTION: item is the first index of the 4 images in the images history of the OLD observation
+        CAUTION: item is the first index of the 4 images in the OLD observation's image history.
         CAUTION: in the buffer, a sample is (act, obs(act)) and NOT (obs, act(obs))
-            i.e. in a sample, the observation is what step returned after being fed act (and preprocessed)
-            therefore, in the RTRL setting, act is appended to obs
+            i.e. the observation is what step returned after being fed act (and preprocessed);
+            in RTRL, act is appended to obs.
         So we load 5 images from here...
         Don't forget the info dict for CRC debugging
         """
@@ -402,10 +405,10 @@ class MemoryTMLidar(MemoryTM):
 class MemoryTMLidarProgress(MemoryTM):
     def get_transition(self, item):
         """
-        CAUTION: item is the first index of the 4 images in the images history of the OLD observation
+        CAUTION: item is the first index of the 4 images in the OLD observation's image history.
         CAUTION: in the buffer, a sample is (act, obs(act)) and NOT (obs, act(obs))
-            i.e. in a sample, the observation is what step returned after being fed act (and preprocessed)
-            therefore, in the RTRL setting, act is appended to obs
+            i.e. the observation is what step returned after being fed act (and preprocessed);
+            in RTRL, act is appended to obs.
         So we load 5 images from here...
         Don't forget the info dict for CRC debugging
         """
@@ -469,7 +472,8 @@ class MemoryTMLidarProgress(MemoryTM):
         item: Index used to load lidar images from stored data.
         Functionality:
 
-        Loads a sequence of lidar images from the stored data, starting from the given index (item) with a specific number of observed lidar images (imgs_obs).
+        Loads a sequence of lidar images from the stored data, starting at item,
+        with a specific number of observed lidar images (imgs_obs).
         """
         res = self.data[3][
             (item + self.start_imgs_offset) : (item + self.start_imgs_offset + self.imgs_obs + 1)
@@ -483,7 +487,8 @@ class MemoryTMLidarProgress(MemoryTM):
         item: Index used to load actions from stored data.
         Functionality:
 
-        Loads a sequence of actions from the stored data, starting from the given index (item) with a specific length of action buffer (act_buf_len).
+        Loads a sequence of actions from the stored data, starting at item,
+        with a specific length of action buffer (act_buf_len).
         """
         res = self.data[1][
             (item + self.start_acts_offset) : (item + self.start_acts_offset + self.act_buf_len + 1)
@@ -551,10 +556,10 @@ class MemoryTMLidarProgress(MemoryTM):
 class MemoryTMFull(MemoryTM):
     def get_transition(self, item):
         """
-        CAUTION: item is the first index of the 4 images in the images history of the OLD observation
+        CAUTION: item is the first index of the 4 images in the OLD observation's image history.
         CAUTION: in the buffer, a sample is (act, obs(act)) and NOT (obs, act(obs))
-            i.e. in a sample, the observation is what step returned after being fed act (and preprocessed)
-            therefore, in the RTRL setting, act is appended to obs
+            i.e. the observation is what step returned after being fed act (and preprocessed);
+            in RTRL, act is appended to obs.
         So we load 5 images from here...
         Don't forget the info dict for CRC debugging
         """
@@ -700,10 +705,10 @@ class MemoryTMFull(MemoryTM):
 class MemoryTMBest(MemoryTM):
     def get_transition(self, item):
         """
-        CAUTION: item is the first index of the 4 images in the images history of the OLD observation
+        CAUTION: item is the first index of the 4 images in the OLD observation's image history.
         CAUTION: in the buffer, a sample is (act, obs(act)) and NOT (obs, act(obs))
-            i.e. in a sample, the observation is what step returned after being fed act (and preprocessed)
-            therefore, in the RTRL setting, act is appended to obs
+            i.e. the observation is what step returned after being fed act (and preprocessed);
+            in RTRL, act is appended to obs.
         So we load 5 images from here...
         Don't forget the info dict for CRC debugging
         """
@@ -979,7 +984,7 @@ class MemoryR2D2(R2D2Memory):
         imgs_obs=4,
         act_buf_len=1,
         nb_steps=2,
-        sample_preprocessor: callable = None,
+        sample_preprocessor: Callable[..., Any] | None = None,
         crc_debug=False,
         device="cpu",
     ):
@@ -1010,10 +1015,10 @@ class MemoryR2D2(R2D2Memory):
 
     def get_transition(self, item):
         """
-        CAUTION: item is the first index of the 4 images in the images history of the OLD observation
+        CAUTION: item is the first index of the 4 images in the OLD observation's image history.
         CAUTION: in the buffer, a sample is (act, obs(act)) and NOT (obs, act(obs))
-            i.e. in a sample, the observation is what step returned after being fed act (and preprocessed)
-            therefore, in the RTRL setting, act is appended to obs
+            i.e. the observation is what step returned after being fed act (and preprocessed);
+            in RTRL, act is appended to obs.
         So we load 5 images from here...
         Don't forget the info dict for CRC debugging
         """
@@ -1227,7 +1232,7 @@ class MemoryR2D2woImages(R2D2Memory):
         imgs_obs=4,
         act_buf_len=1,
         nb_steps=2,
-        sample_preprocessor: callable = None,
+        sample_preprocessor: Callable[..., Any] | None = None,
         crc_debug=False,
         device="cpu",
     ):
@@ -1249,10 +1254,10 @@ class MemoryR2D2woImages(R2D2Memory):
 
     def get_transition(self, item):
         """
-        CAUTION: item is the first index of the 4 images in the images history of the OLD observation
+        CAUTION: item is the first index of the 4 images in the OLD observation's image history.
         CAUTION: in the buffer, a sample is (act, obs(act)) and NOT (obs, act(obs))
-            i.e. in a sample, the observation is what step returned after being fed act (and preprocessed)
-            therefore, in the RTRL setting, act is appended to obs
+            i.e. the observation is what step returned after being fed act (and preprocessed);
+            in RTRL, act is appended to obs.
         So we load 5 images from here...
         Don't forget the info dict for CRC debugging
         """
@@ -1434,7 +1439,7 @@ class MemoryR2D2Sophy(R2D2Memory):
         imgs_obs=4,
         act_buf_len=1,
         nb_steps=2,
-        sample_preprocessor: callable = None,
+        sample_preprocessor: Callable[..., Any] | None = None,
         crc_debug=False,
         device="cpu",
     ):
@@ -1456,10 +1461,10 @@ class MemoryR2D2Sophy(R2D2Memory):
 
     def get_transition(self, item):
         """
-        CAUTION: item is the first index of the 4 images in the images history of the OLD observation
+        CAUTION: item is the first index of the 4 images in the OLD observation's image history.
         CAUTION: in the buffer, a sample is (act, obs(act)) and NOT (obs, act(obs))
-            i.e. in a sample, the observation is what step returned after being fed act (and preprocessed)
-            therefore, in the RTRL setting, act is appended to obs
+            i.e. the observation is what step returned after being fed act (and preprocessed);
+            in RTRL, act is appended to obs.
         So we load 5 images from here...
         Don't forget the info dict for CRC debugging
         """

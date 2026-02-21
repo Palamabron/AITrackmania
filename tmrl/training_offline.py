@@ -1,6 +1,5 @@
 # standard library imports
 import datetime
-import logging
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -8,12 +7,12 @@ from typing import Any
 
 # third-party imports
 import torch
+from loguru import logger
 from pandas import DataFrame
 
 # local imports
 from tmrl.util import pandas_dict
 
-logging.basicConfig(level=logging.INFO)
 __docformat__ = "google"
 
 
@@ -96,7 +95,7 @@ class TrainingOffline:
             observation_space=observation_space, action_space=action_space, device=device
         )
         self.total_samples = len(self.memory)
-        logging.info(f" Initial total_samples:{self.total_samples}")
+        logger.info(f" Initial total_samples:{self.total_samples}")
 
     def update_buffer(self, interface):
         """
@@ -123,7 +122,7 @@ class TrainingOffline:
             else -1.0
         )
         if ratio > self.max_training_steps_per_env_step or ratio == -1.0:
-            logging.info(" Waiting for new samples")
+            logger.info(" Waiting for new samples")
             while ratio > self.max_training_steps_per_env_step or ratio == -1.0:
                 # wait for new samples
                 self.update_buffer(interface)
@@ -134,19 +133,24 @@ class TrainingOffline:
                 )
                 if ratio > self.max_training_steps_per_env_step or ratio == -1.0:
                     time.sleep(self.sleep_between_buffer_retrieval_attempts)
-            logging.info(" Resuming training")
+            logger.info(" Resuming training")
 
     def run_round(self, interface, stats_training, t_sample_prev):
         """
-        Runs a round of training using the memory data in batches.
+        Run one round of training (multiple batches), update buffer and optionally broadcast model.
+
+        Steps:
+            1. Every update_buffer_interval steps, pull buffer from interface into replay memory
+               and refresh end-of-episode indices and reward sums.
+            2. For each batch in memory: call agent.train(), aggregate stats,
+            increment total_updates.
+            3. Every update_model_interval steps, broadcast current actor weights via interface.
+            4. After each batch, call check_ratio to optionally wait for more samples.
+
         Args:
-        interface (an object to retrieve buffer data)
-        stats_training (a list to store training statistics)
-        t_sample_prev (time of the previous sample)
-        Actions:
-        Loops through batches in memory and performs training using an agent.
-        Logs information related to batch checkpoints, training duration, and various statistics.
-        Updates model weights and checks the update-to-sample ratio.
+            interface: Object to retrieve buffer data and broadcast model (e.g. Trainer link).
+            stats_training: List to append per-batch training stats (returns, durations, etc.).
+            t_sample_prev: Timestamp of previous sample (used for sampling duration in stats).
         """
         for batch_index, batch in enumerate(self.memory):  # this samples a fixed number of batches
             t_sample = time.time()
@@ -165,7 +169,7 @@ class TrainingOffline:
             t_update_buffer = time.time()
 
             if self.total_updates == 0:
-                logging.info("starting training")
+                logger.info("starting training")
 
             num_elements = 5
 
@@ -176,7 +180,7 @@ class TrainingOffline:
             batch_index_checkpoints = [i * step_size for i in range(num_elements)]
 
             if batch_index in batch_index_checkpoints:
-                logging.info(
+                logger.info(
                     f"batch {batch_index}/{self.steps} finished at: {datetime.datetime.now()}"
                 )
 
@@ -200,11 +204,20 @@ class TrainingOffline:
             t_sample_prev = time.time()
 
     def run_epoch(self, interface):
-        """
-        Runs multiple rounds within an epoch.
-        Args: interface (an object to retrieve buffer data)
-        Actions:
-        Runs rounds via run_round(). Logs memory size, timings, etc. Increments epoch.
+        """Run one epoch: multiple rounds of training, then increment epoch counter.
+
+        Steps:
+            1. Optionally run agent_scheduler(agent, epoch) if set.
+            2. For each round: check_ratio (wait for samples if needed), then run_round.
+            3. Collect round stats (memory size, round time, idle/update/train times).
+            4. If python_profiling is True, run pyinstrument and log profile.
+            5. Increment epoch and return list of round stats.
+
+        Args:
+            interface: Object to retrieve buffer data and broadcast model.
+
+        Returns:
+            List of per-round stat dicts (e.g. round_time, memory_len, return_test).
         """
         stats = []
 
@@ -212,11 +225,11 @@ class TrainingOffline:
             self.agent_scheduler(self.agent, self.epoch)
 
         for rnd in range(self.rounds):
-            logging.info(
+            logger.info(
                 f"=== epoch {self.epoch}/{self.epochs} ".ljust(20, "=")
                 + f" round {rnd}/{self.rounds} ".ljust(50, "=")
             )
-            logging.debug(f"(Training): current memory size:{len(self.memory)}")
+            logger.debug(f"(Training): current memory size:{len(self.memory)}")
 
             stats_training = []
 
@@ -242,7 +255,7 @@ class TrainingOffline:
             idle_time = t1 - t0
             update_buf_time = t2 - t1
             train_time = t3 - t2
-            logging.debug(
+            logger.debug(
                 f"round_time:{round_time}, idle:{idle_time}, update_buf:{update_buf_time}, "
                 f"train_time:{train_time}"
             )
@@ -255,11 +268,11 @@ class TrainingOffline:
                 ),
             )
 
-            logging.info(stats[-1].add_prefix("  ").to_string() + "\n")
+            logger.info(stats[-1].add_prefix("  ").to_string() + "\n")
 
             if self.python_profiling:
                 pro.stop()
-                logging.info(pro.output_text(unicode=True, color=False, show_all=True))
+                logger.info(pro.output_text(unicode=True, color=False, show_all=True))
 
         # if len(self.memory.end_episodes_indices) > 1:
         # print(f"end_episodes_indices: {self.memory.end_episodes_indices}")

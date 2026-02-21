@@ -1,6 +1,6 @@
 import numpy as np
 import torch
-import torch.nn.functional as F
+import torch.nn.functional as functional
 from torch import nn
 from torch.distributions import Normal
 
@@ -36,10 +36,12 @@ class SquashedGaussianVanillaCNNActor(TorchActorModule):
             logp_pi = pi_distribution.log_prob(pi_action).sum(axis=-1)
             # NB: this is from Spinup:
             # FIXME: this formula is mathematically wrong, no idea why it seems to work
-            logp_pi -= (2 * (np.log(2) - pi_action - F.softplus(-2 * pi_action))).sum(axis=1)
+            logp_pi -= (2 * (np.log(2) - pi_action - functional.softplus(-2 * pi_action))).sum(
+                axis=1
+            )
             # Whereas SB3 does this:
-            # logp_pi -= torch.sum(torch.log(1 - torch.tanh(pi_action) ** 2 + EPSILON), dim=1)  # TODO: double check
-            # # log_prob -= th.sum(th.log(1 - actions**2 + self.epsilon), dim=1)
+            # logp_pi -= torch.sum(torch.log(1 - torch.tanh(pi_action)**2 + EPS), dim=1)
+            # TODO: double check; SB3: log_prob -= th.sum(th.log(1 - actions**2 + eps), dim=1)
         else:
             logp_pi = None
 

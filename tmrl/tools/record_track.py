@@ -1,5 +1,4 @@
 # standard library imports
-import logging
 import os
 import pickle
 import time
@@ -7,13 +6,13 @@ import time
 # third-party imports
 import keyboard
 import numpy as np
-from custom.utils.tools import TM2020OpenPlanetClient
+from loguru import logger
 from matplotlib import pyplot as plt
 from scipy.interpolate import CubicSpline
 from scipy.ndimage import gaussian_filter1d
 
-# local imports
-import config.config_constants as cfg
+import tmrl.config.config_constants as cfg
+from tmrl.custom.tm.utils.tools import TM2020OpenPlanetClient
 
 
 def record_track(path_track=cfg.TRACK_PATH_LEFT):
@@ -24,7 +23,7 @@ def record_track(path_track=cfg.TRACK_PATH_LEFT):
     is_recording = False
     while True:
         if keyboard.is_pressed("e"):
-            logging.info("start recording")
+            logger.info("start recording")
             is_recording = True
         if is_recording:
             data = client.retrieve_data(
@@ -32,8 +31,8 @@ def record_track(path_track=cfg.TRACK_PATH_LEFT):
             )  # we need many points to build a smooth curve
             terminated = bool(data[9])
             if keyboard.is_pressed("q") or terminated:
-                logging.info("Computing reward function checkpoints from captured positions...")
-                logging.info(f"Initial number of captured positions: {len(positions)}")
+                logger.info("Computing reward function checkpoints from captured positions...")
+                logger.info(f"Initial number of captured positions: {len(positions)}")
                 positions = np.array(positions)
 
                 final_positions = [positions[0]]
@@ -61,12 +60,12 @@ def record_track(path_track=cfg.TRACK_PATH_LEFT):
                 print(f"upsampled_arr: {upsampled_arr}", end="\n\n")
                 print(f"spaced_points: {spaced_points}", end="\n\n")
                 print(f"smoothed_points: {smoothed_points}", end="\n\n")
-                logging.info(
+                logger.info(
                     f"Final number of checkpoints of recorded track: {len(smoothed_points)}"
                 )
 
                 pickle.dump(smoothed_points, open(path, "wb"))
-                logging.info("All done")
+                logger.info("All done")
                 return
             else:
                 positions.append([data[3], data[4], data[5]])
@@ -197,7 +196,7 @@ def line(pt1, pt2, dist):
 
 if __name__ == "__main__":
     if not os.path.exists(cfg.REWARD_PATH):
-        logging.debug(f" reward not found at path:{cfg.REWARD_PATH}")
+        logger.debug(f" reward not found at path:{cfg.REWARD_PATH}")
     which_track = input("Choose which track do you want to record [left/right] [l/r]: ").lower()
     assert which_track in ("l", "r", "right", "left"), "Input must be left, right, l or r"
     print('Press "e" if you are ready do record track')

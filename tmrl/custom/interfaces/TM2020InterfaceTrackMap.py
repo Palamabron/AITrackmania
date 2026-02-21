@@ -23,7 +23,7 @@ class TM2020InterfaceTrackMap(TM2020InterfaceLidar):
         self.index = 0
         self.map_left = np.loadtxt("saved_tracks/tmrl-test/track_left.csv", delimiter=",")
         self.map_right = np.loadtxt("saved_tracks/tmrl-test/track_right.csv", delimiter=",")
-        self.all_observed_track_parts = [[], [], [], [], []]
+        self.all_observed_track_parts: list[list[list[float]]] = [[], [], [], [], []]
 
     def get_observation_space(self):
         speed = spaces.Box(low=0.0, high=1000.0, shape=(1,))
@@ -69,7 +69,7 @@ class TM2020InterfaceTrackMap(TM2020InterfaceLidar):
         # retrieving map information --------------------------------------
         # Cut out a portion directly in front of the car, as input for the ai
         look_ahead_distance = 15  # points to look ahead on the track
-        nearby_correction = 60  # one point on a side needs to be at least this close to the same point on the other side
+        nearby_correction = 60  # min distance for a side point to the same point on other side
         l_x, l_z, r_x, r_z = self.get_track_in_front(
             car_position, look_ahead_distance, nearby_correction
         )

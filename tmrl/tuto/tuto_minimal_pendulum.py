@@ -8,6 +8,7 @@ observations and actions.
 # tutorial imports:
 import time
 from threading import Thread
+from typing import Any
 
 import tmrl.config.config_constants as cfg
 from tmrl.custom.custom_algorithms import SpinupSacAgent
@@ -32,7 +33,7 @@ my_run_name = "tutorial_minimal_pendulum"
 
 # Environment class:
 
-env_cls = partial(GenericGymEnv, id="Pendulum-v1", gym_kwargs={"render_mode": None})
+env_cls: Any = partial(GenericGymEnv, id="Pendulum-v1", gym_kwargs={"render_mode": None})
 
 # Observation and action space:
 

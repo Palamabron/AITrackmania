@@ -35,6 +35,9 @@ requires-python = ">=3.12"
 dependencies = [
     "chardet",
     "gymnasium>=0.29",
+    "loguru>=0.7",
+    "tyro>=0.8",
+    "pydantic>=2.0",
     "keyboard>=0.13.5",
     "inputs>=0.5",
     "matplotlib>=3.5",
@@ -110,6 +113,10 @@ src = ["tmrl"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W", "UP"]
+ignore = [
+    "N999",  # allow PascalCase module names (e.g. TM2020Interface.py)
+    "N812",  # allow F for torch.nn.functional (PyTorch convention)
+]
 
 [tool.mypy]
 python_version = "3.12"

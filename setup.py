@@ -1,7 +1,6 @@
 import json
 import platform
 import socket
-import sys
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -11,11 +10,6 @@ from zipfile import ZipFile
 from setuptools import find_packages, setup
 
 TMRL_VERSION = "0.7.1"
-
-
-if sys.version_info < (3, 7):
-    sys.exit("Sorry, Python < 3.7 is not supported.")
-
 
 # NB: the following code is duplicated under tmrl.tools.init_package.init_tmrl,
 # don't forget to update both whenever changing RESOURCES_URL.
@@ -105,8 +99,9 @@ if not TMRL_FOLDER.exists():
                 copy2(TM20_PLUGIN_2, OP_PLUGINS_FOLDER)
             except Exception as e:
                 print(
-                    f"An exception was caught when trying to copy the OpenPlanet plugin automatically. \
-                    Please copy the plugin manually for TrackMania 2020 support. The caught exception was: {str(e)}."
+                    "Exception while copying the OpenPlanet plugin automatically. "
+                    "Please copy the plugin manually for TrackMania 2020 support. "
+                    f"The caught exception was: {e!s}.",
                 )
         else:
             # warn the user that OpenPlanet couldn't be found:

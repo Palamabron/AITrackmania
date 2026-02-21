@@ -859,16 +859,18 @@ training_cls = partial(
 # Instantiate via script argument:
 
 if __name__ == "__main__":
-    from argparse import ArgumentParser
+    from dataclasses import dataclass
 
-    parser = ArgumentParser()
-    parser.add_argument("--server", action="store_true", help="launches the server")
-    parser.add_argument("--trainer", action="store_true", help="launches the trainer")
-    parser.add_argument("--worker", action="store_true", help="launches a rollout worker")
-    parser.add_argument(
-        "--test", action="store_true", help="launches a rollout worker in standalone mode"
-    )
-    args = parser.parse_args()
+    import tyro
+
+    @dataclass
+    class CompetitionCli:
+        server: bool = False
+        trainer: bool = False
+        worker: bool = False
+        test: bool = False
+
+    args = tyro.cli(CompetitionCli)
 
     if args.trainer:
         my_trainer = Trainer(

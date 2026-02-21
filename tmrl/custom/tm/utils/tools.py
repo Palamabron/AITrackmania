@@ -94,7 +94,8 @@ def save_ghost(host="127.0.0.1", port=10000):
 def armin(tab):
     """
     Functionality: Finds the index of the first non-zero element in the input array tab.
-    Returns: The index of the first non-zero element if found; otherwise, returns the index of the last element in the array.
+    Returns: The index of the first non-zero element if found;
+             otherwise, the index of the last element in the array.
     """
     nz = np.nonzero(tab)[0]
     if len(nz) != 0:
@@ -112,7 +113,7 @@ class Lidar:
         """
         Functionality:
         Sets up the LiDAR axis based on the image passed.
-        Creates LiDAR axes for scanning the environment, defined by angles ranging from 90 to 280 degrees.
+        Creates LiDAR axes for scanning, angles from 90 to 280 degrees.
         """
         h, w, _ = im.shape
         self.h = h

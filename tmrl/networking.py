@@ -3,16 +3,19 @@ import atexit
 import datetime
 import itertools
 import json
-import logging
 import os
 import shutil
 import socket
 import tempfile
+import time
+from collections.abc import Callable
 from os.path import exists
+from typing import Any
 
 # third-party imports
 import numpy as np
-from requests import get
+from loguru import logger
+from requests import get  # type: ignore[import-untyped]
 from tlspyo import Endpoint, Relay
 
 import tmrl.config.config_constants as cfg
@@ -22,18 +25,13 @@ import tmrl.config.config_objects as cfg_obj
 from tmrl.actor import ActorModule
 from tmrl.util import dump, load, partial_to_dict
 
-logging.basicConfig(level=logging.INFO)
-
 __docformat__ = "google"
 
 
-# PRINT: ============================================
-
-
-def print_with_timestamp(s):
-    x = datetime.datetime.now()
-    sx = x.strftime("%x %X ")
-    logging.info(sx + str(s))
+def print_with_timestamp(message: str) -> None:
+    """Log message with current date/time prefix."""
+    timestamp = datetime.datetime.now().strftime("%x %X ")
+    logger.info("{}{}", timestamp, message)
 
 
 def print_ip():
@@ -46,24 +44,22 @@ def print_ip():
 
 
 class Buffer:
-    """
-    Buffer of training samples.
+    """In-memory buffer of transition samples for the Server, RolloutWorker, and Trainer.
 
-    `Server`, `RolloutWorker` and `Trainer` all have their own `Buffer` to store and send training samples.
-
-    Samples are tuples of the form (`act`, `new_obs`, `rew`, `terminated`, `truncated`, `info`)
+    Samples are tuples: (act, new_obs, rew, terminated, truncated, info).
     """
 
     def __init__(self, maxlen=cfg.BUFFERS_MAXLEN):
-        """
+        """Initialize an empty buffer with optional max length.
+
         Args:
-            maxlen (int): buffer length
+            maxlen: Maximum number of samples to keep; older samples are dropped when exceeded.
         """
         self.memory = []
-        self.stat_train_return = 0.0  # stores the train return
-        self.stat_test_return = 0.0  # stores the test return
-        self.stat_train_steps = 0  # stores the number of steps per training episode
-        self.stat_test_steps = 0  # stores the number of steps per test episode
+        self.stat_train_return = 0.0
+        self.stat_test_return = 0.0
+        self.stat_train_steps = 0
+        self.stat_test_steps = 0
         self.maxlen = maxlen
 
     def clip_to_maxlen(self):
@@ -77,7 +73,7 @@ class Buffer:
         Appends `sample` to the buffer.
 
         Args:
-            sample (Tuple): a training sample of the form (`act`, `new_obs`, `rew`, `terminated`, `truncated`, `info`)
+            sample (Tuple): (act, new_obs, rew, terminated, truncated, info)
         """
         self.memory.append(sample)
         self.clip_to_maxlen()
@@ -244,7 +240,7 @@ def dump_run_instance(run_instance, checkpoint_path):
 def iterate_epochs(
     run_cls,
     interface: TrainerInterface,
-    checkpoint_path: str,
+    checkpoint_path: str | None,
     dump_run_instance_fn=dump_run_instance,
     load_run_instance_fn=load_run_instance,
     epochs_between_checkpoints=1,
@@ -259,31 +255,31 @@ def iterate_epochs(
     checkpoint_path = checkpoint_path or tempfile.mktemp("_remove_on_exit")
 
     try:
-        logging.debug(f"checkpoint_path: {checkpoint_path}")
+        logger.debug(f"checkpoint_path: {checkpoint_path}")
         if not exists(checkpoint_path):
-            logging.info("=== specification ".ljust(70, "="))
+            logger.info("=== specification ".ljust(70, "="))
             run_instance = run_cls()
             dump_run_instance_fn(run_instance, checkpoint_path)
-            logging.info("")
+            logger.info("")
         else:
-            logging.info("Loading checkpoint...")
+            logger.info("Loading checkpoint...")
             t1 = time.time()
             run_instance = load_run_instance_fn(checkpoint_path)
-            logging.info(f" Loaded checkpoint in {time.time() - t1} seconds.")
+            logger.info(f" Loaded checkpoint in {time.time() - t1} seconds.")
             if updater_fn is not None:
-                logging.info("Updating checkpoint...")
+                logger.info("Updating checkpoint...")
                 t1 = time.time()
                 run_instance = updater_fn(run_instance, run_cls)
-                logging.info(f"Checkpoint updated in {time.time() - t1} seconds.")
+                logger.info(f"Checkpoint updated in {time.time() - t1} seconds.")
 
         while run_instance.epoch < run_instance.epochs:
             yield run_instance.run_epoch(interface=interface)  # yield stats data frame
 
             if run_instance.epoch % epochs_between_checkpoints == 0:
-                logging.info(" saving checkpoint...")
+                logger.info(" saving checkpoint...")
                 t1 = time.time()
                 dump_run_instance_fn(run_instance, checkpoint_path)
-                logging.info(f" saved checkpoint in {time.time() - t1} seconds.")
+                logger.info(f" saved checkpoint in {time.time() - t1} seconds.")
 
     finally:
         if checkpoint_path.endswith("_remove_on_exit") and exists(checkpoint_path):
@@ -296,7 +292,7 @@ def run_with_wandb(
     run_id,
     interface,
     run_cls,
-    checkpoint_path: str = None,
+    checkpoint_path: str | None = None,
     dump_run_instance_fn=None,
     load_run_instance_fn=None,
     updater_fn=None,
@@ -314,14 +310,14 @@ def run_with_wandb(
     )  # clean up after wandb atexit handler finishes
     import wandb
 
-    logging.debug(f" run_cls: {run_cls}")
+    logger.debug(f" run_cls: {run_cls}")
     config = partial_to_dict(run_cls)
     config["environ"] = log_environment_variables()
     hiperparams_dict = cfg.create_config()
     for key, value in hiperparams_dict.items():
         config[key] = value
     # config['git'] = git_info()  # TODO: check this for bugs
-    resume = checkpoint_path and exists(checkpoint_path)
+    resume = bool(checkpoint_path and exists(checkpoint_path))
     wandb_initialized = False
     err_cpt = 0
     while not wandb_initialized:
@@ -339,13 +335,13 @@ def run_with_wandb(
 
         except Exception as e:
             err_cpt += 1
-            logging.warning(f"wandb error {err_cpt}: {e}")
+            logger.warning(f"wandb error {err_cpt}: {e}")
             if err_cpt > 10:
-                logging.warning("Could not connect to wandb, aborting.")
+                logger.warning("Could not connect to wandb, aborting.")
                 exit()
             else:
                 time.sleep(10.0)
-    # logging.info(config)
+    # logger.info(config)
     for stats in iterate_epochs(
         run_cls,
         interface,
@@ -355,13 +351,14 @@ def run_with_wandb(
         1,
         updater_fn,
     ):
-        [wandb.log(json.loads(s.to_json())) for s in stats]
+        for s in stats:
+            wandb.log(json.loads(s.to_json()))
 
 
 def run(
     interface,
     run_cls,
-    checkpoint_path: str = None,
+    checkpoint_path: str | None = None,
     dump_run_instance_fn=None,
     load_run_instance_fn=None,
     updater_fn=None,
@@ -405,9 +402,9 @@ class Trainer:
         hostname=cfg.HOSTNAME,
         model_path=cfg.MODEL_PATH_TRAINER,
         checkpoint_path=cfg.CHECKPOINT_PATH,
-        dump_run_instance_fn: callable = None,
-        load_run_instance_fn: callable = None,
-        updater_fn: callable = None,
+        dump_run_instance_fn: Callable[..., Any] | None = None,
+        load_run_instance_fn: Callable[..., Any] | None = None,
+        updater_fn: Callable[..., Any] | None = None,
     ):
         """
         Args:
@@ -422,12 +419,11 @@ class Trainer:
             keys_dir (str): custom credentials directory for `tlspyo` TLS security
             hostname (str): custom TLS hostname
             model_path (str): path where a local copy of the model will be saved
-            checkpoint_path: path where the `Trainer` will be checkpointed (`None` = no checkpointing)
+            checkpoint_path: path for `Trainer` checkpoint (`None` = no checkpointing)
             dump_run_instance_fn (callable): custom serializer (`None` = pickle.dump)
             load_run_instance_fn (callable): custom deserializer (`None` = pickle.load)
-            updater_fn (callable): custom updater (`None` = no updater). If provided, this must be a function \
-            that takes a checkpoint and training_cls as argument and returns an updated checkpoint. \
-            The updater is called after a checkpoint is loaded, e.g., to update your checkpoint with new arguments.
+            updater_fn (callable): custom updater (`None` = no updater). If provided, must be a
+                function (checkpoint, training_cls) -> updated checkpoint, called after load.
         """
         self.checkpoint_path = checkpoint_path
         self.dump_run_instance_fn = dump_run_instance_fn
@@ -504,11 +500,11 @@ class RolloutWorker:
         self,
         env_cls,
         actor_module_cls,
-        sample_compressor: callable = None,
+        sample_compressor: Callable[..., Any] | None = None,
         device="cpu",
         max_samples_per_episode=np.inf,
         model_path=cfg.MODEL_PATH_WORKER,
-        obs_preprocessor: callable = None,
+        obs_preprocessor: Callable[..., Any] | None = None,
         crc_debug=False,
         model_path_history=cfg.MODEL_PATH_SAVE_HISTORY,
         model_history=cfg.MODEL_HISTORY,
@@ -526,21 +522,17 @@ class RolloutWorker:
         """
         Args:
             env_cls (type): class of the Gymnasium environment (subclass of tmrl.envs.GenericGymEnv)
-            actor_module_cls (type): class of the module containing the policy (subclass of tmrl.actor.ActorModule)
-            sample_compressor (callable): compressor for sending samples over the Internet; \
-            when not `None`, `sample_compressor` must be a function that takes the following arguments: \
-            (prev_act, obs, rew, terminated, truncated, info), and that returns them (modified) in the same order: \
-            when not `None`, a `sample_compressor` works with a corresponding decompression scheme in the `Memory` class
+            actor_module_cls (type): module class for the policy (tmrl.actor.ActorModule subclass)
+            sample_compressor (callable): compressor for samples over the Internet; when not `None`,
+                must take (prev_act, obs, rew, terminated, truncated, info) and return same order;
+                works with a decompression scheme in the Memory class.
             device (str): device on which the policy is running
             max_samples_per_episode (int): if an episode gets longer than this, it is reset
             model_path (str): path where a local copy of the policy will be stored
-            obs_preprocessor (callable): utility for modifying observations retrieved from the environment; \
-            when not `None`, `obs_preprocessor` must be a function that takes an observation as input and outputs the \
-            modified observation
+            obs_preprocessor (callable): if not None, (obs) -> modified observation
             crc_debug (bool): useful for debugging custom pipelines; leave to False otherwise
-            model_path_history (str): (include the filename but omit .tmod) path to the saved history of policies; \
-            we recommend you leave this to the default
-            model_history (int): policies are saved every `model_history` new policies (0: not saved)
+            model_path_history (str): path to policy history (omit .tmod); leave default recommended
+            model_history (int): save policy every this many new policies (0: not saved)
             standalone (bool): if True, the worker will not try to connect to a server
             server_ip (str): ip of the central server
             server_port (int): public port of the central server
@@ -565,10 +557,10 @@ class RolloutWorker:
         )
         self.standalone = standalone
         if os.path.isfile(self.model_path):
-            logging.debug(f"Loading model from {self.model_path}")
+            logger.debug(f"Loading model from {self.model_path}")
             self.actor = self.actor.load(self.model_path, device=self.device)
         else:
-            logging.debug(f"No model found at {self.model_path}")
+            logger.debug(f"No model found at {self.model_path}")
         self.buffer = Buffer()
         self.max_samples_per_episode = max_samples_per_episode
         self.crc_debug = crc_debug
@@ -661,9 +653,8 @@ class RolloutWorker:
         """
         Performs a full RL transition.
 
-        A full RL transition is `obs` -> `act` -> `new_obs`, `rew`, `terminated`, `truncated`, `info`.
-        Note that, in the Real-Time RL setting, `act` is appended to a buffer which is part of `new_obs`.
-        This is because is does not directly affect the new observation, due to real-time delays.
+        A full RL transition is obs -> act -> (new_obs, rew, terminated, truncated, info).
+        In Real-Time RL, act is appended to a buffer that is part of new_obs (real-time delays).
 
         Args:
             reward_function:
@@ -706,14 +697,13 @@ class RolloutWorker:
 
     def collect_train_episode(self, max_samples=None):
         """
-        Collects a maximum of `max_samples` training transitions (from reset to terminated or truncated)
+        Collects up to `max_samples` training transitions (reset to terminated or truncated).
 
-        This method stores the episode and the training return in the local `Buffer` of the worker
+        Stores the episode and training return in the worker's local Buffer.
         for sending to the `Server`.
 
         Args:
-            max_samples (int): if the environment is not `terminated` after `max_samples` time steps,
-                it is forcefully reset and `truncated` is set to True.
+            max_samples (int): if not terminated after this many steps, reset and set truncated.
         """
         if max_samples is None:
             max_samples = self.max_samples_per_episode
@@ -753,10 +743,10 @@ class RolloutWorker:
 
     def run_episode(self, max_samples=None, train=False):
         """
-        Collects a maximum of `max_samples` test transitions (from reset to terminated or truncated).
+        Collects up to `max_samples` test transitions (reset to terminated or truncated).
 
         Args:
-            max_samples (int): At most `max_samples` samples are collected per episode.
+            max_samples (int): at most this many samples per episode.
                 If the episode is longer, it is forcefully reset and `truncated` is set to True.
             train (bool): whether the episode is a training or a test episode.
                 `step` is called with `test=not train`.
@@ -784,16 +774,14 @@ class RolloutWorker:
         """
         Runs the worker for `nb_episodes` episodes.
 
-        This method sends episodes continuously to the Server, and checks for new weights between episodes.
-        For synchronous or more fine-grained sampling, use synchronous or lower-level APIs.
-        For deployment, use `run_episodes` rather than `run`.
+        Sends episodes to the Server and checks for new weights between episodes.
+        For sync/fine-grained sampling use other APIs; for deployment use run_episodes.
 
         Args:
-            test_episode_interval (int): a test episode is collected for every `test_episode_interval` train episodes;
-                set to 0 to not collect test episodes.
-            nb_episodes (int): maximum number of train episodes to collect.
+            test_episode_interval (int): test episode every N train episodes; 0 to disable.
+            nb_episodes (int): max train episodes to collect.
             verbose (bool): whether to log INFO messages.
-            expert (bool): experts send training samples without updating their model nor running test episodes.
+            expert (bool): if True, send samples only, no model updates nor test episodes.
         """
 
         iterator = range(nb_episodes) if nb_episodes != np.inf else itertools.count()
@@ -852,27 +840,25 @@ class RolloutWorker:
         """
         Collects `nb_steps` steps while synchronizing with the Trainer.
 
-        This method is useful for traditional (non-real-time) environments that can be stepped fast.
-        It also works for rtgym environments with `wait_on_done` enabled, just set `end_episodes` to `True`.
+        For traditional (non-real-time) envs that can be stepped fast.
+        For rtgym with wait_on_done, set end_episodes to True.
 
-        Note: This method does not collect test episodes. Periodically use `run_episode(train=False)` if you wish to.
+        Note: Does not collect test episodes; use run_episode(train=False) periodically.
 
         Args:
-            test_episode_interval (int): a test episode is collected for every `test_episode_interval` train episodes;
-                set to 0 to not collect test episodes. NB: `end_episodes` must be `True` to collect test episodes.
-            nb_steps (int): total number of steps to collect (after `initial_steps`).
-            initial_steps (int): initial number of steps to collect before waiting for the first model update.
-            max_steps_per_update (float): maximum number of steps to collect per model received from the Server
-                (this can be a non-integer ratio).
-            end_episodes (bool): when True, waits for episodes to end before sending samples and waiting for updates.
-                When False (default), pauses whenever the max_steps_per_update ratio is exceeded.
+            test_episode_interval (int): test every N train episodes; 0 to disable.
+                Requires end_episodes.
+            nb_steps (int): total steps to collect (after initial_steps).
+            initial_steps (int): steps before waiting for first model update.
+            max_steps_per_update (float): max steps per model from Server (can be non-integer).
+            end_episodes (bool): if True, wait for episode end before send/wait; else pause.
             verbose (bool): whether to log INFO messages.
         """
 
         # collect initial samples
 
         if verbose:
-            logging.info(f"Collecting {initial_steps} initial steps")
+            logger.info(f"Collecting {initial_steps} initial steps")
 
         iteration = 0
         done = False
@@ -900,7 +886,7 @@ class RolloutWorker:
             self.buffer.stat_train_return = ret
             self.buffer.stat_train_steps = steps
             if verbose:
-                logging.info("Sending buffer (initial steps)")
+                logger.info("Sending buffer (initial steps)")
             self.send_and_clear_buffer()
 
         i_model = 1
@@ -909,7 +895,7 @@ class RolloutWorker:
         ratio = (iteration + 1) / i_model
         while ratio > max_steps_per_update:
             if verbose:
-                logging.info(
+                logger.info(
                     f"Ratio {ratio} > {max_steps_per_update}, sending buffer checking updates"
                 )
             self.send_and_clear_buffer()
@@ -961,12 +947,12 @@ class RolloutWorker:
                     ratio = (iteration + 1) / i_model
                     while ratio > max_steps_per_update:
                         if verbose:
-                            logging.info(
-                                f"Ratio {ratio} > {max_steps_per_update}, sending buffer checking updates (no eoe)"
+                            logger.info(
+                                f"Ratio {ratio} > {max_steps_per_update}, sending buffer (no eoe)"
                             )
                         if not done:
                             if verbose:
-                                logging.info("Sending buffer (no eoe)")
+                                logger.info("Sending buffer (no eoe)")
                             self.send_and_clear_buffer()
                         i_model += self.update_actor_weights(verbose=verbose, blocking=True)
                         ratio = (iteration + 1) / i_model
@@ -976,12 +962,10 @@ class RolloutWorker:
                 ratio = (iteration + 1) / i_model
                 while ratio > max_steps_per_update:
                     if verbose:
-                        logging.info(
-                            f"Ratio {ratio} > {max_steps_per_update}, sending buffer checking updates (eoe)"
-                        )
+                        logger.info(f"Ratio {ratio} > {max_steps_per_update}, sending buffer (eoe)")
                     if not done:
                         if verbose:
-                            logging.info("Sending buffer (eoe)")
+                            logger.info("Sending buffer (eoe)")
                         self.send_and_clear_buffer()
                     i_model += self.update_actor_weights(verbose=verbose, blocking=True)
                     ratio = (iteration + 1) / i_model
@@ -989,7 +973,7 @@ class RolloutWorker:
             self.buffer.stat_train_return = ret
             self.buffer.stat_train_steps = steps
             if verbose:
-                logging.info(
+                logger.info(
                     f"Sending buffer - DEBUG ratio {ratio} iteration {iteration} i_model {i_model}"
                 )
             self.send_and_clear_buffer()
@@ -999,7 +983,7 @@ class RolloutWorker:
         Benchmarks the environment.
 
         This method is only compatible with rtgym_ environments.
-        Furthermore, the `"benchmark"` option of the rtgym configuration dictionary must be set to `True`.
+        The rtgym config must have the "benchmark" option set to True.
 
         .. _rtgym: https://github.com/yannbouteiller/rtgym
 

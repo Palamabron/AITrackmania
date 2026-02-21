@@ -330,8 +330,10 @@ With our dummy drone environment, this translates to:
 ```python
 from custom_tmrl.util import partial
 from custom_tmrl.envs import GenericGymEnv
+import custom_tmrl.config.config_constants as cfg
 
-env_cls = partial(GenericGymEnv, id="real-time-gym-ts-v1", gym_kwargs={"config": my_config})
+# cfg.RTGYM_VERSION is "real-time-gym-v1" on Windows, "real-time-gym-ts-v1" on Linux
+env_cls = partial(GenericGymEnv, id=cfg.RTGYM_VERSION, gym_kwargs={"config": my_config})
 ```
 
 We can create a dummy environment to retrieve the action and observation spaces:
@@ -731,8 +733,9 @@ _(Note: be careful when pairing `max_training_steps_per_env_step` with a similar
 ```python
 from custom_tmrl.util import partial
 from custom_tmrl.envs import GenericGymEnv
+import custom_tmrl.config.config_constants as cfg
 
-env_cls = partial(GenericGymEnv, id="real-time-gym-ts-v1", gym_kwargs={"config": my_config})
+env_cls = partial(GenericGymEnv, id=cfg.RTGYM_VERSION, gym_kwargs={"config": my_config})
 ```
 This dummy environment will only be used by the `Trainer` to retrieve the observation and action spaces (`reset()` will not be called).
 Alternatively, you can pass this information as a tuple:

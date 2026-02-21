@@ -15,7 +15,7 @@ from util import partial
 
 def detach(x):
     """
-    Functionality: Detaches a tensor if it is a torch tensor, otherwise recursively detaches tensors from elements within the object.
+    Detaches a tensor if torch tensor, else recursively detaches from elements.
     Returns: Detached tensor or a detached version of the object.
     """
     if isinstance(x, torch.Tensor):
@@ -36,7 +36,7 @@ def no_grad(model):
 
 def exponential_moving_average(averages, values, factor):
     """
-    Functionality: Updates the averages using exponential moving average formula for the given values and factor.
+    Updates the averages using exponential moving average for values and factor.
     """
     with torch.no_grad():
         for a, v in zip(averages, values):
@@ -44,13 +44,13 @@ def exponential_moving_average(averages, values, factor):
 
 
 def copy_shared(model_a):
-    """Create a deepcopy of a model but with the underlying state_dict shared. E.g. useful in combination with `no_grad`."""
+    """Deepcopy of model with state_dict shared. E.g. useful with `no_grad`."""
     model_b = deepcopy(model_a)
     sda = model_a.state_dict(keep_vars=True)
     sdb = model_b.state_dict(keep_vars=True)
     for key in sda:
         a, b = sda[key], sdb[key]
-        b.data = a.data  # strangely this will not make a.data and b.data the same object but their underlying data_ptr will be the same
+        b.data = a.data  # a.data and b.data differ but underlying data_ptr is shared
         assert b.untyped_storage().data_ptr() == a.untyped_storage().data_ptr()
     return model_b
 
@@ -61,7 +61,7 @@ class PopArt(Module):
     def __init__(
         self, output_layer, beta: float = 0.0003, zero_debias: bool = True, start_pop: int = 8
     ):
-        # zero_debias=True and start_pop=8 seem to improve things a little but (False, 0) works as well
+        # zero_debias=True, start_pop=8 help a little; (False, 0) works as well
         super().__init__()
         self.start_pop = start_pop
         self.beta = beta
@@ -71,12 +71,13 @@ class PopArt(Module):
             if isinstance(output_layer, (tuple, list, torch.nn.ModuleList))
             else (output_layer,)
         )
-        shape = self.output_layers[0].bias.shape
-        device = self.output_layers[0].bias.device
-        assert all(shape == x.bias.shape for x in self.output_layers)
-        self.mean = Parameter(torch.zeros(shape, device=device), requires_grad=False)
-        self.mean_square = Parameter(torch.ones(shape, device=device), requires_grad=False)
-        self.std = Parameter(torch.ones(shape, device=device), requires_grad=False)
+        layer0 = self.output_layers[0]
+        shape = tuple(layer0.bias.shape)  # type: ignore[arg-type,union-attr]
+        device = layer0.bias.device  # type: ignore[union-attr]
+        assert all(shape == tuple(x.bias.shape) for x in self.output_layers)
+        self.mean = Parameter(torch.zeros(shape, device=device), requires_grad=False)  # type: ignore[arg-type]
+        self.mean_square = Parameter(torch.ones(shape, device=device), requires_grad=False)  # type: ignore[arg-type]
+        self.std = Parameter(torch.ones(shape, device=device), requires_grad=False)  # type: ignore[arg-type]
         self.updates = 0
 
     @torch.no_grad()
@@ -85,7 +86,7 @@ class PopArt(Module):
         Updates the internal state based on the given target values and normalizes the targets.
         """
         beta = max(1 / (self.updates + 1), self.beta) if self.zero_debias else self.beta
-        # note that for beta = 1/self.updates the resulting mean, std would be the true mean and std over all past data
+        # for beta = 1/self.updates, mean/std are the true mean/std over all past data
 
         new_mean = (1 - beta) * self.mean + beta * targets.mean(0)
         new_mean_square = (1 - beta) * self.mean_square + beta * (targets * targets).mean(0)

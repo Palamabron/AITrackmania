@@ -76,7 +76,7 @@ if platform.system() == "Windows":
 
     def profile_screenshot():
         """
-        Profiling function that measures the time taken to capture 5000 screenshots using the WindowInterface.
+        Profiling: time to capture 5000 screenshots using WindowInterface.
         Procedure:
         Initializes a WindowInterface object for the "Trackmania" window.
         Captures 5000 screenshots using the screenshot() method of WindowInterface.
@@ -88,13 +88,13 @@ if platform.system() == "Windows":
         window_interface = WindowInterface("Trackmania")
         pro.start()
         for _ in range(5000):
-            snap = window_interface.screenshot()
+            _ = window_interface.screenshot()
         pro.stop()
         pro.print(show_all=True)
 
 else:  # dummy import on Linux for uninitialized environments
 
-    class WindowInterface:
+    class WindowInterface:  # type: ignore[no-redef]
         pass
 
     def profile_screenshot():

@@ -1,16 +1,15 @@
 # standard library imports
-import logging
 import pickle
 import time
 
 # third-party imports
 import keyboard
 import numpy as np
+from loguru import logger
 from matplotlib import pyplot as plt
 from scipy.interpolate import CubicSpline
 from scipy.ndimage import gaussian_filter1d
 
-# local imports
 import tmrl.config.config_constants as cfg
 from tmrl.custom.tm.utils.tools import TM2020OpenPlanetClient
 
@@ -28,7 +27,7 @@ def record_reward_dist(path_reward=PATH_REWARD, use_keyboard=False):
         print("Press 'e' to start recording, 'q' to stop")
     while True:
         if not is_recording and (not use_keyboard or keyboard.is_pressed("e")):
-            logging.info("start recording")
+            logger.info("start recording")
             is_recording = True
         if is_recording:
             data = client.retrieve_data(
@@ -37,8 +36,8 @@ def record_reward_dist(path_reward=PATH_REWARD, use_keyboard=False):
             terminated = bool(data[8])
             early_stop = use_keyboard and keyboard.is_pressed("q")
             if early_stop or terminated:
-                logging.info("Computing reward function checkpoints from captured positions...")
-                logging.info(f"Initial number of captured positions: {len(positions)}")
+                logger.info("Computing reward function checkpoints from captured positions...")
+                logger.info(f"Initial number of captured positions: {len(positions)}")
                 positions = np.array(positions)
 
                 final_positions = [positions[0]]
@@ -64,12 +63,12 @@ def record_reward_dist(path_reward=PATH_REWARD, use_keyboard=False):
                 print(f"final_positions: {final_positions}", end="\n\n")
                 print(f"upsampled_arr: {upsampled_arr}", end="\n\n")
                 print(f"spaced_points: {spaced_points}", end="\n\n")
-                logging.info(
+                logger.info(
                     f"Final number of checkpoints in the reward function: {len(spaced_points)}"
                 )
 
                 pickle.dump(spaced_points, open(path, "wb"))
-                logging.info("All done")
+                logger.info("All done")
                 return
             else:
                 positions.append([data[3], data[4], data[5]])

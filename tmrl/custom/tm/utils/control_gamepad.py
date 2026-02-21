@@ -4,6 +4,8 @@ import platform
 if platform.system() in ("Windows", "Linux"):
     import time
 
+    import numpy as np
+
     def control_gamepad(gamepad, control):
         """
         Controls a gamepad for driving simulation.
@@ -34,10 +36,6 @@ if platform.system() in ("Windows", "Linux"):
         sigmoid = 1 / (1 + np.exp(-k * (x + 0.4))) * 1 / (1 + np.exp(-k * (0.4 - x)))
         return np.tan(x) / np.tan(1) * (1 - sigmoid)
 
-    def mapped_steering(x, k=15):
-        sigmoid = 1 / (1 + np.exp(-k * (x + 0.4))) * 1 / (1 + np.exp(-k * (0.4 - x)))
-        return np.tan(x) / np.tan(1) * (1 - sigmoid)
-
     def gamepad_reset(gamepad):
         """
         Resets the gamepad state and performs button presses for reset purposes.
@@ -56,7 +54,8 @@ if platform.system() in ("Windows", "Linux"):
         """
         Initiates specific actions on the gamepad to save a replay in a simulated environment.
         Actions:
-        Simulates a series of button presses (D-pad down, A, D-pad up, A) to trigger the replay saving functionality.
+        Simulates a series of button presses (D-pad down, A, D-pad up, A)
+        to trigger the replay saving functionality.
         """
         time.sleep(5.0)
         gamepad.reset()

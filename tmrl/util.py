@@ -2,7 +2,6 @@
 import functools
 import inspect
 import json
-import logging
 import operator
 import os
 import pickle
@@ -10,22 +9,15 @@ import signal
 import subprocess
 import weakref
 from collections.abc import Callable, Mapping, Sequence
-
-# from contextlib import contextmanager
-# from dataclasses import Field, dataclass, fields, is_dataclass, make_dataclass
 from importlib import import_module
 from pathlib import Path
-
-# from itertools import chain
 from typing import Any, TypeVar, cast
 
-# from weakref import WeakKeyDictionary
-# third-party imports
 import numpy as np
 import pandas as pd
 import torch
+from loguru import logger
 
-logging.basicConfig(level=logging.INFO)
 T = TypeVar("T")  # helps with type inference in some editors
 
 
@@ -298,7 +290,7 @@ class DelayInterrupt:
         [signal.signal(s, self.on_signal) for s in self.signals]
 
     def on_signal(self, *args):
-        logging.info("tmrl.util:DelayInterrupt -- Signal received!", *args)
+        logger.info("tmrl.util:DelayInterrupt -- Signal received! {}", args)
         self.signal_received = True
 
     def __exit__(self, *args):

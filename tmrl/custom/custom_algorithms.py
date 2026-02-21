@@ -1,13 +1,20 @@
 # standard library imports
 import itertools
-import logging
 from copy import deepcopy
 from dataclasses import dataclass
+from typing import Any
 
 # third-party imports
 import numpy as np
 import torch
+from loguru import logger
 from torch.optim import SGD, Adam, AdamW
+from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
+
+try:
+    import wandb
+except ImportError:
+    wandb = None  # type: ignore[assignment]
 
 import tmrl.config.config_constants as cfg
 from tmrl.custom.custom_models import MLPActorCritic, REDQMLPActorCritic
@@ -16,10 +23,7 @@ from tmrl.custom.utils.nn import copy_shared, no_grad
 from tmrl.training import TrainingAgent
 from tmrl.util import cached_property
 
-logging.basicConfig(level=logging.INFO)
-
-
-# Soft Actor-Critic ====================================================================================================
+# Soft Actor-Critic =========================================================================
 
 
 def set_seed(seed=cfg.SEED):
@@ -33,12 +37,12 @@ def set_seed(seed=cfg.SEED):
     torch.backends.cudnn.benchmark = False
 
 
-@dataclass(eq=0)
+@dataclass(eq=False)
 class SpinupSacAgent(TrainingAgent):  # Adapted from Spinup
-    observation_space: type
-    action_space: type
-    device: str = None  # device where the model will live (None for auto)
-    model_cls: type = MLPActorCritic
+    observation_space: type[Any]
+    action_space: type[Any]
+    device: str | None = None  # device where the model will live (None for auto)
+    model_cls: type[Any] = MLPActorCritic
     gamma: float = 0.99
     polyak: float = 0.995
     alpha: float = 0.2  # fixed (v1) or initial (v2) value of the entropy coefficient
@@ -46,13 +50,15 @@ class SpinupSacAgent(TrainingAgent):  # Adapted from Spinup
     lr_critic: float = 1e-3  # learning rate
     lr_entropy: float = 1e-3  # entropy autotuning (SAC v2)
     learn_entropy_coef: bool = True  # if True, SAC v2 is used, else, SAC v1 is used
-    target_entropy: float = None  # if None, the target entropy for SAC v2 is set automatically
+    target_entropy: float | None = (
+        None  # if None, the target entropy for SAC v2 is set automatically
+    )
     optimizer_actor: str = "adam"  # one of ["adam", "adamw", "sgd"]
     optimizer_critic: str = "adam"  # one of ["adam", "adamw", "sgd"]
-    betas_actor: tuple = None  # for Adam and AdamW
-    betas_critic: tuple = None  # for Adam and AdamW
-    l2_actor: float = None  # weight decay
-    l2_critic: float = None  # weight decay
+    betas_actor: tuple[float, ...] | None = None  # for Adam and AdamW
+    betas_critic: tuple[float, ...] | None = None  # for Adam and AdamW
+    l2_actor: float | None = None  # weight decay
+    l2_critic: float | None = None  # weight decay
 
     model_nograd = cached_property(lambda self: no_grad(copy_shared(self.model)))
 
@@ -60,7 +66,7 @@ class SpinupSacAgent(TrainingAgent):  # Adapted from Spinup
         observation_space, action_space = self.observation_space, self.action_space
         device = self.device or ("cuda" if torch.cuda.is_available() else "cpu")
         model = self.model_cls(observation_space, action_space)
-        logging.debug(f" device SAC: {device}")
+        logger.debug(f" device SAC: {device}")
         self.model = model.to(device)
         self.model_target = no_grad(deepcopy(self.model))
 
@@ -69,11 +75,11 @@ class SpinupSacAgent(TrainingAgent):  # Adapted from Spinup
         self.optimizer_actor = self.optimizer_actor.lower()
         self.optimizer_critic = self.optimizer_critic.lower()
         if self.optimizer_actor not in ["adam", "adamw", "sgd"]:
-            logging.warning(
+            logger.warning(
                 f"actor optimizer {self.optimizer_actor} is not valid, defaulting to sgd"
             )
         if self.optimizer_critic not in ["adam", "adamw", "sgd"]:
-            logging.warning(
+            logger.warning(
                 f"critic optimizer {self.optimizer_critic} is not valid, defaulting to sgd"
             )
         if self.optimizer_actor == "adam":
@@ -114,7 +120,7 @@ class SpinupSacAgent(TrainingAgent):  # Adapted from Spinup
             self.target_entropy = float(self.target_entropy)
 
         if self.learn_entropy_coef:
-            # Note: we optimize the log of the entropy coeff which is slightly different from the paper
+            # Note: we optimize the log of the entropy coeff (slightly different from paper)
             # as discussed in https://github.com/rail-berkeley/softlearning/issues/37
             self.log_alpha = torch.log(
                 torch.ones(1, device=self.device) * self.alpha
@@ -315,10 +321,10 @@ class SpinupSacAgent(TrainingAgent):  # Adapted from Spinup
 
 @dataclass(eq=False)
 class REDQSACAgent(TrainingAgent):
-    observation_space: type
-    action_space: type
-    device: str = None  # device where the model will live (None for auto)
-    model_cls: type = REDQMLPActorCritic
+    observation_space: type[Any]
+    action_space: type[Any]
+    device: str | None = None  # device where the model will live (None for auto)
+    model_cls: type[Any] = REDQMLPActorCritic
     gamma: float = 0.99
     polyak: float = 0.995
     alpha: float = 0.2  # fixed (v1) or initial (v2) value of the entropy coefficient
@@ -326,7 +332,7 @@ class REDQSACAgent(TrainingAgent):
     lr_critic: float = 1e-3  # learning rate
     lr_entropy: float = 1e-3  # entropy autotuning
     learn_entropy_coef: bool = True
-    target_entropy: float = None  # if None, the target entropy is set automatically
+    target_entropy: float | None = None  # if None, the target entropy is set automatically
     n: int = 10  # number of REDQ parallel Q networks
     m: int = 2  # number of REDQ randomly sampled target networks
     q_updates_per_policy_update: int = (
@@ -350,7 +356,7 @@ class REDQSACAgent(TrainingAgent):
         observation_space, action_space = self.observation_space, self.action_space
         device = self.device or ("cuda" if torch.cuda.is_available() else "cpu")
         model = self.model_cls(observation_space, action_space)
-        logging.debug(f" device REDQ-SAC: {device}")
+        logger.debug(f" device REDQ-SAC: {device}")
         self.model = model.to(device)
         self.model_target = no_grad(deepcopy(self.model))
         self.pi_optimizer = Adam(
@@ -388,7 +394,7 @@ class REDQSACAgent(TrainingAgent):
         """
         Arguments:
 
-        batch: Training batch consisting of observations, actions, rewards, next observations, termination flags, and possibly additional info.
+        batch: Training batch (observations, actions, rewards, next obs, dones, info).
         epoch: Current epoch number.
         batch_number: Current batch number.
         iteration: Current iteration number.
@@ -485,15 +491,17 @@ class REDQSACAgent(TrainingAgent):
         return ret_dict
 
 
-# SAC with optional learnable entropy coefficent =======================================================================
+# SAC with optional learnable entropy coefficent =============================================
 
 
 @dataclass(eq=False)
-class SpinupSacAgent(TrainingAgent):  # Adapted from Spinup
-    observation_space: type
-    action_space: type
-    device: str = None  # device where the model will live (None for auto)
-    model_cls: type = MLPActorCritic
+class SpinupSacAgentConfig(TrainingAgent):
+    """SAC agent with config-driven defaults (lr, n_steps from cfg)."""
+
+    observation_space: type[Any]
+    action_space: type[Any]
+    device: str | None = None  # device where the model will live (None for auto)
+    model_cls: type[Any] = MLPActorCritic
     gamma: float = 0.99
     polyak: float = 0.995
     alpha: float = 0.2  # fixed (v1) or initial (v2) value of the entropy coefficient
@@ -501,7 +509,9 @@ class SpinupSacAgent(TrainingAgent):  # Adapted from Spinup
     lr_critic: float = cfg.ALG_CONFIG["LR_CRITIC"]  # learning rate
     lr_entropy: float = cfg.ALG_CONFIG["LR_ENTROPY"]  # entropy autotuning (SAC v2)
     learn_entropy_coef: bool = True  # if True, SAC v2 is used, else, SAC v1 is used
-    target_entropy: float = None  # if None, the target entropy for SAC v2 is set automatically
+    target_entropy: float | None = (
+        None  # if None, the target entropy for SAC v2 is set automatically
+    )
     n_steps: int = cfg.ALG_CONFIG["N_STEPS"]
 
     model_nograd = cached_property(lambda self: no_grad(copy_shared(self.model)))
@@ -522,7 +532,7 @@ class SpinupSacAgent(TrainingAgent):  # Adapted from Spinup
         observation_space, action_space = self.observation_space, self.action_space
         device = self.device or ("cuda" if torch.cuda.is_available() else "cpu")
         model = self.model_cls(observation_space, action_space)
-        logging.debug(f" device SAC: {device}")
+        logger.debug(f" device SAC: {device}")
         self.model = model.to(device)
         self.model_target = no_grad(deepcopy(self.model))
 
@@ -563,7 +573,7 @@ class SpinupSacAgent(TrainingAgent):  # Adapted from Spinup
             self.target_entropy = float(self.target_entropy)
 
         if self.learn_entropy_coef:
-            # Note: we optimize the log of the entropy coeff which is slightly different from the paper
+            # Note: we optimize the log of the entropy coeff (slightly different from the paper)
             # as discussed in https://github.com/rail-berkeley/softlearning/issues/37
             self.log_alpha = torch.log(
                 torch.ones(1, device=self.device) * self.alpha
@@ -572,7 +582,7 @@ class SpinupSacAgent(TrainingAgent):  # Adapted from Spinup
         else:
             self.alpha_t = torch.tensor(float(self.alpha)).to(self.device)
 
-        if cfg.WANDB_GRADIENTS:
+        if cfg.WANDB_GRADIENTS and wandb is not None:
             wandb.watch(self.model, log_freq=10)
 
         # self.is_rendered = False
@@ -592,10 +602,10 @@ class SpinupSacAgent(TrainingAgent):  # Adapted from Spinup
     def train(self, batch, epoch, batch_index, iters):
         """
         Functionality:
-        Handles the training process for the SAC (Soft Actor-Critic) agent using a provided batch of data.
+        Handles the training process for the SAC agent using a provided batch of data.
         Sets up necessary configurations and parameters for training.
-        Computes actor and critic losses, performs backpropagation, and updates the corresponding network parameters.
-        Manages entropy coefficient optimization (if enabled) and gradient clipping (if configured).
+        Computes actor and critic losses, backpropagation, updates network parameters.
+        Manages entropy coefficient optimization (if enabled) and gradient clipping.
         Updates target networks by polyak averaging.
         Provides debugging information if specified in the configuration.
         """
@@ -675,7 +685,7 @@ class SpinupSacAgent(TrainingAgent):  # Adapted from Spinup
                 backup = r + (1 - d) * (q_pi_targ.sub_(alpha_t * logp_a2))
                 # backup = r + (1 - d) * (q_pi_targ - alpha_t * logp_a2)
             else:
-                # backup = r.add_(self.gamma * (1 - d).mul_(1 - d).mul_(q_pi_targ.sub_(alpha_t.mul_(logp_a2))))
+                # backup = r + gamma * (1-d) * (q_pi_targ - alpha_t * logp_a2)
                 backup = r + self.gamma * (1 - d) * (q_pi_targ - alpha_t * logp_a2)
 
         # MSE loss against Bellman backup
@@ -828,7 +838,7 @@ class SpinupSacAgent(TrainingAgent):  # Adapted from Spinup
         return ret_dict
 
 
-# TQC with learnable entropy coefficent ===================================================================
+# TQC with learnable entropy coefficent =======================================================
 
 
 # https://github.com/yosider/ml-agents-1/blob/master/docs/Training-SAC.md
@@ -840,10 +850,10 @@ class TQCAgent(TrainingAgent):
     Manages training and setup of the TQC agent with various parameters and configurations.
     """
 
-    observation_space: type
-    action_space: type
-    device: str = None
-    model_cls: type = SophyActorCritic  # Replace with your QuantileActorCritic class
+    observation_space: type[Any]
+    action_space: type[Any]
+    device: str | None = None
+    model_cls: type[Any] = SophyActorCritic  # Replace with your QuantileActorCritic class
     gamma: float = 0.99
     polyak: float = 0.995
     alpha: float = 0.2
@@ -851,7 +861,7 @@ class TQCAgent(TrainingAgent):
     lr_critic: float = 1e-3
     lr_entropy: float = 1e-3
     learn_entropy_coef: bool = True
-    target_entropy: float = None
+    target_entropy: float | None = None
     top_quantiles_to_drop: int = cfg.ALG_CONFIG[
         "TOP_QUANTILES_TO_DROP"
     ]  # ~8% of total number of atoms
@@ -877,7 +887,7 @@ class TQCAgent(TrainingAgent):
         observation_space, action_space = self.observation_space, self.action_space
         device = self.device or ("cuda" if torch.cuda.is_available() else "cpu")
         model = self.model_cls(observation_space, action_space)  # Use TQCActorCritic
-        logging.debug(f" device TQC: {device}")
+        logger.debug(f" device TQC: {device}")
         self.model = model.to(device)
         self.model_target = no_grad(deepcopy(self.model))
 
@@ -923,7 +933,7 @@ class TQCAgent(TrainingAgent):
         else:
             self.alpha_t = torch.tensor(float(self.alpha)).to(device)
 
-        if cfg.WANDB_GRADIENTS:
+        if cfg.WANDB_GRADIENTS and wandb is not None:
             wandb.watch(self.model, log_freq=10)
 
     def get_actor(self):
@@ -944,7 +954,7 @@ class TQCAgent(TrainingAgent):
         """
         Clips the weights of the given model within a specified range.
         Actions:
-        Iterates through model parameters and clips each parameter's values within the specified range (max_value).
+        Iterates through model parameters and clips each within the range (max_value).
         """
         for param in model.parameters():
             param.data.clamp_(-max_value, max_value)
@@ -976,7 +986,7 @@ class TQCAgent(TrainingAgent):
         """
         Clips the weights of the model for TQC within a specified range.
         Actions:
-        Iterates through model parameters and clips each parameter's values within the specified range.
+        Iterates through model parameters and clips each within the range.
         """
         for param in model.parameters():
             param.data.clamp_(-max_value, max_value)
@@ -985,7 +995,7 @@ class TQCAgent(TrainingAgent):
         """
         Manages the training loop for the TQC agent using the provided batch of data.
         Actions:
-        Retrieves necessary data from the batch (observations, actions, rewards, next observations, dones).
+        Retrieves data from the batch (observations, actions, rewards, next obs, dones).
         Computes actor and critic losses.
         Handles entropy coefficient optimization (if enabled).
         Updates actor and critic networks based on computed losses.
@@ -1042,7 +1052,7 @@ class TQCAgent(TrainingAgent):
                             break
                         # Accumulate reward for each step, considering if the state is not terminal
                         n_step_return[i] += (self.gamma**step) * r[i + step]
-                # print(f"Step {step}: n_step_return = {n_step_return}, n_step_not_done = {n_step_not_done}")
+                # print(f"Step {step}: n_step_return = {n_step_return}, ...")
             # print(f"Final n_step_return: {n_step_return}")
 
             n_step_return = n_step_return[:truncated_batch_size]
@@ -1050,7 +1060,7 @@ class TQCAgent(TrainingAgent):
             o2 = o2[:truncated_batch_size]
             d = d[:truncated_batch_size]
 
-        # https://github.com/Stable-Baselines-Team/stable-baselines3-contrib/blob/master/sb3_contrib/tqc/tqc.py :
+        # https://github.com/Stable-Baselines-Team/stable-baselines3-contrib/.../tqc.py :
         # TODO: check if it correct
         # https://arxiv.org/pdf/2005.04269.pdf
         with torch.no_grad():

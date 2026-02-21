@@ -110,7 +110,7 @@ class EffNetActorCritic(nn.Module):
         self, observation_space, action_space, hidden_sizes=(256, 256), activation=nn.ReLU
     ):
         """
-        Description: Initializes the Actor-Critic architecture using EfficientNetV2-style actor and Q-function networks.
+        Initializes Actor-Critic with EfficientNetV2-style actor and Q-function nets.
         Arguments:
         observation_space: Observation space for the environment.
         action_space: Action space for the environment.

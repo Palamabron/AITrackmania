@@ -7,6 +7,7 @@ observations and actions.
 
 # tutorial imports:
 from threading import Thread
+from typing import Any
 
 import tmrl.config.config_constants as cfg
 from tmrl.custom.custom_algorithms import SpinupSacAgent
@@ -41,7 +42,9 @@ my_rtgym_config = DUMMY_RC_DRONE_CONFIG
 
 # Environment class:
 
-env_cls = partial(GenericGymEnv, id="real-time-gym-ts-v1", gym_kwargs={"config": my_rtgym_config})
+env_cls: Any = partial(
+    GenericGymEnv, id="real-time-gym-ts-v1", gym_kwargs={"config": my_rtgym_config}
+)
 
 # Observation and action space:
 

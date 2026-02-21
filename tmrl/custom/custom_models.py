@@ -1,4 +1,4 @@
-# === Trackmania =======================================================================================================
+# === Trackmania =======================================================================
 
 
 # standard library imports
@@ -9,7 +9,7 @@ from math import floor, sqrt
 import numpy as np
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
+import torch.nn.functional as functional
 from torch.distributions.normal import Normal
 from torch.nn import Conv2d, Module, ModuleList
 
@@ -20,7 +20,7 @@ from tmrl.actor import TorchActorModule
 # local imports
 from tmrl.util import prod
 
-# SUPPORTED ============================================================================================================
+# SUPPORTED ===========================================================================
 
 
 # Spinup MLP: =======================================================
@@ -91,7 +91,9 @@ class SquashedGaussianMLPActor(TorchActorModule):
             # and look in appendix C. This is a more numerically-stable equivalent to Eq 21.
             # Try deriving it yourself as a (very difficult) exercise. :)
             logp_pi = pi_distribution.log_prob(pi_action).sum(axis=-1)
-            logp_pi -= (2 * (np.log(2) - pi_action - F.softplus(-2 * pi_action))).sum(axis=1)
+            logp_pi -= (2 * (np.log(2) - pi_action - functional.softplus(-2 * pi_action))).sum(
+                axis=1
+            )
         else:
             logp_pi = None
 
@@ -141,10 +143,6 @@ class MLPActorCritic(nn.Module):
     ):
         super().__init__()
 
-        # obs_dim = observation_space.shape[0]
-        # act_dim = action_space.shape[0]
-        act_limit = action_space.high[0]
-
         # build policy and value functions
         self.actor = SquashedGaussianMLPActor(
             observation_space, action_space, hidden_sizes, activation
@@ -170,10 +168,6 @@ class REDQMLPActorCritic(nn.Module):
     ):
         super().__init__()
 
-        # obs_dim = observation_space.shape[0]
-        # act_dim = action_space.shape[0]
-        act_limit = action_space.high[0]
-
         # build policy and value functions
         self.actor = SquashedGaussianMLPActor(
             observation_space, action_space, hidden_sizes, activation
@@ -192,12 +186,12 @@ class REDQMLPActorCritic(nn.Module):
             return a.squeeze().cpu().numpy()
 
 
-# CNNs: ================================================================================================================
+# CNNs: =================================================================================
 
-# EfficientNet =========================================================================================================
+# EfficientNet ==========================================================================
 
-# EfficientNetV2 implementation adapted from https://github.com/d-li14/efficientnetv2.pytorch/blob/main/effnetv2.py
-# We use the EfficientNetV2 structure for image features and we merge the TM2020 float features to linear layers
+# EfficientNetV2 from https://github.com/d-li14/efficientnetv2.pytorch/blob/main/effnetv2.py
+# We use EfficientNetV2 for image features and merge TM2020 float features into linear layers
 
 
 def _make_divisible(v, divisor, min_value=None):
@@ -225,7 +219,7 @@ if hasattr(nn, "SiLU"):
     SiLU = nn.SiLU
 else:
     # For compatibility with old PyTorch versions
-    class SiLU(nn.Module):
+    class SiLU(nn.Module):  # type: ignore[no-redef]
         def forward(self, x):
             return x * torch.sigmoid(x)
 
@@ -449,7 +443,9 @@ class SquashedGaussianEffNetActor(TorchActorModule):
             # and look in appendix C. This is a more numerically-stable equivalent to Eq 21.
             # Try deriving it yourself as a (very difficult) exercise. :)
             logp_pi = pi_distribution.log_prob(pi_action).sum(axis=-1)
-            logp_pi -= (2 * (np.log(2) - pi_action - F.softplus(-2 * pi_action))).sum(axis=1)
+            logp_pi -= (2 * (np.log(2) - pi_action - functional.softplus(-2 * pi_action))).sum(
+                axis=1
+            )
         else:
             logp_pi = None
 
@@ -461,9 +457,6 @@ class SquashedGaussianEffNetActor(TorchActorModule):
         return pi_action, logp_pi
 
     def act(self, obs, test=False):
-        import sys
-
-        size = sys.getsizeof(obs)
         with torch.no_grad():
             a, _ = self.forward(obs, test, False)
             return a.squeeze().cpu().numpy()
@@ -488,10 +481,6 @@ class EffNetActorCritic(nn.Module):
     ):
         super().__init__()
 
-        # obs_dim = observation_space.shape[0]
-        # act_dim = action_space.shape[0]
-        act_limit = action_space.high[0]
-
         # build policy and value functions
         self.actor = SquashedGaussianMLPActor(
             observation_space, action_space, hidden_sizes, activation
@@ -505,7 +494,7 @@ class EffNetActorCritic(nn.Module):
             return a.squeeze().cpu().numpy()
 
 
-# Vanilla CNN FOR GRAYSCALE IMAGES: ====================================================================================
+# Vanilla CNN FOR GRAYSCALE IMAGES: ====================================================
 
 
 def num_flat_features(x):
@@ -567,13 +556,14 @@ class VanillaCNN(Module):
         else:
             speed, gear, rpm, images, act1, act2 = x
 
-        x = F.relu(self.conv1(images))
-        x = F.relu(self.conv2(x))
-        x = F.relu(self.conv3(x))
-        x = F.relu(self.conv4(x))
+        x = functional.relu(self.conv1(images))
+        x = functional.relu(self.conv2(x))
+        x = functional.relu(self.conv3(x))
+        x = functional.relu(self.conv4(x))
         flat_features = num_flat_features(x)
         assert flat_features == self.flat_features, (
-            f"x.shape:{x.shape}, flat_features:{flat_features}, self.out_channels:{self.out_channels}, self.h_out:{self.h_out}, self.w_out:{self.w_out}"
+            f"x.shape:{x.shape}, flat_features:{flat_features}, "
+            f"out_channels:{self.out_channels}, h_out:{self.h_out}, w_out:{self.w_out}"
         )
         x = x.view(-1, flat_features)
         if self.q_net:
@@ -610,11 +600,11 @@ class SquashedGaussianVanillaCNNActor(TorchActorModule):
         if with_logprob:
             logp_pi = pi_distribution.log_prob(pi_action).sum(axis=-1)
             # NB: this is from Spinup:
-            logp_pi -= (2 * (np.log(2) - pi_action - F.softplus(-2 * pi_action))).sum(
+            logp_pi -= (2 * (np.log(2) - pi_action - functional.softplus(-2 * pi_action))).sum(
                 axis=1
-            )  # FIXME: this formula is mathematically wrong, no idea why it seems to work
+            )  # FIXME: formula is mathematically wrong, no idea why it seems to work
             # Whereas SB3 does this:
-            # logp_pi -= torch.sum(torch.log(1 - torch.tanh(pi_action) ** 2 + EPSILON), dim=1)  # TODO: double check
+            # logp_pi -= torch.sum(torch.log(1 - torch.tanh(pi_action)**2 + EPSILON), dim=1)
             # # log_prob -= th.sum(th.log(1 - actions**2 + self.epsilon), dim=1)
         else:
             logp_pi = None
@@ -658,14 +648,15 @@ class VanillaCNNActorCritic(nn.Module):
             return a.squeeze().cpu().numpy()
 
 
-# Vanilla CNN FOR COLOR IMAGES: ========================================================================================
+# Vanilla CNN FOR COLOR IMAGES: ========================================================
 
 
 def remove_colors(images):
     """
     We remove colors so that we can simply use the same structure as the grayscale model.
 
-    The "color" default pipeline is mostly here for support, as our model effectively gets rid of 2 channels out of 3.
+    The "color" default pipeline is mostly here for support;
+    our model effectively gets rid of 2 channels out of 3.
     If you actually want to use colors, do not use the default pipeline.
     Instead, you need to code a custom model that doesn't get rid of them.
     """
@@ -699,7 +690,7 @@ class VanillaColorCNNActorCritic(VanillaCNNActorCritic):
         self.q2 = VanillaColorCNNQFunction(observation_space, action_space)
 
 
-# UNSUPPORTED ==========================================================================================================
+# UNSUPPORTED ==========================================================================
 
 
 # RNN: ==========================================================
@@ -790,7 +781,9 @@ class SquashedGaussianRNNActor(nn.Module):
             # and look in appendix C. This is a more numerically-stable equivalent to Eq 21.
             # Try deriving it yourself as a (very difficult) exercise. :)
             logp_pi = pi_distribution.log_prob(pi_action).sum(axis=-1)
-            logp_pi -= (2 * (np.log(2) - pi_action - F.softplus(-2 * pi_action))).sum(axis=1)
+            logp_pi -= (2 * (np.log(2) - pi_action - functional.softplus(-2 * pi_action))).sum(
+                axis=1
+            )
         else:
             logp_pi = None
 
@@ -887,8 +880,6 @@ class RNNActorCritic(nn.Module):
         activation=nn.ReLU,
     ):
         super().__init__()
-
-        act_limit = action_space.high[0]
 
         # build policy and value functions
         self.actor = SquashedGaussianRNNActor(

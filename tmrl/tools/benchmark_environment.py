@@ -1,15 +1,14 @@
 # standard library imports
-# local imports
-import logging
 import random
 import time
 
 # third-party imports
 import gymnasium
 from gymnasium import spaces
+from loguru import logger
 from rtgym.envs.real_time_env import DEFAULT_CONFIG_DICT
 
-from custom.interfaces.TM2020InterfaceLidar import TM2020InterfaceLidar
+from tmrl.custom.interfaces.TM2020InterfaceLidar import TM2020InterfaceLidar
 
 NB_STEPS = 1000
 ACT_COMPUTE_MIN = 0.0
@@ -40,13 +39,13 @@ def benchmark():
         o, r, d, t, i, s_r = env.step(None)
         if d or t:
             env.reset()
-        logging.info(f"rew:{r}")
+        logger.info(f"rew:{r}")
     t_f = time.time()
 
     elapsed_time = t_f - t_d
-    logging.info(f"benchmark results: {env.benchmarks()}")
-    logging.info(f"elapsed time: {elapsed_time}")
-    logging.info(f"time-step duration: {elapsed_time / NB_STEPS}")
+    logger.info(f"benchmark results: {env.benchmarks()}")
+    logger.info(f"elapsed time: {elapsed_time}")
+    logger.info(f"time-step duration: {elapsed_time / NB_STEPS}")
 
 
 if __name__ == "__main__":

@@ -178,7 +178,7 @@ class TM2020InterfaceIMPALAwoImages(TM2020Interface):
         total_obs[0] = np.array(total_obs[0])
 
         reward = np.float32(rew)
-        # print(f"Reward: {reward}, crashed {bool(crashed)}, race progress {round(race_progress[0], 2)}")
+        # print(f"Reward: {reward}, crashed {bool(crashed)}, race progress {...}")
         return total_obs, reward, terminated, info
 
     def reset(self, seed=None, options=None):

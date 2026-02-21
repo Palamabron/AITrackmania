@@ -1,11 +1,33 @@
-# third-party imports
-# from tmrl.custom.custom_checkpoints import load_run_instance_images_dataset, dump_run_instance_images_dataset
-# third-party imports
+"""Build runtime objects from config: interface, memory, agent, trainer.
+
+This module reads config_constants (which loads config.json) and selects:
+  - TRAIN_MODEL / POLICY   : neural net classes (MLP, CNN, RNN, IMPALA, etc.)
+  - INT                    : rtgym interface class (TM2020Interface*, partial with kwargs)
+  - CONFIG_DICT            : rtgym config dict (interface + RTGYM_CONFIG overrides)
+  - SAMPLE_COMPRESSOR      : how to compress samples for network transfer
+  - OBS_PREPROCESSOR       : observation preprocessing for the env
+  - MEM / MEMORY           : replay memory class (partial with size, batch_size, etc.)
+  - AGENT                  : training agent class (SAC/TQC/REDQ, partial with hyperparams)
+  - TRAINER                : TorchTrainingOffline partial (epochs, rounds, steps, etc.)
+  - DUMP/LOAD/UPDATER      : checkpoint helpers
+
+Selection logic:
+  - Observation type: PRAGMA_LIDAR (Lidar) vs image-based (Full, IMPALA, Sophy, TrackMap).
+  - Interface: chosen from RTGYM_INTERFACE (Lidar, LidarProgress, TrackMap, IMPALA, Sophy, Full).
+  - Memory: Lidar → MemoryTMLidar* ; IMPALA/Best → MemoryTMBest ;
+  MTQC+images → MemoryR2D2 ; else MemoryTMFull.
+  - Model: Lidar+RNN → RNNActorCritic ; Lidar → MLP or REDQ MLP ; MTQC → IMPALA/Sophy ;
+  else Vanilla CNN.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
 import rtgym
 
-# local imports
 import tmrl.config.config_constants as cfg
-import tmrl.custom.models.IMPALA as impala
+import tmrl.custom.models.IMPALA as impala  # noqa: N811
 import tmrl.custom.models.Sophy as impalaWoImages
 from tmrl.custom.custom_algorithms import REDQSACAgent as REDQ_Agent
 from tmrl.custom.custom_algorithms import SpinupSacAgent as SAC_Agent
@@ -50,22 +72,27 @@ from tmrl.envs import GenericGymEnv
 from tmrl.training_offline import TorchTrainingOffline
 from tmrl.util import partial
 
+# -----------------------------------------------------------------------------
+# Algorithm and model config references (from config.json)
+# -----------------------------------------------------------------------------
+
 ALG_CONFIG = cfg.TMRL_CONFIG["ALG"]
 ALG_NAME = ALG_CONFIG["ALGORITHM"]
-
 MODEL_CONFIG = cfg.TMRL_CONFIG["MODEL"]
 
 assert ALG_NAME in ["SAC", "REDQSAC", "TQC"], (
     f"If you wish to implement {ALG_NAME}, do not use 'ALG' in config.json for that."
 )
 
-# MODEL, GYM ENVIRONMENT, REPLAY MEMORY AND TRAINING: ===========
+# -----------------------------------------------------------------------------
+# 1. Model and policy classes (which neural net: MLP, CNN, RNN, IMPALA, Sophy)
+# -----------------------------------------------------------------------------
 
 if cfg.PRAGMA_LIDAR:
     if cfg.PRAGMA_RNN:
         assert ALG_NAME == "SAC", f"{ALG_NAME} is not implemented here."
-        TRAIN_MODEL = RNNActorCritic
-        POLICY = SquashedGaussianRNNActor
+        TRAIN_MODEL: type[Any] = RNNActorCritic
+        POLICY: type[Any] = SquashedGaussianRNNActor
     else:
         TRAIN_MODEL = MLPActorCritic if ALG_NAME == "SAC" else REDQMLPActorCritic
         POLICY = SquashedGaussianMLPActor
@@ -88,18 +115,28 @@ else:
             else SquashedGaussianVanillaColorCNNActor
         )
 
+# -----------------------------------------------------------------------------
+# 2. RtGym interface (TM2020* class + kwargs from env config)
+# -----------------------------------------------------------------------------
+
 if cfg.PRAGMA_LIDAR:
     if cfg.PRAGMA_PROGRESS:
         INT = partial(
-            TM2020InterfaceLidarProgress, img_hist_len=cfg.IMG_HIST_LEN, gamepad=cfg.PRAGMA_GAMEPAD
+            TM2020InterfaceLidarProgress,
+            img_hist_len=cfg.IMG_HIST_LEN,
+            gamepad=cfg.PRAGMA_GAMEPAD,
         )
     elif cfg.PRAGMA_TRACKMAP:
         INT = partial(
-            TM2020InterfaceTrackMap, img_hist_len=cfg.IMG_HIST_LEN, gamepad=cfg.PRAGMA_GAMEPAD
+            TM2020InterfaceTrackMap,
+            img_hist_len=cfg.IMG_HIST_LEN,
+            gamepad=cfg.PRAGMA_GAMEPAD,
         )
     else:
         INT = partial(
-            TM2020InterfaceLidar, img_hist_len=cfg.IMG_HIST_LEN, gamepad=cfg.PRAGMA_GAMEPAD
+            TM2020InterfaceLidar,
+            img_hist_len=cfg.IMG_HIST_LEN,
+            gamepad=cfg.PRAGMA_GAMEPAD,
         )
 else:
     if cfg.PRAGMA_CUSTOM or cfg.PRAGMA_BEST or cfg.PRAGMA_BEST_TQC or cfg.PRAGMA_MBEST_TQC:
@@ -138,13 +175,17 @@ else:
             resize_to=(cfg.IMG_WIDTH, cfg.IMG_HEIGHT),
         )
 
+# RtGym config dict: default config + our interface + ENV RTGYM_CONFIG overrides
 CONFIG_DICT = rtgym.DEFAULT_CONFIG_DICT.copy()
 CONFIG_DICT["interface"] = INT
 CONFIG_DICT_MODIFIERS = cfg.ENV_CONFIG["RTGYM_CONFIG"]
 for k, v in CONFIG_DICT_MODIFIERS.items():
     CONFIG_DICT[k] = v
 
-# to compress a sample before sending it over the local network/Internet:
+# -----------------------------------------------------------------------------
+# 3. Sample compressor (for sending transitions over the network)
+# -----------------------------------------------------------------------------
+
 if cfg.PRAGMA_LIDAR:
     if cfg.PRAGMA_PROGRESS:
         SAMPLE_COMPRESSOR = get_local_buffer_sample_lidar_progress
@@ -156,7 +197,10 @@ else:
     else:
         SAMPLE_COMPRESSOR = get_local_buffer_sample_tm20_imgs
 
-# to preprocess observations that come out of the gymnasium environment:
+# -----------------------------------------------------------------------------
+# 4. Observation preprocessor (env output → agent input)
+# -----------------------------------------------------------------------------
+
 if cfg.PRAGMA_LIDAR:
     if cfg.PRAGMA_PROGRESS:
         OBS_PREPROCESSOR = obs_preprocessor_tm_lidar_progress_act_in_obs
@@ -167,27 +211,27 @@ else:
         OBS_PREPROCESSOR = obs_preprocessor_mobilenet_act_in_obs
     else:
         OBS_PREPROCESSOR = obs_preprocessor_tm_act_in_obs
-# to augment data that comes out of the replay buffer:
+
 SAMPLE_PREPROCESSOR = None
 
 assert not cfg.PRAGMA_RNN, "RNNs not supported yet"
 
+# -----------------------------------------------------------------------------
+# 5. Replay memory class (partial with size, batch_size, paths, etc.)
+# -----------------------------------------------------------------------------
+
 if cfg.PRAGMA_LIDAR:
     if cfg.PRAGMA_RNN:
-        assert False, "not implemented"
+        raise AssertionError("not implemented")
+    if cfg.PRAGMA_PROGRESS:
+        MEM: type[Any] = MemoryTMLidarProgress
     else:
-        if cfg.PRAGMA_PROGRESS:
-            MEM = MemoryTMLidarProgress
-        else:
-            MEM = MemoryTMLidar
+        MEM = MemoryTMLidar
 else:
     if cfg.PRAGMA_CUSTOM or cfg.PRAGMA_BEST or cfg.PRAGMA_BEST_TQC:
         MEM = MemoryTMBest
     elif cfg.PRAGMA_MBEST_TQC:
-        if cfg.USE_IMAGES:
-            MEM = MemoryR2D2
-        else:
-            MEM = MemoryR2D2woImages
+        MEM = MemoryR2D2 if cfg.USE_IMAGES else MemoryR2D2woImages
     else:
         MEM = MemoryTMFull
 
@@ -202,45 +246,39 @@ MEMORY = partial(
     crc_debug=cfg.CRC_DEBUG,
 )
 
-# ALGORITHM: ===================================================
+# -----------------------------------------------------------------------------
+# 6. Training agent (SAC / TQC / REDQ with hyperparams from ALG_CONFIG)
+# -----------------------------------------------------------------------------
+
+_device = "cuda" if cfg.CUDA_TRAINING else "cpu"
+_common_agent_kw = dict(
+    device=_device,
+    model_cls=TRAIN_MODEL,
+    lr_actor=ALG_CONFIG["LR_ACTOR"],
+    lr_critic=ALG_CONFIG["LR_CRITIC"],
+    lr_entropy=ALG_CONFIG["LR_ENTROPY"],
+    gamma=ALG_CONFIG["GAMMA"],
+    polyak=ALG_CONFIG["POLYAK"],
+    learn_entropy_coef=ALG_CONFIG["LEARN_ENTROPY_COEF"],
+    target_entropy=ALG_CONFIG["TARGET_ENTROPY"],
+    alpha=ALG_CONFIG["ALPHA"],
+)
 
 if ALG_NAME == "SAC":
-    AGENT = partial(
+    AGENT: Any = partial(
         SAC_Agent,
-        device="cuda" if cfg.CUDA_TRAINING else "cpu",
-        model_cls=TRAIN_MODEL,
-        lr_actor=ALG_CONFIG["LR_ACTOR"],
-        lr_critic=ALG_CONFIG["LR_CRITIC"],
-        lr_entropy=ALG_CONFIG["LR_ENTROPY"],
-        gamma=ALG_CONFIG["GAMMA"],
-        polyak=ALG_CONFIG["POLYAK"],
-        learn_entropy_coef=ALG_CONFIG[
-            "LEARN_ENTROPY_COEF"
-        ],  # False for SAC v2 with no temperature autotuning
-        target_entropy=ALG_CONFIG["TARGET_ENTROPY"],  # None for automatic
-        alpha=ALG_CONFIG["ALPHA"],  # inverse of reward scale
+        **_common_agent_kw,
         optimizer_actor=ALG_CONFIG["OPTIMIZER_ACTOR"],
         optimizer_critic=ALG_CONFIG["OPTIMIZER_CRITIC"],
-        betas_actor=ALG_CONFIG["BETAS_ACTOR"] if "BETAS_ACTOR" in ALG_CONFIG else None,
-        betas_critic=ALG_CONFIG["BETAS_CRITIC"] if "BETAS_CRITIC" in ALG_CONFIG else None,
-        l2_actor=ALG_CONFIG["L2_ACTOR"] if "L2_ACTOR" in ALG_CONFIG else None,
-        l2_critic=ALG_CONFIG["L2_CRITIC"] if "L2_CRITIC" in ALG_CONFIG else None,
+        betas_actor=ALG_CONFIG.get("BETAS_ACTOR"),
+        betas_critic=ALG_CONFIG.get("BETAS_CRITIC"),
+        l2_actor=ALG_CONFIG.get("L2_ACTOR"),
+        l2_critic=ALG_CONFIG.get("L2_CRITIC"),
     )
 elif ALG_NAME == "TQC":
     AGENT = partial(
         TQC_Agent,
-        device="cuda" if cfg.CUDA_TRAINING else "cpu",
-        model_cls=TRAIN_MODEL,
-        lr_actor=ALG_CONFIG["LR_ACTOR"],
-        lr_critic=ALG_CONFIG["LR_CRITIC"],
-        lr_entropy=ALG_CONFIG["LR_ENTROPY"],
-        gamma=ALG_CONFIG["GAMMA"],
-        polyak=ALG_CONFIG["POLYAK"],
-        learn_entropy_coef=ALG_CONFIG[
-            "LEARN_ENTROPY_COEF"
-        ],  # False for SAC v2 with no temperature autotuning
-        target_entropy=ALG_CONFIG["TARGET_ENTROPY"],  # None for automatic
-        alpha=ALG_CONFIG["ALPHA"],  # inverse of reward scale
+        **_common_agent_kw,
         top_quantiles_to_drop=ALG_CONFIG["TOP_QUANTILES_TO_DROP"],
         quantiles_number=ALG_CONFIG["QUANTILES_NUMBER"],
         n_steps=ALG_CONFIG["N_STEPS"],
@@ -248,75 +286,44 @@ elif ALG_NAME == "TQC":
 else:
     AGENT = partial(
         REDQ_Agent,
-        device="cuda" if cfg.CUDA_TRAINING else "cpu",
-        model_cls=TRAIN_MODEL,
-        lr_actor=ALG_CONFIG["LR_ACTOR"],
-        lr_critic=ALG_CONFIG["LR_CRITIC"],
-        lr_entropy=ALG_CONFIG["LR_ENTROPY"],
-        gamma=ALG_CONFIG["GAMMA"],
-        polyak=ALG_CONFIG["POLYAK"],
-        learn_entropy_coef=ALG_CONFIG[
-            "LEARN_ENTROPY_COEF"
-        ],  # False for SAC v2 with no temperature autotuning
-        target_entropy=ALG_CONFIG["TARGET_ENTROPY"],  # None for automatic
-        alpha=ALG_CONFIG["ALPHA"],  # inverse of reward scale
-        n=ALG_CONFIG["REDQ_N"],  # number of Q networks
-        m=ALG_CONFIG["REDQ_M"],  # number of Q targets
+        **_common_agent_kw,
+        n=ALG_CONFIG["REDQ_N"],
+        m=ALG_CONFIG["REDQ_M"],
         q_updates_per_policy_update=ALG_CONFIG["REDQ_Q_UPDATES_PER_POLICY_UPDATE"],
     )
 
+# -----------------------------------------------------------------------------
+# 7. Trainer (TorchTrainingOffline partial: epochs, rounds, steps, intervals)
+# -----------------------------------------------------------------------------
 
-# TRAINER: =====================================================
+ENV_CLS = partial(
+    GenericGymEnv,
+    id=cfg.RTGYM_VERSION,
+    gym_kwargs={"config": CONFIG_DICT},
+)
 
+_trainer_kw = dict(
+    env_cls=ENV_CLS,
+    memory_cls=MEMORY,
+    epochs=MODEL_CONFIG["MAX_EPOCHS"],
+    rounds=MODEL_CONFIG["ROUNDS_PER_EPOCH"],
+    steps=MODEL_CONFIG["TRAINING_STEPS_PER_ROUND"],
+    update_model_interval=MODEL_CONFIG["UPDATE_MODEL_INTERVAL"],
+    update_buffer_interval=MODEL_CONFIG["UPDATE_BUFFER_INTERVAL"],
+    max_training_steps_per_env_step=MODEL_CONFIG["MAX_TRAINING_STEPS_PER_ENVIRONMENT_STEP"],
+    python_profiling=cfg.PROFILE_TRAINER,
+    pytorch_profiling=cfg.PYTORCH_PROFILER,
+    training_agent_cls=AGENT,
+    agent_scheduler=None,
+    start_training=MODEL_CONFIG["ENVIRONMENT_STEPS_BEFORE_TRAINING"],
+)
 
-def sac_v2_entropy_scheduler(agent, epoch):
-    start_ent = -0.0
-    end_ent = -7.0
-    end_epoch = 200
-    if epoch <= end_epoch:
-        agent.entopy_target = start_ent + (end_ent - start_ent) * epoch / end_epoch
+TRAINER = partial(TorchTrainingOffline, **_trainer_kw)
 
+# -----------------------------------------------------------------------------
+# 8. Checkpoint helpers (dump/load run instance, updater for SAC/TQC/REDQ)
+# -----------------------------------------------------------------------------
 
-ENV_CLS = partial(GenericGymEnv, id=cfg.RTGYM_VERSION, gym_kwargs={"config": CONFIG_DICT})
-
-if cfg.PRAGMA_LIDAR:  # lidar
-    TRAINER = partial(
-        TorchTrainingOffline,
-        env_cls=ENV_CLS,
-        memory_cls=MEMORY,
-        epochs=MODEL_CONFIG["MAX_EPOCHS"],
-        rounds=MODEL_CONFIG["ROUNDS_PER_EPOCH"],
-        steps=MODEL_CONFIG["TRAINING_STEPS_PER_ROUND"],
-        update_model_interval=MODEL_CONFIG["UPDATE_MODEL_INTERVAL"],
-        update_buffer_interval=MODEL_CONFIG["UPDATE_BUFFER_INTERVAL"],
-        max_training_steps_per_env_step=MODEL_CONFIG["MAX_TRAINING_STEPS_PER_ENVIRONMENT_STEP"],
-        python_profiling=cfg.PROFILE_TRAINER,
-        pytorch_profiling=cfg.PYTORCH_PROFILER,
-        training_agent_cls=AGENT,
-        agent_scheduler=None,  # sac_v2_entropy_scheduler
-        start_training=MODEL_CONFIG["ENVIRONMENT_STEPS_BEFORE_TRAINING"],
-    )  # set this > 0 to start from an existing
-    # policy (fills the buffer up to this number of samples before starting training)
-else:  # images
-    TRAINER = partial(
-        TorchTrainingOffline,
-        env_cls=ENV_CLS,
-        memory_cls=MEMORY,
-        epochs=MODEL_CONFIG["MAX_EPOCHS"],
-        rounds=MODEL_CONFIG["ROUNDS_PER_EPOCH"],
-        steps=MODEL_CONFIG["TRAINING_STEPS_PER_ROUND"],
-        update_model_interval=MODEL_CONFIG["UPDATE_MODEL_INTERVAL"],
-        update_buffer_interval=MODEL_CONFIG["UPDATE_BUFFER_INTERVAL"],
-        max_training_steps_per_env_step=MODEL_CONFIG["MAX_TRAINING_STEPS_PER_ENVIRONMENT_STEP"],
-        python_profiling=cfg.PROFILE_TRAINER,
-        pytorch_profiling=cfg.PYTORCH_PROFILER,
-        training_agent_cls=AGENT,
-        agent_scheduler=None,  # sac_v2_entropy_scheduler
-        start_training=MODEL_CONFIG["ENVIRONMENT_STEPS_BEFORE_TRAINING"],
-    )
-
-# CHECKPOINTS: ===================================================
-
-DUMP_RUN_INSTANCE_FN = None if cfg.PRAGMA_LIDAR else None  # dump_run_instance_images_dataset
-LOAD_RUN_INSTANCE_FN = None if cfg.PRAGMA_LIDAR else None  # load_run_instance_images_dataset
+DUMP_RUN_INSTANCE_FN = None
+LOAD_RUN_INSTANCE_FN = None
 UPDATER_FN = update_run_instance if ALG_NAME in ["SAC", "REDQSAC", "TQC"] else None

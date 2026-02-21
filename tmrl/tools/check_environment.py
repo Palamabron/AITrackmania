@@ -1,8 +1,7 @@
 # third-party imports
-import logging
-
 import cv2
 import gymnasium
+from loguru import logger
 from rtgym.envs.real_time_env import DEFAULT_CONFIG_DICT
 
 import tmrl.config.config_constants as cfg
@@ -36,7 +35,7 @@ def check_env_tm20_trackmap():
     while current < rounds:
         current += 1
         o, r, d, t, i = env.step(None)
-        logging.info(f"r:{r}, d:{d}")
+        logger.info(f"r:{r}, d:{d}")
 
         if d or t:
             print("d: ", d)
@@ -63,7 +62,7 @@ def check_env_tm20lidar():
     o, i = env.reset()
     while True:
         o, r, d, t, i = env.step(None)
-        logging.info(f"r:{r}, d:{d}, t:{t}")
+        logger.info(f"r:{r}, d:{d}, t:{t}")
         if d or t:
             o, i = env.reset()
         img = window_interface.screenshot()[:, :, :3]
@@ -105,20 +104,20 @@ def check_env_tm20full():
     env = gymnasium.make(cfg.RTGYM_VERSION, config=env_config)
     o, i = env.reset()
     show_imgs(o[3])
-    logging.info(
+    logger.info(
         f"o:[{o[0].item():05.01f}, {o[1].item():03.01f}, {o[2].item():07.01f}, imgs({len(o[3])})]"
     )
     while True:
         o, r, d, t, i = env.step(None)
         show_imgs(o[3])
-        logging.info(
+        logger.info(
             f"r:{r:.2f}, d:{d}, t:{t}, o:[{o[0].item():05.01f}, {o[1].item():03.01f}, "
             f"{o[2].item():07.01f}, imgs({len(o[3])})]"
         )
         if d or t:
             o, i = env.reset()
             show_imgs(o[3])
-            logging.info(
+            logger.info(
                 f"o:[{o[0].item():05.01f}, {o[1].item():03.01f}, {o[2].item():07.01f}, "
                 f"imgs({len(o[3])})]"
             )

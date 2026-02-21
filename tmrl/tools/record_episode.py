@@ -1,11 +1,11 @@
 """Record an episode to store in the replay buffer."""
 
-import logging
+from loguru import logger
 
 
 def record_episode():
     """Record an episode in TrackMania for replay buffer storage."""
-    logging.warning(
+    logger.warning(
         "record_episode is a placeholder. Implement this to record episodes for your replay buffer."
     )
     raise NotImplementedError(

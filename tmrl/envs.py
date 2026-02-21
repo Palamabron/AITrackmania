@@ -18,9 +18,9 @@ class GenericGymEnv(gymnasium.Wrapper):
 
         Args:
             id (str): gymnasium id
-            gym_kwargs (dict): keyword arguments of the gymnasium environment (i.e. between -1.0 and 1.0 when the actual action space is something else)
-            obs_scale (float): change this if wanting to rescale actions by a scalar
-            to_float32 (bool): set this to True if wanting observations to be converted to numpy.float32
+            gym_kwargs (dict): keyword arguments for the gymnasium environment
+            obs_scale (float): rescale actions by this scalar if set
+            to_float32 (bool): if True, convert observations to numpy.float32
         """
         if gym_kwargs is None:
             gym_kwargs = {}

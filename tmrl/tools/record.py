@@ -1,12 +1,11 @@
 # standard library imports
-import logging
 import pickle
 import time
 
 # third-party imports
 import numpy as np
+from loguru import logger
 
-# local imports
 import tmrl.config.config_constants as cfg
 from tmrl.custom.tm.utils.tools import TM2020OpenPlanetClient
 
@@ -26,11 +25,11 @@ def record_reward_dist(path_reward=PATH_REWARD, use_keyboard=False):
     while True:
         if not is_recording:
             if not use_keyboard:
-                logging.info("start recording")
+                logger.info("start recording")
                 is_recording = True
             else:
                 if keyboard.is_pressed("e"):
-                    logging.info("start recording")
+                    logger.info("start recording")
                     is_recording = True
 
         if is_recording:
@@ -45,8 +44,8 @@ def record_reward_dist(path_reward=PATH_REWARD, use_keyboard=False):
                 early_stop = keyboard.is_pressed("q")
 
             if early_stop or terminated:
-                logging.info("Computing reward function checkpoints from captured positions...")
-                logging.info(f"Initial number of captured positions: {len(positions)}")
+                logger.info("Computing reward function checkpoints from captured positions...")
+                logger.info(f"Initial number of captured positions: {len(positions)}")
                 positions = np.array(positions)
 
                 final_positions = [positions[0]]
@@ -67,12 +66,12 @@ def record_reward_dist(path_reward=PATH_REWARD, use_keyboard=False):
                         move_by = dst  # remaining distance
 
                 final_positions = np.array(final_positions)
-                logging.info(
+                logger.info(
                     f"Final number of checkpoints in the reward function: {len(final_positions)}"
                 )
 
                 pickle.dump(final_positions, open(path, "wb"))
-                logging.info("All done")
+                logger.info("All done")
                 return
             else:
                 positions.append([data[2], data[3], data[4]])

@@ -1,22 +1,20 @@
 # standard library imports
-import logging
 import os
 import pickle
 import random
 import zlib
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from pathlib import Path
 from random import randint
-
-logging.basicConfig(level=logging.INFO)
+from typing import Any
 
 # third-party imports
 import numpy as np
+from loguru import logger
 
-import tmrl.config.config_constants as cfg
-
-# from torch.utils.data import DataLoader, Dataset, Sampler
 # local imports
+import tmrl.config.config_constants as cfg
 from tmrl.util import collate_torch
 
 __docformat__ = "google"
@@ -38,30 +36,35 @@ def check_samples_crc(
     debug_ts,
     debug_ts_res,
 ):
+    ts_msg = f"Time step: {debug_ts}, since reset: {debug_ts_res}"
     assert original_po is None or str(original_po) == str(rebuilt_po), (
-        f"previous observations don't match:\noriginal:\n{original_po}\n!= rebuilt:\n{rebuilt_po}\nTime step: {debug_ts}, since reset: {debug_ts_res}"
+        f"previous observations don't match:\noriginal:\n{original_po}\n!= rebuilt:\n"
+        f"{rebuilt_po}\n{ts_msg}"
     )
     assert str(original_a) == str(rebuilt_a), (
-        f"actions don't match:\noriginal:\n{original_a}\n!= rebuilt:\n{rebuilt_a}\nTime step: {debug_ts}, since reset: {debug_ts_res}"
+        f"actions don't match:\noriginal:\n{original_a}\n!= rebuilt:\n{rebuilt_a}\n{ts_msg}"
     )
     assert str(original_o) == str(rebuilt_o), (
-        f"observations don't match:\noriginal:\n{original_o}\n!= rebuilt:\n{rebuilt_o}\nTime step: {debug_ts}, since reset: {debug_ts_res}"
+        f"observations don't match:\noriginal:\n{original_o}\n!= rebuilt:\n{rebuilt_o}\n{ts_msg}"
     )
     assert str(original_r) == str(rebuilt_r), (
-        f"rewards don't match:\noriginal:\n{original_r}\n!= rebuilt:\n{rebuilt_r}\nTime step: {debug_ts}, since reset: {debug_ts_res}"
+        f"rewards don't match:\noriginal:\n{original_r}\n!= rebuilt:\n{rebuilt_r}\n{ts_msg}"
     )
     assert str(original_d) == str(rebuilt_d), (
-        f"terminated don't match:\noriginal:\n{original_d}\n!= rebuilt:\n{rebuilt_d}\nTime step: {debug_ts}, since reset: {debug_ts_res}"
+        f"terminated don't match:\noriginal:\n{original_d}\n!= rebuilt:\n{rebuilt_d}\n{ts_msg}"
     )
     assert str(original_t) == str(rebuilt_t), (
-        f"truncated don't match:\noriginal:\n{original_t}\n!= rebuilt:\n{rebuilt_t}\nTime step: {debug_ts}, since reset: {debug_ts_res}"
+        f"truncated don't match:\noriginal:\n{original_t}\n!= rebuilt:\n{rebuilt_t}\n{ts_msg}"
     )
     original_crc = zlib.crc32(
         str.encode(str((original_a, original_o, original_r, original_d, original_t)))
     )
     crc = zlib.crc32(str.encode(str((rebuilt_a, rebuilt_o, rebuilt_r, rebuilt_d, rebuilt_t))))
     assert crc == original_crc, (
-        f"CRC failed: new crc:{crc} != old crc:{original_crc}.\nEither the custom pipeline is corrupted, or crc_debug is False in the rollout worker.\noriginal sample:\n{(original_a, original_o, original_r, original_d)}\n!= rebuilt sample:\n{(rebuilt_a, rebuilt_o, rebuilt_r, rebuilt_d)}\nTime step: {debug_ts}, since reset: {debug_ts_res}"
+        f"CRC failed: new crc:{crc} != old crc:{original_crc}. "
+        "Pipeline corrupted or crc_debug False. "
+        f"original:\n{(original_a, original_o, original_r, original_d)}\n!= rebuilt:\n"
+        f"{(rebuilt_a, rebuilt_o, rebuilt_r, rebuilt_d)}\n{ts_msg}"
     )
     print(f"DEBUG: CRC check passed. Time step: {debug_ts}, since reset: {debug_ts_res}")
 
@@ -79,7 +82,7 @@ class Memory(ABC):
         self,
         device,
         nb_steps,
-        sample_preprocessor: callable = None,
+        sample_preprocessor: Callable[..., Any] | None = None,
         memory_size=1000000,
         batch_size=256,
         dataset_path="",
@@ -112,18 +115,18 @@ class Memory(ABC):
 
         # init memory
         self.path = Path(dataset_path)
-        logging.debug(f"Memory self.path:{self.path}")
+        logger.debug(f"Memory self.path:{self.path}")
         if os.path.isfile(self.path / "data.pkl"):
             with open(self.path / "data.pkl", "rb") as f:
                 self.data = list(pickle.load(f))
         else:
-            logging.info("no data found, initializing empty replay memory")
+            logger.info("no data found, initializing empty replay memory")
             self.data = []
 
         if len(self) > self.memory_size:
             # TODO: crop to memory_size
             # self.data = self.data[-self.memory_size:]
-            logging.warning(
+            logger.warning(
                 f"the dataset length ({len(self)}) is longer than memory_size ({self.memory_size})"
             )
         # random.seed(cfg.SEED)
@@ -158,7 +161,7 @@ class Memory(ABC):
         """
         Must return a transition.
 
-        `info` is required in each sample for CRC debugging. The 'crc' key is what is important when using this feature.
+        `info` is required in each sample for CRC debugging (the 'crc' key is used).
 
         Args:
             item (int): the index where to sample
@@ -175,7 +178,7 @@ class Memory(ABC):
 
         `batch` is a list of training samples.
         The length of `batch` is `batch_size`.
-        Each training sample in the list is of the form `(prev_obs, new_act, rew, new_obs, terminated, truncated)`.
+        Each sample is `(prev_obs, new_act, rew, new_obs, terminated, truncated)`.
         These samples must be collated into 6 tensors of batch dimension `batch_size`.
         These tensors should be collated onto the device indicated by the `device` argument.
         Then, your implementation must return a single tuple containing these 6 tensors.
@@ -251,7 +254,7 @@ class TorchMemory(Memory, ABC):
         self,
         device,
         nb_steps,
-        sample_preprocessor: callable = None,
+        sample_preprocessor: Callable[..., Any] | None = None,
         memory_size=1000000,
         batch_size=256,
         dataset_path="",
@@ -294,7 +297,7 @@ class R2D2Memory(Memory, ABC):
         self,
         device,
         nb_steps,
-        sample_preprocessor: callable = None,
+        sample_preprocessor: Callable[..., Any] | None = None,
         memory_size=1000000,
         batch_size=256,
         dataset_path="",
@@ -323,13 +326,13 @@ class R2D2Memory(Memory, ABC):
         )
         self.rewards_index = 19 if cfg.USE_IMAGES else 18
         self.previous_episode = 0
-        self.end_episodes_indices = []
+        self.end_episodes_indices: list[int] = []
         self.chosen_episode = 0
         self.burn_ins = (20, 40)
         self.isNewEpisode = True
         self.chosen_burn_in = 0
-        self.reward_sums = []
-        self.indices = []
+        self.reward_sums: list[dict[str, Any]] = []
+        self.indices: list[int] = []
         self.cur_idx = 0
         self.batch_size = batch_size
         self.rewind = cfg.TMRL_CONFIG["ALG"]["R2D2_REWIND"]
@@ -346,8 +349,8 @@ class R2D2Memory(Memory, ABC):
     @staticmethod
     def find_zero_rewards_indices(reward_sums):
         """
-        Iterates through reward_sums, finding indices where the reward sum transitions from non-zero to zero.
-        Returns a list of indices where this transition occurs.
+        Finds indices where reward sum transitions from non-zero to zero.
+        Returns a list of those indices.
         """
         zero_rewards_indices = []
         prev_reward_sum = None

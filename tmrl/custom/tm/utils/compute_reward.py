@@ -1,6 +1,5 @@
 # standard library imports
 import atexit
-import logging
 import math
 import os
 import pickle
@@ -11,12 +10,11 @@ import time
 # third-party imports
 import numpy as np
 import pandas as pd
+from loguru import logger
 from sklearn.linear_model import LinearRegression
 
 import tmrl.config.config_constants as cfg
 import wandb
-
-logging.basicConfig(level=logging.INFO)
 
 
 class RewardFunction:
@@ -42,28 +40,28 @@ class RewardFunction:
 
         Args:
             reward_data_path: path where the trajectory file is stored
-            nb_obs_forward: max distance of allowed cuts (as a number of positions in the trajectory)
-            nb_obs_backward: same thing but for when rewinding the reward to a previously visited position
-            nb_zero_rew_before_failure: after this number of steps with no reward, episode is terminated
-            min_nb_steps_before_failure: the episode must have at least this number of steps before failure
-            max_dist_from_traj: the reward is 0 if the car is further than this distance from the demo trajectory
+            nb_obs_forward: max distance of allowed cuts (positions in the trajectory)
+            nb_obs_backward: same for rewinding the reward to a previously visited position
+            nb_zero_rew_before_failure: after this many steps with no reward, episode ends
+            min_nb_steps_before_failure: episode must have at least this many steps before failure
+            max_dist_from_traj: reward is 0 if car is further than this from the demo trajectory
         """
         if not os.path.exists(reward_data_path):
-            logging.debug(f" reward not found at path:{reward_data_path}")
+            logger.debug(f" reward not found at path:{reward_data_path}")
             self.data = np.array([[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]])  # dummy reward
         else:
             with open(reward_data_path, "rb") as f:
                 self.data = pickle.load(f)
 
         if not os.path.exists(cfg.TRACK_PATH_LEFT):
-            logging.debug(f" reward not found at path:{cfg.TRACK_PATH_LEFT}")
+            logger.debug(f" reward not found at path:{cfg.TRACK_PATH_LEFT}")
             self.left_track = np.array([[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]])  # dummy reward
         else:
             with open(cfg.TRACK_PATH_LEFT, "rb") as f:
                 self.left_track = pickle.load(f)
 
         if not os.path.exists(cfg.TRACK_PATH_RIGHT):
-            logging.debug(f" reward not found at path:{cfg.TRACK_PATH_RIGHT}")
+            logger.debug(f" reward not found at path:{cfg.TRACK_PATH_RIGHT}")
             self.right_track = np.array([[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]])  # dummy reward
         else:
             with open(cfg.TRACK_PATH_RIGHT, "rb") as f:
@@ -134,9 +132,9 @@ class RewardFunction:
                 wandb_initialized = True
             except Exception as e:
                 err_cpt += 1
-                logging.warning(f"wandb error {err_cpt}: {e}")
+                logger.warning(f"wandb error {err_cpt}: {e}")
                 if err_cpt > 10:
-                    logging.warning("Could not connect to wandb, aborting.")
+                    logger.warning("Could not connect to wandb, aborting.")
                     exit()
                 else:
                     time.sleep(10.0)
@@ -160,7 +158,7 @@ class RewardFunction:
 
     def get_track_info(self, pos, points_number):
         """
-        Fetches information about the track (left, center, right positions) for the next checkpoints.
+        Fetches track info (left, center, right positions) for the next checkpoints.
         """
         next_indices = [self.cur_idx + i * self.n + 1 for i in range(points_number)]
         left_track_positions, center_track_positions, right_track_positions = [], [], []
@@ -201,7 +199,7 @@ class RewardFunction:
         self,
         pos,
         crashed: bool = False,
-        speed: float = None,
+        speed: float | None = None,
         next_cp: bool = False,
         next_lap: bool = False,
         end_of_tack: bool = False,
@@ -220,7 +218,7 @@ class RewardFunction:
         while True:
             dist = np.linalg.norm(pos - self.data[index])
             if dist <= min_dist:
-                min_dist = dist
+                min_dist = float(dist)
                 best_index = index
                 temp = self.nb_obs_forward
             index += 1
@@ -236,7 +234,7 @@ class RewardFunction:
                 break  # we found the best index and can break the while loop
 
         # The reward is then proportional to the number of passed indexes (i.e., track distance):
-        reward = (best_index - self.cur_idx) / 100.0
+        reward = float((best_index - self.cur_idx) / 100.0)
 
         if (
             best_index == self.cur_idx
@@ -246,7 +244,7 @@ class RewardFunction:
             while True:
                 dist = np.linalg.norm(pos - self.data[index])
                 if dist <= min_dist:
-                    min_dist = dist
+                    min_dist = float(dist)
                     best_index = index
                     temp = self.nb_obs_backward
                 index -= 1
@@ -265,17 +263,17 @@ class RewardFunction:
 
         if self.episode_reward != 0.0:
             reward -= abs(self.constant_penalty)
-            if speed > cfg.SPEED_MIN_THRESHOLD:
+            if speed is not None and speed > cfg.SPEED_MIN_THRESHOLD:
                 speed_reward = (
                     speed - cfg.SPEED_MIN_THRESHOLD
                 ) * self.speed_bonus  # x / 250 * 0.04 = 0.00016 * x
                 reward += speed_reward
                 # print(f"speed_reward: {speed_reward}")
 
-            elif speed > cfg.SPEED_MEDIUM_THRESHOLD:
+            elif speed is not None and speed > cfg.SPEED_MEDIUM_THRESHOLD:
                 speed_reward = (speed - cfg.SPEED_MEDIUM_THRESHOLD * 0.75) * self.speed_bonus * 2
                 reward += speed_reward
-            elif speed < -0.5:
+            elif speed is not None and speed < -0.5:
                 penalty = 1 / (1 + np.exp(-0.1 * speed - 3)) - 1
                 reward += penalty
 
@@ -319,15 +317,15 @@ class RewardFunction:
             self.new_lap = False
             self.near_finish = False
 
-        if speed > cfg.SPEED_MIN_THRESHOLD:
+        if speed is not None and speed > cfg.SPEED_MIN_THRESHOLD:
             speed_reward = (
                 speed - cfg.SPEED_MIN_THRESHOLD
             ) * self.speed_bonus  # x / 250 * 0.04 = 0.00016 * x
             reward += speed_reward
-        elif speed < -0.5:
+        elif speed is not None and speed < -0.5:
             penalty = 1 / (1 + np.exp(-0.1 * speed - 3)) - 1
             reward += penalty
-        elif speed > 1.0:
+        elif speed is not None and speed > 1.0:
             speed_reward = (speed / 250) * 0.04
             reward += speed_reward
 
@@ -352,7 +350,7 @@ class RewardFunction:
 
     def log_model_run(self, terminated, end_of_track):
         """
-        Logs the summary of the run, updating reward-related parameters and logging information to Weights & Biases (wandb).
+        Logs the run summary and reward-related parameters to Weights & Biases (wandb).
         """
         if terminated or end_of_track:
             if end_of_track:

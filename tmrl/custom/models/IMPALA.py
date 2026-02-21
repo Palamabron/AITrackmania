@@ -3,7 +3,7 @@ import random
 
 import numpy as np
 import torch
-import torch.nn.functional as F
+import torch.nn.functional as functional
 from torch import nn
 from torch.autograd import Variable
 from torch.distributions import Normal
@@ -89,9 +89,9 @@ def mlp(sizes, dim_obs, activation=nn.ReLU):
 # def conv2d_out_dims(conv_layer, h_in, w_in):
 #     if conv_layer.padding == "same":
 #         return h_in, w_in
-#     h_out = h_in + 2 * conv_layer.padding[0] - conv_layer.dilation[0] * (conv_layer.kernel_size[0] - 1) - 1
+#     h_out = h_in + 2*conv_layer.padding[0] - conv_layer.dilation[0]*(...)
 #     h_out = math.floor(h_out / conv_layer.stride[0] + 1)
-#     w_out = w_in + 2 * conv_layer.padding[1] - conv_layer.dilation[1] * (conv_layer.kernel_size[1] - 1) - 1
+#     w_out = w_in + 2*conv_layer.padding[1] - conv_layer.dilation[1]*(...)
 #     w_out = math.floor(w_out / conv_layer.stride[1] + 1)
 #     return h_out, w_out
 
@@ -201,8 +201,10 @@ class CNNModule(nn.Module):
     #             name = module.__class__.__name__
     #             if name == 'Conv2d':
     #                 (cin, hin, win) = input_shape
-    #                 xpad = module.padding[0] if module.padding[0] != 's' else module.kernel_size[0] - 1
-    #                 ypad = module.padding[1] if module.padding[1] != 'a' else module.kernel_size[1] - 1
+    #                 xpad = (module.padding[0] if module.padding[0] != 's'
+    #                         else module.kernel_size[0] - 1)
+    #                 ypad = (module.padding[1] if module.padding[1] != 'a'
+    #                         else module.kernel_size[1] - 1)
     #                 cout = module.out_channels
     #                 hout = int(np.floor(
     #                     (hin + 2 * xpad - module.dilation[0] * (module.kernel_size[0] - 1) - 1) /
@@ -215,9 +217,11 @@ class CNNModule(nn.Module):
     #                 (cin, hin, win) = input_shape
     #                 cout = cin
     #                 hout = int(np.floor(
-    #                     (hin + 2 * module.padding - module.dilation * (module.kernel_size - 1) - 1) / module.stride + 1))
+    #                     (hin + 2*module.padding - module.dilation*(module.kernel_size-1)-1)
+    #                     / module.stride + 1))
     #                 wout = int(np.floor(
-    #                     (win + 2 * module.padding - module.dilation * (module.kernel_size - 1) - 1) / module.stride + 1))
+    #                     (win + 2*module.padding - module.dilation*(module.kernel_size-1)-1)
+    #                     / module.stride + 1))
     #                 input_shape = (cout, hout, wout)
     #
     #     return int(np.prod(np.array(input_shape)))
@@ -605,7 +609,9 @@ class SquashedActorQRCNN(TorchActorModule):
             # and look in appendix C. This is a more numerically-stable equivalent to Eq 21.
             # Try deriving it yourself as a (very difficult) exercise. :)
             logp_pi = pi_distribution.log_prob(pi_action).sum(axis=-1)
-            logp_pi -= (2 * (np.log(2) - pi_action - F.softplus(-2 * pi_action))).sum(axis=1)
+            logp_pi -= (2 * (np.log(2) - pi_action - functional.softplus(-2 * pi_action))).sum(
+                axis=1
+            )
         else:
             logp_pi = None
 

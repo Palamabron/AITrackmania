@@ -1,18 +1,15 @@
 import itertools
-import logging
 import os
-import sys
 import tarfile
 from pathlib import Path
 
 import numpy as np
 import torch
+from loguru import logger
 from torch.optim import Adam
 
-from config import config_constants as cfg
-from util import dump, load
-
-logging.basicConfig(stream=sys.stdout, level=logging.INFO)
+import tmrl.config.config_constants as cfg
+from tmrl.util import dump, load
 
 
 def load_run_instance_images_dataset(checkpoint_path):
@@ -27,8 +24,8 @@ def load_run_instance_images_dataset(checkpoint_path):
     parent_path = chk_path.parent.absolute()
     tar_path = str(parent_path / "dataset.tar")
     dataset_path = str(cfg.DATASET_PATH)
-    logging.debug(f" load: tar_path :{tar_path}")
-    logging.debug(f" load: dataset_path :{dataset_path}")
+    logger.debug(f" load: tar_path :{tar_path}")
+    logger.debug(f" load: dataset_path :{dataset_path}")
     with tarfile.open(tar_path, "r") as t:
         t.extractall(dataset_path)
     return load(checkpoint_path)
@@ -45,8 +42,8 @@ def dump_run_instance_images_dataset(run_instance, checkpoint_path):
     parent_path = chk_path.parent.absolute()
     tar_path = str(parent_path / "dataset.tar")
     dataset_path = str(cfg.DATASET_PATH)
-    logging.debug(f" dump: tar_path :{tar_path}")
-    logging.debug(f" dump: dataset_path :{dataset_path}")
+    logger.debug(f" dump: tar_path :{tar_path}")
+    logger.debug(f" dump: dataset_path :{dataset_path}")
     with tarfile.open(tar_path, "w") as tar_handle:
         for root, dirs, files in os.walk(dataset_path):
             for file in files:
@@ -56,11 +53,12 @@ def dump_run_instance_images_dataset(run_instance, checkpoint_path):
 
 def update_memory(run_instance):
     """
-    This function updates the configuration parameters related to memory in a reinforcement learning run instance if they differ from the current settings.
+    Updates memory-related config in a run instance if they differ from current settings.
+
     Args:
-    run_instance: An instance of a run or training session containing configurations and memory settings.
+        run_instance: Instance of a run or training session with config and memory settings.
     Returns:
-    Returns the updated run_instance after modifying memory-related parameters if necessary. If no modifications are needed, it returns the original run_instance.
+        The updated run_instance, or the original if no modifications were needed.
     """
     steps = cfg.MODEL_CONFIG["TRAINING_STEPS_PER_ROUND"]
     memory_size = cfg.MODEL_CONFIG["MEMORY_SIZE"]
@@ -74,8 +72,9 @@ def update_memory(run_instance):
         run_instance.memory.nb_steps = steps
         run_instance.memory.batch_size = batch_size
         run_instance.memory.memory_size = memory_size
-        logging.info(
-            f"Memory updated with steps:{steps}, batch size:{batch_size}, memory size:{memory_size}."
+        logger.info(
+            f"Memory updated with steps:{steps}, batch size:{batch_size}, "
+            f"memory size:{memory_size}."
         )
     return run_instance
 
@@ -86,7 +85,7 @@ def update_run_instance(run_instance, training_cls):
 
     Args:
         run_instance: the instance of the checkpoint to update
-        training_cls: partially instantiated class of a new checkpoint (to replace run_instance if needed)
+        training_cls: partially instantiated class of a new checkpoint (to replace if needed)
 
     Returns:
         run_instance: the updated checkpoint
@@ -100,30 +99,30 @@ def update_run_instance(run_instance, training_cls):
         return new_run_instance
 
     # update training Agent:
-    ALG_CONFIG = cfg.TMRL_CONFIG["ALG"]
-    ALG_NAME = ALG_CONFIG["ALGORITHM"]
-    assert ALG_NAME in ["SAC", "REDQSAC", "TQC"], (
-        f"{ALG_NAME} is not supported by this checkpoint updater."
+    alg_config = cfg.TMRL_CONFIG["ALG"]
+    alg_name = alg_config["ALGORITHM"]
+    assert alg_name in ["SAC", "REDQSAC", "TQC"], (
+        f"{alg_name} is not supported by this checkpoint updater."
     )
 
-    if ALG_NAME in ["SAC", "REDQSAC", "TQC"]:
-        lr_actor = ALG_CONFIG["LR_ACTOR"]
-        lr_critic = ALG_CONFIG["LR_CRITIC"]
-        lr_entropy = ALG_CONFIG["LR_ENTROPY"]
-        gamma = ALG_CONFIG["GAMMA"]
-        polyak = ALG_CONFIG["POLYAK"]
-        learn_entropy_coef = ALG_CONFIG["LEARN_ENTROPY_COEF"]
-        target_entropy = ALG_CONFIG["TARGET_ENTROPY"]
-        alpha = ALG_CONFIG["ALPHA"]
+    if alg_name in ["SAC", "REDQSAC", "TQC"]:
+        lr_actor = alg_config["LR_ACTOR"]
+        lr_critic = alg_config["LR_CRITIC"]
+        lr_entropy = alg_config["LR_ENTROPY"]
+        gamma = alg_config["GAMMA"]
+        polyak = alg_config["POLYAK"]
+        learn_entropy_coef = alg_config["LEARN_ENTROPY_COEF"]
+        target_entropy = alg_config["TARGET_ENTROPY"]
+        alpha = alg_config["ALPHA"]
 
-        if ALG_NAME in ("SAC", "TQC"):
+        if alg_name in ("SAC", "TQC"):
             if run_instance.agent.lr_actor != lr_actor:
                 old = run_instance.agent.lr_actor
                 run_instance.agent.lr_actor = lr_actor
                 run_instance.agent.actor_optimizer = Adam(
                     run_instance.agent.model.actor.parameters(), lr=lr_actor
                 )
-                logging.info(
+                logger.info(
                     f"Actor optimizer reinitialized with new lr: {lr_actor} (old lr: {old})."
                 )
 
@@ -137,12 +136,12 @@ def update_run_instance(run_instance, training_cls):
                     ),
                     lr=lr_critic,
                 )
-                logging.info(
+                logger.info(
                     f"Critic optimizer reinitialized with new lr: {lr_critic} (old lr: {old})."
                 )
 
         if run_instance.agent.learn_entropy_coef != learn_entropy_coef:
-            logging.warning("Cannot switch entropy learning.")
+            logger.warning("Cannot switch entropy learning.")
 
         if run_instance.agent.lr_entropy != lr_entropy or run_instance.agent.alpha != alpha:
             run_instance.agent.lr_entropy = lr_entropy
@@ -157,45 +156,45 @@ def update_run_instance(run_instance, training_cls):
                 run_instance.agent.alpha_optimizer = Adam(
                     [run_instance.agent.log_alpha], lr=lr_entropy
                 )
-                logging.info("Entropy optimizer reinitialized.")
+                logger.info("Entropy optimizer reinitialized.")
             else:
                 run_instance.agent.alpha_t = torch.tensor(float(run_instance.agent.alpha)).to(
                     device
                 )
-                logging.info(f"Alpha changed to {alpha}.")
+                logger.info(f"Alpha changed to {alpha}.")
 
         if run_instance.agent.gamma != gamma:
             old = run_instance.agent.gamma
             run_instance.agent.gamma = gamma
-            logging.info(f"Gamma coefficient changed to {gamma} (old: {old}).")
+            logger.info(f"Gamma coefficient changed to {gamma} (old: {old}).")
 
         if run_instance.agent.polyak != polyak:
             old = run_instance.agent.polyak
             run_instance.agent.polyak = polyak
-            logging.info(f"Polyak coefficient changed to {polyak} (old: {old}).")
+            logger.info(f"Polyak coefficient changed to {polyak} (old: {old}).")
 
         if target_entropy is None:  # automatic entropy coefficient
             action_space = run_instance.agent.action_space
             run_instance.agent.target_entropy = -np.prod(action_space.shape)  # .astype(np.float32)
         else:
             run_instance.agent.target_entropy = float(target_entropy)
-        logging.info(f"Target entropy: {run_instance.agent.target_entropy}.")
+        logger.info(f"Target entropy: {run_instance.agent.target_entropy}.")
 
-        if ALG_NAME == "REDQSAC":
-            m = ALG_CONFIG["REDQ_M"]
-            q_updates_per_policy_update = ALG_CONFIG["REDQ_Q_UPDATES_PER_POLICY_UPDATE"]
+        if alg_name == "REDQSAC":
+            m = alg_config["REDQ_M"]
+            q_updates_per_policy_update = alg_config["REDQ_Q_UPDATES_PER_POLICY_UPDATE"]
 
             if run_instance.agent.q_updates_per_policy_update != q_updates_per_policy_update:
                 old = run_instance.agent.q_updates_per_policy_update
                 run_instance.agent.q_updates_per_policy_update = q_updates_per_policy_update
-                logging.info(
+                logger.info(
                     f"Q update ratio switched to {q_updates_per_policy_update} (old: {old})."
                 )
 
             if run_instance.agent.m != m:
                 old = run_instance.agent.m
                 run_instance.agent.m = m
-                logging.info(f"M switched to {m} (old: {old}).")
+                logger.info(f"M switched to {m} (old: {old}).")
 
     epochs = cfg.MODEL_CONFIG["MAX_EPOCHS"]
     rounds = cfg.MODEL_CONFIG["ROUNDS_PER_EPOCH"]
@@ -208,39 +207,39 @@ def update_run_instance(run_instance, training_cls):
     if run_instance.epochs != epochs:
         old = run_instance.epochs
         run_instance.epochs = epochs
-        logging.info(f"Max epochs changed to {epochs} (old: {old}).")
+        logger.info(f"Max epochs changed to {epochs} (old: {old}).")
 
     if run_instance.rounds != rounds:
         old = run_instance.rounds
         run_instance.rounds = rounds
-        logging.info(f"Rounds per epoch changed to {rounds} (old: {old}).")
+        logger.info(f"Rounds per epoch changed to {rounds} (old: {old}).")
 
     if run_instance.update_model_interval != update_model_interval:
         old = run_instance.update_model_interval
         run_instance.update_model_interval = update_model_interval
-        logging.info(f"Model update interval changed to {update_model_interval} (old: {old}).")
+        logger.info(f"Model update interval changed to {update_model_interval} (old: {old}).")
 
     if run_instance.update_buffer_interval != update_buffer_interval:
         old = run_instance.update_buffer_interval
         run_instance.update_buffer_interval = update_buffer_interval
-        logging.info(f"Buffer update interval changed to {update_buffer_interval} (old: {old}).")
+        logger.info(f"Buffer update interval changed to {update_buffer_interval} (old: {old}).")
 
     if run_instance.max_training_steps_per_env_step != max_training_steps_per_env_step:
         old = run_instance.max_training_steps_per_env_step
         run_instance.max_training_steps_per_env_step = max_training_steps_per_env_step
-        logging.info(
+        logger.info(
             f"Max train/env step ratio changed to {max_training_steps_per_env_step} (old: {old})."
         )
 
     if run_instance.python_profiling != profiling:
         old = run_instance.python_profiling
         run_instance.python_profiling = profiling
-        logging.info(f"Profiling witched to {profiling} (old: {old}).")
+        logger.info(f"Profiling witched to {profiling} (old: {old}).")
 
     if run_instance.start_training != start_training:
         old = run_instance.start_training
         run_instance.start_training = start_training
-        logging.info(
+        logger.info(
             f"Number of environment steps before training changed to {start_training} (old: {old})."
         )
 

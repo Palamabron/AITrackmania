@@ -1,44 +1,41 @@
-# logger (basicConfig must be called before importing anything)
-import logging
+"""TMRL: network-based framework for real-time robot learning (TrackMania 2020)."""
+
+import platform
 import sys
 
-logging.basicConfig(stream=sys.stdout, level=logging.INFO)
+from loguru import logger
 
-# fixes for Windows:
-import platform
+logger.remove()
+logger.add(sys.stdout, level="INFO")
 
 if platform.system() == "Windows":
-    # fix pywin32 in case it fails to import:
     try:
-        import win32con
-        import win32gui
-        import win32ui
+        import win32con  # noqa: F401
+        import win32gui  # noqa: F401
+        import win32ui  # noqa: F401
     except ImportError as e1:
-        logging.info("pywin32 failed to import. Attempting to fix pywin32 installation...")
-        from tools.init_package.init_pywin32 import fix_pywin32
+        logger.info("pywin32 failed to import. Attempting to fix pywin32 installation...")
+        from tmrl.tools.init_package.init_pywin32 import fix_pywin32
 
         try:
             fix_pywin32()
-            import win32con
-            import win32gui
-            import win32ui
+            import win32con  # noqa: F401
+            import win32gui  # noqa: F401
+            import win32ui  # noqa: F401
         except ImportError as e2:
-            logging.error(
-                f"tmrl could not fix pywin32 on your system. The following exceptions were raised:\
-            \n=== Exception 1 ===\n{str(e1)}\n=== Exception 2 ===\n{str(e2)}\
-            \nPlease install pywin32 manually."
+            logger.error(
+                "tmrl could not fix pywin32 on your system. The following exceptions were raised: "
+                f"\n=== Exception 1 ===\n{e1!s}\n=== Exception 2 ===\n{e2!s}\n"
+                "Please install pywin32 manually."
             )
             raise RuntimeError(
                 "Please install pywin32 manually: https://github.com/mhammond/pywin32"
-            )
+            ) from e2
 
-# TMRL folder initialization:
-# do not remove this
-from dataclasses import dataclass
-
-from tmrl.config.config_objects import CONFIG_DICT
-from tmrl.envs import GenericGymEnv
-from tmrl.tools.init_package.init_tmrl import TMRL_FOLDER
+# TMRL folder initialization (imports after platform-dependent block):
+from tmrl.config.config_objects import CONFIG_DICT  # noqa: E402
+from tmrl.envs import GenericGymEnv  # noqa: E402
+from tmrl.tools.init_package.init_tmrl import TMRL_FOLDER  # noqa: E402, F401
 
 
 def get_environment():

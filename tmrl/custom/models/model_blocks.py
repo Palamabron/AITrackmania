@@ -2,7 +2,7 @@ from math import floor
 
 import numpy as np
 import torch
-import torch.nn.functional as F
+import torch.nn.functional as functional
 from torch import nn
 from torch.distributions import Normal
 from torch.nn import Conv2d, Module
@@ -55,7 +55,7 @@ if hasattr(nn, "SiLU"):
     SiLU = nn.SiLU
 else:
     # For compatibility with old PyTorch versions
-    class SiLU(nn.Module):
+    class SiLU(nn.Module):  # type: ignore[no-redef]
         @staticmethod
         def forward(x):
             return x * torch.sigmoid(x)
@@ -157,7 +157,8 @@ def remove_colors(images):
     """
     We remove colors so that we can simply use the same structure as the grayscale model.
 
-    The "color" default pipeline is mostly here for support, as our model effectively gets rid of 2 channels out of 3.
+    The "color" default pipeline is mostly here for support;
+    our model effectively gets rid of 2 channels out of 3.
     If you actually want to use colors, do not use the default pipeline.
     Instead, you need to code a custom model that doesn't get rid of them.
     """
@@ -193,10 +194,10 @@ class VanillaCNN(Module):
             speed, gear, rpm, images, act1, act2 = x
             act = None
 
-        x = F.relu(self.conv1(images))
-        x = F.relu(self.conv2(x))
-        x = F.relu(self.conv3(x))
-        x = F.relu(self.conv4(x))
+        x = functional.relu(self.conv1(images))
+        x = functional.relu(self.conv2(x))
+        x = functional.relu(self.conv3(x))
+        x = functional.relu(self.conv4(x))
         flat_features = num_flat_features(x)
         assert flat_features == self.flat_features, (
             f"x.shape:{x.shape}, flat_features:{flat_features}, self"
@@ -251,7 +252,9 @@ class SquashedGaussianEffNetActor(TorchActorModule):
             # and look in appendix C. This is a more numerically-stable equivalent to Eq 21.
             # Try deriving it yourself as a (very difficult) exercise. :)
             logp_pi = pi_distribution.log_prob(pi_action).sum(axis=-1)
-            logp_pi -= (2 * (np.log(2) - pi_action - F.softplus(-2 * pi_action))).sum(axis=1)
+            logp_pi -= (2 * (np.log(2) - pi_action - functional.softplus(-2 * pi_action))).sum(
+                axis=1
+            )
         else:
             logp_pi = None
 
