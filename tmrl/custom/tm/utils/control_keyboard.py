@@ -30,13 +30,30 @@ if platform.system() == "Windows":
     PUL = ctypes.POINTER(ctypes.c_ulong)
 
     class KeyBdInput(ctypes.Structure):
-        _fields_ = [("wVk", ctypes.c_ushort), ("wScan", ctypes.c_ushort), ("dwFlags", ctypes.c_ulong), ("time", ctypes.c_ulong), ("dwExtraInfo", PUL)]
+        _fields_ = [
+            ("wVk", ctypes.c_ushort),
+            ("wScan", ctypes.c_ushort),
+            ("dwFlags", ctypes.c_ulong),
+            ("time", ctypes.c_ulong),
+            ("dwExtraInfo", PUL),
+        ]
 
     class HardwareInput(ctypes.Structure):
-        _fields_ = [("uMsg", ctypes.c_ulong), ("wParamL", ctypes.c_short), ("wParamH", ctypes.c_ushort)]
+        _fields_ = [
+            ("uMsg", ctypes.c_ulong),
+            ("wParamL", ctypes.c_short),
+            ("wParamH", ctypes.c_ushort),
+        ]
 
     class MouseInput(ctypes.Structure):
-        _fields_ = [("dx", ctypes.c_long), ("dy", ctypes.c_long), ("mouseData", ctypes.c_ulong), ("dwFlags", ctypes.c_ulong), ("time", ctypes.c_ulong), ("dwExtraInfo", PUL)]
+        _fields_ = [
+            ("dx", ctypes.c_long),
+            ("dy", ctypes.c_long),
+            ("mouseData", ctypes.c_ulong),
+            ("dwFlags", ctypes.c_ulong),
+            ("time", ctypes.c_ulong),
+            ("dwExtraInfo", PUL),
+        ]
 
     class Input_I(ctypes.Union):
         _fields_ = [("ki", KeyBdInput), ("mi", MouseInput), ("hi", HardwareInput)]
@@ -47,12 +64,12 @@ if platform.system() == "Windows":
     # Key Functions
 
     def PressKey(hexKeyCode):
-        '''
+        """
         Simulates pressing a key on the keyboard.
         Actions:
         Creates a keyboard input event using the SendInput function from user32.dll.
         Sends a key press event using the given key code.
-        '''
+        """
         extra = ctypes.c_ulong(0)
         ii_ = Input_I()
         ii_.ki = KeyBdInput(0, hexKeyCode, 0x0008, 0, ctypes.pointer(extra))
@@ -60,12 +77,12 @@ if platform.system() == "Windows":
         ctypes.windll.user32.SendInput(1, ctypes.pointer(x), ctypes.sizeof(x))
 
     def ReleaseKey(hexKeyCode):
-        '''
+        """
         Simulates releasing a key on the keyboard.
         Actions:
         Creates a keyboard input event using the SendInput function from user32.dll.
         Sends a key release event using the given key code.
-        '''
+        """
         extra = ctypes.c_ulong(0)
         ii_ = Input_I()
         ii_.ki = KeyBdInput(0, hexKeyCode, 0x0008 | 0x0002, 0, ctypes.pointer(extra))
@@ -73,41 +90,42 @@ if platform.system() == "Windows":
         ctypes.windll.user32.SendInput(1, ctypes.pointer(x), ctypes.sizeof(x))
 
     def apply_control(action):  # move_fast
-        '''
+        """
         Applies control actions based on specific key presses for movement.
         Actions:
         Determines which keys (W, A, S, D) to press or release based on the provided action string.
         Simulates key presses or releases accordingly for forward (W), backward (S), left (A), and right (D) movement.
-        '''
-        if 'f' in action:
+        """
+        if "f" in action:
             PressKey(W)
         else:
             ReleaseKey(W)
-        if 'b' in action:
+        if "b" in action:
             PressKey(S)
         else:
             ReleaseKey(S)
-        if 'l' in action:
+        if "l" in action:
             PressKey(A)
         else:
             ReleaseKey(A)
-        if 'r' in action:
+        if "r" in action:
             PressKey(D)
         else:
             ReleaseKey(D)
 
     def keyres():
-        '''
+        """
         Triggers a key press and release for the DEL key.
         Actions:
         Simulates a press and release of the DEL key.
-        '''
+        """
         PressKey(DEL)
         ReleaseKey(DEL)
 
     def keysavereplay():  # TODO: debug
-        '''Saves a replay with key sequences and mouse actions.'''
+        """Saves a replay with key sequences and mouse actions."""
         import keyboard
+
         PressKey(R)
         time.sleep(0.1)
         ReleaseKey(R)
@@ -122,8 +140,8 @@ if platform.system() == "Windows":
         time.sleep(1.0)
 
 elif platform.system() == "Linux":
-    import subprocess
     import logging
+    import subprocess
 
     KEY_UP = "Up"
     KEY_DOWN = "Down"
@@ -137,7 +155,7 @@ elif platform.system() == "Linux":
         global process
         if process is None or process.poll() is not None:
             logging.debug("(re-)create process")
-            process = subprocess.Popen('/bin/bash', stdin=subprocess.PIPE)
+            process = subprocess.Popen("/bin/bash", stdin=subprocess.PIPE)
         process.stdin.write(c.encode())
         process.stdin.flush()
 
@@ -154,19 +172,19 @@ elif platform.system() == "Linux":
             c_focus = f"xdotool windowfocus {str(window_id)}"
             execute_command(c_focus)
 
-        if 'f' in action:
+        if "f" in action:
             PressKey(KEY_UP)
         else:
             ReleaseKey(KEY_UP)
-        if 'b' in action:
+        if "b" in action:
             PressKey(KEY_DOWN)
         else:
             ReleaseKey(KEY_DOWN)
-        if 'l' in action:
+        if "l" in action:
             PressKey(KEY_LEFT)
         else:
             ReleaseKey(KEY_LEFT)
-        if 'r' in action:
+        if "r" in action:
             PressKey(KEY_RIGHT)
         else:
             ReleaseKey(KEY_RIGHT)

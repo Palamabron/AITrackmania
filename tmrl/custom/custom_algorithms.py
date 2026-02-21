@@ -7,7 +7,7 @@ from dataclasses import dataclass
 # third-party imports
 import numpy as np
 import torch
-from torch.optim import Adam, AdamW, SGD
+from torch.optim import SGD, Adam, AdamW
 
 import tmrl.config.config_constants as cfg
 from tmrl.custom.custom_models import MLPActorCritic, REDQMLPActorCritic
@@ -69,9 +69,13 @@ class SpinupSacAgent(TrainingAgent):  # Adapted from Spinup
         self.optimizer_actor = self.optimizer_actor.lower()
         self.optimizer_critic = self.optimizer_critic.lower()
         if self.optimizer_actor not in ["adam", "adamw", "sgd"]:
-            logging.warning(f"actor optimizer {self.optimizer_actor} is not valid, defaulting to sgd")
+            logging.warning(
+                f"actor optimizer {self.optimizer_actor} is not valid, defaulting to sgd"
+            )
         if self.optimizer_critic not in ["adam", "adamw", "sgd"]:
-            logging.warning(f"critic optimizer {self.optimizer_critic} is not valid, defaulting to sgd")
+            logging.warning(
+                f"critic optimizer {self.optimizer_critic} is not valid, defaulting to sgd"
+            )
         if self.optimizer_actor == "adam":
             pi_optimizer_cls = Adam
         elif self.optimizer_actor == "adamw":
@@ -97,7 +101,10 @@ class SpinupSacAgent(TrainingAgent):  # Adapted from Spinup
             q_optimizer_kwargs["weight_decay"] = self.l2_critic
 
         self.pi_optimizer = pi_optimizer_cls(self.model.actor.parameters(), **pi_optimizer_kwargs)
-        self.q_optimizer = q_optimizer_cls(itertools.chain(self.model.q1.parameters(), self.model.q2.parameters()), **q_optimizer_kwargs)
+        self.q_optimizer = q_optimizer_cls(
+            itertools.chain(self.model.q1.parameters(), self.model.q2.parameters()),
+            **q_optimizer_kwargs,
+        )
 
         # entropy coefficient:
 
@@ -109,7 +116,9 @@ class SpinupSacAgent(TrainingAgent):  # Adapted from Spinup
         if self.learn_entropy_coef:
             # Note: we optimize the log of the entropy coeff which is slightly different from the paper
             # as discussed in https://github.com/rail-berkeley/softlearning/issues/37
-            self.log_alpha = torch.log(torch.ones(1, device=self.device) * self.alpha).requires_grad_(True)
+            self.log_alpha = torch.log(
+                torch.ones(1, device=self.device) * self.alpha
+            ).requires_grad_(True)
             self.alpha_optimizer = Adam([self.log_alpha], lr=self.lr_entropy)
         else:
             self.alpha_t = torch.tensor(float(self.alpha)).to(self.device)
@@ -162,8 +171,8 @@ class SpinupSacAgent(TrainingAgent):  # Adapted from Spinup
             backup = r + self.gamma * (1 - d) * (q_pi_targ - alpha_t * logp_a2)
 
         # MSE loss against Bellman backup
-        loss_q1 = ((q1 - backup)**2).mean()
-        loss_q2 = ((q2 - backup)**2).mean()
+        loss_q1 = ((q1 - backup) ** 2).mean()
+        loss_q2 = ((q2 - backup) ** 2).mean()
         loss_q = (loss_q1 + loss_q2) / 2  # averaged for homogeneity with REDQ
 
         self.q_optimizer.zero_grad()
@@ -205,7 +214,6 @@ class SpinupSacAgent(TrainingAgent):  # Adapted from Spinup
 
         # FIXME: remove debug info
         with torch.no_grad():
-
             if not cfg.DEBUG_MODE:
                 ret_dict = dict(
                     loss_actor=loss_pi.detach().item(),
@@ -321,12 +329,14 @@ class REDQSACAgent(TrainingAgent):
     target_entropy: float = None  # if None, the target entropy is set automatically
     n: int = 10  # number of REDQ parallel Q networks
     m: int = 2  # number of REDQ randomly sampled target networks
-    q_updates_per_policy_update: int = 1  # in REDQ, this is the "UTD ratio" (20), this interplays with lr_actor
+    q_updates_per_policy_update: int = (
+        1  # in REDQ, this is the "UTD ratio" (20), this interplays with lr_actor
+    )
 
     model_nograd = cached_property(lambda self: no_grad(copy_shared(self.model)))
 
     def __post_init__(self):
-        '''
+        """
         Functionality:
         Initializes the REDQ-SAC agent after the object creation.
         Sets up random seed generation for reproducibility.
@@ -334,7 +344,7 @@ class REDQSACAgent(TrainingAgent):
         Defines optimizers for the actor, Q-functions, and entropy coefficient.
         Handles alpha value and entropy coefficient settings.
         Sets up the target entropy for policy optimization.
-        '''
+        """
         set_seed()
 
         observation_space, action_space = self.observation_space, self.action_space
@@ -343,8 +353,12 @@ class REDQSACAgent(TrainingAgent):
         logging.debug(f" device REDQ-SAC: {device}")
         self.model = model.to(device)
         self.model_target = no_grad(deepcopy(self.model))
-        self.pi_optimizer = Adam(self.model.actor.parameters(), lr=self.lr_actor, weight_decay=0.001)
-        self.q_optimizer_list = [Adam(q.parameters(), lr=self.lr_critic, weight_decay=0.001) for q in self.model.qs]
+        self.pi_optimizer = Adam(
+            self.model.actor.parameters(), lr=self.lr_actor, weight_decay=0.001
+        )
+        self.q_optimizer_list = [
+            Adam(q.parameters(), lr=self.lr_critic, weight_decay=0.001) for q in self.model.qs
+        ]
         self.criterion = torch.nn.MSELoss()
         self.loss_pi = torch.zeros((1,), device=device)
 
@@ -356,20 +370,22 @@ class REDQSACAgent(TrainingAgent):
             self.target_entropy = float(self.target_entropy)
 
         if self.learn_entropy_coef:
-            self.log_alpha = torch.log(torch.ones(1, device=self.device) * self.alpha).requires_grad_(True)
+            self.log_alpha = torch.log(
+                torch.ones(1, device=self.device) * self.alpha
+            ).requires_grad_(True)
             self.alpha_optimizer = Adam([self.log_alpha], lr=self.lr_entropy)
         else:
             self.alpha_t = torch.tensor(float(self.alpha)).to(self.device)
 
     def get_actor(self):
-        '''
+        """
         Functionality:
         Returns the actor part of the model, facilitating access to the policy function.
-        '''
+        """
         return self.model_nograd.actor
 
     def train(self, batch, epoch, batch_number, iteration):
-        '''
+        """
         Arguments:
 
         batch: Training batch consisting of observations, actions, rewards, next observations, termination flags, and possibly additional info.
@@ -383,9 +399,9 @@ class REDQSACAgent(TrainingAgent):
         Computes losses for actor, critic, and entropy coefficients.
         Executes policy and Q-function optimization steps using Adam optimizers.
         Handles updating the target network parameters.
-        '''
+        """
         self.i_update += 1
-        update_policy = (self.i_update % self.q_updates_per_policy_update == 0)
+        update_policy = self.i_update % self.q_updates_per_policy_update == 0
 
         o, a, r, o2, d, _ = batch
         pi, logp_pi = None, None
@@ -415,13 +431,16 @@ class REDQSACAgent(TrainingAgent):
             q_prediction_next_cat = torch.stack(q_prediction_next_list, -1)
             min_q, _ = torch.min(q_prediction_next_cat, dim=1, keepdim=True)
             backup = r.unsqueeze(dim=-1) + self.gamma * (1 - d.unsqueeze(dim=-1)) * (
-                    min_q - alpha_t * logp_a2.unsqueeze(dim=-1))
+                min_q - alpha_t * logp_a2.unsqueeze(dim=-1)
+            )
 
         q_prediction_list = [q(o, a) for q in self.model.qs]
         q_prediction_cat = torch.stack(q_prediction_list, -1)
         backup = backup.expand((-1, self.n)) if backup.shape[1] == 1 else backup
 
-        loss_q = self.criterion(q_prediction_cat, backup)  # * self.n  # averaged for homogeneity with SAC
+        loss_q = self.criterion(
+            q_prediction_cat, backup
+        )  # * self.n  # averaged for homogeneity with SAC
 
         for q in self.q_optimizer_list:
             q.zero_grad()
@@ -468,6 +487,7 @@ class REDQSACAgent(TrainingAgent):
 
 # SAC with optional learnable entropy coefficent =======================================================================
 
+
 @dataclass(eq=False)
 class SpinupSacAgent(TrainingAgent):  # Adapted from Spinup
     observation_space: type
@@ -487,7 +507,7 @@ class SpinupSacAgent(TrainingAgent):  # Adapted from Spinup
     model_nograd = cached_property(lambda self: no_grad(copy_shared(self.model)))
 
     def __post_init__(self):
-        '''
+        """
         Functionality:
         Initializes the SAC (Soft Actor-Critic) agent after the object creation.
         Handles seed initialization for reproducibility.
@@ -495,7 +515,7 @@ class SpinupSacAgent(TrainingAgent):  # Adapted from Spinup
         Sets up optimizers for the actor and critic networks.
         Configures scheduler for optimizer if specified in the configuration.
         Handles target entropy setting and entropy coefficient optimization.
-        '''
+        """
         set_seed()
         if self.n_steps == 1:
             self.n_steps = 0
@@ -507,10 +527,18 @@ class SpinupSacAgent(TrainingAgent):  # Adapted from Spinup
         self.model_target = no_grad(deepcopy(self.model))
 
         # Set up optimizers for policy and q-function
-        self.actor_optimizer = Adam(self.model.actor.parameters(), lr=self.lr_actor,
-                                    weight_decay=cfg.ACTOR_WEIGHT_DECAY, eps=cfg.ADAM_EPS)
-        self.critic_optimizer = Adam(itertools.chain(self.model.q1.parameters(), self.model.q2.parameters()),
-                                     lr=self.lr_critic, weight_decay=cfg.CRITIC_WEIGHT_DECAY, eps=cfg.ADAM_EPS)
+        self.actor_optimizer = Adam(
+            self.model.actor.parameters(),
+            lr=self.lr_actor,
+            weight_decay=cfg.ACTOR_WEIGHT_DECAY,
+            eps=cfg.ADAM_EPS,
+        )
+        self.critic_optimizer = Adam(
+            itertools.chain(self.model.q1.parameters(), self.model.q2.parameters()),
+            lr=self.lr_critic,
+            weight_decay=cfg.CRITIC_WEIGHT_DECAY,
+            eps=cfg.ADAM_EPS,
+        )
 
         if len(cfg.SCHEDULER_CONFIG["NAME"]) > 0:
             self.actor_scheduler = CosineAnnealingWarmRestarts(
@@ -518,7 +546,7 @@ class SpinupSacAgent(TrainingAgent):  # Adapted from Spinup
                 cfg.SCHEDULER_CONFIG["T_0"],
                 cfg.SCHEDULER_CONFIG["T_mult"],
                 cfg.SCHEDULER_CONFIG["eta_min"],
-                cfg.SCHEDULER_CONFIG["last_epoch"]
+                cfg.SCHEDULER_CONFIG["last_epoch"],
             )
 
             self.critic_scheduler = CosineAnnealingWarmRestarts(
@@ -526,7 +554,7 @@ class SpinupSacAgent(TrainingAgent):  # Adapted from Spinup
                 cfg.SCHEDULER_CONFIG["T_0"],
                 cfg.SCHEDULER_CONFIG["T_mult"],
                 cfg.SCHEDULER_CONFIG["eta_min"],
-                cfg.SCHEDULER_CONFIG["last_epoch"]
+                cfg.SCHEDULER_CONFIG["last_epoch"],
             )
 
         if self.target_entropy is None:  # automatic entropy coefficient
@@ -537,7 +565,9 @@ class SpinupSacAgent(TrainingAgent):  # Adapted from Spinup
         if self.learn_entropy_coef:
             # Note: we optimize the log of the entropy coeff which is slightly different from the paper
             # as discussed in https://github.com/rail-berkeley/softlearning/issues/37
-            self.log_alpha = torch.log(torch.ones(1, device=self.device) * self.alpha).requires_grad_(True)
+            self.log_alpha = torch.log(
+                torch.ones(1, device=self.device) * self.alpha
+            ).requires_grad_(True)
             self.alpha_optimizer = Adam([self.log_alpha], lr=self.lr_entropy)
         else:
             self.alpha_t = torch.tensor(float(self.alpha)).to(self.device)
@@ -552,15 +582,15 @@ class SpinupSacAgent(TrainingAgent):  # Adapted from Spinup
 
     @staticmethod
     def clip_weights(model, max_value=0.98):
-        '''
+        """
         Functionality:
         Clamps the weights of the given model within a specified range (max_value).
-        '''
+        """
         for param in model.parameters():
             param.data.clamp_(-max_value, max_value)
 
     def train(self, batch, epoch, batch_index, iters):
-        '''
+        """
         Functionality:
         Handles the training process for the SAC (Soft Actor-Critic) agent using a provided batch of data.
         Sets up necessary configurations and parameters for training.
@@ -568,7 +598,7 @@ class SpinupSacAgent(TrainingAgent):  # Adapted from Spinup
         Manages entropy coefficient optimization (if enabled) and gradient clipping (if configured).
         Updates target networks by polyak averaging.
         Provides debugging information if specified in the configuration.
-        '''
+        """
         torch.autograd.set_detect_anomaly(True)
         o, a, r, o2, d, _ = batch
 
@@ -614,10 +644,10 @@ class SpinupSacAgent(TrainingAgent):  # Adapted from Spinup
             for i in range(len(r)):
                 for step in range(self.n_steps):
                     if i + step < len(r):
-                        if d[i + step] == 1.:
+                        if d[i + step] == 1.0:
                             break
                         # Accumulate reward for each step, considering if the state is not terminal
-                        n_step_return[i] += (self.gamma ** step) * r[i + step]
+                        n_step_return[i] += (self.gamma**step) * r[i + step]
             # print(f"Final n_step_return: {n_step_return}")
 
             r = n_step_return[:truncated_batch_size]
@@ -707,8 +737,8 @@ class SpinupSacAgent(TrainingAgent):  # Adapted from Spinup
             ret_dict = dict()
             ret_dict["losses/loss_actor"] = loss_actor.detach()
             ret_dict["losses/loss_critic"] = loss_critic.detach()
-            ret_dict["lrs/actor_lr"] = self.actor_optimizer.param_groups[0]['lr']
-            ret_dict["lrs/critic_lr"] = self.critic_optimizer.param_groups[0]['lr']
+            ret_dict["lrs/actor_lr"] = self.actor_optimizer.param_groups[0]["lr"]
+            ret_dict["lrs/critic_lr"] = self.critic_optimizer.param_groups[0]["lr"]
             if cfg.WANDB_DEBUG:
                 q1_o2_a2 = self.model.q1(o2, a2)[:truncated_batch_size]
                 q2_o2_a2 = self.model.q2(o2, a2)[:truncated_batch_size]
@@ -797,6 +827,7 @@ class SpinupSacAgent(TrainingAgent):  # Adapted from Spinup
 
         return ret_dict
 
+
 # TQC with learnable entropy coefficent ===================================================================
 
 
@@ -808,6 +839,7 @@ class TQCAgent(TrainingAgent):
     Inherits from TrainingAgent.
     Manages training and setup of the TQC agent with various parameters and configurations.
     """
+
     observation_space: type
     action_space: type
     device: str = None
@@ -820,7 +852,9 @@ class TQCAgent(TrainingAgent):
     lr_entropy: float = 1e-3
     learn_entropy_coef: bool = True
     target_entropy: float = None
-    top_quantiles_to_drop: int = cfg.ALG_CONFIG["TOP_QUANTILES_TO_DROP"]  # ~8% of total number of atoms
+    top_quantiles_to_drop: int = cfg.ALG_CONFIG[
+        "TOP_QUANTILES_TO_DROP"
+    ]  # ~8% of total number of atoms
     quantiles_number: int = cfg.ALG_CONFIG["QUANTILES_NUMBER"]
     n_steps: int = cfg.ALG_CONFIG["N_STEPS"]
 
@@ -848,10 +882,14 @@ class TQCAgent(TrainingAgent):
         self.model_target = no_grad(deepcopy(self.model))
 
         # Set up optimizers for policy and q-function
-        self.actor_optimizer = Adam(self.model.actor.parameters(), lr=self.lr_actor,
-                                    weight_decay=cfg.ACTOR_WEIGHT_DECAY)
-        self.critic_optimizer = Adam(itertools.chain(self.model.q1.parameters(), self.model.q2.parameters()),
-                                     lr=self.lr_critic, weight_decay=cfg.CRITIC_WEIGHT_DECAY)
+        self.actor_optimizer = Adam(
+            self.model.actor.parameters(), lr=self.lr_actor, weight_decay=cfg.ACTOR_WEIGHT_DECAY
+        )
+        self.critic_optimizer = Adam(
+            itertools.chain(self.model.q1.parameters(), self.model.q2.parameters()),
+            lr=self.lr_critic,
+            weight_decay=cfg.CRITIC_WEIGHT_DECAY,
+        )
 
         if len(cfg.SCHEDULER_CONFIG["NAME"]) > 0:
             self.actor_scheduler = CosineAnnealingWarmRestarts(
@@ -859,7 +897,7 @@ class TQCAgent(TrainingAgent):
                 cfg.SCHEDULER_CONFIG["T_0"],
                 cfg.SCHEDULER_CONFIG["T_mult"],
                 cfg.SCHEDULER_CONFIG["eta_min"],
-                cfg.SCHEDULER_CONFIG["last_epoch"]
+                cfg.SCHEDULER_CONFIG["last_epoch"],
             )
 
             self.critic_scheduler = CosineAnnealingWarmRestarts(
@@ -867,7 +905,7 @@ class TQCAgent(TrainingAgent):
                 cfg.SCHEDULER_CONFIG["T_0"],
                 cfg.SCHEDULER_CONFIG["T_mult"],
                 cfg.SCHEDULER_CONFIG["eta_min"],
-                cfg.SCHEDULER_CONFIG["last_epoch"]
+                cfg.SCHEDULER_CONFIG["last_epoch"],
             )
 
         self.quantiles_total = self.model.q1.num_quantiles + self.model.q2.num_quantiles
@@ -878,7 +916,9 @@ class TQCAgent(TrainingAgent):
             self.target_entropy = float(self.target_entropy)
 
         if self.learn_entropy_coef:
-            self.log_alpha = torch.log(torch.ones(1, device=device) * self.alpha).requires_grad_(True)
+            self.log_alpha = torch.log(torch.ones(1, device=device) * self.alpha).requires_grad_(
+                True
+            )
             self.alpha_optimizer = Adam([self.log_alpha], lr=self.lr_entropy)
         else:
             self.alpha_t = torch.tensor(float(self.alpha)).to(device)
@@ -894,7 +934,9 @@ class TQCAgent(TrainingAgent):
         """
         Calculate huber loss element-wisely depending on kappa k.
         """
-        loss = torch.where(td_errors.abs() <= k, 0.5 * td_errors.pow(2), k * (td_errors.abs() - 0.5 * k))
+        loss = torch.where(
+            td_errors.abs() <= k, 0.5 * td_errors.pow(2), k * (td_errors.abs() - 0.5 * k)
+        )
         return loss
 
     @staticmethod
@@ -916,13 +958,17 @@ class TQCAgent(TrainingAgent):
         Involves calculating pairwise deltas and applying Huber loss element-wise.
         Returns the computed loss.
         """
-        pairwise_delta = samples[:, None, None, :] - quantiles[:, :, :, None]  # batch x nets x quantiles x samples
+        pairwise_delta = (
+            samples[:, None, None, :] - quantiles[:, :, :, None]
+        )  # batch x nets x quantiles x samples
         huber_loss = self.calculate_huber_loss(pairwise_delta)
 
         n_quantiles = quantiles.shape[2]
         device = self.device or ("cuda" if torch.cuda.is_available() else "cpu")
         tau = torch.arange(n_quantiles, device=device).float() / n_quantiles + 1 / 2 / n_quantiles
-        loss = (torch.abs(tau[None, None, :, None] - (pairwise_delta < 0).float()) * huber_loss).mean()
+        loss = (
+            torch.abs(tau[None, None, :, None] - (pairwise_delta < 0).float()) * huber_loss
+        ).mean()
         return loss
 
     @staticmethod
@@ -992,10 +1038,10 @@ class TQCAgent(TrainingAgent):
             for i in range(len(r)):
                 for step in range(self.n_steps):
                     if i + step < len(r):
-                        if d[i + step] == 1.:
+                        if d[i + step] == 1.0:
                             break
                         # Accumulate reward for each step, considering if the state is not terminal
-                        n_step_return[i] += (self.gamma ** step) * r[i + step]
+                        n_step_return[i] += (self.gamma**step) * r[i + step]
                 # print(f"Step {step}: n_step_return = {n_step_return}, n_step_not_done = {n_step_not_done}")
             # print(f"Final n_step_return: {n_step_return}")
 
@@ -1012,20 +1058,33 @@ class TQCAgent(TrainingAgent):
             if self.n_steps > 1:
                 logp_a2 = logp_a2[:truncated_batch_size]
                 # Compute and cut quantiles at the next state
-                q1_pi_targ = self.model_target.q1(o2, a2)[:truncated_batch_size]  # Tensor(batch x quantiles)
-                q2_pi_targ = self.model_target.q2(o2, a2)[:truncated_batch_size]  # Tensor(batch x quantiles)
+                q1_pi_targ = self.model_target.q1(o2, a2)[
+                    :truncated_batch_size
+                ]  # Tensor(batch x quantiles)
+                q2_pi_targ = self.model_target.q2(o2, a2)[
+                    :truncated_batch_size
+                ]  # Tensor(batch x quantiles)
             else:
                 # Compute and cut quantiles at the next state
                 q1_pi_targ = self.model_target.q1(o2, a2)  # Tensor(batch x quantiles)
                 q2_pi_targ = self.model_target.q2(o2, a2)  # Tensor(batch x quantiles)
-            next_z = torch.stack((q1_pi_targ, q2_pi_targ), dim=1)  # Tensor(batch x nets x quantiles)
-            sorted_z, _ = torch.sort(next_z.reshape(truncated_batch_size, -1))  # Tensor(batch x [nets * quantiles])
-            sorted_z_part = sorted_z[:, :self.quantiles_total - self.top_quantiles_to_drop]
+            next_z = torch.stack(
+                (q1_pi_targ, q2_pi_targ), dim=1
+            )  # Tensor(batch x nets x quantiles)
+            sorted_z, _ = torch.sort(
+                next_z.reshape(truncated_batch_size, -1)
+            )  # Tensor(batch x [nets * quantiles])
+            sorted_z_part = sorted_z[:, : self.quantiles_total - self.top_quantiles_to_drop]
             q_pi_targ = sorted_z_part - alpha_t * logp_a2.reshape(-1, 1)
             not_done = 1 - d
             tmp = q_pi_targ * not_done[:, None]
             if self.n_steps > 1:
-                backup = n_step_return.unsqueeze(1).expand(-1, self.quantiles_total - self.top_quantiles_to_drop) + tmp
+                backup = (
+                    n_step_return.unsqueeze(1).expand(
+                        -1, self.quantiles_total - self.top_quantiles_to_drop
+                    )
+                    + tmp
+                )
             else:
                 backup = r.unsqueeze(1) + self.gamma * tmp
 
@@ -1072,14 +1131,14 @@ class TQCAgent(TrainingAgent):
                 # NB: We use an in-place operations "mul_", "add_" to update target
                 # params, as opposed to "mul" and "add", which would make new tensors.
                 p_targ.data.mul_(self.polyak)
-                p_targ.data.add_((1. - self.polyak) * p.data)
+                p_targ.data.add_((1.0 - self.polyak) * p.data)
 
         with torch.no_grad():
             ret_dict = dict()
             ret_dict["losses/loss_actor"] = actor_loss.detach()
             ret_dict["losses/loss_critic"] = critic_loss.detach()
-            ret_dict["lrs/actor_lr"] = self.actor_optimizer.param_groups[0]['lr']
-            ret_dict["lrs/critic_lr"] = self.critic_optimizer.param_groups[0]['lr']
+            ret_dict["lrs/actor_lr"] = self.actor_optimizer.param_groups[0]["lr"]
+            ret_dict["lrs/critic_lr"] = self.critic_optimizer.param_groups[0]["lr"]
             if cfg.WANDB_DEBUG:
                 ret_dict["debug/log_pi"] = logp_pi.detach().mean()
                 ret_dict["debug/log_pi_std"] = logp_pi.detach().std()
@@ -1123,4 +1182,3 @@ class TQCAgent(TrainingAgent):
             ret_dict["entropy_coef"] = alpha_t.item()
 
         return ret_dict
-

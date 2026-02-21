@@ -1,4 +1,5 @@
 # standard library imports
+import logging
 import pickle
 import time
 
@@ -12,7 +13,6 @@ from scipy.ndimage import gaussian_filter1d
 # local imports
 import tmrl.config.config_constants as cfg
 from tmrl.custom.tm.utils.tools import TM2020OpenPlanetClient
-import logging
 
 PATH_REWARD = cfg.REWARD_PATH
 DATASET_PATH = cfg.DATASET_PATH
@@ -27,15 +27,17 @@ def record_reward_dist(path_reward=PATH_REWARD, use_keyboard=False):
     if use_keyboard:
         print("Press 'e' to start recording, 'q' to stop")
     while True:
-        if not is_recording and (not use_keyboard or keyboard.is_pressed('e')):
-            logging.info(f"start recording")
+        if not is_recording and (not use_keyboard or keyboard.is_pressed("e")):
+            logging.info("start recording")
             is_recording = True
         if is_recording:
-            data = client.retrieve_data(sleep_if_empty=0.01)  # we need many points to build a smooth curve
+            data = client.retrieve_data(
+                sleep_if_empty=0.01
+            )  # we need many points to build a smooth curve
             terminated = bool(data[8])
-            early_stop = use_keyboard and keyboard.is_pressed('q')
+            early_stop = use_keyboard and keyboard.is_pressed("q")
             if early_stop or terminated:
-                logging.info(f"Computing reward function checkpoints from captured positions...")
+                logging.info("Computing reward function checkpoints from captured positions...")
                 logging.info(f"Initial number of captured positions: {len(positions)}")
                 positions = np.array(positions)
 
@@ -62,10 +64,12 @@ def record_reward_dist(path_reward=PATH_REWARD, use_keyboard=False):
                 print(f"final_positions: {final_positions}", end="\n\n")
                 print(f"upsampled_arr: {upsampled_arr}", end="\n\n")
                 print(f"spaced_points: {spaced_points}", end="\n\n")
-                logging.info(f"Final number of checkpoints in the reward function: {len(spaced_points)}")
+                logging.info(
+                    f"Final number of checkpoints in the reward function: {len(spaced_points)}"
+                )
 
                 pickle.dump(spaced_points, open(path, "wb"))
-                logging.info(f"All done")
+                logging.info("All done")
                 return
             else:
                 positions.append([data[3], data[4], data[5]])
@@ -83,7 +87,9 @@ def space_points(points):
     # Calculate the cumulative distance between consecutive points, considering all coordinates
     distances = np.sqrt(np.diff(x) ** 2 + np.diff(y) ** 2 + np.diff(z) ** 2)
     cumulative_distances = np.cumsum(distances)
-    cumulative_distances = np.insert(cumulative_distances, 0, 0)  # Add a starting point distance of 0
+    cumulative_distances = np.insert(
+        cumulative_distances, 0, 0
+    )  # Add a starting point distance of 0
 
     # Create cubic spline interpolations for x, y, and z
     cs_x = CubicSpline(cumulative_distances, x)
@@ -106,10 +112,10 @@ def space_points(points):
     plt.figure(figsize=(30, 20))
 
     # Input points
-    plt.scatter(x, y, label='Input Points', color='blue', marker='o')
+    plt.scatter(x, y, label="Input Points", color="blue", marker="o")
 
     # Output points (interpolated)
-    plt.plot(new_x, new_y, label='Output Points (Interpolated)', color='red', marker='x')
+    plt.plot(new_x, new_y, label="Output Points (Interpolated)", color="red", marker="x")
 
     return new_points
 
@@ -173,7 +179,10 @@ def line(pt1, pt2, dist):
     vec = pt2 - pt1
     norm = np.linalg.norm(vec)
     if norm < dist:
-        return None, dist - norm  # we couldn't create a new point but we moved by a distance of norm
+        return (
+            None,
+            dist - norm,
+        )  # we couldn't create a new point but we moved by a distance of norm
     else:
         vec_unit = vec / norm
         pt = pt1 + vec_unit * dist

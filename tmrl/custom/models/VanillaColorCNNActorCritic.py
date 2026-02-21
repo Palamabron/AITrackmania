@@ -1,6 +1,9 @@
-from custom.models.VanillaCNNActorCritic import VanillaCNNQFunction, VanillaCNNActorCritic, \
-    SquashedGaussianVanillaCNNActor
 from custom.models.model_blocks import remove_colors
+from custom.models.VanillaCNNActorCritic import (
+    SquashedGaussianVanillaCNNActor,
+    VanillaCNNActorCritic,
+    VanillaCNNQFunction,
+)
 
 
 class SquashedGaussianVanillaColorCNNActor(SquashedGaussianVanillaCNNActor):

@@ -5,7 +5,6 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from torch import nn
-from torch.autograd import Variable
 from torch.distributions import Normal
 from torch.nn import MultiheadAttention
 from torchrl.modules import NoisyLinear
@@ -13,7 +12,7 @@ from torchrl.modules import NoisyLinear
 import config.config_constants as cfg
 import config.config_objects as cfo
 from actor import TorchActorModule
-from custom.models.model_constants import LOG_STD_MIN, LOG_STD_MAX
+from custom.models.model_constants import LOG_STD_MAX, LOG_STD_MIN
 
 
 # https://discuss.pytorch.org/t/dropout-in-lstm-during-eval-mode/120177
@@ -23,8 +22,13 @@ def gru(input_size, rnn_size, rnn_len, dropout: float = 0.0):
     hidden_size = rnn_size
 
     gru_layers = nn.GRU(
-        input_size=input_size, hidden_size=hidden_size, num_layers=num_rnn_layers,
-        bias=True, batch_first=True, dropout=dropout, bidirectional=False
+        input_size=input_size,
+        hidden_size=hidden_size,
+        num_layers=num_rnn_layers,
+        bias=True,
+        batch_first=True,
+        dropout=dropout,
+        bidirectional=False,
     )
 
     return gru_layers
@@ -36,8 +40,13 @@ def lstm(input_size, rnn_size, rnn_len, dropout: float = 0.0):
     hidden_size = rnn_size
 
     lstm_layers = nn.LSTM(
-        input_size=input_size, hidden_size=hidden_size, num_layers=num_rnn_layers,
-        bias=True, batch_first=True, dropout=dropout, bidirectional=False
+        input_size=input_size,
+        hidden_size=hidden_size,
+        num_layers=num_rnn_layers,
+        bias=True,
+        batch_first=True,
+        dropout=dropout,
+        bidirectional=False,
     )
 
     return lstm_layers
@@ -70,9 +79,14 @@ def mlp(sizes, dim_obs, activation=nn.ReLU):
 class QRCNNSophy(nn.Module):
     # default value for each argument must be the same in every class in this file!!!
     def __init__(
-            self, observation_space, action_space, rnn_sizes=cfg.RNN_SIZES,
-            rnn_lens=cfg.RNN_LENS, mlp_branch_sizes=cfg.API_MLP_SIZES,
-            activation=nn.ReLU, seed: int = cfg.SEED
+        self,
+        observation_space,
+        action_space,
+        rnn_sizes=cfg.RNN_SIZES,
+        rnn_lens=cfg.RNN_LENS,
+        mlp_branch_sizes=cfg.API_MLP_SIZES,
+        activation=nn.ReLU,
+        seed: int = cfg.SEED,
     ):
         super().__init__()
         torch.manual_seed(seed)
@@ -82,7 +96,7 @@ class QRCNNSophy(nn.Module):
         torch.backends.cudnn.benchmark = False
 
         self.activation = activation()
-        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         dim_obs = sum(math.prod(s for s in space.shape) for space in observation_space)
         print(f"Observation dims in critic: {dim_obs}")
@@ -106,14 +120,13 @@ class QRCNNSophy(nn.Module):
         # )
         self.mlp_act = mlp([mlp_branch_sizes[-1]], mlp_branch_sizes[-2] + dim_act, activation)
 
-        self.attentionRNN = MultiheadAttention(embed_dim=mlp_branch_sizes[-1], num_heads=2, batch_first=True)
+        self.attentionRNN = MultiheadAttention(
+            embed_dim=mlp_branch_sizes[-1], num_heads=2, batch_first=True
+        )
 
         if cfg.NOISY_LINEAR_CRITIC:
             self.model_out = NoisyLinear(
-                rnn_sizes[0],
-                self.num_quantiles,
-                device=self.device,
-                std_init=0.01
+                rnn_sizes[0], self.num_quantiles, device=self.device, std_init=0.01
             )
         else:
             self.model_out = nn.Linear(mlp_branch_sizes[-1], self.num_quantiles)
@@ -180,7 +193,7 @@ class QRCNNSophy(nn.Module):
 
         # if save_hidden:
         #     self.h0 = h0
-            # self.c0 = c0
+        # self.c0 = c0
 
         return torch.squeeze(model_out, -1)
 
@@ -188,13 +201,16 @@ class QRCNNSophy(nn.Module):
 class SquashedActorSophy(TorchActorModule):
     # default value for each argument must be the same in every class in this file!!!
     def __init__(
-            self, observation_space, action_space, rnn_sizes=cfg.RNN_SIZES,
-            rnn_lens=cfg.RNN_LENS, mlp_branch_sizes=cfg.API_MLP_SIZES,
-            activation=nn.ReLU, seed: int = cfg.SEED
+        self,
+        observation_space,
+        action_space,
+        rnn_sizes=cfg.RNN_SIZES,
+        rnn_lens=cfg.RNN_LENS,
+        mlp_branch_sizes=cfg.API_MLP_SIZES,
+        activation=nn.ReLU,
+        seed: int = cfg.SEED,
     ):
-        super().__init__(
-            observation_space, action_space
-        )
+        super().__init__(observation_space, action_space)
         torch.manual_seed(seed)
         np.random.seed(seed)
         random.seed(seed)
@@ -202,7 +218,7 @@ class SquashedActorSophy(TorchActorModule):
         torch.backends.cudnn.benchmark = False
 
         self.activation = activation()
-        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         dim_obs = sum(math.prod(s for s in space.shape) for space in observation_space)
         # print(f"Observation dims critic: {dim_obs}")
@@ -225,14 +241,13 @@ class SquashedActorSophy(TorchActorModule):
         #     rnn_lens[0]
         # )
 
-        self.attentionRNN = MultiheadAttention(embed_dim=mlp_branch_sizes[-1], num_heads=2, batch_first=True)
+        self.attentionRNN = MultiheadAttention(
+            embed_dim=mlp_branch_sizes[-1], num_heads=2, batch_first=True
+        )
 
         if cfg.NOISY_LINEAR_ACTOR:
             self.model_out = NoisyLinear(
-                rnn_sizes[0],
-                mlp_out_size,
-                device=self.device,
-                std_init=0.01
+                rnn_sizes[0], mlp_out_size, device=self.device, std_init=0.01
             )
         else:
             self.model_out = nn.Linear(mlp_branch_sizes[-1], mlp_out_size)
@@ -263,12 +278,12 @@ class SquashedActorSophy(TorchActorModule):
         #     h0 = Variable(
         #         torch.zeros((self.rnn_lens[0], self.rnn_sizes[0]), device=device)
         #     )
-            # c0 = Variable(
-            #     torch.zeros((self.rnn_lens[0], self.rnn_sizes[0]), device=device)
-            # )
+        # c0 = Variable(
+        #     torch.zeros((self.rnn_lens[0], self.rnn_sizes[0]), device=device)
+        # )
         # else:
         #     h0 = self.h0
-            # c0 = self.c0
+        # c0 = self.c0
 
         for index, _ in enumerate(observation):
             observation[index] = observation[index].view(batch_size, -1)
@@ -328,7 +343,7 @@ class SquashedActorSophy(TorchActorModule):
 
         # if save_hidden:
         #     self.h0 = h0
-            # self.c0 = c0
+        # self.c0 = c0
 
         return pi_action, logp_pi
 
@@ -336,16 +351,23 @@ class SquashedActorSophy(TorchActorModule):
         obs_seq = list(obs)
         # obs_seq = list(o.view(1, *o.shape) for o in obs)  # artificially add sequence dimension
         with torch.no_grad():
-            a, _ = self.forward(observation=obs_seq, test=test, with_logprob=False, save_hidden=True)
+            a, _ = self.forward(
+                observation=obs_seq, test=test, with_logprob=False, save_hidden=True
+            )
             return a.cpu().numpy()
 
 
 class SophyActorCritic(nn.Module):
     # default value for each argument must be the same in every class in this file!!!
     def __init__(
-            self, observation_space, action_space, rnn_sizes=cfg.RNN_SIZES,
-            rnn_lens=cfg.RNN_LENS, mlp_branch_sizes=cfg.API_MLP_SIZES,
-            activation=nn.ReLU, seed: int = cfg.SEED
+        self,
+        observation_space,
+        action_space,
+        rnn_sizes=cfg.RNN_SIZES,
+        rnn_lens=cfg.RNN_LENS,
+        mlp_branch_sizes=cfg.API_MLP_SIZES,
+        activation=nn.ReLU,
+        seed: int = cfg.SEED,
     ):
         super().__init__()
         torch.manual_seed(seed)

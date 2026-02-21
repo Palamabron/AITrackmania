@@ -1,7 +1,6 @@
 # third-party imports
-import numpy as np
-import logging
 
+import numpy as np
 
 # OBSERVATION PREPROCESSING ==================================
 
@@ -12,7 +11,13 @@ def obs_preprocessor_tm_act_in_obs(obs):
     """
     grayscale_images = obs[3]
     grayscale_images = grayscale_images.astype(np.float32) / 256.0
-    obs = (obs[0] / 1000.0, obs[1] / 10.0, obs[2] / 10000.0, grayscale_images, *obs[4:])  # >= 1 action
+    obs = (
+        obs[0] / 1000.0,
+        obs[1] / 10.0,
+        obs[2] / 10000.0,
+        grayscale_images,
+        *obs[4:],
+    )  # >= 1 action
     return obs
 
 

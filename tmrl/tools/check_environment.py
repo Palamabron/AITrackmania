@@ -1,16 +1,18 @@
 # third-party imports
-import gymnasium
+import logging
+
 import cv2
+import gymnasium
 from rtgym.envs.real_time_env import DEFAULT_CONFIG_DICT
+
+import tmrl.config.config_constants as cfg
 
 # local imports
 from tmrl.custom.interfaces.TM2020Interface import TM2020Interface
 from tmrl.custom.interfaces.TM2020InterfaceLidar import TM2020InterfaceLidar
 from tmrl.custom.interfaces.TM2020InterfaceTrackMap import TM2020InterfaceTrackMap
-from tmrl.custom.tm.utils.window import WindowInterface
 from tmrl.custom.tm.utils.tools import Lidar
-import tmrl.config.config_constants as cfg
-import logging
+from tmrl.custom.tm.utils.window import WindowInterface
 
 
 def check_env_tm20_trackmap():
@@ -20,11 +22,11 @@ def check_env_tm20_trackmap():
     env_config["interface"] = TM2020InterfaceTrackMap
     env_config["wait_on_done"] = True
     env_config["interface_kwargs"] = {
-                                     "img_hist_len": 1,
-                                     "gamepad": False,
-                                     "min_nb_steps_before_failure": int(20 * 60),
-                                     "record": False
-                                     }
+        "img_hist_len": 1,
+        "gamepad": False,
+        "min_nb_steps_before_failure": int(20 * 60),
+        "record": False,
+    }
     # env_config["time_step_duration"] = 0.5  # nominal duration of your time-step
     # env_config["start_obs_capture"] = 0.4
     env = gymnasium.make("real-time-gym-v1", config=env_config)
@@ -55,7 +57,7 @@ def check_env_tm20lidar():
     env_config["interface_kwargs"] = {
         "img_hist_len": 1,
         "gamepad": False,
-        "min_nb_steps_before_failure": int(20 * 60)
+        "min_nb_steps_before_failure": int(20 * 60),
     }
     env = gymnasium.make(cfg.RTGYM_VERSION, config=env_config)
     o, i = env.reset()
@@ -75,14 +77,18 @@ def show_imgs(imgs, scale=cfg.IMG_SCALE_CHECK_ENV):
         concat = imgs.reshape((nb * h, w))
         width = int(concat.shape[1] * scale)
         height = int(concat.shape[0] * scale)
-        cv2.imshow("Environment", cv2.resize(concat, (width, height), interpolation=cv2.INTER_NEAREST))
+        cv2.imshow(
+            "Environment", cv2.resize(concat, (width, height), interpolation=cv2.INTER_NEAREST)
+        )
         cv2.waitKey(1)
     elif len(imshape) == 4:  # color
         nb, h, w, c = imshape
         concat = imgs.reshape((nb * h, w, c))
         width = int(concat.shape[1] * scale)
         height = int(concat.shape[0] * scale)
-        cv2.imshow("Environment", cv2.resize(concat, (width, height), interpolation=cv2.INTER_NEAREST))
+        cv2.imshow(
+            "Environment", cv2.resize(concat, (width, height), interpolation=cv2.INTER_NEAREST)
+        )
         cv2.waitKey(1)
 
 
@@ -94,21 +100,26 @@ def check_env_tm20full():
         "gamepad": False,
         "min_nb_steps_before_failure": int(20 * 60),
         "grayscale": cfg.GRAYSCALE,
-        "resize_to": (cfg.IMG_WIDTH, cfg.IMG_HEIGHT)
+        "resize_to": (cfg.IMG_WIDTH, cfg.IMG_HEIGHT),
     }
     env = gymnasium.make(cfg.RTGYM_VERSION, config=env_config)
     o, i = env.reset()
     show_imgs(o[3])
-    logging.info(f"o:[{o[0].item():05.01f}, {o[1].item():03.01f}, {o[2].item():07.01f}, imgs({len(o[3])})]")
+    logging.info(
+        f"o:[{o[0].item():05.01f}, {o[1].item():03.01f}, {o[2].item():07.01f}, imgs({len(o[3])})]"
+    )
     while True:
         o, r, d, t, i = env.step(None)
         show_imgs(o[3])
         logging.info(
-            f"r:{r:.2f}, d:{d}, t:{t}, o:[{o[0].item():05.01f}, {o[1].item():03.01f}, {o[2].item():07.01f}, imgs({len(o[3])})]")
+            f"r:{r:.2f}, d:{d}, t:{t}, o:[{o[0].item():05.01f}, {o[1].item():03.01f}, {o[2].item():07.01f}, imgs({len(o[3])})]"
+        )
         if d or t:
             o, i = env.reset()
             show_imgs(o[3])
-            logging.info(f"o:[{o[0].item():05.01f}, {o[1].item():03.01f}, {o[2].item():07.01f}, imgs({len(o[3])})]")
+            logging.info(
+                f"o:[{o[0].item():05.01f}, {o[1].item():03.01f}, {o[2].item():07.01f}, imgs({len(o[3])})]"
+            )
 
 
 if __name__ == "__main__":

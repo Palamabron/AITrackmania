@@ -1,5 +1,5 @@
 # standard library imports
-from typing import Mapping, Sequence
+from collections.abc import Mapping, Sequence
 
 # third-party imports
 import gymnasium
@@ -15,7 +15,7 @@ class AffineObservationWrapper(gymnasium.ObservationWrapper):
         self.observation_space = gymnasium.spaces.Box(
             self.observation(env.observation_space.low),
             self.observation(env.observation_space.high),
-            dtype=env.observation_space.dtype
+            dtype=env.observation_space.dtype,
         )
 
     def observation(self, observation):
@@ -27,11 +27,16 @@ class Float64ToFloat32(gymnasium.ObservationWrapper):
 
     # TODO: change observation/action spaces to correct dtype
     def observation(self, observation):
-        observation = deepmap({np.ndarray: float64_to_float32,
-                               float: float_to_float32,
-                               int: int_to_float32,
-                               np.float32: float_to_float32,
-                               np.float64: float_to_float32}, observation)
+        observation = deepmap(
+            {
+                np.ndarray: float64_to_float32,
+                float: float_to_float32,
+                int: int_to_float32,
+                np.float32: float_to_float32,
+                np.float64: float_to_float32,
+            },
+            observation,
+        )
         return observation
 
     def step(self, action):
@@ -39,7 +44,7 @@ class Float64ToFloat32(gymnasium.ObservationWrapper):
         return observation, reward, done, terminated, info
 
 
-# === Utilities ========================================================================================================
+# === Utilities ================================================================
 
 
 def deepmap(f, m):
@@ -52,17 +57,35 @@ def deepmap(f, m):
     elif isinstance(m, Mapping):
         return type(m)((k, deepmap(f, m[k])) for k in m)
     else:
-
         raise AttributeError(f"m is a {type(m)}, not a Sequence nor a Mapping: {m}")
 
 
 def float64_to_float32(x):
-    return np.asarray([x, ], np.float32) if x.dtype == np.float64 else x
+    return (
+        np.asarray(
+            [
+                x,
+            ],
+            np.float32,
+        )
+        if x.dtype == np.float64
+        else x
+    )
 
 
 def float_to_float32(x):
-    return np.asarray([x, ], np.float32)
+    return np.asarray(
+        [
+            x,
+        ],
+        np.float32,
+    )
 
 
 def int_to_float32(x):
-    return np.asarray([float(x), ], np.float32)
+    return np.asarray(
+        [
+            float(x),
+        ],
+        np.float32,
+    )

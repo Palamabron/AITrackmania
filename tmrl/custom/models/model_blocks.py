@@ -1,22 +1,20 @@
+from math import floor
+
+import numpy as np
 import torch
+import torch.nn.functional as F
+from torch import nn
 from torch.distributions import Normal
+from torch.nn import Conv2d, Module
 
 import config.config_constants as cfg
-import torch.nn.functional as F
-import numpy as np
-
-from math import floor
-from torch import nn
-from torch.nn import Conv2d, Module
-import torch
-
 from actor import TorchActorModule
-from custom.models.model_constants import LOG_STD_MIN, LOG_STD_MAX, effnetv2_s
+from custom.models.model_constants import LOG_STD_MAX, LOG_STD_MIN, effnetv2_s
 
 
 def combined_shape(length, shape=None):
     if shape is None:
-        return length,
+        return (length,)
     return (length, shape) if np.isscalar(shape) else (length, *shape)
 
 
@@ -53,7 +51,7 @@ def _make_divisible(v, divisor, min_value=None):
 
 
 # SiLU (Swish) activation function
-if hasattr(nn, 'SiLU'):
+if hasattr(nn, "SiLU"):
     SiLU = nn.SiLU
 else:
     # For compatibility with old PyTorch versions
@@ -65,13 +63,13 @@ else:
 
 class SELayer(nn.Module):
     def __init__(self, inp, oup, reduction=4):
-        super(SELayer, self).__init__()
+        super().__init__()
         self.avg_pool = nn.AdaptiveAvgPool2d(1)
         self.fc = nn.Sequential(
             nn.Linear(oup, _make_divisible(inp // reduction, 8)),
             SiLU(),
             nn.Linear(_make_divisible(inp // reduction, 8), oup),
-            nn.Sigmoid()
+            nn.Sigmoid(),
         )
 
     def forward(self, x):
@@ -82,24 +80,16 @@ class SELayer(nn.Module):
 
 
 def conv_3x3_bn(inp, oup, stride):
-    return nn.Sequential(
-        nn.Conv2d(inp, oup, 3, stride, 1, bias=False),
-        nn.BatchNorm2d(oup),
-        SiLU()
-    )
+    return nn.Sequential(nn.Conv2d(inp, oup, 3, stride, 1, bias=False), nn.BatchNorm2d(oup), SiLU())
 
 
 def conv_1x1_bn(inp, oup):
-    return nn.Sequential(
-        nn.Conv2d(inp, oup, 1, 1, 0, bias=False),
-        nn.BatchNorm2d(oup),
-        SiLU()
-    )
+    return nn.Sequential(nn.Conv2d(inp, oup, 1, 1, 0, bias=False), nn.BatchNorm2d(oup), SiLU())
 
 
 class MBConv(nn.Module):
     def __init__(self, inp, oup, stride, expand_ratio, use_se):
-        super(MBConv, self).__init__()
+        super().__init__()
         assert stride in [1, 2]
 
         hidden_dim = round(inp * expand_ratio)
@@ -146,9 +136,19 @@ def num_flat_features(x):
 
 
 def conv2d_out_dims(conv_layer, h_in, w_in):
-    h_out = h_in + 2 * conv_layer.padding[0] - conv_layer.dilation[0] * (conv_layer.kernel_size[0] - 1) - 1
+    h_out = (
+        h_in
+        + 2 * conv_layer.padding[0]
+        - conv_layer.dilation[0] * (conv_layer.kernel_size[0] - 1)
+        - 1
+    )
     h_out = floor(h_out / conv_layer.stride[0] + 1)
-    w_out = w_in + 2 * conv_layer.padding[1] - conv_layer.dilation[1] * (conv_layer.kernel_size[1] - 1) - 1
+    w_out = (
+        w_in
+        + 2 * conv_layer.padding[1]
+        - conv_layer.dilation[1] * (conv_layer.kernel_size[1] - 1)
+        - 1
+    )
     w_out = floor(w_out / conv_layer.stride[1] + 1)
     return h_out, w_out
 
@@ -167,7 +167,7 @@ def remove_colors(images):
 
 class VanillaCNN(Module):
     def __init__(self, q_net):
-        super(VanillaCNN, self).__init__()
+        super().__init__()
         self.q_net = q_net
         self.h_out, self.w_out = cfg.IMG_HEIGHT, cfg.IMG_WIDTH
         hist = cfg.IMG_HIST_LEN
@@ -198,9 +198,11 @@ class VanillaCNN(Module):
         x = F.relu(self.conv3(x))
         x = F.relu(self.conv4(x))
         flat_features = num_flat_features(x)
-        assert flat_features == self.flat_features, f"x.shape:{x.shape}, flat_features:{flat_features}, self" \
-                                                    f".out_channels:{self.out_channels}, self.h_out:{self.h_out}, " \
-                                                    f"self.w_out:{self.w_out} "
+        assert flat_features == self.flat_features, (
+            f"x.shape:{x.shape}, flat_features:{flat_features}, self"
+            f".out_channels:{self.out_channels}, self.h_out:{self.h_out}, "
+            f"self.w_out:{self.w_out} "
+        )
         x = x.view(-1, flat_features)
         if self.q_net:
             x = torch.cat((speed, gear, rpm, x, act1, act2, act), -1)
@@ -216,7 +218,7 @@ class SquashedGaussianEffNetActor(TorchActorModule):
         dim_act = action_space.shape[0]
         act_limit = action_space.high[0]
 
-        self.cnn = effnetv2_s(nb_channels_in=4, dim_output=247, width_mult=1.).float()
+        self.cnn = effnetv2_s(nb_channels_in=4, dim_output=247, width_mult=1.0).float()
         self.net = mlp([256, 256], [nn.ReLU, nn.ReLU])
         self.mu_layer = nn.Linear(256, dim_act)
         self.log_std_layer = nn.Linear(256, dim_act)

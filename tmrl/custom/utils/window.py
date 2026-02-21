@@ -1,18 +1,18 @@
 import platform
 
 if platform.system() == "Windows":
-
     import numpy as np
+    import win32con
     import win32gui
     import win32ui
-    import win32con
+
     import config.config_constants as cfg
 
-
     class WindowInterface:
-        '''
-         Manages the interaction with a window named "Trackmania" in a Windows environment.
-        '''
+        """
+        Manages the interaction with a window named "Trackmania" in a Windows environment.
+        """
+
         def __init__(self, window_name="Trackmania"):
             self.window_name = window_name
 
@@ -30,13 +30,13 @@ if platform.system() == "Windows":
 
             self.borders = (self.w_diff // 2, self.h_diff - self.w_diff // 2)
 
-            self.x_origin_offset = - self.w_diff // 2
+            self.x_origin_offset = -self.w_diff // 2
             self.y_origin_offset = 0
 
         def screenshot(self):
-            '''
+            """
             Captures a screenshot of the specified window.
-            '''
+            """
             hwnd = win32gui.FindWindow(None, self.window_name)
             assert hwnd != 0, f"Could not find a window named {self.window_name}."
 
@@ -54,7 +54,7 @@ if platform.system() == "Windows":
             oldbmp = memdc.SelectObject(bitmap)
             memdc.BitBlt((0, 0), (w, h), dc, self.borders, win32con.SRCCOPY)
             bits = bitmap.GetBitmapBits(True)
-            img = (np.frombuffer(bits, dtype='uint8'))
+            img = np.frombuffer(bits, dtype="uint8")
             img.shape = (h, w, 4)
             memdc.SelectObject(oldbmp)  # avoids memory leak
             win32gui.DeleteObject(bitmap.GetHandle())
@@ -63,9 +63,9 @@ if platform.system() == "Windows":
             return img
 
         def move_and_resize(self, x=1, y=0, w=cfg.WINDOW_WIDTH, h=cfg.WINDOW_HEIGHT):
-            '''
+            """
             Moves and resizes the window to the specified coordinates and dimensions.
-            '''
+            """
             x += self.x_origin_offset
             y += self.y_origin_offset
             w += self.w_diff
@@ -74,16 +74,16 @@ if platform.system() == "Windows":
             assert hwnd != 0, f"Could not find a window named {self.window_name}."
             win32gui.MoveWindow(hwnd, x, y, w, h, True)
 
-
     def profile_screenshot():
-        '''
+        """
         Profiling function that measures the time taken to capture 5000 screenshots using the WindowInterface.
         Procedure:
         Initializes a WindowInterface object for the "Trackmania" window.
         Captures 5000 screenshots using the screenshot() method of WindowInterface.
         Stops the profiler and prints the profiling results using pyinstrument.
-        '''
+        """
         from pyinstrument import Profiler
+
         pro = Profiler()
         window_interface = WindowInterface("Trackmania")
         pro.start()
@@ -93,6 +93,7 @@ if platform.system() == "Windows":
         pro.print(show_all=True)
 
 else:  # dummy import on Linux for uninitialized environments
+
     class WindowInterface:
         pass
 

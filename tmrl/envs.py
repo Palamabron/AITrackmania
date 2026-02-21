@@ -1,18 +1,18 @@
 # standard library imports
-from dataclasses import InitVar, dataclass
 
 # third-party imports
 import gymnasium
 
 # local imports
-from wrappers import (AffineObservationWrapper, Float64ToFloat32)
-
+from wrappers import AffineObservationWrapper, Float64ToFloat32
 
 __docformat__ = "google"
 
 
 class GenericGymEnv(gymnasium.Wrapper):
-    def __init__(self, id: str = "Pendulum-v0", gym_kwargs=None, obs_scale: float = 0., to_float32=False):
+    def __init__(
+        self, id: str = "Pendulum-v0", gym_kwargs=None, obs_scale: float = 0.0, to_float32=False
+    ):
         """
         Use this wrapper when using the framework with arbitrary environments.
 
@@ -34,5 +34,5 @@ class GenericGymEnv(gymnasium.Wrapper):
         super().__init__(env)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     pass

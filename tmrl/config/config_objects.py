@@ -12,39 +12,39 @@ from tmrl.custom.custom_algorithms import SpinupSacAgent as SAC_Agent
 from tmrl.custom.custom_algorithms import TQCAgent as TQC_Agent
 from tmrl.custom.custom_checkpoints import update_run_instance
 from tmrl.custom.custom_memories import (
+    MemoryR2D2,
+    MemoryR2D2woImages,
+    MemoryTMBest,
+    MemoryTMFull,
     MemoryTMLidar,
     MemoryTMLidarProgress,
     get_local_buffer_sample_lidar,
     get_local_buffer_sample_lidar_progress,
-    get_local_buffer_sample_tm20_imgs,
-    MemoryTMBest,
     get_local_buffer_sample_mobilenet,
-    MemoryTMFull,
-    MemoryR2D2,
-    MemoryR2D2woImages,
+    get_local_buffer_sample_tm20_imgs,
 )
-from tmrl.custom.tm.tm_preprocessors import (
-    obs_preprocessor_tm_act_in_obs,
-    obs_preprocessor_tm_lidar_act_in_obs,
-    obs_preprocessor_tm_lidar_progress_act_in_obs,
-    obs_preprocessor_mobilenet_act_in_obs,
+from tmrl.custom.custom_models import (
+    MLPActorCritic,
+    REDQMLPActorCritic,
+    RNNActorCritic,
+    SquashedGaussianMLPActor,
+    SquashedGaussianRNNActor,
+    SquashedGaussianVanillaCNNActor,
+    SquashedGaussianVanillaColorCNNActor,
+    VanillaCNNActorCritic,
+    VanillaColorCNNActorCritic,
 )
-from tmrl.custom.interfaces.TM2020InterfaceSophy import TM2020InterfaceIMPALASophy
 from tmrl.custom.interfaces.TM2020Interface import TM2020Interface
 from tmrl.custom.interfaces.TM2020InterfaceIMPALA import TM2020InterfaceIMPALA
 from tmrl.custom.interfaces.TM2020InterfaceLidar import TM2020InterfaceLidar
 from tmrl.custom.interfaces.TM2020InterfaceLidarProgress import TM2020InterfaceLidarProgress
+from tmrl.custom.interfaces.TM2020InterfaceSophy import TM2020InterfaceIMPALASophy
 from tmrl.custom.interfaces.TM2020InterfaceTrackMap import TM2020InterfaceTrackMap
-from tmrl.custom.custom_models import (
-    MLPActorCritic,
-    SquashedGaussianMLPActor,
-    REDQMLPActorCritic,
-    RNNActorCritic,
-    SquashedGaussianRNNActor,
-    VanillaCNNActorCritic,
-    SquashedGaussianVanillaCNNActor,
-    VanillaColorCNNActorCritic,
-    SquashedGaussianVanillaColorCNNActor,
+from tmrl.custom.tm.tm_preprocessors import (
+    obs_preprocessor_mobilenet_act_in_obs,
+    obs_preprocessor_tm_act_in_obs,
+    obs_preprocessor_tm_lidar_act_in_obs,
+    obs_preprocessor_tm_lidar_progress_act_in_obs,
 )
 from tmrl.envs import GenericGymEnv
 from tmrl.training_offline import TorchTrainingOffline
@@ -55,8 +55,9 @@ ALG_NAME = ALG_CONFIG["ALGORITHM"]
 
 MODEL_CONFIG = cfg.TMRL_CONFIG["MODEL"]
 
-assert ALG_NAME in ["SAC", "REDQSAC",
-                    "TQC"], f"If you wish to implement {ALG_NAME}, do not use 'ALG' in config.json for that."
+assert ALG_NAME in ["SAC", "REDQSAC", "TQC"], (
+    f"If you wish to implement {ALG_NAME}, do not use 'ALG' in config.json for that."
+)
 
 # MODEL, GYM ENVIRONMENT, REPLAY MEMORY AND TRAINING: ===========
 
@@ -81,39 +82,61 @@ else:
         assert not cfg.PRAGMA_RNN, "RNNs not supported yet"
         assert ALG_NAME == "SAC", f"{ALG_NAME} is not implemented here."
         TRAIN_MODEL = VanillaCNNActorCritic if cfg.GRAYSCALE else VanillaColorCNNActorCritic
-        POLICY = SquashedGaussianVanillaCNNActor if cfg.GRAYSCALE else SquashedGaussianVanillaColorCNNActor
+        POLICY = (
+            SquashedGaussianVanillaCNNActor
+            if cfg.GRAYSCALE
+            else SquashedGaussianVanillaColorCNNActor
+        )
 
 if cfg.PRAGMA_LIDAR:
     if cfg.PRAGMA_PROGRESS:
-        INT = partial(TM2020InterfaceLidarProgress, img_hist_len=cfg.IMG_HIST_LEN, gamepad=cfg.PRAGMA_GAMEPAD)
+        INT = partial(
+            TM2020InterfaceLidarProgress, img_hist_len=cfg.IMG_HIST_LEN, gamepad=cfg.PRAGMA_GAMEPAD
+        )
     elif cfg.PRAGMA_TRACKMAP:
-        INT = partial(TM2020InterfaceTrackMap, img_hist_len=cfg.IMG_HIST_LEN, gamepad=cfg.PRAGMA_GAMEPAD)
+        INT = partial(
+            TM2020InterfaceTrackMap, img_hist_len=cfg.IMG_HIST_LEN, gamepad=cfg.PRAGMA_GAMEPAD
+        )
     else:
-        INT = partial(TM2020InterfaceLidar, img_hist_len=cfg.IMG_HIST_LEN, gamepad=cfg.PRAGMA_GAMEPAD)
+        INT = partial(
+            TM2020InterfaceLidar, img_hist_len=cfg.IMG_HIST_LEN, gamepad=cfg.PRAGMA_GAMEPAD
+        )
 else:
     if cfg.PRAGMA_CUSTOM or cfg.PRAGMA_BEST or cfg.PRAGMA_BEST_TQC or cfg.PRAGMA_MBEST_TQC:
         if cfg.USE_IMAGES:
             INT = partial(
-                TM2020InterfaceIMPALA, img_hist_len=cfg.IMG_HIST_LEN, gamepad=cfg.PRAGMA_GAMEPAD,
-                grayscale=cfg.GRAYSCALE, resize_to=(cfg.IMG_WIDTH, cfg.IMG_HEIGHT),
-                crash_penalty=cfg.CRASH_PENALTY, constant_penalty=cfg.CONSTANT_PENALTY,
-                checkpoint_reward=cfg.CHECKPOINT_REWARD, lap_reward=cfg.LAP_REWARD,
-                min_nb_steps_before_failure=cfg.MIN_NB_STEPS_BEFORE_FAILURE
+                TM2020InterfaceIMPALA,
+                img_hist_len=cfg.IMG_HIST_LEN,
+                gamepad=cfg.PRAGMA_GAMEPAD,
+                grayscale=cfg.GRAYSCALE,
+                resize_to=(cfg.IMG_WIDTH, cfg.IMG_HEIGHT),
+                crash_penalty=cfg.CRASH_PENALTY,
+                constant_penalty=cfg.CONSTANT_PENALTY,
+                checkpoint_reward=cfg.CHECKPOINT_REWARD,
+                lap_reward=cfg.LAP_REWARD,
+                min_nb_steps_before_failure=cfg.MIN_NB_STEPS_BEFORE_FAILURE,
             )
         else:
             INT = partial(
-                TM2020InterfaceIMPALASophy, img_hist_len=cfg.IMG_HIST_LEN, gamepad=cfg.PRAGMA_GAMEPAD,
-                grayscale=cfg.GRAYSCALE, resize_to=(cfg.IMG_WIDTH, cfg.IMG_HEIGHT),
-                crash_penalty=cfg.CRASH_PENALTY, constant_penalty=cfg.CONSTANT_PENALTY,
-                checkpoint_reward=cfg.CHECKPOINT_REWARD, lap_reward=cfg.LAP_REWARD,
-                min_nb_steps_before_failure=cfg.MIN_NB_STEPS_BEFORE_FAILURE
+                TM2020InterfaceIMPALASophy,
+                img_hist_len=cfg.IMG_HIST_LEN,
+                gamepad=cfg.PRAGMA_GAMEPAD,
+                grayscale=cfg.GRAYSCALE,
+                resize_to=(cfg.IMG_WIDTH, cfg.IMG_HEIGHT),
+                crash_penalty=cfg.CRASH_PENALTY,
+                constant_penalty=cfg.CONSTANT_PENALTY,
+                checkpoint_reward=cfg.CHECKPOINT_REWARD,
+                lap_reward=cfg.LAP_REWARD,
+                min_nb_steps_before_failure=cfg.MIN_NB_STEPS_BEFORE_FAILURE,
             )
     else:
-        INT = partial(TM2020Interface,
-                      img_hist_len=cfg.IMG_HIST_LEN,
-                      gamepad=cfg.PRAGMA_GAMEPAD,
-                      grayscale=cfg.GRAYSCALE,
-                      resize_to=(cfg.IMG_WIDTH, cfg.IMG_HEIGHT))
+        INT = partial(
+            TM2020Interface,
+            img_hist_len=cfg.IMG_HIST_LEN,
+            gamepad=cfg.PRAGMA_GAMEPAD,
+            grayscale=cfg.GRAYSCALE,
+            resize_to=(cfg.IMG_WIDTH, cfg.IMG_HEIGHT),
+        )
 
 CONFIG_DICT = rtgym.DEFAULT_CONFIG_DICT.copy()
 CONFIG_DICT["interface"] = INT
@@ -168,28 +191,32 @@ else:
     else:
         MEM = MemoryTMFull
 
-MEMORY = partial(MEM,
-                 memory_size=MODEL_CONFIG["MEMORY_SIZE"],
-                 batch_size=MODEL_CONFIG["BATCH_SIZE"],
-                 sample_preprocessor=SAMPLE_PREPROCESSOR,
-                 dataset_path=cfg.DATASET_PATH,
-                 imgs_obs=cfg.IMG_HIST_LEN,
-                 act_buf_len=cfg.ACT_BUF_LEN,
-                 crc_debug=cfg.CRC_DEBUG)
+MEMORY = partial(
+    MEM,
+    memory_size=MODEL_CONFIG["MEMORY_SIZE"],
+    batch_size=MODEL_CONFIG["BATCH_SIZE"],
+    sample_preprocessor=SAMPLE_PREPROCESSOR,
+    dataset_path=cfg.DATASET_PATH,
+    imgs_obs=cfg.IMG_HIST_LEN,
+    act_buf_len=cfg.ACT_BUF_LEN,
+    crc_debug=cfg.CRC_DEBUG,
+)
 
 # ALGORITHM: ===================================================
 
 if ALG_NAME == "SAC":
     AGENT = partial(
         SAC_Agent,
-        device='cuda' if cfg.CUDA_TRAINING else 'cpu',
+        device="cuda" if cfg.CUDA_TRAINING else "cpu",
         model_cls=TRAIN_MODEL,
         lr_actor=ALG_CONFIG["LR_ACTOR"],
         lr_critic=ALG_CONFIG["LR_CRITIC"],
         lr_entropy=ALG_CONFIG["LR_ENTROPY"],
         gamma=ALG_CONFIG["GAMMA"],
         polyak=ALG_CONFIG["POLYAK"],
-        learn_entropy_coef=ALG_CONFIG["LEARN_ENTROPY_COEF"],  # False for SAC v2 with no temperature autotuning
+        learn_entropy_coef=ALG_CONFIG[
+            "LEARN_ENTROPY_COEF"
+        ],  # False for SAC v2 with no temperature autotuning
         target_entropy=ALG_CONFIG["TARGET_ENTROPY"],  # None for automatic
         alpha=ALG_CONFIG["ALPHA"],  # inverse of reward scale
         optimizer_actor=ALG_CONFIG["OPTIMIZER_ACTOR"],
@@ -197,41 +224,45 @@ if ALG_NAME == "SAC":
         betas_actor=ALG_CONFIG["BETAS_ACTOR"] if "BETAS_ACTOR" in ALG_CONFIG else None,
         betas_critic=ALG_CONFIG["BETAS_CRITIC"] if "BETAS_CRITIC" in ALG_CONFIG else None,
         l2_actor=ALG_CONFIG["L2_ACTOR"] if "L2_ACTOR" in ALG_CONFIG else None,
-        l2_critic=ALG_CONFIG["L2_CRITIC"] if "L2_CRITIC" in ALG_CONFIG else None
+        l2_critic=ALG_CONFIG["L2_CRITIC"] if "L2_CRITIC" in ALG_CONFIG else None,
     )
 elif ALG_NAME == "TQC":
     AGENT = partial(
         TQC_Agent,
-        device='cuda' if cfg.CUDA_TRAINING else 'cpu',
+        device="cuda" if cfg.CUDA_TRAINING else "cpu",
         model_cls=TRAIN_MODEL,
         lr_actor=ALG_CONFIG["LR_ACTOR"],
         lr_critic=ALG_CONFIG["LR_CRITIC"],
         lr_entropy=ALG_CONFIG["LR_ENTROPY"],
         gamma=ALG_CONFIG["GAMMA"],
         polyak=ALG_CONFIG["POLYAK"],
-        learn_entropy_coef=ALG_CONFIG["LEARN_ENTROPY_COEF"],  # False for SAC v2 with no temperature autotuning
+        learn_entropy_coef=ALG_CONFIG[
+            "LEARN_ENTROPY_COEF"
+        ],  # False for SAC v2 with no temperature autotuning
         target_entropy=ALG_CONFIG["TARGET_ENTROPY"],  # None for automatic
         alpha=ALG_CONFIG["ALPHA"],  # inverse of reward scale
         top_quantiles_to_drop=ALG_CONFIG["TOP_QUANTILES_TO_DROP"],
         quantiles_number=ALG_CONFIG["QUANTILES_NUMBER"],
-        n_steps=ALG_CONFIG["N_STEPS"]
+        n_steps=ALG_CONFIG["N_STEPS"],
     )
 else:
     AGENT = partial(
         REDQ_Agent,
-        device='cuda' if cfg.CUDA_TRAINING else 'cpu',
+        device="cuda" if cfg.CUDA_TRAINING else "cpu",
         model_cls=TRAIN_MODEL,
         lr_actor=ALG_CONFIG["LR_ACTOR"],
         lr_critic=ALG_CONFIG["LR_CRITIC"],
         lr_entropy=ALG_CONFIG["LR_ENTROPY"],
         gamma=ALG_CONFIG["GAMMA"],
         polyak=ALG_CONFIG["POLYAK"],
-        learn_entropy_coef=ALG_CONFIG["LEARN_ENTROPY_COEF"],  # False for SAC v2 with no temperature autotuning
+        learn_entropy_coef=ALG_CONFIG[
+            "LEARN_ENTROPY_COEF"
+        ],  # False for SAC v2 with no temperature autotuning
         target_entropy=ALG_CONFIG["TARGET_ENTROPY"],  # None for automatic
         alpha=ALG_CONFIG["ALPHA"],  # inverse of reward scale
         n=ALG_CONFIG["REDQ_N"],  # number of Q networks
         m=ALG_CONFIG["REDQ_M"],  # number of Q targets
-        q_updates_per_policy_update=ALG_CONFIG["REDQ_Q_UPDATES_PER_POLICY_UPDATE"]
+        q_updates_per_policy_update=ALG_CONFIG["REDQ_Q_UPDATES_PER_POLICY_UPDATE"],
     )
 
 
@@ -263,7 +294,8 @@ if cfg.PRAGMA_LIDAR:  # lidar
         pytorch_profiling=cfg.PYTORCH_PROFILER,
         training_agent_cls=AGENT,
         agent_scheduler=None,  # sac_v2_entropy_scheduler
-        start_training=MODEL_CONFIG["ENVIRONMENT_STEPS_BEFORE_TRAINING"])  # set this > 0 to start from an existing
+        start_training=MODEL_CONFIG["ENVIRONMENT_STEPS_BEFORE_TRAINING"],
+    )  # set this > 0 to start from an existing
     # policy (fills the buffer up to this number of samples before starting training)
 else:  # images
     TRAINER = partial(
@@ -280,7 +312,8 @@ else:  # images
         pytorch_profiling=cfg.PYTORCH_PROFILER,
         training_agent_cls=AGENT,
         agent_scheduler=None,  # sac_v2_entropy_scheduler
-        start_training=MODEL_CONFIG["ENVIRONMENT_STEPS_BEFORE_TRAINING"])
+        start_training=MODEL_CONFIG["ENVIRONMENT_STEPS_BEFORE_TRAINING"],
+    )
 
 # CHECKPOINTS: ===================================================
 

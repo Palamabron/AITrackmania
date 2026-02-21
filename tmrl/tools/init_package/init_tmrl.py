@@ -1,5 +1,4 @@
 import logging
-
 import platform
 from pathlib import Path
 
@@ -18,11 +17,11 @@ def init_tmrl_data():
     """
     Wipes and re-generates the TmrlData folder.
     """
+    import socket
+    import urllib.error
+    import urllib.request
     from shutil import copy2
     from zipfile import ZipFile
-    import urllib.request
-    import urllib.error
-    import socket
 
     resources_url = "https://github.com/trackmania-rl/tmrl/releases/download/v0.6.0/resources.zip"
 
@@ -67,7 +66,7 @@ def init_tmrl_data():
     url_retrieve(resources_url, resources_target)
 
     # unzip downloaded resources:
-    with ZipFile(resources_target, 'r') as zip_ref:
+    with ZipFile(resources_target, "r") as zip_ref:
         zip_ref.extractall(tmrl_folder)
 
     # delete zip file:
@@ -88,35 +87,42 @@ def init_tmrl_data():
             # copy the OpenPlanet script:
             try:
                 # remove old script if found
-                op_scripts_folder = openplanet_folder / 'Scripts'
+                op_scripts_folder = openplanet_folder / "Scripts"
                 if op_scripts_folder.exists():
-                    to_remove = [op_scripts_folder / 'Plugin_GrabData_0_1.as',
-                                 op_scripts_folder / 'Plugin_GrabData_0_1.as.sig',
-                                 op_scripts_folder / 'Plugin_GrabData_0_2.as',
-                                 op_scripts_folder / 'Plugin_GrabData_0_2.as.sig']
+                    to_remove = [
+                        op_scripts_folder / "Plugin_GrabData_0_1.as",
+                        op_scripts_folder / "Plugin_GrabData_0_1.as.sig",
+                        op_scripts_folder / "Plugin_GrabData_0_2.as",
+                        op_scripts_folder / "Plugin_GrabData_0_2.as.sig",
+                    ]
                     for old_file in to_remove:
                         if old_file.exists():
                             old_file.unlink()
                 # copy new plugin
-                op_plugins_folder = openplanet_folder / 'Plugins'
+                op_plugins_folder = openplanet_folder / "Plugins"
                 op_plugins_folder.mkdir(parents=True, exist_ok=True)
-                tm20_plugin_1 = resources_folder / 'Plugins' / 'TMRL_GrabData.op'
-                tm20_plugin_2 = resources_folder / 'Plugins' / 'TMRL_SaveGhost.op'
+                tm20_plugin_1 = resources_folder / "Plugins" / "TMRL_GrabData.op"
+                tm20_plugin_2 = resources_folder / "Plugins" / "TMRL_SaveGhost.op"
                 copy2(tm20_plugin_1, op_plugins_folder)
                 copy2(tm20_plugin_2, op_plugins_folder)
             except Exception as e:
                 print(
                     f"An exception was caught when trying to copy the OpenPlanet plugin automatically. \
-                    Please copy the plugin manually for TrackMania 2020 support. The caught exception was: {str(e)}.")
+                    Please copy the plugin manually for TrackMania 2020 support. The caught exception was: {str(e)}."
+                )
         else:
             # warn the user that OpenPlanet couldn't be found:
-            print(f"The OpenPlanet folder was not found at {openplanet_folder}. \
-            Please copy the OpenPlanet script and signature manually for TrackMania 2020 support.")
+            print(
+                f"The OpenPlanet folder was not found at {openplanet_folder}. \
+            Please copy the OpenPlanet script and signature manually for TrackMania 2020 support."
+            )
 
 
 TMRL_FOLDER = Path.home() / "TmrlData"
 
 if not TMRL_FOLDER.exists():
-    logging.warning(f"The TMRL folder was not found on your machine. Attempting download...")
+    logging.warning("The TMRL folder was not found on your machine. Attempting download...")
     init_tmrl_data()
-    logging.info(f"TMRL folder successfully downloaded, please wait for initialization to complete...")
+    logging.info(
+        "TMRL folder successfully downloaded, please wait for initialization to complete..."
+    )

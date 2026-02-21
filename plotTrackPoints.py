@@ -33,10 +33,10 @@ def smooth_points(points, sigma=12):
 TRACK_PATH_LEFT = cfg.TRACK_PATH_LEFT
 TRACK_PATH_RIGHT = cfg.TRACK_PATH_RIGHT
 
-with open(TRACK_PATH_LEFT, 'rb') as f:
+with open(TRACK_PATH_LEFT, "rb") as f:
     left_track = pickle.load(f)
 
-with open(TRACK_PATH_RIGHT, 'rb') as f:
+with open(TRACK_PATH_RIGHT, "rb") as f:
     right_track = pickle.load(f)
 
 # left_track = smooth_points(left_track)
@@ -47,15 +47,34 @@ with open(TRACK_PATH_RIGHT, 'rb') as f:
 
 # Plotly interactive 3D scatter plot for both tracks
 plotly_fig = go.Figure()
-plotly_fig.add_trace(go.Scatter3d(x=left_track[:, 0], y=left_track[:, 1], z=left_track[:, 2],
-                                  mode='markers', marker=dict(size=5, color='blue', opacity=0.8), name='Left Track'))
-plotly_fig.add_trace(go.Scatter3d(x=right_track[:, 0], y=right_track[:, 1], z=right_track[:, 2],
-                                  mode='markers', marker=dict(size=5, color='red', opacity=0.8), name='Right Track'))
-plotly_fig.update_layout(title='Interactive 3D Scatter Plot of Left and Right Tracks',
-                         scene=dict(
-                             xaxis_title='X Axis', yaxis_title='Y Axis', zaxis_title='Z Axis',
-                             aspectratio=dict(x=1, y=0.01, z=1)
-                         )
-                         )
+plotly_fig.add_trace(
+    go.Scatter3d(
+        x=left_track[:, 0],
+        y=left_track[:, 1],
+        z=left_track[:, 2],
+        mode="markers",
+        marker=dict(size=5, color="blue", opacity=0.8),
+        name="Left Track",
+    )
+)
+plotly_fig.add_trace(
+    go.Scatter3d(
+        x=right_track[:, 0],
+        y=right_track[:, 1],
+        z=right_track[:, 2],
+        mode="markers",
+        marker=dict(size=5, color="red", opacity=0.8),
+        name="Right Track",
+    )
+)
+plotly_fig.update_layout(
+    title="Interactive 3D Scatter Plot of Left and Right Tracks",
+    scene=dict(
+        xaxis_title="X Axis",
+        yaxis_title="Y Axis",
+        zaxis_title="Z Axis",
+        aspectratio=dict(x=1, y=0.01, z=1),
+    ),
+)
 # Display the interactive plot (will be displayed in a separate browser window)
 plotly_fig.show(renderer="browser")

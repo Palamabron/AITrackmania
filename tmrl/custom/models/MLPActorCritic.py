@@ -1,18 +1,19 @@
 import numpy as np
-import torch.nn.functional as F
 import torch
-
+import torch.nn.functional as F
 from torch import nn
 from torch.distributions import Normal
 
-from custom.models.model_blocks import mlp
-from custom.models.model_constants import LOG_STD_MIN, LOG_STD_MAX
 from actor import TorchActorModule
+from custom.models.model_blocks import mlp
+from custom.models.model_constants import LOG_STD_MAX, LOG_STD_MIN
 from util import prod
 
 
 class SquashedGaussianMLPActor(TorchActorModule):
-    def __init__(self, observation_space, action_space, hidden_sizes=(256, 256), activation=nn.ReLU):
+    def __init__(
+        self, observation_space, action_space, hidden_sizes=(256, 256), activation=nn.ReLU
+    ):
         super().__init__(observation_space, action_space)
         dim_obs = sum(prod(s for s in space.shape) for space in observation_space)
         dim_act = action_space.shape[0]
@@ -75,7 +76,9 @@ class MLPQFunction(nn.Module):
 
 
 class MLPActorCritic(nn.Module):
-    def __init__(self, observation_space, action_space, hidden_sizes=(256, 256), activation=nn.ReLU):
+    def __init__(
+        self, observation_space, action_space, hidden_sizes=(256, 256), activation=nn.ReLU
+    ):
         super().__init__()
 
         # obs_dim = observation_space.shape[0]
@@ -83,7 +86,9 @@ class MLPActorCritic(nn.Module):
         # act_limit = action_space.high[0]
 
         # build policy and value functions
-        self.actor = SquashedGaussianMLPActor(observation_space, action_space, hidden_sizes, activation)
+        self.actor = SquashedGaussianMLPActor(
+            observation_space, action_space, hidden_sizes, activation
+        )
         self.q1 = MLPQFunction(observation_space, action_space, hidden_sizes, activation)
         self.q2 = MLPQFunction(observation_space, action_space, hidden_sizes, activation)
 

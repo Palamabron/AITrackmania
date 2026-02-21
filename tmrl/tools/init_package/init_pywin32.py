@@ -6,10 +6,10 @@
 #
 # copies PyWinTypesxx.dll and PythonCOMxx.dll into the system directory,
 # and creates a pth file
-import os
-import sys
 import glob
+import os
 import shutil
+import sys
 import sysconfig
 
 try:
@@ -31,7 +31,7 @@ class Tee:
         if self.f is not None:
             try:
                 self.f.write(what.replace("\n", "\r\n"))
-            except IOError:
+            except OSError:
                 pass
         tee_f.write(what)
 
@@ -39,7 +39,7 @@ class Tee:
         if self.f is not None:
             try:
                 self.f.flush()
-            except IOError:
+            except OSError:
                 pass
         tee_f.flush()
 
@@ -89,9 +89,7 @@ except NameError:
 
     def get_root_hkey():
         try:
-            winreg.OpenKey(
-                winreg.HKEY_LOCAL_MACHINE, root_key_name, 0, winreg.KEY_CREATE_SUB_KEY
-            )
+            winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, root_key_name, 0, winreg.KEY_CREATE_SUB_KEY)
             return winreg.HKEY_LOCAL_MACHINE
         except OSError:
             # Either not exist, or no permissions to create subkey means
@@ -145,7 +143,8 @@ except NameError:
 
 
 def CopyTo(desc, src, dest):
-    import win32api, win32con
+    import win32api
+    import win32con
 
     while 1:
         try:
@@ -160,8 +159,7 @@ def CopyTo(desc, src, dest):
             full_desc = (
                 "Error %s\n\n"
                 "If you have any Python applications running, "
-                "please close them now\nand select 'Retry'\n\n%s"
-                % (desc, details.strerror)
+                "please close them now\nand select 'Retry'\n\n%s" % (desc, details.strerror)
             )
             rc = win32api.MessageBox(
                 0, full_desc, "Installation Error", win32con.MB_ABORTRETRYIGNORE
@@ -181,7 +179,8 @@ def CopyTo(desc, src, dest):
 # our pywintypes_system32 directory.
 def LoadSystemModule(lib_dir, modname):
     # See if this is a debug build.
-    import importlib.util, importlib.machinery
+    import importlib.machinery
+    import importlib.util
 
     suffix = "_d" if "_d.pyd" in importlib.machinery.EXTENSION_SUFFIXES else ""
     filename = "%s%d%d%s.dll" % (
@@ -266,7 +265,7 @@ def RegisterHelpFile(register=True, lib_dir=None):
             SetPyKeyVal("Help\\Pythonwin Reference", None, chm_file)
             return chm_file
         else:
-            print("NOTE: PyWin32.chm can not be located, so has not " "been registered")
+            print("NOTE: PyWin32.chm can not be located, so has not been registered")
     else:
         UnsetPyKeyVal("Help\\Pythonwin Reference", None, delete_key=True)
     return None
@@ -331,9 +330,7 @@ def RegisterPythonwin(register=True, lib_dir=None):
         # tell windows about the change
         from win32com.shell import shell, shellcon
 
-        shell.SHChangeNotify(
-            shellcon.SHCNE_ASSOCCHANGED, shellcon.SHCNF_IDLIST, None, None
-        )
+        shell.SHChangeNotify(shellcon.SHCNE_ASSOCCHANGED, shellcon.SHCNF_IDLIST, None, None)
 
 
 def get_shortcuts_folder():
@@ -381,7 +378,8 @@ def fixup_dbi():
     # We used to have a dbi.pyd with our .pyd files, but now have a .py file.
     # If the user didn't uninstall, they will find the .pyd which will cause
     # problems - so handle that.
-    import win32api, win32con
+    import win32api
+    import win32con
 
     pyd_name = os.path.join(os.path.dirname(win32api.__file__), "dbi.pyd")
     pyd_d_name = os.path.join(os.path.dirname(win32api.__file__), "dbi_d.pyd")
@@ -391,16 +389,13 @@ def fixup_dbi():
         if os.path.isfile(this_pyd) and os.path.isfile(py_name):
             try:
                 if os.path.isfile(this_dest):
-                    print(
-                        "Old dbi '%s' already exists - deleting '%s'"
-                        % (this_dest, this_pyd)
-                    )
+                    print("Old dbi '%s' already exists - deleting '%s'" % (this_dest, this_pyd))
                     os.remove(this_pyd)
                 else:
                     os.rename(this_pyd, this_dest)
                     print("renamed '%s'->'%s.old'" % (this_pyd, this_pyd))
                     file_created(this_pyd + ".old")
-            except os.error as exc:
+            except OSError as exc:
                 print("FAILED to rename '%s': %s" % (this_pyd, exc))
 
 
@@ -424,11 +419,11 @@ def install(lib_dir):
         for root in winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER:
             try:
                 winreg.DeleteKey(root, keyname + "\\Debug")
-            except WindowsError:
+            except OSError:
                 pass
             try:
                 winreg.DeleteKey(root, keyname)
-            except WindowsError:
+            except OSError:
                 pass
     LoadSystemModule(lib_dir, "pywintypes")
     LoadSystemModule(lib_dir, "pythoncom")
@@ -484,9 +479,7 @@ def install(lib_dir):
                 continue
             raise
     else:
-        raise RuntimeError(
-            "You don't have enough permissions to install the system files"
-        )
+        raise RuntimeError("You don't have enough permissions to install the system files")
 
     # Pythonwin 'compiles' config files - record them for uninstall.
     pywin_dir = os.path.join(lib_dir, "Pythonwin", "pywin")
@@ -627,11 +620,11 @@ def uninstall(lib_dir):
         # The dbi.pyd.old files we may have created.
         try:
             os.remove(os.path.join(lib_dir, "win32", "dbi.pyd.old"))
-        except os.error:
+        except OSError:
             pass
         try:
             os.remove(os.path.join(lib_dir, "win32", "dbi_d.pyd.old"))
-        except os.error:
+        except OSError:
             pass
 
     except Exception as why:
@@ -684,7 +677,7 @@ def uninstall(lib_dir):
 
 def verify_destination(location):
     if not os.path.isdir(location):
-        raise argparse.ArgumentTypeError('Path "{}" does not exist!'.format(location))
+        raise argparse.ArgumentTypeError(f'Path "{location}" does not exist!')
     return location
 
 
@@ -753,7 +746,7 @@ def main():
     args = parser.parse_args()
 
     if not args.quiet:
-        print("Parsed arguments are: {}".format(args))
+        print(f"Parsed arguments are: {args}")
 
     if not args.install ^ args.remove:
         parser.error("You need to either choose to -install or -remove!")
@@ -761,7 +754,7 @@ def main():
     if args.wait is not None:
         try:
             os.waitpid(args.wait, 0)
-        except os.error:
+        except OSError:
             # child already dead
             pass
 

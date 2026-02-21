@@ -3,11 +3,10 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 from torch.distributions import Normal
-import torch
 
 from actor import TorchActorModule
 from custom.models.model_blocks import VanillaCNN
-from custom.models.model_constants import LOG_STD_MIN, LOG_STD_MAX
+from custom.models.model_constants import LOG_STD_MAX, LOG_STD_MIN
 
 
 class SquashedGaussianVanillaCNNActor(TorchActorModule):

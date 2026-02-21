@@ -1,4 +1,5 @@
 # standard library imports
+import logging
 import os
 import pickle
 import time
@@ -6,14 +7,13 @@ import time
 # third-party imports
 import keyboard
 import numpy as np
+from custom.utils.tools import TM2020OpenPlanetClient
 from matplotlib import pyplot as plt
 from scipy.interpolate import CubicSpline
 from scipy.ndimage import gaussian_filter1d
 
 # local imports
 import config.config_constants as cfg
-from custom.utils.tools import TM2020OpenPlanetClient
-import logging
 
 
 def record_track(path_track=cfg.TRACK_PATH_LEFT):
@@ -23,14 +23,16 @@ def record_track(path_track=cfg.TRACK_PATH_LEFT):
 
     is_recording = False
     while True:
-        if keyboard.is_pressed('e'):
-            logging.info(f"start recording")
+        if keyboard.is_pressed("e"):
+            logging.info("start recording")
             is_recording = True
         if is_recording:
-            data = client.retrieve_data(sleep_if_empty=0.01)  # we need many points to build a smooth curve
+            data = client.retrieve_data(
+                sleep_if_empty=0.01
+            )  # we need many points to build a smooth curve
             terminated = bool(data[9])
-            if keyboard.is_pressed('q') or terminated:
-                logging.info(f"Computing reward function checkpoints from captured positions...")
+            if keyboard.is_pressed("q") or terminated:
+                logging.info("Computing reward function checkpoints from captured positions...")
                 logging.info(f"Initial number of captured positions: {len(positions)}")
                 positions = np.array(positions)
 
@@ -59,10 +61,12 @@ def record_track(path_track=cfg.TRACK_PATH_LEFT):
                 print(f"upsampled_arr: {upsampled_arr}", end="\n\n")
                 print(f"spaced_points: {spaced_points}", end="\n\n")
                 print(f"smoothed_points: {smoothed_points}", end="\n\n")
-                logging.info(f"Final number of checkpoints of recorded track: {len(smoothed_points)}")
+                logging.info(
+                    f"Final number of checkpoints of recorded track: {len(smoothed_points)}"
+                )
 
                 pickle.dump(smoothed_points, open(path, "wb"))
-                logging.info(f"All done")
+                logging.info("All done")
                 return
             else:
                 positions.append([data[3], data[4], data[5]])
@@ -71,7 +75,7 @@ def record_track(path_track=cfg.TRACK_PATH_LEFT):
 
 
 def space_points(points):
-    with open(cfg.REWARD_PATH, 'rb') as f:
+    with open(cfg.REWARD_PATH, "rb") as f:
         data = pickle.load(f)
     # Extract x, y, and z coordinates from the input points
     x = points[:, 0]
@@ -81,7 +85,9 @@ def space_points(points):
     # Calculate the cumulative distance between consecutive points, considering all coordinates
     distances = np.sqrt(np.diff(x) ** 2 + np.diff(y) ** 2 + np.diff(z) ** 2)
     cumulative_distances = np.cumsum(distances)
-    cumulative_distances = np.insert(cumulative_distances, 0, 0)  # Add a starting point distance of 0
+    cumulative_distances = np.insert(
+        cumulative_distances, 0, 0
+    )  # Add a starting point distance of 0
 
     # Create cubic spline interpolations for x, y, and z
     cs_x = CubicSpline(cumulative_distances, x)
@@ -105,10 +111,10 @@ def space_points(points):
     plt.figure(figsize=(30, 20))
 
     # Input points
-    plt.scatter(x, y, label='Input Points', color='blue', marker='o')
+    plt.scatter(x, y, label="Input Points", color="blue", marker="o")
 
     # Output points (interpolated)
-    plt.plot(new_x, new_y, label='Output Points (Interpolated)', color='red', marker='x')
+    plt.plot(new_x, new_y, label="Output Points (Interpolated)", color="red", marker="x")
 
     return new_points
 
@@ -179,7 +185,10 @@ def line(pt1, pt2, dist):
     vec = pt2 - pt1
     norm = np.linalg.norm(vec)
     if norm < dist:
-        return None, dist - norm  # we couldn't create a new point but we moved by a distance of norm
+        return (
+            None,
+            dist - norm,
+        )  # we couldn't create a new point but we moved by a distance of norm
     else:
         vec_unit = vec / norm
         pt = pt1 + vec_unit * dist
@@ -191,7 +200,7 @@ if __name__ == "__main__":
         logging.debug(f" reward not found at path:{cfg.REWARD_PATH}")
     which_track = input("Choose which track do you want to record [left/right] [l/r]: ").lower()
     assert which_track in ("l", "r", "right", "left"), "Input must be left, right, l or r"
-    print("Press \"e\" if you are ready do record track")
+    print('Press "e" if you are ready do record track')
     if which_track in ("l", "left"):
         record_track(path_track=cfg.TRACK_PATH_LEFT)
     elif which_track in ("r", "right"):

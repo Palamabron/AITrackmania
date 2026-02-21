@@ -1,18 +1,14 @@
 import torch
 from torch import nn
-import torch
 from torch.nn import ModuleList
 
-from custom.models.MLPActorCritic import SquashedGaussianMLPActor, MLPQFunction
+from custom.models.MLPActorCritic import MLPQFunction, SquashedGaussianMLPActor
 
 
 class REDQMLPActorCritic(nn.Module):
-    def __init__(self,
-                 observation_space,
-                 action_space,
-                 hidden_sizes=(256, 256),
-                 activation=nn.ReLU,
-                 n=10):
+    def __init__(
+        self, observation_space, action_space, hidden_sizes=(256, 256), activation=nn.ReLU, n=10
+    ):
         super().__init__()
 
         # obs_dim = observation_space.shape[0]
@@ -20,10 +16,15 @@ class REDQMLPActorCritic(nn.Module):
         # act_limit = action_space.high[0]
 
         # build policy and value functions
-        self.actor = SquashedGaussianMLPActor(observation_space, action_space, hidden_sizes, activation)
+        self.actor = SquashedGaussianMLPActor(
+            observation_space, action_space, hidden_sizes, activation
+        )
         self.n = n
         self.qs = ModuleList(
-            [MLPQFunction(observation_space, action_space, hidden_sizes, activation) for _ in range(self.n)]
+            [
+                MLPQFunction(observation_space, action_space, hidden_sizes, activation)
+                for _ in range(self.n)
+            ]
         )
 
     def act(self, obs, test=False):

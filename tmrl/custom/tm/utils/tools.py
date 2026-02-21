@@ -15,11 +15,11 @@ from config.config_constants import LIDAR_BLACK_THRESHOLD
 
 class TM2020OpenPlanetClient:
     # Script attributes:
-    def __init__(self, host='127.0.0.1', port=9000, struct_str='<' + 'f' * 19):
+    def __init__(self, host="127.0.0.1", port=9000, struct_str="<" + "f" * 19):
         self._struct_str = struct_str
-        self.nb_floats = self._struct_str.count('f')
-        self.nb_int32 = self._struct_str.count('i')
-        self.nb_uint64 = self._struct_str.count('Q')
+        self.nb_floats = self._struct_str.count("f")
+        self.nb_int32 = self._struct_str.count("i")
+        self.nb_uint64 = self._struct_str.count("Q")
         self._nb_bytes = self.nb_floats * 4 + self.nb_uint64 * 8 + self.nb_int32 * 4
 
         self._host = host
@@ -41,13 +41,13 @@ class TM2020OpenPlanetClient:
         #    try:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.connect((self._host, self._port))
-            data_raw = b''
+            data_raw = b""
             while True:  # main loop
                 while len(data_raw) < self._nb_bytes:
                     data_raw += s.recv(1024)
                 div = len(data_raw) // self._nb_bytes
-                data_used = data_raw[(div - 1) * self._nb_bytes:div * self._nb_bytes]
-                data_raw = data_raw[div * self._nb_bytes:]
+                data_used = data_raw[(div - 1) * self._nb_bytes : div * self._nb_bytes]
+                data_raw = data_raw[div * self._nb_bytes :]
                 self.__lock.acquire()
                 self.__data = data_used
                 self.__lock.release()
@@ -72,12 +72,14 @@ class TM2020OpenPlanetClient:
                 if t_start is None:
                     t_start = time.time()
                 t_now = time.time()
-                assert t_now - t_start < timeout, f"OpenPlanet stopped sending data since more than {timeout}s."
+                assert t_now - t_start < timeout, (
+                    f"OpenPlanet stopped sending data since more than {timeout}s."
+                )
                 time.sleep(sleep_if_empty)
         return data
 
 
-def save_ghost(host='127.0.0.1', port=10000):
+def save_ghost(host="127.0.0.1", port=10000):
     """
     Saves the current ghost
 
@@ -90,10 +92,10 @@ def save_ghost(host='127.0.0.1', port=10000):
 
 
 def armin(tab):
-    '''
+    """
     Functionality: Finds the index of the first non-zero element in the input array tab.
     Returns: The index of the first non-zero element if found; otherwise, returns the index of the last element in the array.
-    '''
+    """
     nz = np.nonzero(tab)[0]
     if len(nz) != 0:
         return nz[0].item()
@@ -107,15 +109,15 @@ class Lidar:
         self.black_threshold = LIDAR_BLACK_THRESHOLD
 
     def _set_axis_lidar(self, im):
-        '''
+        """
         Functionality:
         Sets up the LiDAR axis based on the image passed.
         Creates LiDAR axes for scanning the environment, defined by angles ranging from 90 to 280 degrees.
-        '''
+        """
         h, w, _ = im.shape
         self.h = h
         self.w = w
-        self.road_point = (44*h//49, w//2)
+        self.road_point = (44 * h // 49, w // 2)
         min_dist = 20
         list_ax_x = []
         list_ax_y = []
@@ -143,14 +145,14 @@ class Lidar:
         self.list_axis_y = list_ax_y
 
     def lidar_20(self, img, show=False):
-        '''
+        """
         Functionality:
         Calculates LiDAR distances given an image.
         If the image dimensions differ from the previously set dimensions, updates the LiDAR axis.
         Loops through the predefined LiDAR axes and calculates the distances.
         Optionally displays LiDAR lines on the image if show is set to True.
         Returns: An array of distances calculated by the LiDAR.
-        '''
+        """
         h, w, _ = img.shape
         if h != self.h or w != self.w:
             self._set_axis_lidar(img)
@@ -163,8 +165,11 @@ class Lidar:
             index = armin(np.all(img[axis_x, axis_y] < self.black_threshold, axis=1))
             if show:
                 img = cv2.line(
-                    img, (self.road_point[1], self.road_point[0]),
-                    (axis_y[index], axis_x[index]), color, thickness
+                    img,
+                    (self.road_point[1], self.road_point[0]),
+                    (axis_y[index], axis_x[index]),
+                    color,
+                    thickness,
                 )
             index = np.float32(index)
             distances.append(index)

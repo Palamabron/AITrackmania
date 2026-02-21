@@ -3,25 +3,26 @@ from math import sqrt
 import torch
 from torch import nn
 
-from custom.models.MLPActorCritic import SquashedGaussianMLPActor, MLPQFunction
-from custom.models.model_blocks import mlp, _make_divisible, conv_3x3_bn, MBConv, conv_1x1_bn
+from custom.models.MLPActorCritic import MLPQFunction, SquashedGaussianMLPActor
+from custom.models.model_blocks import MBConv, _make_divisible, conv_1x1_bn, conv_3x3_bn, mlp
 from util import prod
 
 
 class EffNetV2(nn.Module):
-    '''
+    """
     Description: Defines an EfficientNetV2-style convolutional neural network architecture.
-    '''
-    def __init__(self, cfgs, nb_channels_in=3, dim_output=1, width_mult=1.):
-        '''
+    """
+
+    def __init__(self, cfgs, nb_channels_in=3, dim_output=1, width_mult=1.0):
+        """
         Description: Initializes an EfficientNetV2-style convolutional neural network.
         Arguments:
         cfgs: Configuration for building the layers.
         nb_channels_in: Number of input channels (default: 3 for RGB).
         dim_output: Dimension of the output (default: 1).
         width_mult: Width multiplier for controlling the model width (default: 1.0).
-        '''
-        super(EffNetV2, self).__init__()
+        """
+        super().__init__()
         self.cfgs = cfgs
 
         # building first layer
@@ -44,12 +45,12 @@ class EffNetV2(nn.Module):
         self._initialize_weights()
 
     def forward(self, x):
-        '''
+        """
         Description: Defines the forward pass through the network layers.
         Arguments:
         x: Input tensor.
         Returns: Output tensor after passing through the network layers.
-        '''
+        """
         x = self.features(x)
         x = self.conv(x)
         x = self.avgpool(x)
@@ -58,14 +59,14 @@ class EffNetV2(nn.Module):
         return x
 
     def _initialize_weights(self):
-        '''
+        """
         Description: Initializes the weights for various layers in the network.
         No Arguments or Returns: Handles weight initialization within the network.
-        '''
+        """
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
                 n = m.kernel_size[0] * m.kernel_size[1] * m.out_channels
-                m.weight.data.normal_(0, sqrt(2. / n))
+                m.weight.data.normal_(0, sqrt(2.0 / n))
                 if m.bias is not None:
                     m.bias.data.zero_()
             elif isinstance(m, nn.BatchNorm2d):
@@ -78,42 +79,44 @@ class EffNetV2(nn.Module):
 
 class EffNetQFunction(nn.Module):
     def __init__(self, obs_space, act_space, hidden_sizes=(256, 256), activation=nn.ReLU):
-        '''
+        """
         Description: Initializes the Q-function (critic) architecture for the Actor-Critic method.
         Arguments:
         obs_space: Observation space for the environment.
         act_space: Action space for the environment.
         hidden_sizes: Hidden layer sizes in the MLP (default: (256, 256)).
         activation: Activation function used in the MLP (default: nn.ReLU).
-        '''
+        """
         super().__init__()
         obs_dim = sum(prod(s for s in space.shape) for space in obs_space)
         act_dim = act_space.shape[0]
         self.q = mlp([obs_dim + act_dim] + list(hidden_sizes) + [1], activation)
 
     def forward(self, obs, act):
-        '''
+        """
         Description: Defines the forward pass of the Q-function network.
         Arguments:
         obs: Observation tensor.
         act: Action tensor.
         Returns: Q-values tensor for the given observations and actions.
-        '''
+        """
         x = torch.cat((*obs, act), -1)
         q = self.q(x)
         return torch.squeeze(q, -1)  # Critical to ensure q has right shape.
 
 
 class EffNetActorCritic(nn.Module):
-    def __init__(self, observation_space, action_space, hidden_sizes=(256, 256), activation=nn.ReLU):
-        '''
+    def __init__(
+        self, observation_space, action_space, hidden_sizes=(256, 256), activation=nn.ReLU
+    ):
+        """
         Description: Initializes the Actor-Critic architecture using EfficientNetV2-style actor and Q-function networks.
         Arguments:
         observation_space: Observation space for the environment.
         action_space: Action space for the environment.
         hidden_sizes: Hidden layer sizes in the networks (default: (256, 256)).
         activation: Activation function used in the networks (default: nn.ReLU).
-        '''
+        """
         super().__init__()
 
         # obs_dim = observation_space.shape[0]
@@ -121,18 +124,20 @@ class EffNetActorCritic(nn.Module):
         # act_limit = action_space.high[0]
 
         # build policy and value functions
-        self.actor = SquashedGaussianMLPActor(observation_space, action_space, hidden_sizes, activation)
+        self.actor = SquashedGaussianMLPActor(
+            observation_space, action_space, hidden_sizes, activation
+        )
         self.q1 = MLPQFunction(observation_space, action_space, hidden_sizes, activation)
         self.q2 = MLPQFunction(observation_space, action_space, hidden_sizes, activation)
 
     def act(self, obs, test=False):
-        '''
+        """
         Description: Produces actions from the actor network based on observed states.
         Arguments:
         obs: Observation tensor.
         test: Flag for testing mode (default: False).
         Returns: Array of actions inferred from the actor network.
-        '''
+        """
         with torch.no_grad():
             a, _ = self.actor(obs, test, False)
             return a.cpu().numpy()

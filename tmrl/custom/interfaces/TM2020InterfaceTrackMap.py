@@ -7,18 +7,22 @@ from tmrl.custom.tm.utils.control_mouse import mouse_save_replay_tm20
 
 
 class TM2020InterfaceTrackMap(TM2020InterfaceLidar):
-    def __init__(self, img_hist_len=1, gamepad=False, min_nb_steps_before_failure=int(20 * 3.5), record=False,
-                 save_replay: bool = False):
+    def __init__(
+        self,
+        img_hist_len=1,
+        gamepad=False,
+        min_nb_steps_before_failure=int(20 * 3.5),
+        record=False,
+        save_replay: bool = False,
+    ):
         super().__init__(img_hist_len=img_hist_len, gamepad=gamepad, save_replays=save_replay)
         self.record = record
         self.window_interface = None
         self.lidar = None
         self.last_pos = [0, 0]
         self.index = 0
-        self.map_left = np.loadtxt('saved_tracks/tmrl-test/track_left.csv',
-                                   delimiter=',')
-        self.map_right = np.loadtxt('saved_tracks/tmrl-test/track_right.csv',
-                                    delimiter=',')
+        self.map_left = np.loadtxt("saved_tracks/tmrl-test/track_left.csv", delimiter=",")
+        self.map_right = np.loadtxt("saved_tracks/tmrl-test/track_right.csv", delimiter=",")
         self.all_observed_track_parts = [[], [], [], [], []]
 
     def get_observation_space(self):
@@ -33,8 +37,15 @@ class TM2020InterfaceTrackMap(TM2020InterfaceLidar):
         failure_counter = spaces.Box(low=0.0, high=15, shape=(1,))
         return spaces.Tuple(
             (
-                speed, gear, rpm, track_information, acceleration,
-                steering_angle, slipping_tires, crash, failure_counter
+                speed,
+                gear,
+                rpm,
+                track_information,
+                acceleration,
+                steering_angle,
+                slipping_tires,
+                crash,
+                failure_counter,
             )
         )
 
@@ -43,7 +54,6 @@ class TM2020InterfaceTrackMap(TM2020InterfaceLidar):
         return data
 
     def get_obs_rew_terminated_info(self):
-
         """
         returns the observation, the reward, and a terminated signal for end of episode
         obs must be a list of numpy arrays
@@ -60,7 +70,9 @@ class TM2020InterfaceTrackMap(TM2020InterfaceLidar):
         # Cut out a portion directly in front of the car, as input for the ai
         look_ahead_distance = 15  # points to look ahead on the track
         nearby_correction = 60  # one point on a side needs to be at least this close to the same point on the other side
-        l_x, l_z, r_x, r_z = self.get_track_in_front(car_position, look_ahead_distance, nearby_correction)
+        l_x, l_z, r_x, r_z = self.get_track_in_front(
+            car_position, look_ahead_distance, nearby_correction
+        )
 
         # normalize the track in front
 
@@ -73,26 +85,46 @@ class TM2020InterfaceTrackMap(TM2020InterfaceLidar):
         self.all_observed_track_parts[4].append(car_position)
         # ----------------------------------------------------------------------
 
-        track_information = np.array(np.append(np.append(l_x, r_x), np.append(l_z, r_z)), dtype='float32')
-        speed = np.array([
-            data[0],
-        ], dtype='float32')
-        gear = np.array([
-            data[9],
-        ], dtype='float32')
-        rpm = np.array([
-            data[10],
-        ], dtype='float32')
-        acceleration = np.array([
-            data[18],
-        ], dtype='float32')
-        steering_angle = np.array([
-            data[19],
-        ], dtype='float32')
-        slipping_tires = np.array(data[20:24], dtype='float32')
-        crash = np.array([
-            data[24],
-        ], dtype='float32')
+        track_information = np.array(
+            np.append(np.append(l_x, r_x), np.append(l_z, r_z)), dtype="float32"
+        )
+        speed = np.array(
+            [
+                data[0],
+            ],
+            dtype="float32",
+        )
+        gear = np.array(
+            [
+                data[9],
+            ],
+            dtype="float32",
+        )
+        rpm = np.array(
+            [
+                data[10],
+            ],
+            dtype="float32",
+        )
+        acceleration = np.array(
+            [
+                data[18],
+            ],
+            dtype="float32",
+        )
+        steering_angle = np.array(
+            [
+                data[19],
+            ],
+            dtype="float32",
+        )
+        slipping_tires = np.array(data[20:24], dtype="float32")
+        crash = np.array(
+            [
+                data[24],
+            ],
+            dtype="float32",
+        )
         # self.isFirstTime = False
         end_of_track = bool(data[8])
         info = {}
@@ -108,8 +140,9 @@ class TM2020InterfaceTrackMap(TM2020InterfaceLidar):
             if self.save_replays:
                 mouse_save_replay_tm20()
         else:
-            rew, terminated, failure_counter = self.reward_function.compute_reward(pos=np.array(
-                [data[2], data[3], data[4]]))  # data[2-4] are the position, from that the reward is computed
+            rew, terminated, failure_counter = self.reward_function.compute_reward(
+                pos=np.array([data[2], data[3], data[4]])
+            )  # data[2-4] are the position, from that the reward is computed
             reward += rew
 
         failure_counter = float(failure_counter)
@@ -117,8 +150,17 @@ class TM2020InterfaceTrackMap(TM2020InterfaceLidar):
         #     print(failure_counter)
         reward += self.constant_penalty
         reward = np.float32(reward)
-        obs = [speed, gear, rpm, track_information, acceleration, steering_angle, slipping_tires, crash,
-               failure_counter]
+        obs = [
+            speed,
+            gear,
+            rpm,
+            track_information,
+            acceleration,
+            steering_angle,
+            slipping_tires,
+            crash,
+            failure_counter,
+        ]
         return obs, reward, terminated, info
 
     def normalize_track(self, l_x, l_z, r_x, r_z, car_position, yaw):
@@ -140,30 +182,57 @@ class TM2020InterfaceTrackMap(TM2020InterfaceLidar):
         """
         self.reset_common()
         data = self.grab_data()
-        track_information = np.full((60,), 0, dtype='float32')
-        speed = np.array([
-            data[0],
-        ], dtype='float32')
-        gear = np.array([
-            data[9],
-        ], dtype='float32')
-        rpm = np.array([
-            data[10],
-        ], dtype='float32')
+        track_information = np.full((60,), 0, dtype="float32")
+        speed = np.array(
+            [
+                data[0],
+            ],
+            dtype="float32",
+        )
+        gear = np.array(
+            [
+                data[9],
+            ],
+            dtype="float32",
+        )
+        rpm = np.array(
+            [
+                data[10],
+            ],
+            dtype="float32",
+        )
 
-        acceleration = np.array([
-            data[18],
-        ], dtype='float32')
-        steering_angle = np.array([
-            data[19],
-        ], dtype='float32')
-        slipping_tires = np.array(data[20:24], dtype='float32')
-        crash = np.array([
-            data[24],
-        ], dtype='float32')
+        acceleration = np.array(
+            [
+                data[18],
+            ],
+            dtype="float32",
+        )
+        steering_angle = np.array(
+            [
+                data[19],
+            ],
+            dtype="float32",
+        )
+        slipping_tires = np.array(data[20:24], dtype="float32")
+        crash = np.array(
+            [
+                data[24],
+            ],
+            dtype="float32",
+        )
         failure_counter = 0.0
-        obs = [speed, gear, rpm, track_information, acceleration, steering_angle, slipping_tires, crash,
-               failure_counter]
+        obs = [
+            speed,
+            gear,
+            rpm,
+            track_information,
+            acceleration,
+            steering_angle,
+            slipping_tires,
+            crash,
+            failure_counter,
+        ]
         self.reward_function.reset()
         return obs, {}
 
@@ -181,20 +250,23 @@ class TM2020InterfaceTrackMap(TM2020InterfaceLidar):
             j_min = max(i_l_min - nearby_correction, 0)  # lower bound
             j_max = min(i_l_min + nearby_correction, len(self.map_left.T) - 1)  # upper bound
             tree_r = spatial.KDTree(
-                self.map_right.T[j_min:j_max])  # look up the index of the closest point on the other side of the track
+                self.map_right.T[j_min:j_max]
+            )  # look up the index of the closest point on the other side of the track
             (_, i_r_min) = tree_r.query(self.map_left.T[i_l_min])
             i_r_min = i_r_min + j_min
-
 
         else:
             # print("right side is closer")
             i_r = i - len(
-                self.map_left.T)  # this index is the index for the closest point on the right side of the track
+                self.map_left.T
+            )  # this index is the index for the closest point on the right side of the track
             i_r_min = i_r
             # find the nearest point on the left side of the track, but look for only nearby points
             j_min = max(i_r - nearby_correction, 0)  # lower bound
             j_max = min(i_r + nearby_correction, len(self.map_right.T) - 1)  # upper bound
-            tree_l = spatial.KDTree(self.map_left.T[j_min:j_max])  # look up the index of the closest point
+            tree_l = spatial.KDTree(
+                self.map_left.T[j_min:j_max]
+            )  # look up the index of the closest point
             (_, i_l_min) = tree_l.query(self.map_right.T[i_r])
             i_l_min = i_l_min + j_min
 

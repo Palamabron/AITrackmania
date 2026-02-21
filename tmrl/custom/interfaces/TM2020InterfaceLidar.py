@@ -6,9 +6,17 @@ from tmrl.custom.tm.utils.tools import Lidar
 
 
 class TM2020InterfaceLidar(TM2020Interface):
-    def __init__(self, img_hist_len=1, gamepad=False, min_nb_steps_before_failure=int(20 * 3.5),
-                 save_replays: bool = False, **kwargs):
-        super().__init__(img_hist_len=img_hist_len, gamepad=gamepad, save_replays=save_replays, **kwargs)
+    def __init__(
+        self,
+        img_hist_len=1,
+        gamepad=False,
+        min_nb_steps_before_failure=int(20 * 3.5),
+        save_replays: bool = False,
+        **kwargs,
+    ):
+        super().__init__(
+            img_hist_len=img_hist_len, gamepad=gamepad, save_replays=save_replays, **kwargs
+        )
         self.min_nb_steps_before_failure = min_nb_steps_before_failure
         self.window_interface = None
         self.lidar = None
@@ -16,9 +24,12 @@ class TM2020InterfaceLidar(TM2020Interface):
     def grab_lidar_speed_and_data(self):
         img = self.window_interface.screenshot()[:, :, :3]
         data = self.client.retrieve_data()
-        speed = np.array([
-            data[0],
-        ], dtype='float32')
+        speed = np.array(
+            [
+                data[0],
+            ],
+            dtype="float32",
+        )
         lidar = self.lidar.lidar_20(img=img, show=False)
         return lidar, speed, data
 
@@ -36,7 +47,7 @@ class TM2020InterfaceLidar(TM2020Interface):
         img, speed, data = self.grab_lidar_speed_and_data()
         for _ in range(self.img_hist_len):
             self.img_hist.append(img)
-        imgs = np.array(list(self.img_hist), dtype='float32')
+        imgs = np.array(list(self.img_hist), dtype="float32")
         obs = [speed, imgs]
         self.reward_function.reset()
         return obs, {}
@@ -48,9 +59,10 @@ class TM2020InterfaceLidar(TM2020Interface):
         """
         img, speed, data = self.grab_lidar_speed_and_data()
         rew, terminated, failure_counter = self.reward_function.compute_reward(
-            pos=np.array([data[2], data[3], data[4]]))
+            pos=np.array([data[2], data[3], data[4]])
+        )
         self.img_hist.append(img)
-        imgs = np.array(list(self.img_hist), dtype='float32')
+        imgs = np.array(list(self.img_hist), dtype="float32")
         obs = [speed, imgs]
         end_of_track = bool(data[8])
         info = {}
@@ -66,8 +78,12 @@ class TM2020InterfaceLidar(TM2020Interface):
         must be a Tuple
         """
         speed = spaces.Box(low=0.0, high=1000.0, shape=(1,))
-        imgs = spaces.Box(low=0.0, high=np.inf, shape=(
-            self.img_hist_len,
-            19,
-        ))  # lidars
+        imgs = spaces.Box(
+            low=0.0,
+            high=np.inf,
+            shape=(
+                self.img_hist_len,
+                19,
+            ),
+        )  # lidars
         return spaces.Tuple((speed, imgs))

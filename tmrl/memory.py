@@ -12,25 +12,57 @@ logging.basicConfig(level=logging.INFO)
 
 # third-party imports
 import numpy as np
-# from torch.utils.data import DataLoader, Dataset, Sampler
 
+import tmrl.config.config_constants as cfg
+
+# from torch.utils.data import DataLoader, Dataset, Sampler
 # local imports
 from tmrl.util import collate_torch
-import tmrl.config.config_constants as cfg
 
 __docformat__ = "google"
 
 
-def check_samples_crc(original_po, original_a, original_o, original_r, original_d, original_t, rebuilt_po, rebuilt_a, rebuilt_o, rebuilt_r, rebuilt_d, rebuilt_t, debug_ts, debug_ts_res):
-    assert original_po is None or str(original_po) == str(rebuilt_po), f"previous observations don't match:\noriginal:\n{original_po}\n!= rebuilt:\n{rebuilt_po}\nTime step: {debug_ts}, since reset: {debug_ts_res}"
-    assert str(original_a) == str(rebuilt_a), f"actions don't match:\noriginal:\n{original_a}\n!= rebuilt:\n{rebuilt_a}\nTime step: {debug_ts}, since reset: {debug_ts_res}"
-    assert str(original_o) == str(rebuilt_o), f"observations don't match:\noriginal:\n{original_o}\n!= rebuilt:\n{rebuilt_o}\nTime step: {debug_ts}, since reset: {debug_ts_res}"
-    assert str(original_r) == str(rebuilt_r), f"rewards don't match:\noriginal:\n{original_r}\n!= rebuilt:\n{rebuilt_r}\nTime step: {debug_ts}, since reset: {debug_ts_res}"
-    assert str(original_d) == str(rebuilt_d), f"terminated don't match:\noriginal:\n{original_d}\n!= rebuilt:\n{rebuilt_d}\nTime step: {debug_ts}, since reset: {debug_ts_res}"
-    assert str(original_t) == str(rebuilt_t), f"truncated don't match:\noriginal:\n{original_t}\n!= rebuilt:\n{rebuilt_t}\nTime step: {debug_ts}, since reset: {debug_ts_res}"
-    original_crc = zlib.crc32(str.encode(str((original_a, original_o, original_r, original_d, original_t))))
+def check_samples_crc(
+    original_po,
+    original_a,
+    original_o,
+    original_r,
+    original_d,
+    original_t,
+    rebuilt_po,
+    rebuilt_a,
+    rebuilt_o,
+    rebuilt_r,
+    rebuilt_d,
+    rebuilt_t,
+    debug_ts,
+    debug_ts_res,
+):
+    assert original_po is None or str(original_po) == str(rebuilt_po), (
+        f"previous observations don't match:\noriginal:\n{original_po}\n!= rebuilt:\n{rebuilt_po}\nTime step: {debug_ts}, since reset: {debug_ts_res}"
+    )
+    assert str(original_a) == str(rebuilt_a), (
+        f"actions don't match:\noriginal:\n{original_a}\n!= rebuilt:\n{rebuilt_a}\nTime step: {debug_ts}, since reset: {debug_ts_res}"
+    )
+    assert str(original_o) == str(rebuilt_o), (
+        f"observations don't match:\noriginal:\n{original_o}\n!= rebuilt:\n{rebuilt_o}\nTime step: {debug_ts}, since reset: {debug_ts_res}"
+    )
+    assert str(original_r) == str(rebuilt_r), (
+        f"rewards don't match:\noriginal:\n{original_r}\n!= rebuilt:\n{rebuilt_r}\nTime step: {debug_ts}, since reset: {debug_ts_res}"
+    )
+    assert str(original_d) == str(rebuilt_d), (
+        f"terminated don't match:\noriginal:\n{original_d}\n!= rebuilt:\n{rebuilt_d}\nTime step: {debug_ts}, since reset: {debug_ts_res}"
+    )
+    assert str(original_t) == str(rebuilt_t), (
+        f"truncated don't match:\noriginal:\n{original_t}\n!= rebuilt:\n{rebuilt_t}\nTime step: {debug_ts}, since reset: {debug_ts_res}"
+    )
+    original_crc = zlib.crc32(
+        str.encode(str((original_a, original_o, original_r, original_d, original_t)))
+    )
     crc = zlib.crc32(str.encode(str((rebuilt_a, rebuilt_o, rebuilt_r, rebuilt_d, rebuilt_t))))
-    assert crc == original_crc, f"CRC failed: new crc:{crc} != old crc:{original_crc}.\nEither the custom pipeline is corrupted, or crc_debug is False in the rollout worker.\noriginal sample:\n{(original_a, original_o, original_r, original_d)}\n!= rebuilt sample:\n{(rebuilt_a, rebuilt_o, rebuilt_r, rebuilt_d)}\nTime step: {debug_ts}, since reset: {debug_ts_res}"
+    assert crc == original_crc, (
+        f"CRC failed: new crc:{crc} != old crc:{original_crc}.\nEither the custom pipeline is corrupted, or crc_debug is False in the rollout worker.\noriginal sample:\n{(original_a, original_o, original_r, original_d)}\n!= rebuilt sample:\n{(rebuilt_a, rebuilt_o, rebuilt_r, rebuilt_d)}\nTime step: {debug_ts}, since reset: {debug_ts_res}"
+    )
     print(f"DEBUG: CRC check passed. Time step: {debug_ts}, since reset: {debug_ts_res}")
 
 
@@ -43,14 +75,16 @@ class Memory(ABC):
        Your `__init__` method needs to take at least all the arguments of the superclass.
     """
 
-    def __init__(self,
-                 device,
-                 nb_steps,
-                 sample_preprocessor: callable = None,
-                 memory_size=1000000,
-                 batch_size=256,
-                 dataset_path="",
-                 crc_debug=False):
+    def __init__(
+        self,
+        device,
+        nb_steps,
+        sample_preprocessor: callable = None,
+        memory_size=1000000,
+        batch_size=256,
+        dataset_path="",
+        crc_debug=False,
+    ):
         """
         Args:
             device (str): output tensors will be collated to this device
@@ -79,8 +113,8 @@ class Memory(ABC):
         # init memory
         self.path = Path(dataset_path)
         logging.debug(f"Memory self.path:{self.path}")
-        if os.path.isfile(self.path / 'data.pkl'):
-            with open(self.path / 'data.pkl', 'rb') as f:
+        if os.path.isfile(self.path / "data.pkl"):
+            with open(self.path / "data.pkl", "rb") as f:
                 self.data = list(pickle.load(f))
         else:
             logging.info("no data found, initializing empty replay memory")
@@ -89,7 +123,9 @@ class Memory(ABC):
         if len(self) > self.memory_size:
             # TODO: crop to memory_size
             # self.data = self.data[-self.memory_size:]
-            logging.warning(f"the dataset length ({len(self)}) is longer than memory_size ({self.memory_size})")
+            logging.warning(
+                f"the dataset length ({len(self)}) is longer than memory_size ({self.memory_size})"
+            )
         # random.seed(cfg.SEED)
 
     def __iter__(self):
@@ -172,9 +208,24 @@ class Memory(ABC):
     def __getitem__(self, item):
         prev_obs, new_act, rew, new_obs, terminated, truncated, info = self.get_transition(item)
         if self.crc_debug:
-            po, a, o, r, d, t = info['crc_sample']
-            debug_ts, debug_ts_res = info['crc_sample_ts']
-            check_samples_crc(po, a, o, r, d, t, prev_obs, new_act, new_obs, rew, terminated, truncated, debug_ts, debug_ts_res)
+            po, a, o, r, d, t = info["crc_sample"]
+            debug_ts, debug_ts_res = info["crc_sample_ts"]
+            check_samples_crc(
+                po,
+                a,
+                o,
+                r,
+                d,
+                t,
+                prev_obs,
+                new_act,
+                new_obs,
+                rew,
+                terminated,
+                truncated,
+                debug_ts,
+                debug_ts_res,
+            )
         if self.sample_preprocessor is not None:
             prev_obs, new_act, rew, new_obs, terminated, truncated = self.sample_preprocessor(
                 prev_obs, new_act, rew, new_obs, terminated, truncated
@@ -196,14 +247,16 @@ class TorchMemory(Memory, ABC):
        Your `__init__` method needs to take at least all the arguments of the superclass.
     """
 
-    def __init__(self,
-                 device,
-                 nb_steps,
-                 sample_preprocessor: callable = None,
-                 memory_size=1000000,
-                 batch_size=256,
-                 dataset_path="",
-                 crc_debug=False):
+    def __init__(
+        self,
+        device,
+        nb_steps,
+        sample_preprocessor: callable = None,
+        memory_size=1000000,
+        batch_size=256,
+        dataset_path="",
+        crc_debug=False,
+    ):
         """
         Args:
             device (str): output tensors will be collated to this device
@@ -214,13 +267,15 @@ class TorchMemory(Memory, ABC):
             dataset_path (str): an offline dataset may be provided here to initialize the memory
             crc_debug (bool): False usually, True when using CRC debugging of the pipeline
         """
-        super().__init__(memory_size=memory_size,
-                         batch_size=batch_size,
-                         dataset_path=dataset_path,
-                         nb_steps=nb_steps,
-                         sample_preprocessor=sample_preprocessor,
-                         crc_debug=crc_debug,
-                         device=device)
+        super().__init__(
+            memory_size=memory_size,
+            batch_size=batch_size,
+            dataset_path=dataset_path,
+            nb_steps=nb_steps,
+            sample_preprocessor=sample_preprocessor,
+            crc_debug=crc_debug,
+            device=device,
+        )
 
     def collate(self, batch, device):
         return collate_torch(batch, device)
@@ -228,23 +283,24 @@ class TorchMemory(Memory, ABC):
 
 class R2D2Memory(Memory, ABC):
     """
-        Partial implementation of the `Memory` class collating samples into batched torch tensors.
+    Partial implementation of the `Memory` class collating samples into batched torch tensors.
 
-        .. note::
-           When overriding `__init__`, don't forget to call `super().__init__` in the subclass.
-           Your `__init__` method needs to take at least all the arguments of the superclass.
-        """
+    .. note::
+       When overriding `__init__`, don't forget to call `super().__init__` in the subclass.
+       Your `__init__` method needs to take at least all the arguments of the superclass.
+    """
 
-    def __init__(self,
-                 device,
-                 nb_steps,
-                 sample_preprocessor: callable = None,
-                 memory_size=1000000,
-                 batch_size=256,
-                 dataset_path="",
-                 crc_debug=False,
-                 # info_index=21
-                 ):
+    def __init__(
+        self,
+        device,
+        nb_steps,
+        sample_preprocessor: callable = None,
+        memory_size=1000000,
+        batch_size=256,
+        dataset_path="",
+        crc_debug=False,
+        # info_index=21
+    ):
         """
         Args:
             device (str): output tensors will be collated to this device
@@ -255,15 +311,16 @@ class R2D2Memory(Memory, ABC):
             dataset_path (str): an offline dataset may be provided here to initialize the memory
             crc_debug (bool): False usually, True when using CRC debugging of the pipeline
         """
-        super().__init__(memory_size=memory_size,
-                         batch_size=batch_size,
-                         dataset_path=dataset_path,
-                         nb_steps=nb_steps,
-                         sample_preprocessor=sample_preprocessor,
-                         crc_debug=crc_debug,
-                         device=device,
-                         # info_index=info_index
-                         )
+        super().__init__(
+            memory_size=memory_size,
+            batch_size=batch_size,
+            dataset_path=dataset_path,
+            nb_steps=nb_steps,
+            sample_preprocessor=sample_preprocessor,
+            crc_debug=crc_debug,
+            device=device,
+            # info_index=info_index
+        )
         self.rewards_index = 19 if cfg.USE_IMAGES else 18
         self.previous_episode = 0
         self.end_episodes_indices = []
@@ -279,24 +336,24 @@ class R2D2Memory(Memory, ABC):
         assert 0.1 <= self.rewind <= 0.9, "R2D2 REWIND CONST SHOULD BE BETWEEN 0.1 AND 0.9"
 
     def collate(self, batch, device):
-        '''
+        """
         Method in Memory and its subclasses.
         Used to collate a batch of data onto a specified device.
         Calls an external function collate_torch and returns its result.
-        '''
+        """
         return collate_torch(batch, device)
 
     @staticmethod
     def find_zero_rewards_indices(reward_sums):
-        '''
+        """
         Iterates through reward_sums, finding indices where the reward sum transitions from non-zero to zero.
         Returns a list of indices where this transition occurs.
-        '''
+        """
         zero_rewards_indices = []
         prev_reward_sum = None
 
         for i, entry in enumerate(reward_sums):
-            reward_sum = entry['reward_sum']
+            reward_sum = entry["reward_sum"]
             if prev_reward_sum is not None and reward_sum == 0.0 and prev_reward_sum != 0.0:
                 zero_rewards_indices.append(i - 1)
 
@@ -306,10 +363,10 @@ class R2D2Memory(Memory, ABC):
 
     @staticmethod
     def normalize_list(input_list):
-        '''
+        """
         Normalizes a list of values between 0 and 1.
         Handles cases where the range of values is zero to prevent division by zero.
-        '''
+        """
         # Find the minimum and maximum values in the list
         min_val = min(input_list)
         max_val = max(input_list)
@@ -324,12 +381,15 @@ class R2D2Memory(Memory, ABC):
         return normalized_list
 
     def sample_indices(self):
-        '''
+        """
         Generates indices for sampling from the memory based on various conditions.
         Logic involves selecting indices based on episode lengths, rewards, and episode transitions.
-        '''
+        """
         self.end_episodes_indices = self.find_zero_rewards_indices(self.data[self.rewards_index])
-        self.reward_sums = [self.data[self.rewards_index][index]['reward_sum'] for index in self.end_episodes_indices]
+        self.reward_sums = [
+            self.data[self.rewards_index][index]["reward_sum"]
+            for index in self.end_episodes_indices
+        ]
         batch_size = self.batch_size
 
         if len(self.end_episodes_indices) == 0:
@@ -355,15 +415,17 @@ class R2D2Memory(Memory, ABC):
                 else:
                     if sum(self.reward_sums) > 0:
                         self.chosen_episode = random.choices(
-                            self.end_episodes_indices, weights=self.reward_sums,
-                            k=1
+                            self.end_episodes_indices, weights=self.reward_sums, k=1
                         )[0]
                     else:
                         self.chosen_episode = random.choices(
-                            self.end_episodes_indices, weights=self.normalize_list(self.reward_sums),
-                            k=1
+                            self.end_episodes_indices,
+                            weights=self.normalize_list(self.reward_sums),
+                            k=1,
                         )[0]
-                    previous_episode_index = sorted(self.end_episodes_indices).index(self.chosen_episode) - 1
+                    previous_episode_index = (
+                        sorted(self.end_episodes_indices).index(self.chosen_episode) - 1
+                    )
                     if previous_episode_index < 0:
                         self.previous_episode = 0
                     else:
@@ -389,7 +451,6 @@ class R2D2Memory(Memory, ABC):
 
                     return result
                 else:
-
                     if self.previous_episode < 0:
                         self.previous_episode = 0
 
@@ -400,7 +461,6 @@ class R2D2Memory(Memory, ABC):
                     self.isNewEpisode = False
                     return result
             else:
-
                 self.cur_idx -= int(batch_size * self.rewind)
 
                 if self.cur_idx + batch_size >= self.chosen_episode:
@@ -425,23 +485,26 @@ class R2D2Memory(Memory, ABC):
             return res
 
     def sample(self):
-        '''
+        """
         Samples data from the memory using the generated indices from sample_indices.
         Collates the sampled data into a batch using the collate method and returns it.
-        '''
+        """
         indices = self.sample_indices()
         batch = [self[idx] for idx in indices]
         batch = self.collate(batch, self.device)
         return batch
 
 
-def load_and_print_pickle_file(path=r"C:\Users\Yann\Desktop\git\tmrl\data\data.pkl"):  # r"D:\data2020"
-    '''
+def load_and_print_pickle_file(
+    path=r"C:\Users\Yann\Desktop\git\tmrl\data\data.pkl",
+):  # r"D:\data2020"
+    """
     Loads and prints content from a pickle file specified by the path.
     Reads the pickle file and displays the number of samples along with their content.
-    '''
+    """
     import pickle
-    with open(path, 'rb') as f:
+
+    with open(path, "rb") as f:
         data = pickle.load(f)
     print(f"nb samples: {len(data[0])}")
     for i, d in enumerate(data):

@@ -4,20 +4,21 @@
 # standard library imports
 
 # third-party imports
+from math import floor, sqrt
+
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.distributions.normal import Normal
-from math import floor, sqrt
 from torch.nn import Conv2d, Module, ModuleList
-# import torchvision
 
+import tmrl.config.config_constants as cfg
+from tmrl.actor import TorchActorModule
+
+# import torchvision
 # local imports
 from tmrl.util import prod
-from tmrl.actor import TorchActorModule
-import tmrl.config.config_constants as cfg
-
 
 # SUPPORTED ============================================================================================================
 
@@ -28,7 +29,7 @@ import tmrl.config.config_constants as cfg
 
 def combined_shape(length, shape=None):
     if shape is None:
-        return (length, )
+        return (length,)
     return (length, shape) if np.isscalar(shape) else (length, *shape)
 
 
@@ -50,7 +51,9 @@ EPSILON = 1e-7
 
 
 class SquashedGaussianMLPActor(TorchActorModule):
-    def __init__(self, observation_space, action_space, hidden_sizes=(256, 256), activation=nn.ReLU):
+    def __init__(
+        self, observation_space, action_space, hidden_sizes=(256, 256), activation=nn.ReLU
+    ):
         super().__init__(observation_space, action_space)
         try:
             dim_obs = sum(prod(s for s in space.shape) for space in observation_space)
@@ -121,13 +124,21 @@ class MLPQFunction(nn.Module):
         self.q = mlp([obs_dim + act_dim] + list(hidden_sizes) + [1], activation)
 
     def forward(self, obs, act):
-        x = torch.cat((*obs, act), -1) if self.tuple_obs else torch.cat((torch.flatten(obs, start_dim=1), act), -1)
+        x = (
+            torch.cat((*obs, act), -1)
+            if self.tuple_obs
+            else torch.cat((torch.flatten(obs, start_dim=1), act), -1)
+        )
         q = self.q(x)
-        return torch.squeeze(q, -1)  # Critical to ensure q has right shape.  # FIXME: understand this
+        return torch.squeeze(
+            q, -1
+        )  # Critical to ensure q has right shape.  # FIXME: understand this
 
 
 class MLPActorCritic(nn.Module):
-    def __init__(self, observation_space, action_space, hidden_sizes=(256, 256), activation=nn.ReLU):
+    def __init__(
+        self, observation_space, action_space, hidden_sizes=(256, 256), activation=nn.ReLU
+    ):
         super().__init__()
 
         # obs_dim = observation_space.shape[0]
@@ -135,7 +146,9 @@ class MLPActorCritic(nn.Module):
         act_limit = action_space.high[0]
 
         # build policy and value functions
-        self.actor = SquashedGaussianMLPActor(observation_space, action_space, hidden_sizes, activation)
+        self.actor = SquashedGaussianMLPActor(
+            observation_space, action_space, hidden_sizes, activation
+        )
         self.q1 = MLPQFunction(observation_space, action_space, hidden_sizes, activation)
         self.q2 = MLPQFunction(observation_space, action_space, hidden_sizes, activation)
 
@@ -152,12 +165,9 @@ class MLPActorCritic(nn.Module):
 
 
 class REDQMLPActorCritic(nn.Module):
-    def __init__(self,
-                 observation_space,
-                 action_space,
-                 hidden_sizes=(256, 256),
-                 activation=nn.ReLU,
-                 n=10):
+    def __init__(
+        self, observation_space, action_space, hidden_sizes=(256, 256), activation=nn.ReLU, n=10
+    ):
         super().__init__()
 
         # obs_dim = observation_space.shape[0]
@@ -165,9 +175,16 @@ class REDQMLPActorCritic(nn.Module):
         act_limit = action_space.high[0]
 
         # build policy and value functions
-        self.actor = SquashedGaussianMLPActor(observation_space, action_space, hidden_sizes, activation)
+        self.actor = SquashedGaussianMLPActor(
+            observation_space, action_space, hidden_sizes, activation
+        )
         self.n = n
-        self.qs = ModuleList([MLPQFunction(observation_space, action_space, hidden_sizes, activation) for _ in range(self.n)])
+        self.qs = ModuleList(
+            [
+                MLPQFunction(observation_space, action_space, hidden_sizes, activation)
+                for _ in range(self.n)
+            ]
+        )
 
     def act(self, obs, test=False):
         with torch.no_grad():
@@ -204,7 +221,7 @@ def _make_divisible(v, divisor, min_value=None):
 
 
 # SiLU (Swish) activation function
-if hasattr(nn, 'SiLU'):
+if hasattr(nn, "SiLU"):
     SiLU = nn.SiLU
 else:
     # For compatibility with old PyTorch versions
@@ -215,13 +232,13 @@ else:
 
 class SELayer(nn.Module):
     def __init__(self, inp, oup, reduction=4):
-        super(SELayer, self).__init__()
+        super().__init__()
         self.avg_pool = nn.AdaptiveAvgPool2d(1)
         self.fc = nn.Sequential(
             nn.Linear(oup, _make_divisible(inp // reduction, 8)),
             SiLU(),
             nn.Linear(_make_divisible(inp // reduction, 8), oup),
-            nn.Sigmoid()
+            nn.Sigmoid(),
         )
 
     def forward(self, x):
@@ -232,24 +249,16 @@ class SELayer(nn.Module):
 
 
 def conv_3x3_bn(inp, oup, stride):
-    return nn.Sequential(
-        nn.Conv2d(inp, oup, 3, stride, 1, bias=False),
-        nn.BatchNorm2d(oup),
-        SiLU()
-    )
+    return nn.Sequential(nn.Conv2d(inp, oup, 3, stride, 1, bias=False), nn.BatchNorm2d(oup), SiLU())
 
 
 def conv_1x1_bn(inp, oup):
-    return nn.Sequential(
-        nn.Conv2d(inp, oup, 1, 1, 0, bias=False),
-        nn.BatchNorm2d(oup),
-        SiLU()
-    )
+    return nn.Sequential(nn.Conv2d(inp, oup, 1, 1, 0, bias=False), nn.BatchNorm2d(oup), SiLU())
 
 
 class MBConv(nn.Module):
     def __init__(self, inp, oup, stride, expand_ratio, use_se):
-        super(MBConv, self).__init__()
+        super().__init__()
         assert stride in [1, 2]
 
         hidden_dim = round(inp * expand_ratio)
@@ -288,8 +297,8 @@ class MBConv(nn.Module):
 
 
 class EffNetV2(nn.Module):
-    def __init__(self, cfgs, nb_channels_in=3, dim_output=1, width_mult=1.):
-        super(EffNetV2, self).__init__()
+    def __init__(self, cfgs, nb_channels_in=3, dim_output=1, width_mult=1.0):
+        super().__init__()
         self.cfgs = cfgs
 
         # building first layer
@@ -323,7 +332,7 @@ class EffNetV2(nn.Module):
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
                 n = m.kernel_size[0] * m.kernel_size[1] * m.out_channels
-                m.weight.data.normal_(0, sqrt(2. / n))
+                m.weight.data.normal_(0, sqrt(2.0 / n))
                 if m.bias is not None:
                     m.bias.data.zero_()
             elif isinstance(m, nn.BatchNorm2d):
@@ -407,7 +416,7 @@ class SquashedGaussianEffNetActor(TorchActorModule):
         dim_act = action_space.shape[0]
         act_limit = action_space.high[0]
 
-        self.cnn = effnetv2_s(nb_channels_in=4, dim_output=247, width_mult=1.).float()
+        self.cnn = effnetv2_s(nb_channels_in=4, dim_output=247, width_mult=1.0).float()
         self.net = mlp([256, 256], [nn.ReLU, nn.ReLU])
         self.mu_layer = nn.Linear(256, dim_act)
         self.log_std_layer = nn.Linear(256, dim_act)
@@ -453,6 +462,7 @@ class SquashedGaussianEffNetActor(TorchActorModule):
 
     def act(self, obs, test=False):
         import sys
+
         size = sys.getsizeof(obs)
         with torch.no_grad():
             a, _ = self.forward(obs, test, False)
@@ -473,7 +483,9 @@ class EffNetQFunction(nn.Module):
 
 
 class EffNetActorCritic(nn.Module):
-    def __init__(self, observation_space, action_space, hidden_sizes=(256, 256), activation=nn.ReLU):
+    def __init__(
+        self, observation_space, action_space, hidden_sizes=(256, 256), activation=nn.ReLU
+    ):
         super().__init__()
 
         # obs_dim = observation_space.shape[0]
@@ -481,7 +493,9 @@ class EffNetActorCritic(nn.Module):
         act_limit = action_space.high[0]
 
         # build policy and value functions
-        self.actor = SquashedGaussianMLPActor(observation_space, action_space, hidden_sizes, activation)
+        self.actor = SquashedGaussianMLPActor(
+            observation_space, action_space, hidden_sizes, activation
+        )
         self.q1 = MLPQFunction(observation_space, action_space, hidden_sizes, activation)
         self.q2 = MLPQFunction(observation_space, action_space, hidden_sizes, activation)
 
@@ -503,14 +517,32 @@ def num_flat_features(x):
 
 
 def conv2d_out_dims(conv_layer, h_in, w_in):
-    h_out = floor((h_in + 2 * conv_layer.padding[0] - conv_layer.dilation[0] * (conv_layer.kernel_size[0] - 1) - 1) / conv_layer.stride[0] + 1)
-    w_out = floor((w_in + 2 * conv_layer.padding[1] - conv_layer.dilation[1] * (conv_layer.kernel_size[1] - 1) - 1) / conv_layer.stride[1] + 1)
+    h_out = floor(
+        (
+            h_in
+            + 2 * conv_layer.padding[0]
+            - conv_layer.dilation[0] * (conv_layer.kernel_size[0] - 1)
+            - 1
+        )
+        / conv_layer.stride[0]
+        + 1
+    )
+    w_out = floor(
+        (
+            w_in
+            + 2 * conv_layer.padding[1]
+            - conv_layer.dilation[1] * (conv_layer.kernel_size[1] - 1)
+            - 1
+        )
+        / conv_layer.stride[1]
+        + 1
+    )
     return h_out, w_out
 
 
 class VanillaCNN(Module):
     def __init__(self, q_net):
-        super(VanillaCNN, self).__init__()
+        super().__init__()
         self.q_net = q_net
         self.h_out, self.w_out = cfg.IMG_HEIGHT, cfg.IMG_WIDTH
         hist = cfg.IMG_HIST_LEN
@@ -540,7 +572,9 @@ class VanillaCNN(Module):
         x = F.relu(self.conv3(x))
         x = F.relu(self.conv4(x))
         flat_features = num_flat_features(x)
-        assert flat_features == self.flat_features, f"x.shape:{x.shape}, flat_features:{flat_features}, self.out_channels:{self.out_channels}, self.h_out:{self.h_out}, self.w_out:{self.w_out}"
+        assert flat_features == self.flat_features, (
+            f"x.shape:{x.shape}, flat_features:{flat_features}, self.out_channels:{self.out_channels}, self.h_out:{self.h_out}, self.w_out:{self.w_out}"
+        )
         x = x.view(-1, flat_features)
         if self.q_net:
             x = torch.cat((speed, gear, rpm, x, act1, act2, act), -1)
@@ -576,7 +610,9 @@ class SquashedGaussianVanillaCNNActor(TorchActorModule):
         if with_logprob:
             logp_pi = pi_distribution.log_prob(pi_action).sum(axis=-1)
             # NB: this is from Spinup:
-            logp_pi -= (2 * (np.log(2) - pi_action - F.softplus(-2 * pi_action))).sum(axis=1)  # FIXME: this formula is mathematically wrong, no idea why it seems to work
+            logp_pi -= (2 * (np.log(2) - pi_action - F.softplus(-2 * pi_action))).sum(
+                axis=1
+            )  # FIXME: this formula is mathematically wrong, no idea why it seems to work
             # Whereas SB3 does this:
             # logp_pi -= torch.sum(torch.log(1 - torch.tanh(pi_action) ** 2 + EPSILON), dim=1)  # TODO: double check
             # # log_prob -= th.sum(th.log(1 - actions**2 + self.epsilon), dim=1)
@@ -623,6 +659,7 @@ class VanillaCNNActorCritic(nn.Module):
 
 
 # Vanilla CNN FOR COLOR IMAGES: ========================================================================================
+
 
 def remove_colors(images):
     """
@@ -676,12 +713,28 @@ def rnn(input_size, rnn_size, rnn_len):
     assert num_rnn_layers >= 1
     hidden_size = rnn_size
 
-    gru = nn.GRU(input_size=input_size, hidden_size=hidden_size, num_layers=num_rnn_layers, bias=True, batch_first=True, dropout=0, bidirectional=False)
+    gru = nn.GRU(
+        input_size=input_size,
+        hidden_size=hidden_size,
+        num_layers=num_rnn_layers,
+        bias=True,
+        batch_first=True,
+        dropout=0,
+        bidirectional=False,
+    )
     return gru
 
 
 class SquashedGaussianRNNActor(nn.Module):
-    def __init__(self, obs_space, act_space, rnn_size=100, rnn_len=2, mlp_sizes=(100, 100), activation=nn.ReLU):
+    def __init__(
+        self,
+        obs_space,
+        act_space,
+        rnn_size=100,
+        rnn_len=2,
+        mlp_sizes=(100, 100),
+        activation=nn.ReLU,
+    ):
         super().__init__()
         dim_obs = sum(prod(s for s in space.shape) for space in obs_space)
         dim_act = act_space.shape[0]
@@ -762,7 +815,16 @@ class RNNQFunction(nn.Module):
     """
     The action is merged in the latent space after the RNN
     """
-    def __init__(self, obs_space, act_space, rnn_size=100, rnn_len=2, mlp_sizes=(100, 100), activation=nn.ReLU):
+
+    def __init__(
+        self,
+        obs_space,
+        act_space,
+        rnn_size=100,
+        rnn_len=2,
+        mlp_sizes=(100, 100),
+        activation=nn.ReLU,
+    ):
         super().__init__()
         dim_obs = sum(prod(s for s in space.shape) for space in obs_space)
         dim_act = act_space.shape[0]
@@ -815,12 +877,26 @@ class RNNQFunction(nn.Module):
 
 
 class RNNActorCritic(nn.Module):
-    def __init__(self, observation_space, action_space, rnn_size=100, rnn_len=2, mlp_sizes=(100, 100), activation=nn.ReLU):
+    def __init__(
+        self,
+        observation_space,
+        action_space,
+        rnn_size=100,
+        rnn_len=2,
+        mlp_sizes=(100, 100),
+        activation=nn.ReLU,
+    ):
         super().__init__()
 
         act_limit = action_space.high[0]
 
         # build policy and value functions
-        self.actor = SquashedGaussianRNNActor(observation_space, action_space, rnn_size, rnn_len, mlp_sizes, activation)
-        self.q1 = RNNQFunction(observation_space, action_space, rnn_size, rnn_len, mlp_sizes, activation)
-        self.q2 = RNNQFunction(observation_space, action_space, rnn_size, rnn_len, mlp_sizes, activation)
+        self.actor = SquashedGaussianRNNActor(
+            observation_space, action_space, rnn_size, rnn_len, mlp_sizes, activation
+        )
+        self.q1 = RNNQFunction(
+            observation_space, action_space, rnn_size, rnn_len, mlp_sizes, activation
+        )
+        self.q2 = RNNQFunction(
+            observation_space, action_space, rnn_size, rnn_len, mlp_sizes, activation
+        )

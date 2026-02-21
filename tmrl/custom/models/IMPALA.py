@@ -7,12 +7,12 @@ import torch.nn.functional as F
 from torch import nn
 from torch.autograd import Variable
 from torch.distributions import Normal
-from torchrl.modules import NoisyLinear, TanhNormal
+from torchrl.modules import NoisyLinear
 
 import config.config_constants as cfg
 import config.config_objects as cfo
 from actor import TorchActorModule
-from custom.models.model_constants import LOG_STD_MIN, LOG_STD_MAX
+from custom.models.model_constants import LOG_STD_MAX, LOG_STD_MIN
 
 
 # https://discuss.pytorch.org/t/dropout-in-lstm-during-eval-mode/120177
@@ -22,8 +22,13 @@ def gru(input_size, rnn_size, rnn_len, dropout: float = 0.1):
     hidden_size = rnn_size
 
     gru_layers = nn.GRU(
-        input_size=input_size, hidden_size=hidden_size, num_layers=num_rnn_layers,
-        bias=True, batch_first=True, dropout=dropout, bidirectional=False
+        input_size=input_size,
+        hidden_size=hidden_size,
+        num_layers=num_rnn_layers,
+        bias=True,
+        batch_first=True,
+        dropout=dropout,
+        bidirectional=False,
     )
 
     return gru_layers
@@ -35,8 +40,13 @@ def lstm(input_size, rnn_size, rnn_len, dropout: float = 0.0):
     hidden_size = rnn_size
 
     lstm_layers = nn.LSTM(
-        input_size=input_size, hidden_size=hidden_size, num_layers=num_rnn_layers,
-        bias=True, batch_first=True, dropout=dropout, bidirectional=False
+        input_size=input_size,
+        hidden_size=hidden_size,
+        num_layers=num_rnn_layers,
+        bias=True,
+        batch_first=True,
+        dropout=dropout,
+        bidirectional=False,
     )
 
     return lstm_layers
@@ -50,6 +60,7 @@ def lstm(input_size, rnn_size, rnn_len, dropout: float = 0.0):
 #         else:
 #             layers += [nn.Linear(sizes[j], sizes[j + 1]), activation()]
 #     return nn.Sequential(*layers)
+
 
 def mlp(sizes, dim_obs, activation=nn.ReLU):
     """
@@ -91,8 +102,10 @@ def init_kaiming(layer):
 
 
 class CNNModule(nn.Module):
-    def __init__(self, mlp_out_size: int = cfg.CNN_OUTPUT_SIZE, activation=nn.LeakyReLU, seed: int = cfg.SEED):
-        super(CNNModule, self).__init__()
+    def __init__(
+        self, mlp_out_size: int = cfg.CNN_OUTPUT_SIZE, activation=nn.LeakyReLU, seed: int = cfg.SEED
+    ):
+        super().__init__()
         torch.manual_seed(seed)
         np.random.seed(seed)
         random.seed(seed)
@@ -125,18 +138,49 @@ class CNNModule(nn.Module):
             # Create a residual block
             residual_block = nn.Sequential(
                 nn.Conv2d(
-                    filters[i] if i != 0 else hist, filters[i], kernel_size=3,
-                    stride=1, padding="same", groups=1
+                    filters[i] if i != 0 else hist,
+                    filters[i],
+                    kernel_size=3,
+                    stride=1,
+                    padding="same",
+                    groups=1,
                 ),
                 nn.MaxPool2d(kernel_size=3, stride=2),
-                nn.Conv2d(filters[i], filters[i], kernel_size=3, stride=1, padding=0, groups=self.conv_groups),
+                nn.Conv2d(
+                    filters[i],
+                    filters[i],
+                    kernel_size=3,
+                    stride=1,
+                    padding=0,
+                    groups=self.conv_groups,
+                ),
                 activation(),
-                nn.Conv2d(filters[i], filters[i], kernel_size=3, stride=1, padding="same", groups=self.conv_groups),
+                nn.Conv2d(
+                    filters[i],
+                    filters[i],
+                    kernel_size=3,
+                    stride=1,
+                    padding="same",
+                    groups=self.conv_groups,
+                ),
                 activation(),
-                nn.Conv2d(filters[i], filters[i], kernel_size=3, stride=1, padding=0, groups=self.conv_groups),
+                nn.Conv2d(
+                    filters[i],
+                    filters[i],
+                    kernel_size=3,
+                    stride=1,
+                    padding=0,
+                    groups=self.conv_groups,
+                ),
                 activation(),
-                nn.Conv2d(filters[i], filters[last_index], kernel_size=3, stride=1, padding="same",
-                          groups=self.conv_groups),
+                nn.Conv2d(
+                    filters[i],
+                    filters[last_index],
+                    kernel_size=3,
+                    stride=1,
+                    padding="same",
+                    groups=self.conv_groups,
+                ),
                 activation(),
             )
 
@@ -186,14 +230,22 @@ class CNNModule(nn.Module):
                     cin, hin, win = temp_shape
 
                     # Ensure kernel_size, stride, and padding are integers
-                    kernel_size = module.kernel_size[0] if isinstance(module.kernel_size, tuple) else module.kernel_size
+                    kernel_size = (
+                        module.kernel_size[0]
+                        if isinstance(module.kernel_size, tuple)
+                        else module.kernel_size
+                    )
                     stride = module.stride[0] if isinstance(module.stride, tuple) else module.stride
-                    padding = module.padding[0] if isinstance(module.padding, tuple) else module.padding
+                    padding = (
+                        module.padding[0] if isinstance(module.padding, tuple) else module.padding
+                    )
 
                     # Check if padding is a string and handle it
                     if isinstance(padding, str):
-                        if padding == 'same':
-                            padding = kernel_size // 2  # This is a common way to compute 'same' padding
+                        if padding == "same":
+                            padding = (
+                                kernel_size // 2
+                            )  # This is a common way to compute 'same' padding
                         else:
                             raise ValueError(f"Unsupported padding value: {padding}")
 
@@ -205,9 +257,15 @@ class CNNModule(nn.Module):
 
                 elif isinstance(module, nn.MaxPool2d):
                     cin, hin, win = temp_shape
-                    kernel_size = module.kernel_size if isinstance(module.kernel_size, int) else module.kernel_size[0]
+                    kernel_size = (
+                        module.kernel_size
+                        if isinstance(module.kernel_size, int)
+                        else module.kernel_size[0]
+                    )
                     stride = module.stride if isinstance(module.stride, int) else module.stride[0]
-                    padding = module.padding if isinstance(module.padding, int) else module.padding[0]
+                    padding = (
+                        module.padding if isinstance(module.padding, int) else module.padding[0]
+                    )
 
                     hout = (hin + 2 * padding - (kernel_size - 1) - 1) // stride + 1
                     wout = (win + 2 * padding - (kernel_size - 1) - 1) // stride + 1
@@ -244,9 +302,14 @@ class CNNModule(nn.Module):
 class QRCNNQFunction(nn.Module):
     # domyślne wartości parametrów muszą się zgadzać
     def __init__(
-            self, observation_space, action_space, rnn_sizes=cfg.RNN_SIZES,
-            rnn_lens=cfg.RNN_LENS, mlp_branch_sizes=cfg.API_MLP_SIZES,
-            activation=nn.ReLU, seed: int = cfg.SEED
+        self,
+        observation_space,
+        action_space,
+        rnn_sizes=cfg.RNN_SIZES,
+        rnn_lens=cfg.RNN_LENS,
+        mlp_branch_sizes=cfg.API_MLP_SIZES,
+        activation=nn.ReLU,
+        seed: int = cfg.SEED,
     ):
         super().__init__()
         torch.manual_seed(seed)
@@ -257,7 +320,7 @@ class QRCNNQFunction(nn.Module):
 
         self.cnn_module = CNNModule()
         self.activation = activation()
-        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         dim_obs = sum(math.prod(s for s in space.shape) for space in observation_space)
         dim_obs -= math.prod(s for s in observation_space[-3].shape)
@@ -272,25 +335,18 @@ class QRCNNQFunction(nn.Module):
         if cfg.MLP_LAYERNORM:
             self.layernorm_mlp = nn.LayerNorm(mlp_branch_sizes[-1])
 
-        self.rnn_block_api = lstm(
-            mlp_branch_sizes[-1],
-            rnn_sizes[0],
-            rnn_lens[0]
-        )
+        self.rnn_block_api = lstm(mlp_branch_sizes[-1], rnn_sizes[0], rnn_lens[0])
 
         self.rnn_block_cat = lstm(
             self.cnn_module.mlp_out_size + rnn_sizes[0] + dim_act,
             rnn_sizes[1],
             rnn_lens[1],
-            dropout=cfg.RNN_DROPOUT
+            dropout=cfg.RNN_DROPOUT,
         )
 
         if cfg.NOISY_LINEAR_CRITIC:
             self.model_out = NoisyLinear(
-                rnn_sizes[0],
-                self.num_quantiles,
-                device=self.device,
-                std_init=0.01
+                rnn_sizes[0], self.num_quantiles, device=self.device, std_init=0.01
             )
         else:
             self.model_out = nn.Linear(rnn_sizes[0], self.num_quantiles)
@@ -325,20 +381,18 @@ class QRCNNQFunction(nn.Module):
                 cnn_branch_input = cnn_branch_input.permute(0, 3, 1, 2)
             conv_branch_out = self.cnn_module(cnn_branch_input)
 
-        if not save_hidden or self.h0 is None or self.c0 is None or self.h1 is None or self.c1 is None:
+        if (
+            not save_hidden
+            or self.h0 is None
+            or self.c0 is None
+            or self.h1 is None
+            or self.c1 is None
+        ):
             device = observation[0].device
-            h0 = Variable(
-                torch.zeros((self.rnn_lens[0], self.rnn_sizes[0]), device=device)
-            )
-            c0 = Variable(
-                torch.zeros((self.rnn_lens[0], self.rnn_sizes[0]), device=device)
-            )
-            h1 = Variable(
-                torch.zeros((self.rnn_lens[1], self.rnn_sizes[1]), device=device)
-            )
-            c1 = Variable(
-                torch.zeros((self.rnn_lens[1], self.rnn_sizes[1]), device=device)
-            )
+            h0 = Variable(torch.zeros((self.rnn_lens[0], self.rnn_sizes[0]), device=device))
+            c0 = Variable(torch.zeros((self.rnn_lens[0], self.rnn_sizes[0]), device=device))
+            h1 = Variable(torch.zeros((self.rnn_lens[1], self.rnn_sizes[1]), device=device))
+            c1 = Variable(torch.zeros((self.rnn_lens[1], self.rnn_sizes[1]), device=device))
         else:
             h0 = self.h0
             c0 = self.c0
@@ -350,9 +404,9 @@ class QRCNNQFunction(nn.Module):
         for index, _ in enumerate(observation):
             observation[index] = observation[index].view(batch_size, -1)
 
-        observation_except_img = observation[:self.img_index]
+        observation_except_img = observation[: self.img_index]
         if len(observation) > self.img_index + 1:
-            observation_except_img += observation[(self.img_index + 1):]
+            observation_except_img += observation[(self.img_index + 1) :]
 
         # Pack the tensors in observation_except_24 to handle variable sequence lengths
         obs_seq_cat = torch.cat(observation_except_img, -1)
@@ -391,13 +445,16 @@ class QRCNNQFunction(nn.Module):
 class SquashedActorQRCNN(TorchActorModule):
     # domyślne wartości parametrów muszą się zgadzać
     def __init__(
-            self, observation_space, action_space, rnn_sizes=cfg.RNN_SIZES,
-            rnn_lens=cfg.RNN_LENS, mlp_branch_sizes=cfg.API_MLP_SIZES,
-            activation=nn.ReLU, seed: int = cfg.SEED
+        self,
+        observation_space,
+        action_space,
+        rnn_sizes=cfg.RNN_SIZES,
+        rnn_lens=cfg.RNN_LENS,
+        mlp_branch_sizes=cfg.API_MLP_SIZES,
+        activation=nn.ReLU,
+        seed: int = cfg.SEED,
     ):
-        super().__init__(
-            observation_space, action_space
-        )
+        super().__init__(observation_space, action_space)
         torch.manual_seed(seed)
         np.random.seed(seed)
         random.seed(seed)
@@ -406,7 +463,7 @@ class SquashedActorQRCNN(TorchActorModule):
 
         self.cnn_module = CNNModule()
         self.activation = activation()
-        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         dim_obs = sum(math.prod(s for s in space.shape) for space in observation_space)
         dim_obs -= math.prod(s for s in observation_space[-3].shape)
@@ -421,25 +478,18 @@ class SquashedActorQRCNN(TorchActorModule):
         if cfg.MLP_LAYERNORM:
             self.layernorm_mlp = nn.LayerNorm(mlp_branch_sizes[-1])
 
-        self.rnn_block_api = lstm(
-            mlp_branch_sizes[-1],
-            rnn_sizes[0],
-            rnn_lens[0]
-        )
+        self.rnn_block_api = lstm(mlp_branch_sizes[-1], rnn_sizes[0], rnn_lens[0])
 
         self.rnn_block_cat = lstm(
             self.cnn_module.mlp_out_size + rnn_sizes[0],
             rnn_sizes[1],
             rnn_lens[1],
-            dropout=cfg.RNN_DROPOUT
+            dropout=cfg.RNN_DROPOUT,
         )
 
         if cfg.NOISY_LINEAR_ACTOR:
             self.model_out = NoisyLinear(
-                rnn_sizes[0],
-                self.num_quantiles,
-                device=self.device,
-                std_init=0.01
+                rnn_sizes[0], self.num_quantiles, device=self.device, std_init=0.01
             )
         else:
             self.model_out = nn.Linear(rnn_sizes[0], mlp_out_size)
@@ -480,20 +530,18 @@ class SquashedActorQRCNN(TorchActorModule):
 
             conv_branch_out = self.cnn_module(cnn_branch_input)
 
-        if not save_hidden or self.h0 is None or self.c0 is None or self.h1 is None or self.c1 is None:
+        if (
+            not save_hidden
+            or self.h0 is None
+            or self.c0 is None
+            or self.h1 is None
+            or self.c1 is None
+        ):
             device = observation[0].device
-            h0 = Variable(
-                torch.zeros((self.rnn_lens[0], self.rnn_sizes[0]), device=device)
-            )
-            c0 = Variable(
-                torch.zeros((self.rnn_lens[0], self.rnn_sizes[0]), device=device)
-            )
-            h1 = Variable(
-                torch.zeros((self.rnn_lens[1], self.rnn_sizes[1]), device=device)
-            )
-            c1 = Variable(
-                torch.zeros((self.rnn_lens[1], self.rnn_sizes[1]), device=device)
-            )
+            h0 = Variable(torch.zeros((self.rnn_lens[0], self.rnn_sizes[0]), device=device))
+            c0 = Variable(torch.zeros((self.rnn_lens[0], self.rnn_sizes[0]), device=device))
+            h1 = Variable(torch.zeros((self.rnn_lens[1], self.rnn_sizes[1]), device=device))
+            c1 = Variable(torch.zeros((self.rnn_lens[1], self.rnn_sizes[1]), device=device))
         else:
             h0 = self.h0
             c0 = self.c0
@@ -505,9 +553,9 @@ class SquashedActorQRCNN(TorchActorModule):
         for index, _ in enumerate(observation):
             observation[index] = observation[index].view(batch_size, -1)
 
-        observation_except_img = observation[:self.img_index]
+        observation_except_img = observation[: self.img_index]
         if len(observation) > self.img_index + 1:
-            observation_except_img += observation[(self.img_index + 1):]
+            observation_except_img += observation[(self.img_index + 1) :]
 
         # Pack the tensors in observation_except_img to handle variable sequence lengths
         obs_seq_cat = torch.cat(observation_except_img, -1)
@@ -578,16 +626,23 @@ class SquashedActorQRCNN(TorchActorModule):
         obs_seq = list(obs)
         # obs_seq = list(o.view(1, *o.shape) for o in obs)  # artificially add sequence dimension
         with torch.no_grad():
-            a, _ = self.forward(observation=obs_seq, test=test, with_logprob=False, save_hidden=True)
+            a, _ = self.forward(
+                observation=obs_seq, test=test, with_logprob=False, save_hidden=True
+            )
             return a.cpu().numpy()
 
 
 class QRCNNActorCritic(nn.Module):
     # domyślne wartości parametrów muszą się zgadzać
     def __init__(
-            self, observation_space, action_space, rnn_sizes=cfg.RNN_SIZES,
-            rnn_lens=cfg.RNN_LENS, mlp_branch_sizes=cfg.API_MLP_SIZES,
-            activation=nn.ReLU, seed: int = cfg.SEED
+        self,
+        observation_space,
+        action_space,
+        rnn_sizes=cfg.RNN_SIZES,
+        rnn_lens=cfg.RNN_LENS,
+        mlp_branch_sizes=cfg.API_MLP_SIZES,
+        activation=nn.ReLU,
+        seed: int = cfg.SEED,
     ):
         super().__init__()
         torch.manual_seed(seed)

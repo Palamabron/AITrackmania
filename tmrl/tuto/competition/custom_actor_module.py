@@ -42,7 +42,8 @@ In particular, you will want to set the following in the TMRL config.json file o
 "PUBLIC_IP_SERVER": "<ip.of.the.server>",
 "PORT": <port of the server (usually requires port forwarding if accessed via the Internet)>,
 
-If you are training over the Internet, please read the security instructions on the TMRL GitHub page.
+If you are training over the Internet, please read the security instructions on the
+TMRL GitHub page.
 
 IMPORTANT: Set a custom 'RUN_NAME' in config.json, otherwise this script will not work.
 """
@@ -50,20 +51,24 @@ IMPORTANT: Set a custom 'RUN_NAME' in config.json, otherwise this script will no
 # Let us start our tutorial by importing some useful stuff.
 
 # The constants that are defined in config.json:
+import os
+
+# And a couple external libraries:
+import numpy as np
+
 import config.config_constants as cfg
+
 # Useful classes:
 import config.config_objects as cfg_obj
-# The utility that TMRL uses to partially instantiate classes:
-from util import partial
+
 # The TMRL three main entities (i.e., the Trainer, the RolloutWorker and the central Server):
-from networking import Trainer, RolloutWorker, Server
+from networking import RolloutWorker, Server, Trainer
 
 # The training class that we will customize with our own training algorithm in this tutorial:
 from training_offline import TrainingOffline
 
-# And a couple external libraries:
-import numpy as np
-import os
+# The utility that TMRL uses to partially instantiate classes:
+from util import partial
 
 # Now, let us look into the content of config.json:
 
@@ -74,7 +79,8 @@ import os
 # or you can change them in the TMRL config.json file (recommended).
 
 # Maximum number of training 'epochs':
-# (training is checkpointed at the end of each 'epoch', this is also when training metrics can be logged to wandb)
+# (training is checkpointed at the end of each 'epoch',
+# this is also when training metrics can be logged to wandb).
 epochs = cfg.TMRL_CONFIG["MAX_EPOCHS"]
 
 # Number of rounds per 'epoch':
@@ -90,7 +96,8 @@ steps = cfg.TMRL_CONFIG["TRAINING_STEPS_PER_ROUND"]
 start_training = cfg.TMRL_CONFIG["ENVIRONMENT_STEPS_BEFORE_TRAINING"]
 
 # Maximum training steps / environment steps ratio:
-# (if training becomes faster than this ratio, it will be paused, waiting for new samples from the environment)
+# (if training becomes faster than this ratio, it will be paused,
+# waiting for new samples from the environment).
 max_training_steps_per_env_step = cfg.TMRL_CONFIG["MAX_TRAINING_STEPS_PER_ENVIRONMENT_STEP"]
 
 # Number of training steps performed between broadcasts of policy updates:
@@ -100,7 +107,7 @@ update_model_interval = cfg.TMRL_CONFIG["UPDATE_MODEL_INTERVAL"]
 update_buffer_interval = cfg.TMRL_CONFIG["UPDATE_BUFFER_INTERVAL"]
 
 # Training device (e.g., "cuda:0"):
-device_trainer = 'cuda' if cfg.CUDA_TRAINING else 'cpu'
+device_trainer = "cuda" if cfg.CUDA_TRAINING else "cpu"
 
 # Maximum size of the replay buffer:
 memory_size = cfg.TMRL_CONFIG["MEMORY_SIZE"]
@@ -113,19 +120,25 @@ batch_size = cfg.TMRL_CONFIG["BATCH_SIZE"]
 # (Also, please use your own wandb account if you are going to log huge stuff :) )
 
 wandb_run_id = cfg.WANDB_RUN_ID  # change this by a name of your choice for your run
-wandb_project = cfg.TMRL_CONFIG["WANDB_PROJECT"]  # name of the wandb project in which your run will appear
+wandb_project = cfg.TMRL_CONFIG[
+    "WANDB_PROJECT"
+]  # name of the wandb project in which your run will appear
 wandb_entity = cfg.TMRL_CONFIG["WANDB_ENTITY"]  # wandb account
 wandb_key = cfg.TMRL_CONFIG["WANDB_KEY"]  # wandb API key
 
-os.environ['WANDB_API_KEY'] = wandb_key  # this line sets your wandb API key as the active key
+os.environ["WANDB_API_KEY"] = wandb_key  # this line sets your wandb API key as the active key
 
 # Number of time-steps after which episodes collected by the worker are truncated:
 max_samples_per_episode = cfg.TMRL_CONFIG["RW_MAX_SAMPLES_PER_EPISODE"]
 
 # Networking parameters:
 # (In TMRL, networking is managed by tlspyo. The following are tlspyo parameters.)
-server_ip_for_trainer = cfg.SERVER_IP_FOR_TRAINER  # IP of the machine running the Server (trainer point of view)
-server_ip_for_worker = cfg.SERVER_IP_FOR_WORKER  # IP of the machine running the Server (worker point of view)
+server_ip_for_trainer = (
+    cfg.SERVER_IP_FOR_TRAINER
+)  # IP of the machine running the Server (trainer point of view)
+server_ip_for_worker = (
+    cfg.SERVER_IP_FOR_WORKER
+)  # IP of the machine running the Server (worker point of view)
 server_port = cfg.PORT  # port used to communicate with this machine
 password = cfg.PASSWORD  # password that secures your communication
 security = cfg.SECURITY  # when training over the Internet, it is safer to change this to "TLS"
@@ -154,7 +167,8 @@ sample_preprocessor = None
 dataset_path = cfg.DATASET_PATH
 
 # Preprocessor applied by the worker to the observations it collects:
-# (Note: if your script defines the name "obs_preprocessor", we will use your preprocessor instead of the default)
+# (Note: if your script defines the name "obs_preprocessor",
+# we will use your preprocessor instead of the default).
 obs_preprocessor = cfg_obj.OBS_PREPROCESSOR
 
 # =====================================================================
@@ -165,8 +179,9 @@ obs_preprocessor = cfg_obj.OBS_PREPROCESSOR
 # rtgym environment class (full TrackMania Gymnasium environment):
 env_cls = cfg_obj.ENV_CLS
 
-# Device used for inference on workers (change if you like but keep in mind that the competition evaluation is on CPU)
-device_worker = 'cpu'
+# Device used for inference on workers
+# (change if you like but keep in mind that the competition evaluation is on CPU).
+device_worker = "cpu"
 
 # =====================================================================
 # ENVIRONMENT PARAMETERS
@@ -203,14 +218,16 @@ act_buf_len = cfg.ACT_BUF_LEN
 # If you need a custom memory, change the relevant advanced parameters.
 # Custom memories are described in the full TMRL tutorial.
 
-memory_cls = partial(memory_base_cls,
-                     memory_size=memory_size,
-                     batch_size=batch_size,
-                     sample_preprocessor=sample_preprocessor,
-                     dataset_path=cfg.DATASET_PATH,
-                     imgs_obs=imgs_buf_len,
-                     act_buf_len=act_buf_len,
-                     crc_debug=False)
+memory_cls = partial(
+    memory_base_cls,
+    memory_size=memory_size,
+    batch_size=batch_size,
+    sample_preprocessor=sample_preprocessor,
+    dataset_path=cfg.DATASET_PATH,
+    imgs_obs=imgs_buf_len,
+    act_buf_len=act_buf_len,
+    crc_debug=False,
+)
 
 # =====================================================================
 # CUSTOM MODEL
@@ -232,15 +249,15 @@ LOG_STD_MIN = -20
 # Let us import the ActorModule that we are supposed to implement.
 # We will use PyTorch in this tutorial.
 # TMRL readily provides a PyTorch-specific subclass of ActorModule:
-from actor import TorchActorModule
+from math import floor
 
 # Plus a couple useful imports:
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.distributions.normal import Normal
-from math import floor
 
+from actor import TorchActorModule
 
 # In the full version of the TrackMania 2020 environment, the
 # observation-space comprises a history of screenshots. Thus, we need
@@ -281,10 +298,26 @@ def num_flat_features(x):
 
 # The next utility computes the dimensionality of the output in a 2D CNN layer:
 def conv2d_out_dims(conv_layer, h_in, w_in):
-    h_out = floor((h_in + 2 * conv_layer.padding[0] - conv_layer.dilation[0] * (conv_layer.kernel_size[0] - 1) - 1) /
-                  conv_layer.stride[0] + 1)
-    w_out = floor((w_in + 2 * conv_layer.padding[1] - conv_layer.dilation[1] * (conv_layer.kernel_size[1] - 1) - 1) /
-                  conv_layer.stride[1] + 1)
+    h_out = floor(
+        (
+            h_in
+            + 2 * conv_layer.padding[0]
+            - conv_layer.dilation[0] * (conv_layer.kernel_size[0] - 1)
+            - 1
+        )
+        / conv_layer.stride[0]
+        + 1
+    )
+    w_out = floor(
+        (
+            w_in
+            + 2 * conv_layer.padding[1]
+            - conv_layer.dilation[1] * (conv_layer.kernel_size[1] - 1)
+            - 1
+        )
+        / conv_layer.stride[1]
+        + 1
+    )
     return h_out, w_out
 
 
@@ -297,7 +330,7 @@ class VanillaCNN(nn.Module):
         Args:
             q_net (bool): indicates whether this neural net is a critic network
         """
-        super(VanillaCNN, self).__init__()
+        super().__init__()
 
         self.q_net = q_net
 
@@ -321,7 +354,8 @@ class VanillaCNN(nn.Module):
         # The MLP input will be formed of:
         # - the flattened CNN output
         # - the current speed, gear and RPM measurements (3 floats)
-        # - the 2 previous actions (2 x 3 floats), important because of the real-time nature of our controller
+        # - the 2 previous actions (2 x 3 floats),
+        # important because of the real-time nature of our controller
         # - when the module is the critic, the selected action (3 floats)
         float_features = 12 if self.q_net else 9
         self.mlp_input_features = self.flat_features + float_features
@@ -362,11 +396,13 @@ class VanillaCNN(nn.Module):
         # Now we will flatten our output feature map.
         # Let us double-check that our dimensions are what we expect them to be:
         flat_features = num_flat_features(x)
-        assert flat_features == self.flat_features, f"x.shape:{x.shape},\
+        assert flat_features == self.flat_features, (
+            f"x.shape:{x.shape},\
                                                     flat_features:{flat_features},\
                                                     self.out_channels:{self.out_channels},\
                                                     self.h_out:{self.h_out},\
                                                     self.w_out:{self.w_out}"
+        )
         # All good, let us flatten our output feature map:
         x = x.view(-1, flat_features)
 
@@ -466,7 +502,7 @@ class MyActorModule(TorchActorModule):
         Args:
             path: pathlib.Path: path to where the object will be stored.
         """
-        with open(path, 'w') as json_file:
+        with open(path, "w") as json_file:
             json.dump(self.state_dict(), json_file, cls=TorchJSONEncoder)
         # torch.save(self.state_dict(), path)
 
@@ -484,7 +520,7 @@ class MyActorModule(TorchActorModule):
             The loaded ActorModule instance
         """
         self.device = device
-        with open(path, 'r') as json_file:
+        with open(path) as json_file:
             state_dict = json.load(json_file, cls=TorchJSONDecoder)
         self.load_state_dict(state_dict)
         self.to_device(device)
@@ -525,7 +561,9 @@ class MyActorModule(TorchActorModule):
         if test:
             pi_action = mu  # at test time, our action is deterministic (it is just the means)
         else:
-            pi_action = pi_distribution.rsample()  # during training, it is sampled in the multivariate gaussian
+            pi_action = (
+                pi_distribution.rsample()
+            )  # during training, it is sampled in the multivariate gaussian
         # We retrieve the log probabilities of our multivariate gaussian as they will be useful for SAC:
         if compute_logprob:
             logp_pi = pi_distribution.log_prob(pi_action).sum(axis=-1)
@@ -627,22 +665,22 @@ class VanillaCNNActorCritic(nn.Module):
 # this ActorModule. Let us now tackle the training algorithm per-se.
 # In TMRL, this is done by implementing a custom TrainingAgent.
 
-from training import TrainingAgent
-
-# We will also use a couple utilities, and the Adam optimizer:
-
-from custom.utils.nn import copy_shared, no_grad
-from util import cached_property
-from copy import deepcopy
 import itertools
+from copy import deepcopy
+
 from torch.optim import Adam
 
+# We will also use a couple utilities, and the Adam optimizer:
+from custom.utils.nn import copy_shared, no_grad
+from training import TrainingAgent
+from util import cached_property
 
 # A TrainingAgent must implement two methods:
 # -> train(batch): optimizes the model from a batch of RL samples
 # -> get_actor(): outputs a copy of the current ActorModule
 # In this tutorial, we implement the Soft Actor-Critic algorithm
 # by adapting the OpenAI Spinup implementation.
+
 
 class SACTrainingAgent(TrainingAgent):
     """
@@ -662,21 +700,23 @@ class SACTrainingAgent(TrainingAgent):
     # no-grad copy of the model used to send the Actor weights in get_actor():
     model_nograd = cached_property(lambda self: no_grad(copy_shared(self.model)))
 
-    def __init__(self,
-                 observation_space=None,  # Gymnasium observation space (required argument here for your convenience)
-                 action_space=None,  # Gymnasium action space (required argument here for your convenience)
-                 device=None,  # Device our TrainingAgent should use for training (required argument)
-                 model_cls=VanillaCNNActorCritic,  # An actor-critic module, encapsulating our ActorModule
-                 gamma=0.99,  # Discount factor
-                 polyak=0.995,  # Exponential averaging factor for the target critic
-                 alpha=0.2,  # Value of the entropy coefficient
-                 lr_actor=1e-3,  # Learning rate for the actor
-                 lr_critic=1e-3):  # Learning rate for the critic
+    def __init__(
+        self,
+        observation_space=None,  # Gymnasium observation space (required argument here for your convenience)
+        action_space=None,  # Gymnasium action space (required argument here for your convenience)
+        device=None,  # Device our TrainingAgent should use for training (required argument)
+        model_cls=VanillaCNNActorCritic,  # An actor-critic module, encapsulating our ActorModule
+        gamma=0.99,  # Discount factor
+        polyak=0.995,  # Exponential averaging factor for the target critic
+        alpha=0.2,  # Value of the entropy coefficient
+        lr_actor=1e-3,  # Learning rate for the actor
+        lr_critic=1e-3,
+    ):  # Learning rate for the critic
 
         # required arguments passed to the superclass:
-        super().__init__(observation_space=observation_space,
-                         action_space=action_space,
-                         device=device)
+        super().__init__(
+            observation_space=observation_space, action_space=action_space, device=device
+        )
 
         # custom stuff:
         model = model_cls(observation_space, action_space)
@@ -796,13 +836,15 @@ class SACTrainingAgent(TrainingAgent):
 # The following have shown reasonable results in the past, using the full TrackMania environment.
 # Note however that training a policy with SAC in this environment is a matter of several days!
 
-training_agent_cls = partial(SACTrainingAgent,
-                             model_cls=VanillaCNNActorCritic,
-                             gamma=0.995,
-                             polyak=0.995,
-                             alpha=0.01,
-                             lr_actor=0.00001,
-                             lr_critic=0.00005)
+training_agent_cls = partial(
+    SACTrainingAgent,
+    model_cls=VanillaCNNActorCritic,
+    gamma=0.995,
+    polyak=0.995,
+    alpha=0.01,
+    lr_actor=0.00001,
+    lr_critic=0.00005,
+)
 
 # =====================================================================
 # TMRL TRAINER
@@ -822,8 +864,7 @@ training_cls = partial(
     start_training=start_training,
     device=device_trainer,
     python_profiling=cfg.PROFILE_TRAINER,
-    pytorch_profiling=cfg.PYTORCH_PROFILER
-
+    pytorch_profiling=cfg.PYTORCH_PROFILER,
 )
 
 # =====================================================================
@@ -844,18 +885,22 @@ if __name__ == "__main__":
     from argparse import ArgumentParser
 
     parser = ArgumentParser()
-    parser.add_argument('--server', action='store_true', help='launches the server')
-    parser.add_argument('--trainer', action='store_true', help='launches the trainer')
-    parser.add_argument('--worker', action='store_true', help='launches a rollout worker')
-    parser.add_argument('--test', action='store_true', help='launches a rollout worker in standalone mode')
+    parser.add_argument("--server", action="store_true", help="launches the server")
+    parser.add_argument("--trainer", action="store_true", help="launches the trainer")
+    parser.add_argument("--worker", action="store_true", help="launches a rollout worker")
+    parser.add_argument(
+        "--test", action="store_true", help="launches a rollout worker in standalone mode"
+    )
     args = parser.parse_args()
 
     if args.trainer:
-        my_trainer = Trainer(training_cls=training_cls,
-                             server_ip=server_ip_for_trainer,
-                             server_port=server_port,
-                             password=password,
-                             security=security)
+        my_trainer = Trainer(
+            training_cls=training_cls,
+            server_ip=server_ip_for_trainer,
+            server_port=server_port,
+            password=password,
+            security=security,
+        )
         my_trainer.run()
 
         # Note: if you want to log training metrics to wandb, replace my_trainer.run() with:
@@ -864,23 +909,23 @@ if __name__ == "__main__":
         #                           run_id=wandb_run_id)
 
     elif args.worker or args.test:
-        rw = RolloutWorker(env_cls=env_cls,
-                           actor_module_cls=MyActorModule,
-                           sample_compressor=sample_compressor,
-                           device=device_worker,
-                           server_ip=server_ip_for_worker,
-                           server_port=server_port,
-                           password=password,
-                           security=security,
-                           max_samples_per_episode=max_samples_per_episode,
-                           obs_preprocessor=obs_preprocessor,
-                           standalone=args.test)
+        rw = RolloutWorker(
+            env_cls=env_cls,
+            actor_module_cls=MyActorModule,
+            sample_compressor=sample_compressor,
+            device=device_worker,
+            server_ip=server_ip_for_worker,
+            server_port=server_port,
+            password=password,
+            security=security,
+            max_samples_per_episode=max_samples_per_episode,
+            obs_preprocessor=obs_preprocessor,
+            standalone=args.test,
+        )
         rw.run(test_episode_interval=10)
     elif args.server:
         import time
 
-        serv = Server(port=server_port,
-                      password=password,
-                      security=security)
+        serv = Server(port=server_port, password=password, security=security)
         while True:
             time.sleep(1.0)

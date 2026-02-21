@@ -1,4 +1,6 @@
 # standard library imports
+# local imports
+import logging
 import random
 import time
 
@@ -6,9 +8,6 @@ import time
 import gymnasium
 from gymnasium import spaces
 from rtgym.envs.real_time_env import DEFAULT_CONFIG_DICT
-
-# local imports
-import logging
 
 from custom.interfaces.TM2020InterfaceLidar import TM2020InterfaceLidar
 
@@ -18,14 +17,18 @@ ACT_COMPUTE_MAX = 0.05
 
 
 def benchmark():
-    action_space = spaces.Box(low=-1.0, high=1.0, shape=(3, ))
+    action_space = spaces.Box(low=-1.0, high=1.0, shape=(3,))
 
     env_config = DEFAULT_CONFIG_DICT.copy()
     env_config["interface"] = TM2020InterfaceLidar
     env_config["benchmark"] = True
     env_config["running_average_factor"] = 0.05
     env_config["wait_on_done"] = True
-    env_config["interface_kwargs"] = {"img_hist_len": 1, "gamepad": False, "min_nb_steps_before_failure": int(20 * 60)}
+    env_config["interface_kwargs"] = {
+        "img_hist_len": 1,
+        "gamepad": False,
+        "min_nb_steps_before_failure": int(20 * 60),
+    }
     env = gymnasium.make("real-time-gym-v1", config=env_config)
 
     t_d = time.time()

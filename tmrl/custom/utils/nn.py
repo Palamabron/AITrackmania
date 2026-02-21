@@ -1,13 +1,12 @@
 # standard library imports
 from copy import deepcopy
-from dataclasses import InitVar, dataclass
 
 # third-party imports
 import numpy as np
 import torch
 from torch.distributions import Distribution, Normal
 from torch.nn import Module
-from torch.nn.init import calculate_gain, kaiming_uniform_, xavier_uniform_
+from torch.nn.init import kaiming_uniform_
 from torch.nn.parameter import Parameter
 
 # local imports
@@ -15,10 +14,10 @@ from util import partial
 
 
 def detach(x):
-    '''
+    """
     Functionality: Detaches a tensor if it is a torch tensor, otherwise recursively detaches tensors from elements within the object.
     Returns: Detached tensor or a detached version of the object.
-    '''
+    """
     if isinstance(x, torch.Tensor):
         return x.detach()
     else:
@@ -26,19 +25,19 @@ def detach(x):
 
 
 def no_grad(model):
-    '''
+    """
     Functionality: Sets requires_grad attribute of all parameters in the model to False.
     Returns: The modified model with requires_grad set to False for all parameters.
-    '''
+    """
     for p in model.parameters():
         p.requires_grad = False
     return model
 
 
 def exponential_moving_average(averages, values, factor):
-    '''
+    """
     Functionality: Updates the averages using exponential moving average formula for the given values and factor.
-    '''
+    """
     with torch.no_grad():
         for a, v in zip(averages, values):
             a += factor * (v - a)  # equivalent to a = (1-factor) * a + factor * v
@@ -58,13 +57,20 @@ def copy_shared(model_a):
 
 class PopArt(Module):
     """PopArt http://papers.nips.cc/paper/6076-learning-values-across-many-orders-of-magnitude"""
-    def __init__(self, output_layer, beta: float = 0.0003, zero_debias: bool = True, start_pop: int = 8):
+
+    def __init__(
+        self, output_layer, beta: float = 0.0003, zero_debias: bool = True, start_pop: int = 8
+    ):
         # zero_debias=True and start_pop=8 seem to improve things a little but (False, 0) works as well
         super().__init__()
         self.start_pop = start_pop
         self.beta = beta
         self.zero_debias = zero_debias
-        self.output_layers = output_layer if isinstance(output_layer, (tuple, list, torch.nn.ModuleList)) else (output_layer, )
+        self.output_layers = (
+            output_layer
+            if isinstance(output_layer, (tuple, list, torch.nn.ModuleList))
+            else (output_layer,)
+        )
         shape = self.output_layers[0].bias.shape
         device = self.output_layers[0].bias.device
         assert all(shape == x.bias.shape for x in self.output_layers)
@@ -75,9 +81,9 @@ class PopArt(Module):
 
     @torch.no_grad()
     def update(self, targets):
-        '''
-         Updates the internal state based on the given target values and normalizes the targets.
-        '''
+        """
+        Updates the internal state based on the given target values and normalizes the targets.
+        """
         beta = max(1 / (self.updates + 1), self.beta) if self.zero_debias else self.beta
         # note that for beta = 1/self.updates the resulting mean, std would be the true mean and std over all past data
 
@@ -101,15 +107,15 @@ class PopArt(Module):
         return self.normalize(targets)
 
     def normalize(self, x):
-        '''
+        """
         Normalizes the input tensor.
-        '''
+        """
         return (x - self.mean) / self.std
 
     def unnormalize(self, x):
-        '''
+        """
         Un-normalizes the input tensor.
-        '''
+        """
         return x * self.std + self.mean
 
     def normalize_sum(self, s):
@@ -122,6 +128,7 @@ class TanhNormal(Distribution):
     """Distribution of X ~ tanh(Z) where Z ~ N(mean, std)
     Adapted from https://github.com/vitchyr/rlkit
     """
+
     def __init__(self, normal_mean, normal_std, epsilon=1e-6):
         self.normal_mean = normal_mean
         self.normal_std = normal_std
@@ -130,9 +137,9 @@ class TanhNormal(Distribution):
         super().__init__(self.normal.batch_shape, self.normal.event_shape)
 
     def log_prob(self, x):
-        '''
-         Calculates the log probability of a given value.
-        '''
+        """
+        Calculates the log probability of a given value.
+        """
         if hasattr(x, "pre_tanh_value"):
             pre_tanh_value = x.pre_tanh_value
         else:
@@ -141,9 +148,9 @@ class TanhNormal(Distribution):
         return self.normal.log_prob(pre_tanh_value) - torch.log(1 - x * x + self.epsilon)
 
     def sample(self, sample_shape=torch.Size()):
-        '''
+        """
         Samples from the distribution.
-        '''
+        """
         z = self.normal.sample(sample_shape)
         out = torch.tanh(z)
         out.pre_tanh_value = z
@@ -191,7 +198,7 @@ class RlkitLinear(torch.nn.Linear):
         # this mistake seems to be in rlkit too
         # https://github.com/vitchyr/rlkit/blob/master/rlkit/torch/pytorch_util.py
         fan_in = self.weight.shape[0]  # this is actually fanout!!!
-        bound = 1. / np.sqrt(fan_in)
+        bound = 1.0 / np.sqrt(fan_in)
         self.weight.data.uniform_(-bound, bound)
         self.bias.data.fill_(0.1)
 
@@ -211,7 +218,9 @@ class BasicReLU(torch.nn.Linear):
 
 
 class AffineReLU(BasicReLU):
-    def __init__(self, in_features, out_features, init_weight_bound: float = 1., init_bias: float = 0.):
+    def __init__(
+        self, in_features, out_features, init_weight_bound: float = 1.0, init_bias: float = 0.0
+    ):
         super().__init__(in_features, out_features)
         bound = init_weight_bound / np.sqrt(in_features)
         self.weight.data.uniform_(-bound, bound)
@@ -220,7 +229,11 @@ class AffineReLU(BasicReLU):
 
 class NormalizedReLU(torch.nn.Sequential):
     def __init__(self, in_features, out_features, prenorm_bias=True):
-        super().__init__(torch.nn.Linear(in_features, out_features, bias=prenorm_bias), torch.nn.LayerNorm(out_features), torch.nn.ReLU())
+        super().__init__(
+            torch.nn.Linear(in_features, out_features, bias=prenorm_bias),
+            torch.nn.LayerNorm(out_features),
+            torch.nn.ReLU(),
+        )
 
 
 class KaimingReLU(torch.nn.Linear):
@@ -228,32 +241,38 @@ class KaimingReLU(torch.nn.Linear):
         super().__init__(in_features, out_features)
         with torch.no_grad():
             kaiming_uniform_(self.weight)
-            self.bias.fill_(0.)
+            self.bias.fill_(0.0)
 
     def forward(self, x):
         x = super().forward(x)
         return torch.relu(x)
 
 
-Linear10 = partial(AffineReLU, init_bias=1.)
+Linear10 = partial(AffineReLU, init_bias=1.0)
 Linear04 = partial(AffineReLU, init_bias=0.4)
 LinearConstBias = partial(AffineReLU, init_bias=0.1)
-LinearZeroBias = partial(AffineReLU, init_bias=0.)
-AffineSimon = partial(AffineReLU, init_weight_bound=0.01, init_bias=1.)
+LinearZeroBias = partial(AffineReLU, init_bias=0.0)
+AffineSimon = partial(AffineReLU, init_weight_bound=0.01, init_bias=1.0)
 
 
 def dqn_conv(n):
-    '''
+    """
     Creates a DQN convolutional neural network architecture.
-    '''
-    return torch.nn.Sequential(torch.nn.Conv2d(n, 32, kernel_size=8, stride=4), torch.nn.ReLU(), torch.nn.Conv2d(32, 64, kernel_size=4, stride=2), torch.nn.ReLU(),
-                               torch.nn.Conv2d(64, 64, kernel_size=3, stride=1), torch.nn.ReLU())
+    """
+    return torch.nn.Sequential(
+        torch.nn.Conv2d(n, 32, kernel_size=8, stride=4),
+        torch.nn.ReLU(),
+        torch.nn.Conv2d(32, 64, kernel_size=4, stride=2),
+        torch.nn.ReLU(),
+        torch.nn.Conv2d(64, 64, kernel_size=3, stride=1),
+        torch.nn.ReLU(),
+    )
 
 
 def big_conv(n):
-    '''
+    """
     Creates a larger convolutional neural network architecture.
-    '''
+    """
     # if input shape = 64 x 256 then output shape = 2 x 26
     return torch.nn.Sequential(
         torch.nn.Conv2d(n, 64, 8, stride=2),
@@ -268,9 +287,9 @@ def big_conv(n):
 
 
 def hd_conv(n):
-    '''
+    """
     Creates a convolutional neural network architecture with more layers.
-    '''
+    """
     return torch.nn.Sequential(
         torch.nn.Conv2d(n, 32, 8, stride=2),
         torch.nn.LeakyReLU(),

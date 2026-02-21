@@ -1,21 +1,20 @@
-import os
+import json
 import platform
+import socket
 import sys
-from setuptools import find_packages, setup
+import urllib.error
+import urllib.request
 from pathlib import Path
 from shutil import copy2
 from zipfile import ZipFile
-import urllib.request
-import urllib.error
-import socket
-import config.config_constants as cfg
 
+from setuptools import find_packages, setup
 
-TMRL_VERSION = '0.7.1'
+TMRL_VERSION = "0.7.1"
 
 
 if sys.version_info < (3, 7):
-    sys.exit('Sorry, Python < 3.7 is not supported.')
+    sys.exit("Sorry, Python < 3.7 is not supported.")
 
 
 # NB: the following code is duplicated under tmrl.tools.init_package.init_tmrl,
@@ -62,16 +61,19 @@ if not TMRL_FOLDER.exists():
     url_retrieve(RESOURCES_URL, RESOURCES_TARGET)
 
     # unzip downloaded resources:
-    with ZipFile(RESOURCES_TARGET, 'r') as zip_ref:
+    with ZipFile(RESOURCES_TARGET, "r") as zip_ref:
         zip_ref.extractall(TMRL_FOLDER)
 
     # delete zip file:
     RESOURCES_TARGET.unlink()
 
-    # copy relevant files:
+    # copy relevant files (read MAP_NAME from extracted config to avoid importing tmrl)
     RESOURCES_FOLDER = TMRL_FOLDER / "resources"
     copy2(RESOURCES_FOLDER / "config.json", CONFIG_FOLDER)
-    copy2(RESOURCES_FOLDER / str("reward_" + cfg.MAP_NAME + ".pkl"), REWARD_FOLDER)
+    with open(RESOURCES_FOLDER / "config.json") as f:
+        _env_config = json.load(f).get("ENV", {})
+    _map_name = _env_config.get("MAP_NAME", "Trackmania")
+    copy2(RESOURCES_FOLDER / str("reward_" + _map_name + ".pkl"), REWARD_FOLDER)
     copy2(RESOURCES_FOLDER / "SAC_4_LIDAR_pretrained.tmod", WEIGHTS_FOLDER)
     copy2(RESOURCES_FOLDER / "SAC_4_imgs_pretrained.tmod", WEIGHTS_FOLDER)
 
@@ -83,30 +85,35 @@ if not TMRL_FOLDER.exists():
             # copy the OpenPlanet script:
             try:
                 # remove old script if found
-                OP_SCRIPTS_FOLDER = OPENPLANET_FOLDER / 'Scripts'
+                OP_SCRIPTS_FOLDER = OPENPLANET_FOLDER / "Scripts"
                 if OP_SCRIPTS_FOLDER.exists():
-                    to_remove = [OP_SCRIPTS_FOLDER / 'Plugin_GrabData_0_1.as',
-                                 OP_SCRIPTS_FOLDER / 'Plugin_GrabData_0_1.as.sig',
-                                 OP_SCRIPTS_FOLDER / 'Plugin_GrabData_0_2.as',
-                                 OP_SCRIPTS_FOLDER / 'Plugin_GrabData_0_2.as.sig']
+                    to_remove = [
+                        OP_SCRIPTS_FOLDER / "Plugin_GrabData_0_1.as",
+                        OP_SCRIPTS_FOLDER / "Plugin_GrabData_0_1.as.sig",
+                        OP_SCRIPTS_FOLDER / "Plugin_GrabData_0_2.as",
+                        OP_SCRIPTS_FOLDER / "Plugin_GrabData_0_2.as.sig",
+                    ]
                     for old_file in to_remove:
                         if old_file.exists():
                             old_file.unlink()
                 # copy new plugin
-                OP_PLUGINS_FOLDER = OPENPLANET_FOLDER / 'Plugins'
+                OP_PLUGINS_FOLDER = OPENPLANET_FOLDER / "Plugins"
                 OP_PLUGINS_FOLDER.mkdir(parents=True, exist_ok=True)
-                TM20_PLUGIN_1 = RESOURCES_FOLDER / 'Plugins' / 'TMRL_GrabData.op'
-                TM20_PLUGIN_2 = RESOURCES_FOLDER / 'Plugins' / 'TMRL_SaveGhost.op'
+                TM20_PLUGIN_1 = RESOURCES_FOLDER / "Plugins" / "TMRL_GrabData.op"
+                TM20_PLUGIN_2 = RESOURCES_FOLDER / "Plugins" / "TMRL_SaveGhost.op"
                 copy2(TM20_PLUGIN_1, OP_PLUGINS_FOLDER)
                 copy2(TM20_PLUGIN_2, OP_PLUGINS_FOLDER)
             except Exception as e:
                 print(
                     f"An exception was caught when trying to copy the OpenPlanet plugin automatically. \
-                    Please copy the plugin manually for TrackMania 2020 support. The caught exception was: {str(e)}.")
+                    Please copy the plugin manually for TrackMania 2020 support. The caught exception was: {str(e)}."
+                )
         else:
             # warn the user that OpenPlanet couldn't be found:
-            print(f"The OpenPlanet folder was not found at {OPENPLANET_FOLDER}. \
-            Please copy the OpenPlanet script and signature manually for TrackMania 2020 support.")
+            print(
+                f"The OpenPlanet folder was not found at {OPENPLANET_FOLDER}. \
+            Please copy the OpenPlanet script and signature manually for TrackMania 2020 support."
+            )
 
 
 # Metadata and dependencies are defined in pyproject.toml

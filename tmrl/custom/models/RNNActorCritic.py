@@ -3,10 +3,9 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 from torch.distributions import Normal
-import torch
 
 from custom.models.model_blocks import mlp
-from custom.models.model_constants import LOG_STD_MIN, LOG_STD_MAX
+from custom.models.model_constants import LOG_STD_MAX, LOG_STD_MIN
 from util import prod
 
 
@@ -19,14 +18,27 @@ def rnn(input_size, rnn_size, rnn_len):
     hidden_size = rnn_size
 
     gru = nn.GRU(
-        input_size=input_size, hidden_size=hidden_size, num_layers=num_rnn_layers,
-        bias=True, batch_first=True, dropout=0, bidirectional=False
+        input_size=input_size,
+        hidden_size=hidden_size,
+        num_layers=num_rnn_layers,
+        bias=True,
+        batch_first=True,
+        dropout=0,
+        bidirectional=False,
     )
     return gru
 
 
 class SquashedGaussianRNNActor(nn.Module):
-    def __init__(self, obs_space, act_space, rnn_size=100, rnn_len=2, mlp_sizes=(100, 100), activation=nn.ReLU):
+    def __init__(
+        self,
+        obs_space,
+        act_space,
+        rnn_size=100,
+        rnn_len=2,
+        mlp_sizes=(100, 100),
+        activation=nn.ReLU,
+    ):
         super().__init__()
         dim_obs = sum(prod(s for s in space.shape) for space in obs_space)
         dim_act = act_space.shape[0]
@@ -112,7 +124,15 @@ class RNNQFunction(nn.Module):
     The action is merged in the latent space after the RNN
     """
 
-    def __init__(self, obs_space, act_space, rnn_size=100, rnn_len=2, mlp_sizes=(100, 100), activation=nn.ReLU):
+    def __init__(
+        self,
+        obs_space,
+        act_space,
+        rnn_size=100,
+        rnn_len=2,
+        mlp_sizes=(100, 100),
+        activation=nn.ReLU,
+    ):
         super().__init__()
         dim_obs = sum(prod(s for s in space.shape) for space in obs_space)
         dim_act = act_space.shape[0]
@@ -167,13 +187,26 @@ class RNNQFunction(nn.Module):
 
 
 class RNNActorCritic(nn.Module):
-    def __init__(self, observation_space, action_space, rnn_size=100,
-                 rnn_len=2, mlp_sizes=(100, 100), activation=nn.ReLU):
+    def __init__(
+        self,
+        observation_space,
+        action_space,
+        rnn_size=100,
+        rnn_len=2,
+        mlp_sizes=(100, 100),
+        activation=nn.ReLU,
+    ):
         super().__init__()
 
         # act_limit = action_space.high[0]
 
         # build policy and value functions
-        self.actor = SquashedGaussianRNNActor(observation_space, action_space, rnn_size, rnn_len, mlp_sizes, activation)
-        self.q1 = RNNQFunction(observation_space, action_space, rnn_size, rnn_len, mlp_sizes, activation)
-        self.q2 = RNNQFunction(observation_space, action_space, rnn_size, rnn_len, mlp_sizes, activation)
+        self.actor = SquashedGaussianRNNActor(
+            observation_space, action_space, rnn_size, rnn_len, mlp_sizes, activation
+        )
+        self.q1 = RNNQFunction(
+            observation_space, action_space, rnn_size, rnn_len, mlp_sizes, activation
+        )
+        self.q2 = RNNQFunction(
+            observation_space, action_space, rnn_size, rnn_len, mlp_sizes, activation
+        )

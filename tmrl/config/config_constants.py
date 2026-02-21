@@ -1,14 +1,12 @@
 # standard library imports
 
-import logging
-
-import os
-from pathlib import Path
 import json
+import logging
+import os
 import platform
-from packaging import version
+from pathlib import Path
 
-from tmrl.custom.tm.utils.compute_reward import RewardFunction
+from packaging import version
 
 __compatibility__ = "0.6.0"
 
@@ -38,8 +36,9 @@ with open(CONFIG_FILE) as f:
 __err_msg = "Perform a clean installation:\n(1) Uninstall TMRL,\n(2) Delete the TmrlData folder,\n(3) Reinstall TMRL."
 assert "__VERSION__" in TMRL_CONFIG, "config.json is outdated. " + __err_msg
 CONFIG_VERSION = TMRL_CONFIG["__VERSION__"]
-assert version.parse(CONFIG_VERSION) >= version.parse(__compatibility__), \
+assert version.parse(CONFIG_VERSION) >= version.parse(__compatibility__), (
     f"config.json version ({CONFIG_VERSION}) must be >= {__compatibility__}. " + __err_msg
+)
 
 # GENERAL: ===========================================================
 
@@ -54,8 +53,12 @@ CUDA_INFERENCE = TMRL_CONFIG["CUDA_INFERENCE"]  # True if CUDA, False if CPU (ro
 
 PRAGMA_GAMEPAD = TMRL_CONFIG["VIRTUAL_GAMEPAD"]  # True to use gamepad, False to use keyboard
 
-LOCALHOST_WORKER = TMRL_CONFIG["LOCALHOST_WORKER"]  # set to True for RolloutWorkers on the same machine as the Server
-LOCALHOST_TRAINER = TMRL_CONFIG["LOCALHOST_TRAINER"]  # set to True for Trainers on the same machine as the Server
+LOCALHOST_WORKER = TMRL_CONFIG[
+    "LOCALHOST_WORKER"
+]  # set to True for RolloutWorkers on the same machine as the Server
+LOCALHOST_TRAINER = TMRL_CONFIG[
+    "LOCALHOST_TRAINER"
+]  # set to True for Trainers on the same machine as the Server
 PUBLIC_IP_SERVER = TMRL_CONFIG["PUBLIC_IP_SERVER"]
 
 SERVER_IP_FOR_WORKER = PUBLIC_IP_SERVER if not LOCALHOST_WORKER else "127.0.0.1"
@@ -96,7 +99,9 @@ if PRAGMA_PROGRESS or PRAGMA_TRACKMAP:
     PRAGMA_LIDAR = True
 LIDAR_BLACK_THRESHOLD = [55, 55, 55]  # [88, 88, 88] for tiny road, [55, 55, 55] FOR BASIC ROAD
 REWARD_CONFIG = ENV_CONFIG["REWARD_CONFIG"]
-SLEEP_TIME_AT_RESET = ENV_CONFIG["SLEEP_TIME_AT_RESET"]  # 1.5 to start in a Markov state with the lidar
+SLEEP_TIME_AT_RESET = ENV_CONFIG[
+    "SLEEP_TIME_AT_RESET"
+]  # 1.5 to start in a Markov state with the lidar
 IMG_HIST_LEN = ENV_CONFIG["IMG_HIST_LEN"]  # 4 without RNN, 1 with RNN
 ACT_BUF_LEN = ENV_CONFIG["RTGYM_CONFIG"]["act_buf_len"]
 WINDOW_WIDTH = ENV_CONFIG["WINDOW_WIDTH"]
@@ -106,7 +111,9 @@ IMG_WIDTH = ENV_CONFIG["IMG_WIDTH"] if "IMG_WIDTH" in ENV_CONFIG else 64
 IMG_HEIGHT = ENV_CONFIG["IMG_HEIGHT"] if "IMG_HEIGHT" in ENV_CONFIG else 64
 LINUX_X_OFFSET = ENV_CONFIG["LINUX_X_OFFSET"] if "LINUX_X_OFFSET" in ENV_CONFIG else 64
 LINUX_Y_OFFSET = ENV_CONFIG["LINUX_Y_OFFSET"] if "LINUX_Y_OFFSET" in ENV_CONFIG else 70
-IMG_SCALE_CHECK_ENV = ENV_CONFIG["IMG_SCALE_CHECK_ENV"] if "IMG_SCALE_CHECK_ENV" in ENV_CONFIG else 1.0
+IMG_SCALE_CHECK_ENV = (
+    ENV_CONFIG["IMG_SCALE_CHECK_ENV"] if "IMG_SCALE_CHECK_ENV" in ENV_CONFIG else 1.0
+)
 
 # DEBUGGING AND BENCHMARKING: ===================================
 # Only for checking the consistency of the custom networking methods, set it to False otherwise.
@@ -148,7 +155,7 @@ WANDB_KEY = TMRL_CONFIG["WANDB_KEY"]
 WANDB_GRADIENTS = TMRL_CONFIG["WANDB_GRADIENTS"]
 WANDB_DEBUG_REWARD = TMRL_CONFIG["WANDB_DEBUG_REWARD"]
 
-os.environ['WANDB_API_KEY'] = WANDB_KEY
+os.environ["WANDB_API_KEY"] = WANDB_KEY
 
 # NETWORKING: ==================================================
 
@@ -160,14 +167,19 @@ LOCAL_PORT_TRAINER = TMRL_CONFIG["LOCAL_PORT_TRAINER"]
 LOCAL_PORT_WORKER = TMRL_CONFIG["LOCAL_PORT_WORKER"]
 PASSWORD = TMRL_CONFIG["PASSWORD"]
 SECURITY = "TLS" if TMRL_CONFIG["TLS"] else None
-CREDENTIALS_DIRECTORY = TMRL_CONFIG["TLS_CREDENTIALS_DIRECTORY"] if TMRL_CONFIG[
-                                                                        "TLS_CREDENTIALS_DIRECTORY"] != "" else None
+CREDENTIALS_DIRECTORY = (
+    TMRL_CONFIG["TLS_CREDENTIALS_DIRECTORY"]
+    if TMRL_CONFIG["TLS_CREDENTIALS_DIRECTORY"] != ""
+    else None
+)
 HOSTNAME = TMRL_CONFIG["TLS_HOSTNAME"]
 NB_WORKERS = None if TMRL_CONFIG["NB_WORKERS"] < 0 else TMRL_CONFIG["NB_WORKERS"]
 
 # (200 000 000 is large enough for 1000 images right now)
 BUFFER_SIZE = TMRL_CONFIG["BUFFER_SIZE"]  # (268_435_456) socket buffer size
-HEADER_SIZE = TMRL_CONFIG["HEADER_SIZE"]  # fixed number of characters used to describe the data length
+HEADER_SIZE = TMRL_CONFIG[
+    "HEADER_SIZE"
+]  # fixed number of characters used to describe the data length
 
 # MODEL CONFIG =========================
 MODEL_CONFIG = TMRL_CONFIG["MODEL"]
@@ -211,7 +223,9 @@ def create_config():
     env_config = TMRL_CONFIG["ENV"]
 
     config["TRAINING_STEPS_PER_ROUND"] = model_config["TRAINING_STEPS_PER_ROUND"]
-    config["MAX_TRAINING_STEPS_PER_ENVIRONMENT_STEP"] = model_config["MAX_TRAINING_STEPS_PER_ENVIRONMENT_STEP"]
+    config["MAX_TRAINING_STEPS_PER_ENVIRONMENT_STEP"] = model_config[
+        "MAX_TRAINING_STEPS_PER_ENVIRONMENT_STEP"
+    ]
     config["ENVIRONMENT_STEPS_BEFORE_TRAINING"] = model_config["ENVIRONMENT_STEPS_BEFORE_TRAINING"]
     config["UPDATE_MODEL_INTERVAL"] = model_config["UPDATE_MODEL_INTERVAL"]
     config["UPDATE_BUFFER_INTERVAL"] = model_config["UPDATE_BUFFER_INTERVAL"]
@@ -270,7 +284,9 @@ def create_config():
     config["ACTOR_WEIGHT_DECAY"] = alg_config["ACTOR_WEIGHT_DECAY"]
     config["CRITIC_WEIGHT_DECAY"] = alg_config["CRITIC_WEIGHT_DECAY"]
     config["CLIPPING_WEIGHTS"] = alg_config["CLIPPING_WEIGHTS"]
-    config["CLIP_WEIGHTS_VALUE"] = 1.0 if not config["CLIPPING_WEIGHTS"] else alg_config["CLIP_WEIGHTS_VALUE"]
+    config["CLIP_WEIGHTS_VALUE"] = (
+        1.0 if not config["CLIPPING_WEIGHTS"] else alg_config["CLIP_WEIGHTS_VALUE"]
+    )
     config["POINTS_NUMBER"] = alg_config["NUMBER_OF_POINTS"]
     config["POINTS_DISTANCE"] = alg_config["POINTS_DISTANCE"]
     config["SPEED_BONUS"] = alg_config["SPEED_BONUS"]

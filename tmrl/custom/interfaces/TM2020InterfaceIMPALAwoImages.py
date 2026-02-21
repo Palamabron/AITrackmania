@@ -1,29 +1,39 @@
-import time
-
-import cv2
 import numpy as np
 from gymnasium import spaces
 
-from custom.interfaces.TM2020Interface import TM2020Interface
-from custom.utils.compute_reward import RewardFunction
-from custom.utils.control_mouse import mouse_save_replay_tm20
-
 import config.config_constants as cfg
+from custom.interfaces.TM2020Interface import TM2020Interface
+from custom.utils.control_mouse import mouse_save_replay_tm20
 
 
 class TM2020InterfaceIMPALAwoImages(TM2020Interface):
     def __init__(
-            self, img_hist_len=1, gamepad=False, min_nb_steps_before_failure=int(160),
-            record=False, save_replay: bool = False,
-            grayscale: bool = False, resize_to: tuple = (128, 64),
-            finish_reward=cfg.END_OF_TRACK_REWARD, constant_penalty: float = 0.05,
-            crash_penalty=cfg.CRASH_PENALTY, checkpoint_reward=cfg.CHECKPOINT_REWARD,
-            lap_reward=cfg.LAP_REWARD, nb_zero_rew_before_failure=70
+        self,
+        img_hist_len=1,
+        gamepad=False,
+        min_nb_steps_before_failure=160,
+        record=False,
+        save_replay: bool = False,
+        grayscale: bool = False,
+        resize_to: tuple = (128, 64),
+        finish_reward=cfg.END_OF_TRACK_REWARD,
+        constant_penalty: float = 0.05,
+        crash_penalty=cfg.CRASH_PENALTY,
+        checkpoint_reward=cfg.CHECKPOINT_REWARD,
+        lap_reward=cfg.LAP_REWARD,
+        nb_zero_rew_before_failure=70,
     ):
         super().__init__(
-            img_hist_len=img_hist_len, gamepad=gamepad, min_nb_steps_before_failure=min_nb_steps_before_failure,
-            save_replays=save_replay, grayscale=grayscale, finish_reward=finish_reward, resize_to=resize_to,
-            constant_penalty=constant_penalty, crash_penalty=crash_penalty, nb_zero_rew_before_failure=nb_zero_rew_before_failure
+            img_hist_len=img_hist_len,
+            gamepad=gamepad,
+            min_nb_steps_before_failure=min_nb_steps_before_failure,
+            save_replays=save_replay,
+            grayscale=grayscale,
+            finish_reward=finish_reward,
+            resize_to=resize_to,
+            constant_penalty=constant_penalty,
+            crash_penalty=crash_penalty,
+            nb_zero_rew_before_failure=nb_zero_rew_before_failure,
         )
         self.record = record
         self.window_interface = None
@@ -37,10 +47,10 @@ class TM2020InterfaceIMPALAwoImages(TM2020Interface):
         # https://gymnasium.farama.org/api/spaces/
         """Returns the observation space.
 
-            Returns:
-                observation_space: gymnasium.spaces.Tuple
+        Returns:
+            observation_space: gymnasium.spaces.Tuple
 
-            Note: Do NOT put the action buffer here (automated).
+        Note: Do NOT put the action buffer here (automated).
         """
         speed = spaces.Box(low=0.0, high=1000.0, shape=(1,))
 
@@ -64,18 +74,24 @@ class TM2020InterfaceIMPALAwoImages(TM2020Interface):
 
         failure_counter = spaces.Box(low=0.0, high=15, shape=(1,))
 
-        next_checkpoints = spaces.Box(low=-100.0, high=100.0, shape=(2 * self.points_number, ))
+        next_checkpoints = spaces.Box(low=-100.0, high=100.0, shape=(2 * self.points_number,))
 
         return spaces.Tuple(
             (
                 next_checkpoints,
-                speed, acceleration, jerk,
+                speed,
+                acceleration,
+                jerk,
                 race_progress,
-                input_steer, input_gas_pedal, input_brake,
+                input_steer,
+                input_gas_pedal,
+                input_brake,
                 gear,
-                aim_yaw, aim_pitch,
-                steer_angle, slip_coef,
-                failure_counter
+                aim_yaw,
+                aim_pitch,
+                steer_angle,
+                slip_coef,
+                failure_counter,
             )
         )
 
@@ -85,40 +101,40 @@ class TM2020InterfaceIMPALAwoImages(TM2020Interface):
 
     def get_obs_rew_terminated_info(self):
         """
-            returns the observation, the reward, and a terminated signal for end of episode
-            obs must be a list of numpy arrays
+        returns the observation, the reward, and a terminated signal for end of episode
+        obs must be a list of numpy arrays
         """
         data = self.grab_data()
         # print(f"data: {data}")
         cur_cp = int(data[0])
         cur_lap = int(data[1])
 
-        speed = np.array([data[2]], dtype='float32')
+        speed = np.array([data[2]], dtype="float32")
 
-        pos = np.array([data[3], data[4], data[5]], dtype='float32')
+        pos = np.array([data[3], data[4], data[5]], dtype="float32")
 
-        input_steer = np.array([data[6]], dtype='float32')
-        input_gas_pedal = np.array([data[7]], dtype='float32')
-        input_brake = np.array([data[8]], dtype='float32')
+        input_steer = np.array([data[6]], dtype="float32")
+        input_gas_pedal = np.array([data[7]], dtype="float32")
+        input_brake = np.array([data[8]], dtype="float32")
 
-        acceleration = np.array([data[10]], dtype='float32')
-        jerk = np.array([data[11]], dtype='float32')
+        acceleration = np.array([data[10]], dtype="float32")
+        jerk = np.array([data[11]], dtype="float32")
 
-        aim_yaw = np.array([data[12]], dtype='float32')
-        aim_pitch = np.array([data[13]], dtype='float32')
+        aim_yaw = np.array([data[12]], dtype="float32")
+        aim_pitch = np.array([data[13]], dtype="float32")
 
-        steer_angle = np.array(data[14:16], dtype='float32')
+        steer_angle = np.array(data[14:16], dtype="float32")
 
-        slip_coef = np.array(data[16:18], dtype='float32')
+        slip_coef = np.array(data[16:18], dtype="float32")
 
-        gear = np.array([data[18]], dtype='float32')
+        gear = np.array([data[18]], dtype="float32")
 
         rew, terminated, failure_counter, reward_sum = self.reward_function.compute_reward(
             pos=pos,  # position x,y,z
             crashed=bool(self.is_crashed),
             speed=speed[0],
             next_cp=self.cur_checkpoint < cur_cp,
-            next_lap=self.cur_lap < cur_lap
+            next_lap=self.cur_lap < cur_lap,
         )
 
         race_progress = self.reward_function.compute_race_progress()
@@ -136,19 +152,25 @@ class TM2020InterfaceIMPALAwoImages(TM2020Interface):
             if self.save_replays:
                 mouse_save_replay_tm20(True)
 
-        race_progress = np.array([race_progress], dtype='float32')
+        race_progress = np.array([race_progress], dtype="float32")
 
         failure_counter = np.array([float(failure_counter)])
         info = {"reward_sum": reward_sum}
 
         observation = [
-            speed, acceleration, jerk,
+            speed,
+            acceleration,
+            jerk,
             race_progress,
-            input_steer, input_gas_pedal, input_brake,
+            input_steer,
+            input_gas_pedal,
+            input_brake,
             gear,
-            aim_yaw, aim_pitch,
-            steer_angle, slip_coef,
-            failure_counter
+            aim_yaw,
+            aim_pitch,
+            steer_angle,
+            slip_coef,
+            failure_counter,
         ]
 
         total_obs = [next_checkpoints] + observation
@@ -169,25 +191,25 @@ class TM2020InterfaceIMPALAwoImages(TM2020Interface):
         self.cur_lap = 0
         self.cur_checkpoint = 0
 
-        speed = np.array([data[2]], dtype='float32')
+        speed = np.array([data[2]], dtype="float32")
 
-        pos = np.array([data[3], data[4], data[5]], dtype='float32')
+        pos = np.array([data[3], data[4], data[5]], dtype="float32")
 
-        input_steer = np.array([data[6]], dtype='float32')
-        input_gas_pedal = np.array([data[7]], dtype='float32')
-        input_brake = np.array([data[8]], dtype='float32')
+        input_steer = np.array([data[6]], dtype="float32")
+        input_gas_pedal = np.array([data[7]], dtype="float32")
+        input_brake = np.array([data[8]], dtype="float32")
         # isFinished 9
-        acceleration = np.array([data[10]], dtype='float32')
-        jerk = np.array([data[11]], dtype='float32')
+        acceleration = np.array([data[10]], dtype="float32")
+        jerk = np.array([data[11]], dtype="float32")
 
-        aim_yaw = np.array([data[12]], dtype='float32')
-        aim_pitch = np.array([data[13]], dtype='float32')
+        aim_yaw = np.array([data[12]], dtype="float32")
+        aim_pitch = np.array([data[13]], dtype="float32")
 
-        steer_angle = np.array(data[14:16], dtype='float32')
+        steer_angle = np.array(data[14:16], dtype="float32")
 
-        slip_coef = np.array(data[16:18], dtype='float32')
+        slip_coef = np.array(data[16:18], dtype="float32")
 
-        gear = np.array([data[18]], dtype='float32')
+        gear = np.array([data[18]], dtype="float32")
 
         failure_counter = np.array([0.0])
         race_progress = 0.0
@@ -195,13 +217,19 @@ class TM2020InterfaceIMPALAwoImages(TM2020Interface):
         next_checkpoints = self.reward_function.get_n_next_checkpoints_xy(pos, self.points_number)
 
         observation = [
-            speed, acceleration, jerk,
+            speed,
+            acceleration,
+            jerk,
             race_progress,
-            input_steer, input_gas_pedal, input_brake,
+            input_steer,
+            input_gas_pedal,
+            input_brake,
             gear,
-            aim_yaw, aim_pitch,
-            steer_angle, slip_coef,
-            failure_counter
+            aim_yaw,
+            aim_pitch,
+            steer_angle,
+            slip_coef,
+            failure_counter,
         ]
 
         total_obs = [next_checkpoints] + observation
