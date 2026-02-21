@@ -107,8 +107,9 @@ def init_tmrl_data():
                 copy2(tm20_plugin_2, op_plugins_folder)
             except Exception as e:
                 print(
-                    f"An exception was caught when trying to copy the OpenPlanet plugin automatically. \
-                    Please copy the plugin manually for TrackMania 2020 support. The caught exception was: {str(e)}."
+                    "Exception while copying the OpenPlanet plugin automatically. "
+                    "Please copy the plugin manually for TrackMania 2020 support. "
+                    f"The caught exception was: {e!s}.",
                 )
         else:
             # warn the user that OpenPlanet couldn't be found:

@@ -17,7 +17,7 @@ from importlib import import_module
 from pathlib import Path
 
 # from itertools import chain
-from typing import TypeVar
+from typing import Any, Callable, TypeVar, cast
 
 # from weakref import WeakKeyDictionary
 # third-party imports
@@ -33,7 +33,7 @@ def pandas_dict(*args, **kwargs) -> pd.Series:
     return pd.Series(dict(*args, **kwargs), dtype=object)
 
 
-def shallow_copy(obj: T) -> T:
+def shallow_copy[T](obj: T) -> T:
     x = type(obj).__new__(type(obj))
     vars(x).update(vars(obj))
     return x
@@ -44,9 +44,9 @@ def shallow_copy(obj: T) -> T:
 
 def collate_torch(batch, device=None):
     """
-    Turns a batch of nested structures with numpy arrays as leaves into into a single element of 
+    Turns a batch of nested structures with numpy arrays as leaves into into a single element of
     the same nested structure with batched torch tensors as leaves.
-    
+
     Args:
         batch: The batch to collate.
         device: The device to use for the collated batch.
@@ -84,7 +84,7 @@ def collate_torch(batch, device=None):
 
 
 # noinspection PyPep8Naming
-class cached_property:
+class cached_property:  # noqa: N801
     """Similar to `property` but after calling the getter/init function the result is cached.
     It can be used to create object attributes that aren't stored in the object's __dict__.
     This is useful if we want to exclude certain attributes from being pickled."""
@@ -114,13 +114,12 @@ def default():
     raise ValueError("This is a dummy function and not meant to be called.")
 
 
-def partial(func: type[T] = default, *args, **kwargs) -> T | type[T]:
+def partial[T](func: type[T] | Callable[..., Any] = default, *args: Any, **kwargs: Any) -> functools.partial[Any]:
     """
     Like `functools.partial`, except if used as a keyword argument for another `partial`
     and no function is supplied. Then, the outer `partial` will insert the appropriate
     default value as the function.
     """
-
     if func is not default:
         for k, v in kwargs.items():
             if isinstance(v, functools.partial) and v.func is default:
@@ -155,8 +154,11 @@ def get_class_or_function(func):
     return getattr(import_module(module), name)
 
 
-def partial_from_args(func: str | callable, kwargs: dict[str, str]):
-    func = get_class_or_function(func) if isinstance(func, str) else func
+def partial_from_args(func: str | Callable[..., Any], kwargs: dict[str, str]):
+    resolved: Callable[..., Any] = (
+        get_class_or_function(func) if isinstance(func, str) else func
+    )
+    func = cast(Callable[..., Any], resolved)
     keys = {k.split(".")[0] for k in kwargs}
     keywords = {}
     for key in keys:

@@ -112,13 +112,15 @@ def check_env_tm20full():
         o, r, d, t, i = env.step(None)
         show_imgs(o[3])
         logging.info(
-            f"r:{r:.2f}, d:{d}, t:{t}, o:[{o[0].item():05.01f}, {o[1].item():03.01f}, {o[2].item():07.01f}, imgs({len(o[3])})]"
+            f"r:{r:.2f}, d:{d}, t:{t}, o:[{o[0].item():05.01f}, {o[1].item():03.01f}, "
+            f"{o[2].item():07.01f}, imgs({len(o[3])})]"
         )
         if d or t:
             o, i = env.reset()
             show_imgs(o[3])
             logging.info(
-                f"o:[{o[0].item():05.01f}, {o[1].item():03.01f}, {o[2].item():07.01f}, imgs({len(o[3])})]"
+                f"o:[{o[0].item():05.01f}, {o[1].item():03.01f}, {o[2].item():07.01f}, "
+                f"imgs({len(o[3])})]"
             )
 
 

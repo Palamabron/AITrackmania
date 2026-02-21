@@ -1,9 +1,12 @@
+import itertools
 import random
 from copy import deepcopy
 from threading import Thread
+from typing import Any, Callable
 
 import numpy as np
 import torch
+import torch.nn.functional as F  # noqa: N812
 from torch.optim import Adam
 from tuto_envs.dummy_rc_drone_interface import DUMMY_RC_DRONE_CONFIG
 
@@ -11,6 +14,7 @@ import config.config_constants as cfg
 from actor import TorchActorModule
 from custom.utils.nn import copy_shared, no_grad
 from envs import GenericGymEnv
+from memory import TorchMemory
 from networking import RolloutWorker, Server, Trainer
 from training import TrainingAgent
 from training_offline import TorchTrainingOffline
@@ -18,7 +22,7 @@ from util import cached_property, partial, prod
 
 CRC_DEBUG = False
 
-# === Networking parameters ============================================================================================
+# === Networking parameters ===
 
 security = None
 password = cfg.PASSWORD
@@ -27,13 +31,13 @@ server_ip = "127.0.0.1"
 server_port = 6666
 
 
-# === Server ===========================================================================================================
+# === Server ===
 
 if __name__ == "__main__":
     my_server = Server(security=security, password=password, port=server_port)
 
 
-# === Environment ======================================================================================================
+# === Environment ===
 
 # rtgym interface:
 
@@ -54,9 +58,7 @@ print(f"action space: {act_space}")
 print(f"observation space: {obs_space}")
 
 
-# === Worker ===========================================================================================================
-
-import torch.nn.functional as F
+# === Worker ===
 
 # ActorModule:
 
@@ -133,7 +135,7 @@ def my_sample_compressor(prev_act, obs, rew, terminated, truncated, info):
     This decompressor is the append() or get_transition() method of the memory.
 
     Args:
-        prev_act: action computed from a previous observation and applied to yield obs in the transition
+        prev_act: action from previous observation that yielded obs
         obs, rew, terminated, truncated, info: outcome of the transition
     Returns:
         prev_act_mod: compressed prev_act
@@ -160,7 +162,7 @@ sample_compressor = my_sample_compressor
 
 # Device
 
-device = "cpu"
+device: str | None = "cpu"
 
 
 # Networking
@@ -199,7 +201,7 @@ if __name__ == "__main__":
     # my_worker.run(test_episode_interval=10)  # this would block the script here!
 
 
-# === Trainer ==========================================================================================================
+# === Trainer ===
 
 # --- Networking and files ---
 
@@ -220,8 +222,6 @@ env_cls = partial(GenericGymEnv, id="real-time-gym-ts-v1", gym_kwargs={"config":
 
 # Memory:
 
-from memory import TorchMemory
-
 
 def last_true_in_list(li):
     """
@@ -239,7 +239,7 @@ class MyMemory(TorchMemory):
         act_buf_len=None,
         device=None,
         nb_steps=None,
-        sample_preprocessor: callable = None,
+        sample_preprocessor: Callable[..., Any] | None = None,
         memory_size=1000000,
         batch_size=32,
         dataset_path="",
@@ -259,7 +259,8 @@ class MyMemory(TorchMemory):
 
     def append_buffer(self, buffer):
         """
-        buffer.memory is a list of compressed (act_mod, new_obs_mod, rew_mod, terminated_mod, truncated_mod, info_mod) samples
+        buffer.memory: list of compressed (act_mod, new_obs_mod, rew_mod,
+            terminated_mod, truncated_mod, info_mod) samples.
         """
 
         # decompose compressed samples into their relevant components:
@@ -362,8 +363,8 @@ class MyMemory(TorchMemory):
                 if eoe < self.act_buf_len - 1:
                     # last_act_buf is concerned
                     if item == 0:
-                        # we have a problem: the previous action has been discarded; we cannot recover the buffer
-                        # in this edge case, we randomly sample another item
+                        # Previous action discarded; cannot recover buffer.
+                        # In this edge case, randomly sample another item.
                         item = random.randint(1, self.__len__())
                         continue
                     last_act_buf_eoe = eoe
@@ -448,9 +449,6 @@ class MyActorCriticModule(torch.nn.Module):
         self.q2 = MyCriticModule(
             observation_space, action_space, hidden_sizes, activation
         )  # Q network 2
-
-
-import itertools
 
 
 class MyTrainingAgent(TrainingAgent):

@@ -1,8 +1,8 @@
 """
-This script is used to evaluate your submission to the TMRL competition.
-It assumes the script where you implemented your ActorModule is in the same folder and is named "custom_actor_module.py".
-It also assumes your ActorModule implementation is named "MyActorModule".
-When using this script, don't forget to set "SLEEP_TIME_AT_RESET" to 0.0 in config.json.
+Evaluate your submission to the TMRL competition.
+Assumes the ActorModule script is in the same folder and named "custom_actor_module.py",
+and that your ActorModule class is named "MyActorModule".
+Set "SLEEP_TIME_AT_RESET" to 0.0 in config.json when using this script.
 """
 
 import tmrl.config.config_constants as cfg
@@ -19,7 +19,7 @@ config = cfg_obj.CONFIG_DICT
 config["interface_kwargs"] = {"save_replays": True}
 env_cls = partial(GenericGymEnv, id=cfg.RTGYM_VERSION, gym_kwargs={"config": config})
 
-# Device used for inference on workers (change if you like but keep in mind that the competition evaluation is on CPU)
+# Device for inference (competition evaluation is on CPU)
 device_worker = "cpu"
 
 try:

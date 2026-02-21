@@ -34,7 +34,7 @@ def benchmark():
     t_d = time.time()
     o, i = env.reset()
     for idx in range(NB_STEPS - 1):
-        act = action_space.sample()
+        _ = action_space.sample()  # simulate action compute time
         time.sleep(random.uniform(ACT_COMPUTE_MIN, ACT_COMPUTE_MAX))
         # o, r, d, t, i = env.step(act)
         o, r, d, t, i, s_r = env.step(None)
