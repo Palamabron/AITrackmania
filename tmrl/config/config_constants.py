@@ -1,13 +1,27 @@
 # standard library imports
+
+import logging
+
 import os
 from pathlib import Path
-import logging
 import json
+import platform
+from packaging import version
 
-from custom.utils.compute_reward import RewardFunction
+from tmrl.custom.tm.utils.compute_reward import RewardFunction
 
-logging.basicConfig(level=logging.INFO)
+__compatibility__ = "0.6.0"
+
+# TMRL FOLDER: =======================================================
+
+SYSTEM = platform.system()
+RTGYM_VERSION = "real-time-gym-v1" if SYSTEM == "Windows" else "real-time-gym-ts-v1"
+
 TMRL_FOLDER = Path.home() / "TmrlData"
+
+if not TMRL_FOLDER.exists():
+    raise RuntimeError(f"Missing folder: {TMRL_FOLDER}")
+
 CHECKPOINTS_FOLDER = TMRL_FOLDER / "checkpoints"
 DATASET_FOLDER = TMRL_FOLDER / "dataset"
 REWARD_FOLDER = TMRL_FOLDER / "reward"
@@ -19,12 +33,18 @@ CONFIG_FILE = TMRL_FOLDER / "config" / "config.json"
 with open(CONFIG_FILE) as f:
     TMRL_CONFIG = json.load(f)
 
+# VERSION CHECK: =====================================================
+
+__err_msg = "Perform a clean installation:\n(1) Uninstall TMRL,\n(2) Delete the TmrlData folder,\n(3) Reinstall TMRL."
+assert "__VERSION__" in TMRL_CONFIG, "config.json is outdated. " + __err_msg
+CONFIG_VERSION = TMRL_CONFIG["__VERSION__"]
+assert version.parse(CONFIG_VERSION) >= version.parse(__compatibility__), \
+    f"config.json version ({CONFIG_VERSION}) must be >= {__compatibility__}. " + __err_msg
+
+# GENERAL: ===========================================================
+
 RUN_NAME = TMRL_CONFIG["RUN_NAME"]
-
-# Maximum length of the local buffers for RolloutWorkers, Server and TrainerInterface:
 BUFFERS_MAXLEN = TMRL_CONFIG["BUFFERS_MAXLEN"]
-
-# If this number of timesteps is reached, the RolloutWorker will reset the episode:
 RW_MAX_SAMPLES_PER_EPISODE = TMRL_CONFIG["RW_MAX_SAMPLES_PER_EPISODE"]
 
 PRAGMA_RNN = False  # True to use an RNN, False to use an MLP
@@ -75,7 +95,7 @@ USE_IMAGES = ENV_CONFIG["USE_IMAGES"]
 if PRAGMA_PROGRESS or PRAGMA_TRACKMAP:
     PRAGMA_LIDAR = True
 LIDAR_BLACK_THRESHOLD = [55, 55, 55]  # [88, 88, 88] for tiny road, [55, 55, 55] FOR BASIC ROAD
-
+REWARD_CONFIG = ENV_CONFIG["REWARD_CONFIG"]
 SLEEP_TIME_AT_RESET = ENV_CONFIG["SLEEP_TIME_AT_RESET"]  # 1.5 to start in a Markov state with the lidar
 IMG_HIST_LEN = ENV_CONFIG["IMG_HIST_LEN"]  # 4 without RNN, 1 with RNN
 ACT_BUF_LEN = ENV_CONFIG["RTGYM_CONFIG"]["act_buf_len"]
@@ -84,11 +104,15 @@ WINDOW_HEIGHT = ENV_CONFIG["WINDOW_HEIGHT"]
 GRAYSCALE = ENV_CONFIG["IMG_GRAYSCALE"] if "IMG_GRAYSCALE" in ENV_CONFIG else False
 IMG_WIDTH = ENV_CONFIG["IMG_WIDTH"] if "IMG_WIDTH" in ENV_CONFIG else 64
 IMG_HEIGHT = ENV_CONFIG["IMG_HEIGHT"] if "IMG_HEIGHT" in ENV_CONFIG else 64
+LINUX_X_OFFSET = ENV_CONFIG["LINUX_X_OFFSET"] if "LINUX_X_OFFSET" in ENV_CONFIG else 64
+LINUX_Y_OFFSET = ENV_CONFIG["LINUX_Y_OFFSET"] if "LINUX_Y_OFFSET" in ENV_CONFIG else 70
+IMG_SCALE_CHECK_ENV = ENV_CONFIG["IMG_SCALE_CHECK_ENV"] if "IMG_SCALE_CHECK_ENV" in ENV_CONFIG else 1.0
 
 # DEBUGGING AND BENCHMARKING: ===================================
 # Only for checking the consistency of the custom networking methods, set it to False otherwise.
 # Caution: difficult to handle if reset transitions are collected.
 DEBUGGER = TMRL_CONFIG["DEBUGGER"]
+DEBUG_MODE = DEBUGGER.get("DEBUG_MODE", False)
 CRC_DEBUG = DEBUGGER["CRC_DEBUG"]
 CRC_DEBUG_SAMPLES = DEBUGGER["CRC_DEBUG_SAMPLES"]  # Number of samples collected in CRC_DEBUG mode
 PROFILE_TRAINER = DEBUGGER["PROFILE_TRAINER"]  # Will profile each epoch in the Trainer when True

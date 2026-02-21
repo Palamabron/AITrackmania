@@ -11,8 +11,8 @@ https://github.com/trackmania-rl/tmrl#full-environment
 
 Note: This tutorial describes implementing and running a TrainingAgent along with an ActorModule.
 It is relevant if you want to implement your own RL approaches in TrackMania.
-If you plan to try non-RL approaches instead, this is also accepted:
-just use the competition Gymnasium Full environment and do whatever you need,
+If you plan to try non-RL approaches instead, this is also accepted in the competition:
+just use the Gymnasium Full environment and do whatever you need,
 then, wrap your trained policy in an ActorModule, and submit your entry :)
 
 Copy and adapt this script to implement your own algorithm/model in TrackMania.
@@ -43,6 +43,8 @@ In particular, you will want to set the following in the TMRL config.json file o
 "PORT": <port of the server (usually requires port forwarding if accessed via the Internet)>,
 
 If you are training over the Internet, please read the security instructions on the TMRL GitHub page.
+
+IMPORTANT: Set a custom 'RUN_NAME' in config.json, otherwise this script will not work.
 """
 
 # Let us start our tutorial by importing some useful stuff.
@@ -796,11 +798,11 @@ class SACTrainingAgent(TrainingAgent):
 
 training_agent_cls = partial(SACTrainingAgent,
                              model_cls=VanillaCNNActorCritic,
-                             gamma=0.99,
+                             gamma=0.995,
                              polyak=0.995,
-                             alpha=0.02,
-                             lr_actor=0.000005,
-                             lr_critic=0.00003)
+                             alpha=0.01,
+                             lr_actor=0.00001,
+                             lr_critic=0.00005)
 
 # =====================================================================
 # TMRL TRAINER
@@ -854,9 +856,13 @@ if __name__ == "__main__":
                              server_port=server_port,
                              password=password,
                              security=security)
-        my_trainer.run_with_wandb(entity=wandb_entity,
-                                  project=wandb_project,
-                                  run_id=wandb_run_id)
+        my_trainer.run()
+
+        # Note: if you want to log training metrics to wandb, replace my_trainer.run() with:
+        # my_trainer.run_with_wandb(entity=wandb_entity,
+        #                           project=wandb_project,
+        #                           run_id=wandb_run_id)
+
     elif args.worker or args.test:
         rw = RolloutWorker(env_cls=env_cls,
                            actor_module_cls=MyActorModule,
@@ -869,7 +875,7 @@ if __name__ == "__main__":
                            max_samples_per_episode=max_samples_per_episode,
                            obs_preprocessor=obs_preprocessor,
                            standalone=args.test)
-        rw.run()
+        rw.run(test_episode_interval=10)
     elif args.server:
         import time
 

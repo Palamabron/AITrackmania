@@ -1,14 +1,15 @@
 import numpy as np
 from gymnasium import spaces
 
-from custom.interfaces.TM2020Interface import TM2020Interface
-from custom.utils.tools import Lidar
+from tmrl.custom.interfaces.TM2020Interface import TM2020Interface
+from tmrl.custom.tm.utils.tools import Lidar
 
 
 class TM2020InterfaceLidar(TM2020Interface):
     def __init__(self, img_hist_len=1, gamepad=False, min_nb_steps_before_failure=int(20 * 3.5),
-                 save_replays: bool = False):
-        super().__init__(img_hist_len, gamepad, min_nb_steps_before_failure, save_replays)
+                 save_replays: bool = False, **kwargs):
+        super().__init__(img_hist_len=img_hist_len, gamepad=gamepad, save_replays=save_replays, **kwargs)
+        self.min_nb_steps_before_failure = min_nb_steps_before_failure
         self.window_interface = None
         self.lidar = None
 

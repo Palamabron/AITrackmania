@@ -13,7 +13,7 @@ import logging
 
 import pandas as pd
 
-from config import config_constants as cfg
+import tmrl.config.config_constants as cfg
 from sklearn.linear_model import LinearRegression
 import wandb
 
@@ -215,9 +215,16 @@ class RewardFunction:
             index += 1
             temp -= 1
             # stop condition
-            if index >= self.datalen or temp <= 0:
-                break
-        reward = (best_index - self.cur_idx) * self.index_divider
+            if index >= self.datalen or temp <= 0:  # if trajectory complete or cuts counter depleted
+                # We check that we are not too far from the demo trajectory:
+                if min_dist > self.max_dist_from_traj:
+                    best_index = self.cur_idx  # if so, consider we didn't move
+
+                break  # we found the best index and can break the while loop
+
+        # The reward is then proportional to the number of passed indexes (i.e., track distance):
+        reward = (best_index - self.cur_idx) / 100.0
+
         if best_index == self.cur_idx:  # if the best index didn't change, we rewind (more Markovian reward)
             min_dist = np.inf
             index = self.cur_idx

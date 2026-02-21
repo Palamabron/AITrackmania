@@ -4,32 +4,51 @@
 import rtgym
 
 # local imports
-import config.config_constants as cfg
-import custom.models.IMPALA as impala
-import custom.models.Sophy as impalaWoImages
-from custom.custom_algorithms import REDQSACAgent as REDQ_Agent
-from custom.custom_algorithms import SpinupSacAgent as SAC_Agent
-from custom.custom_algorithms import TQCAgent as TQC_Agent
-from custom.custom_checkpoints import update_run_instance
-from custom.custom_memories import MemoryTMLidar, MemoryTMLidarProgress, get_local_buffer_sample_lidar, \
-    get_local_buffer_sample_lidar_progress, get_local_buffer_sample_tm20_imgs, MemoryTMBest, \
-    get_local_buffer_sample_mobilenet, MemoryTMFull, MemoryR2D2, MemoryR2D2woImages
-from custom.custom_preprocessors import obs_preprocessor_tm_act_in_obs, obs_preprocessor_tm_lidar_act_in_obs, \
-    obs_preprocessor_tm_lidar_progress_act_in_obs, obs_preprocessor_mobilenet_act_in_obs
-from custom.interfaces.TM2020InterfaceSophy import TM2020InterfaceIMPALASophy
-from custom.interfaces.TM2020Interface import TM2020Interface
-from custom.interfaces.TM2020InterfaceIMPALA import TM2020InterfaceIMPALA
-from custom.interfaces.TM2020InterfaceLidar import TM2020InterfaceLidar
-from custom.interfaces.TM2020InterfaceLidarProgress import TM2020InterfaceLidarProgress
-from custom.interfaces.TM2020InterfaceTrackMap import TM2020InterfaceTrackMap
-from custom.models.MLPActorCritic import MLPActorCritic, SquashedGaussianMLPActor
-from custom.models.REDQMLPActorCritic import REDQMLPActorCritic
-from custom.models.RNNActorCritic import RNNActorCritic, SquashedGaussianRNNActor
-from custom.models.VanillaCNNActorCritic import VanillaCNNActorCritic, SquashedGaussianVanillaCNNActor
-from custom.models.VanillaColorCNNActorCritic import VanillaColorCNNActorCritic, SquashedGaussianVanillaColorCNNActor
-from envs import GenericGymEnv
-from training_offline import TorchTrainingOffline
-from util import partial
+import tmrl.config.config_constants as cfg
+import tmrl.custom.models.IMPALA as impala
+import tmrl.custom.models.Sophy as impalaWoImages
+from tmrl.custom.custom_algorithms import REDQSACAgent as REDQ_Agent
+from tmrl.custom.custom_algorithms import SpinupSacAgent as SAC_Agent
+from tmrl.custom.custom_algorithms import TQCAgent as TQC_Agent
+from tmrl.custom.custom_checkpoints import update_run_instance
+from tmrl.custom.custom_memories import (
+    MemoryTMLidar,
+    MemoryTMLidarProgress,
+    get_local_buffer_sample_lidar,
+    get_local_buffer_sample_lidar_progress,
+    get_local_buffer_sample_tm20_imgs,
+    MemoryTMBest,
+    get_local_buffer_sample_mobilenet,
+    MemoryTMFull,
+    MemoryR2D2,
+    MemoryR2D2woImages,
+)
+from tmrl.custom.tm.tm_preprocessors import (
+    obs_preprocessor_tm_act_in_obs,
+    obs_preprocessor_tm_lidar_act_in_obs,
+    obs_preprocessor_tm_lidar_progress_act_in_obs,
+    obs_preprocessor_mobilenet_act_in_obs,
+)
+from tmrl.custom.interfaces.TM2020InterfaceSophy import TM2020InterfaceIMPALASophy
+from tmrl.custom.interfaces.TM2020Interface import TM2020Interface
+from tmrl.custom.interfaces.TM2020InterfaceIMPALA import TM2020InterfaceIMPALA
+from tmrl.custom.interfaces.TM2020InterfaceLidar import TM2020InterfaceLidar
+from tmrl.custom.interfaces.TM2020InterfaceLidarProgress import TM2020InterfaceLidarProgress
+from tmrl.custom.interfaces.TM2020InterfaceTrackMap import TM2020InterfaceTrackMap
+from tmrl.custom.custom_models import (
+    MLPActorCritic,
+    SquashedGaussianMLPActor,
+    REDQMLPActorCritic,
+    RNNActorCritic,
+    SquashedGaussianRNNActor,
+    VanillaCNNActorCritic,
+    SquashedGaussianVanillaCNNActor,
+    VanillaColorCNNActorCritic,
+    SquashedGaussianVanillaColorCNNActor,
+)
+from tmrl.envs import GenericGymEnv
+from tmrl.training_offline import TorchTrainingOffline
+from tmrl.util import partial
 
 ALG_CONFIG = cfg.TMRL_CONFIG["ALG"]
 ALG_NAME = ALG_CONFIG["ALGORITHM"]
@@ -172,7 +191,13 @@ if ALG_NAME == "SAC":
         polyak=ALG_CONFIG["POLYAK"],
         learn_entropy_coef=ALG_CONFIG["LEARN_ENTROPY_COEF"],  # False for SAC v2 with no temperature autotuning
         target_entropy=ALG_CONFIG["TARGET_ENTROPY"],  # None for automatic
-        alpha=ALG_CONFIG["ALPHA"]  # inverse of reward scale
+        alpha=ALG_CONFIG["ALPHA"],  # inverse of reward scale
+        optimizer_actor=ALG_CONFIG["OPTIMIZER_ACTOR"],
+        optimizer_critic=ALG_CONFIG["OPTIMIZER_CRITIC"],
+        betas_actor=ALG_CONFIG["BETAS_ACTOR"] if "BETAS_ACTOR" in ALG_CONFIG else None,
+        betas_critic=ALG_CONFIG["BETAS_CRITIC"] if "BETAS_CRITIC" in ALG_CONFIG else None,
+        l2_actor=ALG_CONFIG["L2_ACTOR"] if "L2_ACTOR" in ALG_CONFIG else None,
+        l2_critic=ALG_CONFIG["L2_CRITIC"] if "L2_CRITIC" in ALG_CONFIG else None
     )
 elif ALG_NAME == "TQC":
     AGENT = partial(
@@ -221,7 +246,7 @@ def sac_v2_entropy_scheduler(agent, epoch):
         agent.entopy_target = start_ent + (end_ent - start_ent) * epoch / end_epoch
 
 
-ENV_CLS = partial(GenericGymEnv, id="real-time-gym-v1", gym_kwargs={"config": CONFIG_DICT})
+ENV_CLS = partial(GenericGymEnv, id=cfg.RTGYM_VERSION, gym_kwargs={"config": CONFIG_DICT})
 
 if cfg.PRAGMA_LIDAR:  # lidar
     TRAINER = partial(

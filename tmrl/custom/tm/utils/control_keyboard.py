@@ -4,17 +4,15 @@
 import platform
 import time
 
-# local imports
-from custom.utils.control_mouse import (mouse_change_name_replay_tm20,
-                                                                mouse_close_replay_window_tm20,
-                                                                mouse_save_replay_tm20)
-
 if platform.system() == "Windows":
     # standard library imports
     import ctypes
 
-    # third-party imports
-    import keyboard
+    from tmrl.custom.tm.utils.control_mouse import (
+        mouse_change_name_replay_tm20,
+        mouse_close_replay_window_tm20,
+        mouse_save_replay_tm20,
+    )
 
     SendInput = ctypes.windll.user32.SendInput
 
@@ -108,12 +106,8 @@ if platform.system() == "Windows":
         ReleaseKey(DEL)
 
     def keysavereplay():  # TODO: debug
-        '''
-        Saves a replay with specific key sequences and mouse actions.
-        Actions:
-        Simulates pressing the R key, waits, changes the replay name, writes a timestamp, saves the replay, and closes the replay window.
-        Utilizes mouse-related functions for changing replay names, saving the replay, and closing the window.
-        '''
+        '''Saves a replay with key sequences and mouse actions.'''
+        import keyboard
         PressKey(R)
         time.sleep(0.1)
         ReleaseKey(R)
@@ -127,13 +121,64 @@ if platform.system() == "Windows":
         mouse_close_replay_window_tm20()
         time.sleep(1.0)
 
+elif platform.system() == "Linux":
+    import subprocess
+    import logging
+
+    KEY_UP = "Up"
+    KEY_DOWN = "Down"
+    KEY_RIGHT = "Right"
+    KEY_LEFT = "Left"
+    KEY_BACKSPACE = "BackSpace"
+
+    process = None
+
+    def execute_command(c):
+        global process
+        if process is None or process.poll() is not None:
+            logging.debug("(re-)create process")
+            process = subprocess.Popen('/bin/bash', stdin=subprocess.PIPE)
+        process.stdin.write(c.encode())
+        process.stdin.flush()
+
+    def PressKey(key):
+        c = f"xdotool keydown {str(key)}\n"
+        execute_command(c)
+
+    def ReleaseKey(key):
+        c = f"xdotool keyup {str(key)}\n"
+        execute_command(c)
+
+    def apply_control(action, window_id=None):  # move_fast
+        if window_id is not None:
+            c_focus = f"xdotool windowfocus {str(window_id)}"
+            execute_command(c_focus)
+
+        if 'f' in action:
+            PressKey(KEY_UP)
+        else:
+            ReleaseKey(KEY_UP)
+        if 'b' in action:
+            PressKey(KEY_DOWN)
+        else:
+            ReleaseKey(KEY_DOWN)
+        if 'l' in action:
+            PressKey(KEY_LEFT)
+        else:
+            ReleaseKey(KEY_LEFT)
+        if 'r' in action:
+            PressKey(KEY_RIGHT)
+        else:
+            ReleaseKey(KEY_RIGHT)
+
+    def keyres():
+        PressKey(KEY_BACKSPACE)
+        ReleaseKey(KEY_BACKSPACE)
+
 else:
 
-    def apply_control(action):  # move_fast
+    def apply_control(action):
         pass
 
     def keyres():
-        pass
-
-    def keysavereplay():
         pass

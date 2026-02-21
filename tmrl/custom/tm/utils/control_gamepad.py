@@ -1,9 +1,7 @@
 # standard library imports
 import platform
 
-import numpy as np
-
-if platform.system() == "Windows":
+if platform.system() in ("Windows", "Linux"):
 
     import time
 

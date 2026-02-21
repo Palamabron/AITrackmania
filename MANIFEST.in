@@ -1,3 +1,2 @@
-include tools/*
-exclude tmrl/data/*
+include readme/pypi.md
 exclude tmrl/wandb/*

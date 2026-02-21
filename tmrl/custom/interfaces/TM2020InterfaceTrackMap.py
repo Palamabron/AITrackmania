@@ -2,14 +2,14 @@ import numpy as np
 from gymnasium import spaces
 from scipy import spatial
 
-from custom.interfaces.TM2020InterfaceLidar import TM2020InterfaceLidar
-from custom.utils.control_mouse import mouse_save_replay_tm20
+from tmrl.custom.interfaces.TM2020InterfaceLidar import TM2020InterfaceLidar
+from tmrl.custom.tm.utils.control_mouse import mouse_save_replay_tm20
 
 
 class TM2020InterfaceTrackMap(TM2020InterfaceLidar):
     def __init__(self, img_hist_len=1, gamepad=False, min_nb_steps_before_failure=int(20 * 3.5), record=False,
                  save_replay: bool = False):
-        super().__init__(img_hist_len, gamepad, min_nb_steps_before_failure, save_replay)
+        super().__init__(img_hist_len=img_hist_len, gamepad=gamepad, save_replays=save_replay)
         self.record = record
         self.window_interface = None
         self.lidar = None

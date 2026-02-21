@@ -1,7 +1,7 @@
 # Prerequisites
-* Windows / Linux (Windows required if running TrackMania)
+* Windows / Linux
 * Python >= 3.7
-* A recent NVIDIA GPU (required only on the training computer if you plan to train your own AI)
+* A recent NVIDIA GPU (required only on the training computer if you plan to train your own models)
 
 #### If using Anaconda on Windows:
 
@@ -13,19 +13,18 @@ conda install pywin32
 
 # Installation
 
-_(Note for ML developers: in case you are not interested in using support for TrackMania, you can simply [install tmrl](#install-tmrl))._
+_(**Note for ML developers:** in case you are not interested in using support for TrackMania, you can simply [install the tmrl library](#install-tmrl))._
 
 The following instructions are for installing `tmrl` with support for the TrackMania 2020 video game.
 
 You will first need to install [TrackMania 2020](https://www.trackmania.com/) (obviously), and also a small community-supported utility called [Openplanet for TrackMania](https://openplanet.nl/) (the Gymnasium environment needs this utility to compute the reward).
 
-
-### Install TrackMania 2020:
+### Windows users - Install TrackMania 2020:
 _(Required only on the computer(s) running TrackMania)_
 
 To install the free version of TM20, you can follow the instructions on their [official website](https://www.trackmania.com/) .
 
-### Install Openplanet:
+### Windows users - Install Openplanet:
 _(Required only on the computer(s) running TrackMania)_
 
 Make sure you have the `Visual C++ runtime` installed or OpenPlanet will not work.
@@ -35,14 +34,34 @@ Then, install [Openplanet for TrackMania](https://openplanet.nl/).
 
 During the installation, Windows may complain that OpenPlanet has no valid certificate (this is a small non-commercial tool not signed by any company). In such case, you will have to hit the link for "more info", and then click "install anyway".
 
+### Linux users:
+_(Windows users can skip this section)_
 
+Since version `0.6.0`, we support the full TrackMania 2020 pipeline on Linux, including the `gymnasium` environment.
+Because Ubisoft Nadeo does not officially support Linux, we wrote a [Linux tutorial](install_linux.md) to help you set up TrackMania and OpenPlanet on your machine.
 
 ### Install TMRL:
 
 To install the `tmrl` python library, open your favorite terminal and run:
 
+**Option 1 – PyPI (recommended):**
 ```shell
 pip install tmrl
+```
+
+**Option 2 – With [uv](https://docs.astral.sh/uv/) (fast, reproducible):**
+```shell
+# Install uv: curl -LsSf https://astral.sh/uv/install.sh | sh
+uv sync
+# Or for editable install: uv pip install -e .
+```
+
+The project is configured for CUDA 12.4 (RTX 4090 / CUDA 12.x) by default. For other setups, edit `[tool.uv]` in `pyproject.toml`.
+
+Then, validate the installation:
+
+```shell
+python -m tmrl --install
 ```
 
 #### Additional information for Windows / Trackmania 2020:
@@ -72,6 +91,8 @@ If at some point you want to do a clean re-install of `tmrl`:
 - Delete the `TmrlData` folder from your home folder
 - `pip install tmrl`
 
+## Set up TMRL
+
 ### (Optional) Configure/manage TMRL:
 
 The `TmrlData` folder is your _"control pannel"_, it contains everything `tmrl` uses and generates:
@@ -83,6 +104,8 @@ The `TmrlData` folder is your _"control pannel"_, it contains everything `tmrl` 
 
 Navigate to `TmrlData\config` and open `config.json` in a text editor.
 
+( :information_source: `config.json` is described in details [here](reference_guide.md).)
+
 In particular, you may want to adapt the following entries:
 - `RUN_NAME`: set a new name for starting training from scratch
 - `LOCALHOST_WORKER`: set to `false` for `workers` not on the same computer as the `server`
@@ -92,6 +115,15 @@ In particular, you may want to adapt the following entries:
 - `WANDB_PROJECT`, `WANDB_ENTITY` and `WANDB_KEY` can be replaced by you own [wandb](https://wandb.ai/site) credentials for monitoring training
 
 You can delete the content of all folders (but not the folders themselves) whenever you like (except `config.json`, a default version is provided in `resources` if you delete this).
+
+To reset the library, delete the entire `TmrlData` folder and run:
+
+```shell
+python -m tmrl --install
+```
+
+This will download and extract the `TmrlData` folder back to its original state.
+
 
 ### (Optional) Check that everything works:
 

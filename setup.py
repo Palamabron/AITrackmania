@@ -10,11 +10,19 @@ import urllib.error
 import socket
 import config.config_constants as cfg
 
+
+TMRL_VERSION = '0.7.1'
+
+
 if sys.version_info < (3, 7):
-    sys.exit('Sorry, Python < 3.7 is not supported. We use dataclasses that have been introduced in 3.7.')
+    sys.exit('Sorry, Python < 3.7 is not supported.')
 
 
-RESOURCES_URL = "https://github.com/trackmania-rl/tmrl/releases/download/v0.4.2/resources.zip"
+# NB: the following code is duplicated under tmrl.tools.init_package.init_tmrl,
+# don't forget to update both whenever changing RESOURCES_URL.
+
+
+RESOURCES_URL = "https://github.com/trackmania-rl/tmrl/releases/download/v0.6.0/resources.zip"
 
 
 def url_retrieve(url: str, outfile: Path, overwrite: bool = False):
@@ -87,8 +95,10 @@ if not TMRL_FOLDER.exists():
                 # copy new plugin
                 OP_PLUGINS_FOLDER = OPENPLANET_FOLDER / 'Plugins'
                 OP_PLUGINS_FOLDER.mkdir(parents=True, exist_ok=True)
-                TM20_PLUGIN = RESOURCES_FOLDER / 'Plugins' / 'TMRL_GrabData.op'
-                copy2(TM20_PLUGIN, OP_PLUGINS_FOLDER)
+                TM20_PLUGIN_1 = RESOURCES_FOLDER / 'Plugins' / 'TMRL_GrabData.op'
+                TM20_PLUGIN_2 = RESOURCES_FOLDER / 'Plugins' / 'TMRL_SaveGhost.op'
+                copy2(TM20_PLUGIN_1, OP_PLUGINS_FOLDER)
+                copy2(TM20_PLUGIN_2, OP_PLUGINS_FOLDER)
             except Exception as e:
                 print(
                     f"An exception was caught when trying to copy the OpenPlanet plugin automatically. \
@@ -99,59 +109,8 @@ if not TMRL_FOLDER.exists():
             Please copy the OpenPlanet script and signature manually for TrackMania 2020 support.")
 
 
-install_req = [
-    'numpy',
-    'torch>=2.0.0',
-    'pandas',
-    'gymnasium',
-    'rtgym>=0.9',
-    'pyyaml',
-    'wandb',
-    'requests',
-    'opencv-python',
-    'keyboard',
-    'pyautogui',
-    'pyinstrument',
-    'tlspyo>=0.2.5',
-    'chardet'  # requests dependency
-]
-
-if platform.system() == "Windows":
-    install_req.append('pywin32>=303')
-    install_req.append('vgamepad')
-
-# The directory containing this file
-HERE = os.path.abspath(os.path.dirname(__file__))
-
-# The text of the README file
-with open(os.path.join(HERE, "README.md")) as fid:
-    README = fid.read()
-
+# Metadata and dependencies are defined in pyproject.toml
 setup(
-    name='tmrl',
-    version='0.5.3',
-    description='Network-based framework for real-time robot learning',
-    long_description=README,
-    long_description_content_type='text/markdown',
-    keywords='reinforcement learning, robot learning, trackmania, self driving, roborace',
-    url='https://github.com/trackmania-rl/tmrl',
-    download_url='https://github.com/trackmania-rl/tmrl/archive/refs/tags/v0.5.3.tar.gz',
-    author='Yann Bouteiller, Edouard Geze',
-    author_email='yann.bouteiller@polymtl.ca, edouard.geze@hotmail.fr',
-    license='MIT',
-    install_requires=install_req,
-    classifiers=[
-            'Development Status :: 4 - Beta',
-            'Intended Audience :: Developers',
-            'Intended Audience :: Education',
-            'Intended Audience :: Information Technology',
-            'Intended Audience :: Science/Research',
-            'License :: OSI Approved :: MIT License',
-            'Programming Language :: Python',
-            'Topic :: Games/Entertainment',
-            'Topic :: Scientific/Engineering :: Artificial Intelligence',
-        ],
     include_package_data=True,
-    extras_require={},
-    scripts=[],
-    packages=find_packages(exclude=("tests", )))
+    packages=find_packages(exclude=("tests",)),
+)
