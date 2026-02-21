@@ -127,6 +127,54 @@ class MBConv(nn.Module):
             return self.conv(x)
 
 
+# -----------------------------------------------------------------------------
+# Residual MLP block (paper 2503.14858: depth scaling with LayerNorm + Swish)
+# Block = Dense -> LayerNorm -> Swish -> Dense -> LayerNorm -> Swish; then add input (residual).
+# -----------------------------------------------------------------------------
+
+
+class ResidualMLPBlock(nn.Module):
+    """Single residual block: Linear -> LayerNorm -> Swish -> Linear -> LayerNorm -> Swish; out = x + block(x)."""
+
+    def __init__(self, dim: int):
+        super().__init__()
+        self.linear1 = nn.Linear(dim, dim)
+        self.ln1 = nn.LayerNorm(dim)
+        self.linear2 = nn.Linear(dim, dim)
+        self.ln2 = nn.LayerNorm(dim)
+        self.act = SiLU()
+        self._init_weights()
+
+    def _init_weights(self):
+        for m in (self.linear1, self.linear2):
+            nn.init.orthogonal_(m.weight, gain=1.0)
+            if m.bias is not None:
+                nn.init.zeros_(m.bias)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        out = self.linear1(x)
+        out = self.ln1(out)
+        out = self.act(out)
+        out = self.linear2(out)
+        out = self.ln2(out)
+        return x + self.act(out)
+
+
+def residual_mlp_backbone(
+    input_dim: int,
+    hidden_dim: int,
+    num_blocks: int,
+) -> nn.Module:
+    """Build residual MLP backbone: input_proj -> num_blocks x ResidualMLPBlock. Output dim = hidden_dim."""
+    layers = []
+    layers.append(nn.Linear(input_dim, hidden_dim))
+    layers.append(nn.LayerNorm(hidden_dim))
+    layers.append(SiLU())
+    for _ in range(num_blocks):
+        layers.append(ResidualMLPBlock(hidden_dim))
+    return nn.Sequential(*layers)
+
+
 def num_flat_features(x):
     size = x.size()[1:]
     num_features = 1

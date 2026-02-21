@@ -14,9 +14,9 @@ This module reads config_constants (which loads config.json) and selects:
 Selection logic:
   - Observation type: PRAGMA_LIDAR (Lidar) vs image-based (Full, IMPALA, Sophy, TrackMap).
   - Interface: chosen from RTGYM_INTERFACE (Lidar, LidarProgress, TrackMap, IMPALA, Sophy, Full).
-  - Memory: Lidar → MemoryTMLidar* ; IMPALA/Best → MemoryTMBest ;
+  - Memory: Lidar → MemoryTMLidar* ; IMPALA/Best → MemoryTMBest ; 
   MTQC+images → MemoryR2D2 ; else MemoryTMFull.
-  - Model: Lidar+RNN → RNNActorCritic ; Lidar → MLP or REDQ MLP ; MTQC → IMPALA/Sophy ;
+  - Model: Lidar+RNN → RNNActorCritic ; Lidar → MLP or REDQ MLP ; MTQC → IMPALA/Sophy ; 
   else Vanilla CNN.
 """
 
@@ -48,8 +48,11 @@ from tmrl.custom.custom_memories import (
 from tmrl.custom.custom_models import (
     MLPActorCritic,
     REDQMLPActorCritic,
+    REDQResidualMLPActorCritic,
+    ResidualMLPActorCritic,
     RNNActorCritic,
     SquashedGaussianMLPActor,
+    SquashedGaussianResidualMLPActor,
     SquashedGaussianRNNActor,
     SquashedGaussianVanillaCNNActor,
     SquashedGaussianVanillaColorCNNActor,
@@ -93,6 +96,17 @@ if cfg.PRAGMA_LIDAR:
         assert ALG_NAME == "SAC", f"{ALG_NAME} is not implemented here."
         TRAIN_MODEL: type[Any] = RNNActorCritic
         POLICY: type[Any] = SquashedGaussianRNNActor
+    elif cfg.USE_RESIDUAL_MLP:
+        _residual_kw = dict(
+            hidden_dim=cfg.RESIDUAL_MLP_HIDDEN_DIM,
+            num_blocks=cfg.RESIDUAL_MLP_NUM_BLOCKS,
+        )
+        TRAIN_MODEL = (
+            partial(ResidualMLPActorCritic, **_residual_kw)
+            if ALG_NAME == "SAC"
+            else partial(REDQResidualMLPActorCritic, n=ALG_CONFIG.get("REDQ_N", 10), **_residual_kw)
+        )
+        POLICY = partial(SquashedGaussianResidualMLPActor, **_residual_kw)
     else:
         TRAIN_MODEL = MLPActorCritic if ALG_NAME == "SAC" else REDQMLPActorCritic
         POLICY = SquashedGaussianMLPActor
