@@ -1,6 +1,6 @@
 # Prerequisites
 * Windows / Linux
-* Python >= 3.7
+* Python >= 3.12
 * A recent NVIDIA GPU (required only on the training computer if you plan to train your own models)
 
 #### If using Anaconda on Windows:
