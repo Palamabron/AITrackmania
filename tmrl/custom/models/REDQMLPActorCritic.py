@@ -2,7 +2,7 @@ import torch
 from torch import nn
 from torch.nn import ModuleList
 
-from custom.models.MLPActorCritic import MLPQFunction, SquashedGaussianMLPActor
+from tmrl.custom.models.MLPActorCritic import MLPQFunction, SquashedGaussianMLPActor
 
 
 class REDQMLPActorCritic(nn.Module):

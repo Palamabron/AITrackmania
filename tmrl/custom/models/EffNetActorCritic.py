@@ -3,9 +3,9 @@ from math import sqrt
 import torch
 from torch import nn
 
-from custom.models.MLPActorCritic import MLPQFunction, SquashedGaussianMLPActor
-from custom.models.model_blocks import MBConv, _make_divisible, conv_1x1_bn, conv_3x3_bn, mlp
-from util import prod
+from tmrl.custom.models.MLPActorCritic import MLPQFunction, SquashedGaussianMLPActor
+from tmrl.custom.models.model_blocks import MBConv, _make_divisible, conv_1x1_bn, conv_3x3_bn, mlp
+from tmrl.util import prod
 
 
 class EffNetV2(nn.Module):

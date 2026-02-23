@@ -6,7 +6,7 @@ if platform.system() == "Windows":
     import win32gui
     import win32ui
 
-    import config.config_constants as cfg
+    import tmrl.config.config_constants as cfg
 
     class WindowInterface:
         """

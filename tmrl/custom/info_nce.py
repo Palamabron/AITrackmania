@@ -72,25 +72,23 @@ def info_nce_loss(
     psi_g_neg: (B, K, D) negative goal embeddings (e.g. random goals). First dim must match B.
     Returns scalar loss.
     """
-    B = phi_sa.shape[0]
-    if psi_g_neg.shape[0] != B:
+    b = phi_sa.shape[0]
+    if psi_g_neg.shape[0] != b:
         raise ValueError(
-            f"psi_g_neg first dimension ({psi_g_neg.shape[0]}) must match batch size B ({B}) from phi_sa."
+            f"psi_g_neg first dim ({psi_g_neg.shape[0]}) must match batch size ({b}) from phi_sa."
         )
     if psi_g_neg.dim() == 3:
-        K = psi_g_neg.shape[1]
+        k = psi_g_neg.shape[1]
         phi_sa = phi_sa.unsqueeze(1)
         f_pos = -torch.norm(phi_sa - psi_g_pos.unsqueeze(1), dim=-1, p=2).squeeze(1) / temperature
-        f_neg = -torch.norm(
-            phi_sa.expand(-1, K, -1) - psi_g_neg, dim=-1, p=2
-        ) / temperature
+        f_neg = -torch.norm(phi_sa.expand(-1, k, -1) - psi_g_neg, dim=-1, p=2) / temperature
         logits = torch.cat([f_pos.unsqueeze(1), f_neg], dim=1)
     else:
         # 2D (B, D): one negative per batch item
         f_pos = -torch.norm(phi_sa - psi_g_pos, dim=-1, p=2) / temperature
         f_neg = -torch.norm(phi_sa - psi_g_neg, dim=-1, p=2) / temperature
         logits = torch.stack([f_pos, f_neg], dim=1)
-    labels = torch.zeros(B, dtype=torch.long, device=phi_sa.device)
+    labels = torch.zeros(b, dtype=torch.long, device=phi_sa.device)
     return nn.functional.cross_entropy(logits, labels)
 
 
@@ -107,34 +105,34 @@ def info_nce_loss_from_encoders(
     Compute InfoNCE loss using StateActionGoalEncoders.
 
     g_neg: (B, K, g_dim), or (B, g_dim) for K=1, or (B*K, g_dim) if num_negatives=K.
-    When g_neg is 2D, first dimension must be B (batch size) or B*K; if B*K, num_negatives must be K.
+    When g_neg is 2D, first dim must be B (batch size) or B*K; if B*K, num_negatives=K.
     """
     phi_sa = encoder.forward_sa(s, a)
-    B = phi_sa.shape[0]
+    b = phi_sa.shape[0]
     psi_g_pos = encoder.forward_g(g_pos)
     if isinstance(g_neg, (list, tuple)):
         g_neg = torch.stack(g_neg, dim=1)
     if g_neg.dim() == 2:
-        M, g_dim = g_neg.shape[0], g_neg.shape[1]
-        if M == B:
+        m, g_dim = g_neg.shape[0], g_neg.shape[1]
+        if m == b:
             # (B, g_dim): one negative per batch item -> (B, 1, D)
             psi_g_neg = encoder.forward_g(g_neg)
             psi_g_neg = psi_g_neg.unsqueeze(1)
-        elif num_negatives is not None and M == B * num_negatives:
+        elif num_negatives is not None and m == b * num_negatives:
             # (B*K, g_dim): reshape to (B, K, g_dim)
-            K = num_negatives
-            g_neg = g_neg.view(B, K, g_dim)
-            psi_g_neg = encoder.forward_g(g_neg.view(B * K, -1)).view(B, K, -1)
+            k = num_negatives
+            g_neg = g_neg.view(b, k, g_dim)
+            psi_g_neg = encoder.forward_g(g_neg.view(b * k, -1)).view(b, k, -1)
         else:
             raise ValueError(
-                f"g_neg has shape (M={M}, g_dim). M must equal batch size B={B}, "
-                f"or B*K={B}*K with num_negatives=K passed. Got num_negatives={num_negatives}."
+                f"g_neg has shape (M={m}, g_dim). M must equal B={b}, "
+                f"or B*K with num_negatives passed. Got num_negatives={num_negatives}."
             )
     else:
-        B_neg, K, _ = g_neg.shape
-        if B_neg != B:
+        b_neg, k, _ = g_neg.shape
+        if b_neg != b:
             raise ValueError(
-                f"g_neg first dimension ({B_neg}) must match batch size B ({B}) from (s, a)."
+                f"g_neg first dimension ({b_neg}) must match batch size ({b}) from (s, a)."
             )
-        psi_g_neg = encoder.forward_g(g_neg.view(B * K, -1)).view(B, K, -1)
+        psi_g_neg = encoder.forward_g(g_neg.view(b * k, -1)).view(b, k, -1)
     return info_nce_loss(phi_sa, psi_g_pos, psi_g_neg, temperature)

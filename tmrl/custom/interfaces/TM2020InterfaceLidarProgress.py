@@ -1,7 +1,7 @@
 import numpy as np
 from gymnasium import spaces
 
-from custom.interfaces.TM2020InterfaceLidar import TM2020InterfaceLidar
+from tmrl.custom.interfaces.TM2020InterfaceLidar import TM2020InterfaceLidar
 
 
 class TM2020InterfaceLidarProgress(TM2020InterfaceLidar):
@@ -27,7 +27,7 @@ class TM2020InterfaceLidarProgress(TM2020InterfaceLidar):
         img, speed, data = self.grab_lidar_speed_and_data()
         rew, terminated, failure_counter = self.reward_function.compute_reward(
             pos=np.array([data[2], data[3], data[4]])
-        )
+        )[:3]
         progress = np.array(
             [self.reward_function.cur_idx / self.reward_function.datalen], dtype="float32"
         )

@@ -59,28 +59,27 @@ from math import floor
 
 # And a couple external libraries:
 import numpy as np
+import tmrl.config.config_constants as cfg
+
+# Useful classes:
+import tmrl.config.config_objects as cfg_obj
 import torch
 import torch.nn as nn
 import torch.nn.functional as F  # noqa: N812
+from tmrl.actor import TorchActorModule
+from tmrl.custom.utils.nn import copy_shared, no_grad
+
+# The TMRL three main entities (i.e., the Trainer, the RolloutWorker and the central Server):
+from tmrl.networking import RolloutWorker, Server, Trainer
+from tmrl.training import TrainingAgent
+
+# The utility that TMRL uses to partially instantiate classes:
+from tmrl.util import cached_property, partial
 from torch.distributions.normal import Normal
 from torch.optim import Adam
 
-import config.config_constants as cfg
-
-# Useful classes:
-import config.config_objects as cfg_obj
-from actor import TorchActorModule
-from custom.utils.nn import copy_shared, no_grad
-
-# The TMRL three main entities (i.e., the Trainer, the RolloutWorker and the central Server):
-from networking import RolloutWorker, Server, Trainer
-from training import TrainingAgent
-
 # The training class that we will customize with our own training algorithm in this tutorial:
 from training_offline import TrainingOffline
-
-# The utility that TMRL uses to partially instantiate classes:
-from util import cached_property, partial
 
 # Now, let us look into the content of config.json:
 

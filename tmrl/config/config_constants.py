@@ -10,7 +10,7 @@ Config file layout (config.json):
   VIRTUAL_GAMEPAD - Use gamepad (True) or keyboard (False)
   LOCALHOST_WORKER / LOCALHOST_TRAINER - Use 127.0.0.1 when same machine as server
   PUBLIC_IP_SERVER - Server IP for remote workers/trainers
-  ENV             - Environment: RTGYM_INTERFACE, SEED, MAP_NAME, rewards, 
+  ENV             - Environment: RTGYM_INTERFACE, SEED, MAP_NAME, rewards,
                   failure params, image/window
   MODEL           - Training loop, memory size, CNN/RNN/MLP sizes, scheduler
   ALG             - Algorithm (SAC/TQC/REDQSAC), learning rates, gamma, etc.
@@ -50,6 +50,112 @@ if not TMRL_FOLDER.exists():
 CONFIG_FILE_PATH = TMRL_FOLDER / "config" / "config.json"
 with open(CONFIG_FILE_PATH) as f:
     TMRL_CONFIG = json.load(f)
+
+
+def _deep_merge_defaults(cfg: dict, default: dict) -> None:
+    """In-place merge default into cfg; only fill missing keys."""
+    for key, default_val in default.items():
+        if key not in cfg:
+            cfg[key] = default_val
+        elif isinstance(default_val, dict) and isinstance(cfg[key], dict):
+            _deep_merge_defaults(cfg[key], default_val)
+
+
+# Default config for missing sections (e.g. incomplete or old config.json)
+_DEFAULT_TMRL_CONFIG = {
+    "RUN_NAME": "tmrl_run",
+    "BUFFERS_MAXLEN": 500000,
+    "RW_MAX_SAMPLES_PER_EPISODE": 1000,
+    "CUDA_TRAINING": True,
+    "CUDA_INFERENCE": False,
+    "VIRTUAL_GAMEPAD": True,
+    "LOCALHOST_WORKER": True,
+    "LOCALHOST_TRAINER": True,
+    "PUBLIC_IP_SERVER": "0.0.0.0",
+    "PASSWORD": "YourRandomPasswordHere",
+    "TLS": False,
+    "TLS_HOSTNAME": "default",
+    "TLS_CREDENTIALS_DIRECTORY": "",
+    "NB_WORKERS": -1,
+    "WANDB_PROJECT": "tmrl",
+    "WANDB_ENTITY": "tmrl",
+    "WANDB_KEY": "YourWandbApiKey",
+    "WANDB_GRADIENTS": False,
+    "WANDB_DEBUG_REWARD": True,
+    "WANDB_WORKER": True,
+    "PORT": 55555,
+    "LOCAL_PORT_SERVER": 55556,
+    "LOCAL_PORT_TRAINER": 55557,
+    "LOCAL_PORT_WORKER": 55558,
+    "BUFFER_SIZE": 536870912,
+    "HEADER_SIZE": 12,
+    "MODEL": {
+        "MAX_EPOCHS": 10000,
+        "ROUNDS_PER_EPOCH": 100,
+        "TRAINING_STEPS_PER_ROUND": 200,
+        "MAX_TRAINING_STEPS_PER_ENVIRONMENT_STEP": 4.0,
+        "ENVIRONMENT_STEPS_BEFORE_TRAINING": 1000,
+        "UPDATE_MODEL_INTERVAL": 200,
+        "UPDATE_BUFFER_INTERVAL": 200,
+        "SAVE_MODEL_EVERY": 0,
+        "MEMORY_SIZE": 1000000,
+        "BATCH_SIZE": 256,
+        "SCHEDULER": {"NAME": "", "T_0": 100, "T_mult": 2, "eta_min": 1.0e-6, "last_epoch": -1},
+        "NOISY_LINEAR_CRITIC": False,
+        "NOISY_LINEAR_ACTOR": False,
+        "OUTPUT_DROPOUT": 0.0,
+        "RNN_DROPOUT": 0.0,
+        "CNN_FILTERS": [32, 64, 64, 64],
+        "CNN_OUTPUT_SIZE": 256,
+        "RNN_LENS": [1],
+        "RNN_SIZES": [64],
+        "API_MLP_SIZES": [256, 256],
+        "API_LAYERNORM": True,
+        "MLP_LAYERNORM": False,
+        "USE_RESIDUAL_MLP": False,
+        "RESIDUAL_MLP_HIDDEN_DIM": 256,
+        "RESIDUAL_MLP_NUM_BLOCKS": 6,
+        "USE_RESIDUAL_SOPHY": False,
+        "USE_FROZEN_EFFNET": False,
+        "FROZEN_EFFNET_EMBED_DIM": 256,
+        "FROZEN_EFFNET_WIDTH_MULT": 0.5,
+    },
+    "ALG": {
+        "ALGORITHM": "SAC",
+        "LEARN_ENTROPY_COEF": False,
+        "LR_ACTOR": 1.0e-5,
+        "LR_CRITIC": 5.0e-5,
+        "LR_ENTROPY": 3.0e-4,
+        "GAMMA": 0.995,
+        "POLYAK": 0.995,
+        "TARGET_ENTROPY": -0.5,
+        "ALPHA": 0.01,
+        "REDQ_N": 10,
+        "REDQ_M": 2,
+        "REDQ_Q_UPDATES_PER_POLICY_UPDATE": 20,
+        "TOP_QUANTILES_TO_DROP": 2,
+        "QUANTILES_NUMBER": 1,
+        "N_STEPS": 1,
+        "CLIPPING_WEIGHTS": False,
+        "CLIP_WEIGHTS_VALUE": 1.0,
+        "ACTOR_WEIGHT_DECAY": 0.0,
+        "CRITIC_WEIGHT_DECAY": 0.0,
+        "NUMBER_OF_POINTS": 0,
+        "POINTS_DISTANCE": 0.0,
+        "SPEED_BONUS": 0.0,
+        "SPEED_MIN_THRESHOLD": 0.0,
+        "SPEED_MEDIUM_THRESHOLD": 0.0,
+        "ADAM_EPS": 1.0e-8,
+        "R2D2_REWIND": 0.5,
+        "OPTIMIZER_ACTOR": "adam",
+        "OPTIMIZER_CRITIC": "adam",
+        "BETAS_ACTOR": [0.9, 0.999],
+        "BETAS_CRITIC": [0.9, 0.999],
+        "L2_ACTOR": 0.0,
+        "L2_CRITIC": 0.0,
+    },
+}
+_deep_merge_defaults(TMRL_CONFIG, _DEFAULT_TMRL_CONFIG)
 
 assert "__VERSION__" in TMRL_CONFIG, (
     "config.json is outdated. " + CONFIG_COMPATIBILITY_ERROR_MESSAGE
@@ -145,10 +251,59 @@ class EnvConfig(BaseModel):
     REWARD_CONFIG: dict = Field(
         default_factory=dict, description="REWARD_CONFIG dict for RewardFunction"
     )
+    INIT_GAS_BIAS: float = Field(
+        default=0.0,
+        description="Bias for actor output dim 0 (gas) before tanh; e.g. 0.8 => default forward",
+    )
     model_config = {"extra": "allow"}
 
 
-_raw_env = TMRL_CONFIG["ENV"]
+_raw_env = dict(TMRL_CONFIG["ENV"])
+# Fill missing ENV keys with defaults (handles older or incomplete config.json)
+_default_env = {
+    "SEED": 0,
+    "MAP_NAME": "",
+    "MIN_NB_ZERO_REW_BEFORE_FAILURE": 0,
+    "MAX_NB_ZERO_REW_BEFORE_FAILURE": 0,
+    "MIN_NB_STEPS_BEFORE_FAILURE": 0,
+    "OSCILLATION_PERIOD": 0,
+    "NB_OBS_FORWARD": 0,
+    "CRASH_PENALTY": 0.0,
+    "CRASH_COOLDOWN": 0,
+    "CONSTANT_PENALTY": 0.0,
+    "LAP_REWARD": 0.0,
+    "LAP_COOLDOWN": 0,
+    "CHECKPOINT_REWARD": 0.0,
+    "END_OF_TRACK_REWARD": 0.0,
+    "USE_IMAGES": True,
+    "SLEEP_TIME_AT_RESET": 1.5,
+    "IMG_HIST_LEN": 4,
+    "WINDOW_WIDTH": 640,
+    "WINDOW_HEIGHT": 480,
+    "IMG_GRAYSCALE": True,
+    "IMG_WIDTH": 64,
+    "IMG_HEIGHT": 64,
+    "LINUX_X_OFFSET": 64,
+    "LINUX_Y_OFFSET": 70,
+    "IMG_SCALE_CHECK_ENV": 1.0,
+    "MIN_GAS_WARM_START": 0.0,
+    "INIT_GAS_BIAS": 0.0,
+    "REWARD_CONFIG": {},
+}
+if "RTGYM_CONFIG" not in _raw_env:
+    _default_env["RTGYM_CONFIG"] = {
+        "time_step_duration": 0.05,
+        "start_obs_capture": 0.04,
+        "time_step_timeout_factor": 1.0,
+        "act_buf_len": 2,
+        "benchmark": False,
+        "wait_on_done": True,
+        "ep_max_length": 1000,
+    }
+for _k, _v in _default_env.items():
+    if _k not in _raw_env:
+        _raw_env[_k] = _v
+TMRL_CONFIG["ENV"] = _raw_env  # so create_config() and others see full ENV
 ENV_CONFIG = _raw_env  # keep dict for code that indexes by key
 
 # Observation type flags (derived from RTGYM_INTERFACE string)
@@ -156,20 +311,26 @@ RTGYM_INTERFACE = str(_raw_env["RTGYM_INTERFACE"]).upper()
 USE_LIDAR_OBSERVATIONS = RTGYM_INTERFACE.endswith("LIDAR")
 USE_CUSTOM_BACKBONE = RTGYM_INTERFACE.endswith("MOBILEV3") or RTGYM_INTERFACE.endswith("CUSTOM")
 USE_LIDAR_PROGRESS = RTGYM_INTERFACE.endswith("LIDARPROGRESS")
+USE_LIDAR_PROGRESS_IMAGES = "LIDARPROGRESSIMAGES" in RTGYM_INTERFACE
 USE_TRACKMAP = RTGYM_INTERFACE.endswith("TRACKMAP")
+USE_TRACKMAP_IMAGES = "TRACKMAPIMAGES" in RTGYM_INTERFACE
 USE_BEST_INTERFACE = RTGYM_INTERFACE.endswith("BEST")
 USE_BEST_TQC = RTGYM_INTERFACE.endswith("BEST_TQC")
 USE_MBEST_TQC = RTGYM_INTERFACE.endswith("MTQC")
+USE_TQC_GRAB = "TQCGRAB" in RTGYM_INTERFACE
 
 PRAGMA_LIDAR = USE_LIDAR_OBSERVATIONS
 PRAGMA_CUSTOM = USE_CUSTOM_BACKBONE
 PRAGMA_PROGRESS = USE_LIDAR_PROGRESS
+PRAGMA_LIDAR_PROGRESS_IMAGES = USE_LIDAR_PROGRESS_IMAGES
 PRAGMA_TRACKMAP = USE_TRACKMAP
+PRAGMA_TRACKMAP_IMAGES = USE_TRACKMAP_IMAGES
 PRAGMA_BEST = USE_BEST_INTERFACE
 PRAGMA_BEST_TQC = USE_BEST_TQC
 PRAGMA_MBEST_TQC = USE_MBEST_TQC
+PRAGMA_TQC_GRAB = USE_TQC_GRAB
 
-if USE_LIDAR_PROGRESS or USE_TRACKMAP:
+if USE_LIDAR_PROGRESS or USE_TRACKMAP or USE_LIDAR_PROGRESS_IMAGES or USE_TRACKMAP_IMAGES:
     USE_LIDAR_OBSERVATIONS = True
     PRAGMA_LIDAR = True
 
@@ -202,6 +363,8 @@ IMG_HEIGHT = _raw_env.get("IMG_HEIGHT", 64)
 LINUX_X_OFFSET = _raw_env.get("LINUX_X_OFFSET", 64)
 LINUX_Y_OFFSET = _raw_env.get("LINUX_Y_OFFSET", 70)
 IMG_SCALE_CHECK_ENV = _raw_env.get("IMG_SCALE_CHECK_ENV", 1.0)
+MIN_GAS_WARM_START = _raw_env.get("MIN_GAS_WARM_START", 0.0)
+INIT_GAS_BIAS = _raw_env.get("INIT_GAS_BIAS", 0.0)
 
 # -----------------------------------------------------------------------------
 # Debug / profiling (config.json → DEBUGGER)
@@ -215,12 +378,22 @@ class DebuggerConfig(BaseModel):
     CRC_DEBUG: bool = Field(description="Enable CRC checks on samples (pipeline consistency)")
     CRC_DEBUG_SAMPLES: int = 0
     PROFILE_TRAINER: bool = Field(description="Profile each epoch with Python profiler")
-    WANDB_DEBUG: bool = False
+    WANDB_DEBUG: bool = True
     PYTORCH_PROFILER: bool = False
     model_config = {"extra": "allow"}
 
 
-_debugger_raw = TMRL_CONFIG["DEBUGGER"]
+_debugger_raw = TMRL_CONFIG.get(
+    "DEBUGGER",
+    {
+        "DEBUG_MODE": False,
+        "CRC_DEBUG": False,
+        "CRC_DEBUG_SAMPLES": 0,
+        "PROFILE_TRAINER": False,
+        "WANDB_DEBUG": True,
+        "PYTORCH_PROFILER": False,
+    },
+)
 DEBUGGER_CONFIG = DebuggerConfig(**_debugger_raw)
 DEBUGGER = _debugger_raw
 DEBUG_MODE = DEBUGGER_CONFIG.DEBUG_MODE
@@ -262,6 +435,7 @@ WANDB_ENTITY = TMRL_CONFIG["WANDB_ENTITY"]
 WANDB_KEY = TMRL_CONFIG["WANDB_KEY"]
 WANDB_GRADIENTS = TMRL_CONFIG["WANDB_GRADIENTS"]
 WANDB_DEBUG_REWARD = TMRL_CONFIG["WANDB_DEBUG_REWARD"]
+WANDB_WORKER = TMRL_CONFIG.get("WANDB_WORKER", True)
 os.environ["WANDB_API_KEY"] = WANDB_KEY
 
 # -----------------------------------------------------------------------------
@@ -304,6 +478,10 @@ MLP_LAYERNORM = MODEL_CONFIG["MLP_LAYERNORM"]
 USE_RESIDUAL_MLP = MODEL_CONFIG.get("USE_RESIDUAL_MLP", False)
 RESIDUAL_MLP_HIDDEN_DIM = MODEL_CONFIG.get("RESIDUAL_MLP_HIDDEN_DIM", 256)
 RESIDUAL_MLP_NUM_BLOCKS = MODEL_CONFIG.get("RESIDUAL_MLP_NUM_BLOCKS", 6)
+USE_RESIDUAL_SOPHY = MODEL_CONFIG.get("USE_RESIDUAL_SOPHY", False)
+USE_FROZEN_EFFNET = MODEL_CONFIG.get("USE_FROZEN_EFFNET", False)
+FROZEN_EFFNET_EMBED_DIM = MODEL_CONFIG.get("FROZEN_EFFNET_EMBED_DIM", 256)
+FROZEN_EFFNET_WIDTH_MULT = MODEL_CONFIG.get("FROZEN_EFFNET_WIDTH_MULT", 0.5)
 
 # -----------------------------------------------------------------------------
 # Algorithm (config.json → ALG): SAC/TQC/REDQSAC, LRs, gamma, quantiles, etc.
@@ -390,6 +568,14 @@ def create_config() -> dict:
     training_config["NOISY_LINEAR_ACTOR"] = model_config["NOISY_LINEAR_ACTOR"]
     training_config["NOISY_LINEAR_CRITIC"] = model_config["NOISY_LINEAR_CRITIC"]
     training_config["RNN_DROPOUT"] = model_config["RNN_DROPOUT"]
+
+    training_config["USE_RESIDUAL_MLP"] = model_config.get("USE_RESIDUAL_MLP", False)
+    training_config["RESIDUAL_MLP_HIDDEN_DIM"] = model_config.get("RESIDUAL_MLP_HIDDEN_DIM", 256)
+    training_config["RESIDUAL_MLP_NUM_BLOCKS"] = model_config.get("RESIDUAL_MLP_NUM_BLOCKS", 6)
+    training_config["USE_RESIDUAL_SOPHY"] = model_config.get("USE_RESIDUAL_SOPHY", False)
+    training_config["USE_FROZEN_EFFNET"] = model_config.get("USE_FROZEN_EFFNET", False)
+    training_config["FROZEN_EFFNET_EMBED_DIM"] = model_config.get("FROZEN_EFFNET_EMBED_DIM", 256)
+    training_config["FROZEN_EFFNET_WIDTH_MULT"] = model_config.get("FROZEN_EFFNET_WIDTH_MULT", 0.5)
 
     training_config["MIN_NB_ZERO_REW_BEFORE_FAILURE"] = env_config["MIN_NB_ZERO_REW_BEFORE_FAILURE"]
     training_config["MAX_NB_ZERO_REW_BEFORE_FAILURE"] = env_config["MAX_NB_ZERO_REW_BEFORE_FAILURE"]

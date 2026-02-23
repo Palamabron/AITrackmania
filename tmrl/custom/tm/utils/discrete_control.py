@@ -8,11 +8,10 @@ and pass that to the existing control_gamepad(), so vibrations on guardrail hit 
 
 import numpy as np
 
-
 # Default bins: steer (e.g. 5), gas (3), brake (2) -> 5*3*2 = 30 actions
-DEFAULT_N_STEER = 5   # left, left-mid, center, right-mid, right
-DEFAULT_N_GAS = 3     # 0, half, full
-DEFAULT_N_BRAKE = 2   # no brake, brake
+DEFAULT_N_STEER = 5  # left, left-mid, center, right-mid, right
+DEFAULT_N_GAS = 3  # 0, half, full
+DEFAULT_N_BRAKE = 2  # no brake, brake
 
 
 def build_discrete_to_continuous(

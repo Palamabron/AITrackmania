@@ -10,12 +10,14 @@ import cv2
 import numpy as np
 
 # local imports
-from config.config_constants import LIDAR_BLACK_THRESHOLD
+from tmrl.config.config_constants import LIDAR_BLACK_THRESHOLD
 
 
 class TM2020OpenPlanetClient:
     # Script attributes:
-    def __init__(self, host="127.0.0.1", port=9000, struct_str="<" + "f" * 19):
+    def __init__(self, host="127.0.0.1", port=9000, struct_str=None, nb_floats=19):
+        if struct_str is None:
+            struct_str = "<" + "f" * nb_floats
         self._struct_str = struct_str
         self.nb_floats = self._struct_str.count("f")
         self.nb_int32 = self._struct_str.count("i")
@@ -28,39 +30,72 @@ class TM2020OpenPlanetClient:
         # Threading attributes:
         self.__lock = Lock()
         self.__data = None
+        self._received_once = False  # used for longer first-packet timeout
+        self._client_connected = (
+            False  # True when connect() succeeded (may still be waiting for first frame)
+        )
         self.__t_client = Thread(target=self.__client_thread, args=(), kwargs={}, daemon=True)
         self.__t_client.start()
 
     def __client_thread(self):
         """
         Thread of the client.
-        This listens for incoming data until the object is destroyed
-        TODO: handle disconnection
+        Connects to the OpenPlanet plugin (retries until the plugin is listening),
+        then receives data until the connection is closed.
         """
-        # while True:
-        #    try:
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.connect((self._host, self._port))
-            data_raw = b""
-            while True:  # main loop
-                while len(data_raw) < self._nb_bytes:
-                    data_raw += s.recv(1024)
-                div = len(data_raw) // self._nb_bytes
-                data_used = data_raw[(div - 1) * self._nb_bytes : div * self._nb_bytes]
-                data_raw = data_raw[div * self._nb_bytes :]
-                self.__lock.acquire()
-                self.__data = data_used
-                self.__lock.release()
+        retry_interval = 2.0
+        retry_count = 0
+        while True:
+            try:
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                    s.connect((self._host, self._port))
+                    self._client_connected = True
+                    print(
+                        f"Connected to OpenPlanet plugin at {self._host}:{self._port}. "
+                        "Waiting for game data (be in a map with car on track, not main menu).",
+                        flush=True,
+                    )
+                    data_raw = b""
+                    while True:  # main loop
+                        while len(data_raw) < self._nb_bytes:
+                            chunk = s.recv(1024)
+                            if not chunk:
+                                self._client_connected = False
+                                break  # connection closed, reconnect
+                            data_raw += chunk
+                        if len(data_raw) < self._nb_bytes:
+                            self._client_connected = False
+                            break  # connection closed
+                        div = len(data_raw) // self._nb_bytes
+                        data_used = data_raw[(div - 1) * self._nb_bytes : div * self._nb_bytes]
+                        data_raw = data_raw[div * self._nb_bytes :]
+                        self.__lock.acquire()
+                        self.__data = data_used
+                        self._received_once = True
+                        self.__lock.release()
+            except (ConnectionRefusedError, OSError):
+                self._client_connected = False
+                retry_count += 1
+                if retry_count == 1 or retry_count % 5 == 0:
+                    print(
+                        f"Cannot connect to {self._host}:{self._port} (attempt {retry_count}). "
+                        "TrackMania running? TQC_GrabData loaded (F3→Developer→Reload)? In map?",
+                        flush=True,
+                    )
+                time.sleep(retry_interval)
+                continue
 
-    def retrieve_data(self, sleep_if_empty=0.01, timeout=10.0):
+    def retrieve_data(self, sleep_if_empty=0.01, timeout=10.0, first_packet_timeout=60.0):
         """
-        Retrieves the most recently received data
-        Use this function to retrieve the most recently received data
-        This blocks if nothing has been received so far
+        Retrieves the most recently received data.
+        Blocks if nothing has been received so far.
+        Uses first_packet_timeout until the first packet is received (allows time for
+        connection/reconnect); then uses timeout for subsequent waits.
         """
         c = True
         t_start = None
         data = None
+        last_hint_log = 0.0
         while c:
             self.__lock.acquire()
             if self.__data is not None:
@@ -72,8 +107,27 @@ class TM2020OpenPlanetClient:
                 if t_start is None:
                     t_start = time.time()
                 t_now = time.time()
-                assert t_now - t_start < timeout, (
-                    f"OpenPlanet stopped sending data since more than {timeout}s."
+                elapsed = t_now - t_start
+                effective_timeout = first_packet_timeout if not self._received_once else timeout
+                if not self._received_once and elapsed - last_hint_log >= 15.0:
+                    last_hint_log = elapsed
+                    if self._client_connected:
+                        print(
+                            "Connected but no game data yet. Be IN A MAP with car on track "
+                            "(drive or stand), not main menu or loading.",
+                            flush=True,
+                        )
+                    else:
+                        print(
+                            f"Waiting for OpenPlanet plugin ({self._host}:{self._port}). "
+                            "Start TrackMania, load map, TQC_GrabData (F3→Developer→Reload), "
+                            "then be in map (car on track).",
+                            flush=True,
+                        )
+                assert elapsed < effective_timeout, (
+                    f"OpenPlanet stopped sending data since more than {effective_timeout}s. "
+                    "Check: (1) TrackMania running, (2) TQC_GrabData (F3→Developer→Reload), "
+                    "(3) IN A MAP with car on track (not menu/loading)."
                 )
                 time.sleep(sleep_if_empty)
         return data

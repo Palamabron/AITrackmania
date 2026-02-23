@@ -142,7 +142,7 @@ class TM2020InterfaceTrackMap(TM2020InterfaceLidar):
         else:
             rew, terminated, failure_counter = self.reward_function.compute_reward(
                 pos=np.array([data[2], data[3], data[4]])
-            )  # data[2-4] are the position, from that the reward is computed
+            )[:3]  # data[2-4] are the position, from that the reward is computed
             reward += rew
 
         failure_counter = float(failure_counter)

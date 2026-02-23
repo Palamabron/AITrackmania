@@ -16,14 +16,16 @@ from torch.nn import Conv2d, Module, ModuleList
 import tmrl.config.config_constants as cfg
 from tmrl.actor import TorchActorModule
 
+# SUPPORTED ===========================================================================
+# Residual MLP (paper 2503.14858: depth scaling with LayerNorm + Swish)
+from tmrl.custom.models.model_blocks import (
+    FrozenEfficientNetEncoder,
+    residual_mlp_backbone,
+)
+
 # import torchvision
 # local imports
 from tmrl.util import prod
-
-# SUPPORTED ===========================================================================
-
-# Residual MLP (paper 2503.14858: depth scaling with LayerNorm + Swish)
-from tmrl.custom.models.model_blocks import residual_mlp_backbone
 
 # Spinup MLP: =======================================================
 # Adapted from the SAC implementation of OpenAI Spinup
@@ -342,6 +344,201 @@ class REDQResidualMLPActorCritic(nn.Module):
                 )
                 for _ in range(self.n)
             ]
+        )
+
+    def act(self, obs, test=False):
+        with torch.no_grad():
+            a, _ = self.actor(obs, test, False)
+            res = a.squeeze().cpu().numpy()
+            if not len(res.shape):
+                res = np.expand_dims(res, 0)
+            return res
+
+
+# Frozen EffNet + residual MLP (images -> embeddings -> further layers): ================
+
+
+def _vector_dim_except(observation_space, image_index: int):
+    """Sum of flattened sizes of all observation components except the one at image_index."""
+    try:
+        spaces = list(observation_space)
+    except TypeError:
+        return prod(observation_space.shape)
+    return sum(
+        prod(space.shape) if hasattr(space, "shape") else int(space)
+        for i, space in enumerate(spaces)
+        if i != image_index
+    )
+
+
+def _cat_obs_except_image(obs, image_index: int):
+    """Concatenate all observation tensors except obs[image_index] on the last dim."""
+    parts = [obs[i] for i in range(len(obs)) if i != image_index]
+    if any(t.dim() > 2 for t in parts):
+        parts = [t.view(t.size(0), -1) for t in parts]
+    return torch.cat(parts, dim=-1).float()
+
+
+class SquashedGaussianFrozenEffNetResidualActor(TorchActorModule):
+    """Actor: frozen EfficientNet (image->embed) + concat vector -> residual MLP -> policy."""
+
+    def __init__(
+        self,
+        observation_space,
+        action_space,
+        image_index: int = 3,
+        embed_dim: int = 256,
+        hidden_dim: int = 256,
+        num_blocks: int = 6,
+        width_mult: float = 0.5,
+    ):
+        super().__init__(observation_space, action_space)
+        self.image_index = image_index
+        try:
+            spaces = list(observation_space)
+            nb_channels_in = int(prod(spaces[image_index].shape))
+            if len(spaces[image_index].shape) >= 2:
+                nb_channels_in = spaces[image_index].shape[0]
+        except (TypeError, IndexError):
+            nb_channels_in = 4
+        vector_dim = _vector_dim_except(observation_space, image_index)
+        input_dim = embed_dim + vector_dim
+        dim_act = action_space.shape[0]
+        act_limit = action_space.high[0]
+
+        self.encoder = FrozenEfficientNetEncoder(
+            nb_channels_in=nb_channels_in,
+            embed_dim=embed_dim,
+            width_mult=width_mult,
+        )
+        self.backbone = residual_mlp_backbone(input_dim, hidden_dim, num_blocks)
+        self.mu_layer = nn.Linear(hidden_dim, dim_act)
+        self.log_std_layer = nn.Linear(hidden_dim, dim_act)
+        self.act_limit = act_limit
+
+    def forward(self, obs, test=False, with_logprob=True):
+        imgs = obs[self.image_index].float()
+        vec = _cat_obs_except_image(obs, self.image_index)
+        emb = self.encoder(imgs)
+        x = torch.cat([emb, vec], dim=-1)
+        net_out = self.backbone(x)
+        mu = self.mu_layer(net_out)
+        log_std = self.log_std_layer(net_out)
+        log_std = torch.clamp(log_std, LOG_STD_MIN, LOG_STD_MAX)
+        std = torch.exp(log_std)
+
+        pi_distribution = Normal(mu, std)
+        if test:
+            pi_action = mu
+        else:
+            pi_action = pi_distribution.rsample()
+
+        if with_logprob:
+            logp_pi = pi_distribution.log_prob(pi_action).sum(axis=-1)
+            logp_pi -= (2 * (np.log(2) - pi_action - functional.softplus(-2 * pi_action))).sum(
+                axis=1
+            )
+        else:
+            logp_pi = None
+
+        pi_action = torch.tanh(pi_action)
+        pi_action = self.act_limit * pi_action
+        return pi_action, logp_pi
+
+    def act(self, obs, test=False):
+        with torch.no_grad():
+            a, _ = self.forward(obs, test, False)
+            res = a.squeeze().cpu().numpy()
+            if not len(res.shape):
+                res = np.expand_dims(res, 0)
+            return res
+
+
+class FrozenEffNetResidualQFunction(nn.Module):
+    """Q-function: frozen EffNet(image) + concat(vector, act) -> residual MLP -> Q."""
+
+    def __init__(
+        self,
+        obs_space,
+        act_space,
+        image_index: int = 3,
+        embed_dim: int = 256,
+        hidden_dim: int = 256,
+        num_blocks: int = 6,
+        width_mult: float = 0.5,
+    ):
+        super().__init__()
+        self.image_index = image_index
+        try:
+            spaces = list(obs_space)
+            nb_channels_in = (
+                int(spaces[image_index].shape[0])
+                if len(spaces[image_index].shape) >= 2
+                else int(prod(spaces[image_index].shape))
+            )
+        except (TypeError, IndexError):
+            nb_channels_in = 4
+        vector_dim = _vector_dim_except(obs_space, image_index)
+        act_dim = act_space.shape[0]
+        input_dim = embed_dim + vector_dim + act_dim
+
+        self.encoder = FrozenEfficientNetEncoder(
+            nb_channels_in=nb_channels_in,
+            embed_dim=embed_dim,
+            width_mult=width_mult,
+        )
+        self.backbone = residual_mlp_backbone(input_dim, hidden_dim, num_blocks)
+        self.q_head = nn.Linear(hidden_dim, 1)
+
+    def forward(self, obs, act):
+        imgs = obs[self.image_index].float()
+        vec = _cat_obs_except_image(obs, self.image_index)
+        emb = self.encoder(imgs)
+        x = torch.cat([emb, vec, act], dim=-1)
+        q = self.q_head(self.backbone(x))
+        return torch.squeeze(q, -1)
+
+
+class FrozenEffNetResidualActorCritic(nn.Module):
+    """Actor-critic: frozen small EfficientNet embeddings + residual MLP head (SiLU, LayerNorm)."""
+
+    def __init__(
+        self,
+        observation_space,
+        action_space,
+        image_index: int = 3,
+        embed_dim: int = 256,
+        hidden_dim: int = 256,
+        num_blocks: int = 6,
+        width_mult: float = 0.5,
+    ):
+        super().__init__()
+        self.actor = SquashedGaussianFrozenEffNetResidualActor(
+            observation_space,
+            action_space,
+            image_index=image_index,
+            embed_dim=embed_dim,
+            hidden_dim=hidden_dim,
+            num_blocks=num_blocks,
+            width_mult=width_mult,
+        )
+        self.q1 = FrozenEffNetResidualQFunction(
+            observation_space,
+            action_space,
+            image_index=image_index,
+            embed_dim=embed_dim,
+            hidden_dim=hidden_dim,
+            num_blocks=num_blocks,
+            width_mult=width_mult,
+        )
+        self.q2 = FrozenEffNetResidualQFunction(
+            observation_space,
+            action_space,
+            image_index=image_index,
+            embed_dim=embed_dim,
+            hidden_dim=hidden_dim,
+            num_blocks=num_blocks,
+            width_mult=width_mult,
         )
 
     def act(self, obs, test=False):

@@ -9,10 +9,10 @@ from torch.autograd import Variable
 from torch.distributions import Normal
 from torchrl.modules import NoisyLinear
 
-import config.config_constants as cfg
-import config.config_objects as cfo
-from actor import TorchActorModule
-from custom.models.model_constants import LOG_STD_MAX, LOG_STD_MIN
+import tmrl.config.config_constants as cfg
+import tmrl.config.config_objects as cfo
+from tmrl.actor import TorchActorModule
+from tmrl.custom.models.model_constants import LOG_STD_MAX, LOG_STD_MIN
 
 
 # https://discuss.pytorch.org/t/dropout-in-lstm-during-eval-mode/120177

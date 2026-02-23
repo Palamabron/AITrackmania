@@ -16,6 +16,17 @@ from tmrl.util import pandas_dict
 __docformat__ = "google"
 
 
+def _stats_dict_to_numeric(d: dict) -> dict:
+    """Convert tensor values in a stats dict to Python scalars so pandas can aggregate."""
+    out = {}
+    for k, v in d.items():
+        if isinstance(v, torch.Tensor):
+            out[k] = v.item() if v.numel() == 1 else float(v.mean().item())
+        else:
+            out[k] = v
+    return out
+
+
 @dataclass(eq=False)
 class TrainingOffline:
     """
@@ -122,16 +133,34 @@ class TrainingOffline:
             else -1.0
         )
         if ratio > self.max_training_steps_per_env_step or ratio == -1.0:
-            logger.info(" Waiting for new samples")
+            logger.info(
+                " Waiting for new samples (total_samples={}, need >= {} to start)",
+                self.total_samples,
+                self.start_training,
+            )
+            wait_attempts = 0
             while ratio > self.max_training_steps_per_env_step or ratio == -1.0:
-                # wait for new samples
+                samples_before = self.total_samples
                 self.update_buffer(interface)
+                if self.total_samples > samples_before:
+                    logger.info(
+                        " Received {} samples from server (total: {})",
+                        self.total_samples - samples_before,
+                        self.total_samples,
+                    )
                 ratio = (
                     self.total_updates / self.total_samples
                     if self.total_samples > 0.0 and self.total_samples >= self.start_training
                     else -1.0
                 )
                 if ratio > self.max_training_steps_per_env_step or ratio == -1.0:
+                    wait_attempts += 1
+                    if wait_attempts % 10 == 1 and wait_attempts > 1:
+                        logger.info(
+                            " Still waiting for samples (total_samples={}, attempt ~{})",
+                            self.total_samples,
+                            wait_attempts,
+                        )
                     time.sleep(self.sleep_between_buffer_retrieval_attempts)
             logger.info(" Resuming training")
 
@@ -194,7 +223,7 @@ class TrainingOffline:
             stats_training_dict["episode_length_train"] = self.memory.stat_train_steps
             stats_training_dict["sampling_duration"] = t_sample - t_sample_prev
             stats_training_dict["training_step_duration"] = t_train - t_update_buffer
-            stats_training += (stats_training_dict,)
+            stats_training += (_stats_dict_to_numeric(stats_training_dict),)
             self.total_updates += 1
             if self.total_updates % self.update_model_interval == 0:
                 # broadcast model weights

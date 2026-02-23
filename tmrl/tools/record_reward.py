@@ -1,9 +1,9 @@
 # standard library imports
+import os
 import pickle
-import time
+import threading
 
 # third-party imports
-import keyboard
 import numpy as np
 from loguru import logger
 from matplotlib import pyplot as plt
@@ -13,29 +13,81 @@ from scipy.ndimage import gaussian_filter1d
 import tmrl.config.config_constants as cfg
 from tmrl.custom.tm.utils.tools import TM2020OpenPlanetClient
 
+# Must match TQC_GrabData plugin (20 floats). Default 19 would misalign and corrupt trajectory.
+TQC_GRAB_NB_FLOATS = 20
+
 PATH_REWARD = cfg.REWARD_PATH
 DATASET_PATH = cfg.DATASET_PATH
+
+# Minimum positions required to build trajectory (spline needs enough points)
+MIN_POSITIONS_FOR_RECORDING = 50
 
 
 def record_reward_dist(path_reward=PATH_REWARD, use_keyboard=False):
     positions = []
-    client = TM2020OpenPlanetClient()
-    path = path_reward
-
-    is_recording = False
+    client = TM2020OpenPlanetClient(port=9000, nb_floats=TQC_GRAB_NB_FLOATS)
+    # When using keyboard, save to current directory so you can find the file easily.
     if use_keyboard:
-        print("Press 'e' to start recording, 'q' to stop")
+        path = os.path.abspath(os.path.join(os.getcwd(), f"reward_{cfg.MAP_NAME}.pkl"))
+        logger.info(f"Reward file will be saved to: {path}")
+    else:
+        path = path_reward
+
+    stop_requested = False
+    last_too_few_logged = -1  # throttle "too few positions" warning
+
+    if use_keyboard:
+        # Terminal-based start/stop so the game keeps full keyboard (e.g. A/D for steering).
+        logger.info("Press Enter in this terminal to start recording.")
+        try:
+            input()
+        except EOFError:
+            pass
+        logger.info("start recording")
+        logger.info(
+            "Recording. Drive in the game (steer with A/D or gamepad). "
+            "When done, switch back to this terminal and press Enter to stop."
+        )
+
+        def wait_for_stop():
+            try:
+                input()
+                nonlocal stop_requested
+                stop_requested = True
+            except EOFError:
+                pass
+
+        stop_thread = threading.Thread(target=wait_for_stop, daemon=True)
+        stop_thread.start()
+
+    is_recording = True
     while True:
-        if not is_recording and (not use_keyboard or keyboard.is_pressed("e")):
-            logger.info("start recording")
-            is_recording = True
         if is_recording:
             data = client.retrieve_data(
                 sleep_if_empty=0.01
             )  # we need many points to build a smooth curve
             terminated = bool(data[8])
-            early_stop = use_keyboard and keyboard.is_pressed("q")
-            if early_stop or terminated:
+            early_stop = use_keyboard and stop_requested
+            # Keyboard mode: stop on Enter only; ignore "lap finished" to allow full lap.
+            should_stop = early_stop or (terminated and not use_keyboard)
+            if should_stop:
+                if len(positions) < MIN_POSITIONS_FOR_RECORDING:
+                    if early_stop:
+                        # Ignore spurious/buffered Enter; keep recording until we have enough.
+                        stop_requested = False
+                    # Ignore "lap finished" when we have almost no data (game often sends at start).
+                    if use_keyboard and len(positions) == 0:
+                        logger.debug(
+                            "Ignoring lap-finished signal with 0 positions; keep recording."
+                        )
+                    elif use_keyboard and len(positions) != last_too_few_logged:
+                        last_too_few_logged = len(positions)
+                        logger.warning(
+                            f"Too few positions ({len(positions)}). "
+                            f"Need at least {MIN_POSITIONS_FOR_RECORDING}. "
+                            "Drive along the track, then press Enter here to stop."
+                        )
+                    continue
                 logger.info("Computing reward function checkpoints from captured positions...")
                 logger.info(f"Initial number of captured positions: {len(positions)}")
                 positions = np.array(positions)
@@ -58,23 +110,31 @@ def record_reward_dist(path_reward=PATH_REWARD, use_keyboard=False):
                         move_by = dst  # remaining distance
 
                 final_positions = np.array(final_positions)
+                if len(final_positions) < 2:
+                    logger.error(
+                        f"Not enough distinct positions ({len(final_positions)}) for trajectory. "
+                        "Drive further along the track before stopping."
+                    )
+                    return
                 upsampled_arr = interp_points_with_cubic_spline(final_positions, data_density=3)
                 spaced_points = space_points(upsampled_arr)
-                print(f"final_positions: {final_positions}", end="\n\n")
-                print(f"upsampled_arr: {upsampled_arr}", end="\n\n")
-                print(f"spaced_points: {spaced_points}", end="\n\n")
+                logger.debug(f"final_positions: {final_positions}")
+                logger.debug(f"upsampled_arr: {upsampled_arr}")
+                logger.debug(f"spaced_points: {spaced_points}")
                 logger.info(
                     f"Final number of checkpoints in the reward function: {len(spaced_points)}"
                 )
 
+                abs_path = os.path.abspath(path)
                 pickle.dump(spaced_points, open(path, "wb"))
-                logger.info("All done")
+                logger.info(f"Saved reward trajectory to: {abs_path}")
+                if use_keyboard:
+                    logger.info(
+                        f"Move to TmrlData if needed, e.g.: {os.path.normpath(cfg.REWARD_PATH)}"
+                    )
                 return
             else:
                 positions.append([data[3], data[4], data[5]])
-        else:
-            if use_keyboard:
-                time.sleep(0.05)  # waiting for user to press E
 
 
 def space_points(points):
@@ -120,6 +180,11 @@ def space_points(points):
 
 
 def interp_points_with_cubic_spline(sub_array, data_density):
+    if len(sub_array) < 2:
+        raise ValueError(
+            f"CubicSpline needs at least 2 points, got {len(sub_array)}. "
+            "Drive longer before stopping recording."
+        )
     original_x, original_y, original_z = sub_array.T
 
     # Calculate the new x-values based on data density (e.g., double the points)

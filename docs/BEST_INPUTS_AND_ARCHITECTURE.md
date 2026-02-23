@@ -33,7 +33,15 @@ For a **2-actor** setup (limited env steps), the best inputs are:
 
 ---
 
-## 4. Discrete actions + controller (vibrations) + InfoNCE
+## 4. Reward function (stability and config)
+
+- **Bounded output**: `RewardFunction.compute_reward()` (in `tmrl/custom/tm/utils/compute_reward.py`) applies `math.tanh(reward)` at the end, so per-step reward is in **(-1, 1)**. This keeps value scales stable for SAC/TQC.
+- **Config**: Set **`ENV.END_OF_TRACK_REWARD`** (top-level in `ENV`) so the finish bonus is used; `REWARD_CONFIG.END_OF_TRACK` is used by the interface for `finish_reward`, while the trajectory-based reward uses `cfg.END_OF_TRACK_REWARD` for the near-finish bonus. Use the same value (e.g. 100.0) for both if you want a strong finish signal.
+- **No double-counting**: Speed bonus and backward penalty are applied once per step (inside the `episode_reward != 0` block). Avoid adding a second speed-reward block in the same function.
+
+---
+
+## 5. Discrete actions + controller (vibrations) + InfoNCE
 
 - **Controller kept for vibrations**: The gamepad API is used so that `crash_callback` (e.g. in `TM2020Interface`) still receives vibration (large_motor) when the vehicle hits the guardrail. Do not switch to keyboard-only if you need this signal.
 - **Discrete action space**: The policy can output a **discrete** action index; it is then mapped to continuous control `[gas, brake, steer]` and passed to the same `send_control` / `control_gamepad` path. So the game still gets analog gamepad input and vibrations still work.
@@ -42,3 +50,29 @@ For a **2-actor** setup (limited env steps), the best inputs are:
 - **InfoNCE loss**: Optional contrastive (goal-conditioned) loss for auxiliary training.
   - **Implementation**: `tmrl/custom/info_nce.py` — `StateActionGoalEncoders` (phi(s,a), psi(g)), `info_nce_loss()`, `info_nce_loss_from_encoders()`. Define goals g (e.g. next checkpoint or future state); sample negatives from other trajectories; add the InfoNCE loss to your training step (e.g. alongside SAC critic loss) and optionally maximize f(s,a,g) for the policy.
   - To use with SAC: train encoders with InfoNCE on (s, a, g_pos, g_neg); optionally add an auxiliary reward or policy loss term that encourages high f(s,a,g) for the current goal.
+
+---
+
+## 6. 1-actor recommended (TQCGRAB + new model architecture)
+
+For **single-actor** training with the TQC_GrabData plugin (API-only, no images):
+
+- **Recommended**: Use **Residual Sophy** (paper 2503.14858v4): deep residual MLP backbone (LayerNorm + SiLU) + optional attention. Set in config: `MODEL.USE_RESIDUAL_SOPHY`: `true`, `RESIDUAL_MLP_HIDDEN_DIM`: `256`, `RESIDUAL_MLP_NUM_BLOCKS`: `8`, `BATCH_SIZE`: `512`. Algorithm: TQC. Copy `docs/config_tqcgrab_1actor_recommended.json` to `TmrlData/config/config.json` to test.
+- **Alternative (LIDAR only)**: Use `RTGYM_INTERFACE`: `LIDARPROGRESS`, `USE_RESIDUAL_MLP`: `true`, REDQ, same residual depth/width and high UTD.
+
+For **images + vector** (e.g. BEST or MTQC with images):
+
+- **Frozen EfficientNet + residual head**: Set `USE_FROZEN_EFFNET`: `true` and `ALGORITHM`: `SAC`. A small frozen EfficientNet produces image embeddings; they are concatenated with the API vector and passed through a deep residual MLP head (SiLU, LayerNorm). Config: `FROZEN_EFFNET_EMBED_DIM`, `FROZEN_EFFNET_WIDTH_MULT`, `RESIDUAL_MLP_HIDDEN_DIM`, `RESIDUAL_MLP_NUM_BLOCKS`.
+
+---
+
+## 7. Images + LIDAR (LIDARPROGRESSIMAGES)
+
+To use **both camera images and LIDAR** in one model:
+
+- **Interface**: Set `ENV.RTGYM_INTERFACE` to **`LIDARPROGRESSIMAGES`**. This uses `TM2020InterfaceLidarProgressImages`: one screenshot per step → LIDAR from `Lidar.lidar_20(img)` and a resized (optionally grayscale) image. Observation: `(speed, progress, lidar_history, image_history)`.
+- **Model**: Automatically uses **Frozen EfficientNet + residual head** (SAC only): image at index 3, vector = speed + progress + flattened LIDAR history.
+- **Config**: Use `ALGORITHM`: `SAC`. Image size via `ENV.IMG_WIDTH`, `ENV.IMG_HEIGHT`; `ENV.IMG_GRAYSCALE`: `true` recommended. Reward trajectory must be recorded for progress (see below).
+
+**Recording points for LIDAR and reward:**  
+LIDAR is **not** from recorded map points; it is computed from the game screenshot each step. **Reward trajectory** (progress/checkpoints) and **track boundaries** (left/right) are recorded with scripts and saved under `TmrlData/`. See **[Recording track and LIDAR](RECORDING_TRACK_AND_LIDAR.md)** for scripts (`record_reward.py`, `record_track.py`) and exact paths (`reward/reward_<MAP_NAME>.pkl`, `track/track_<MAP_NAME>_left.pkl`, `_right.pkl`).

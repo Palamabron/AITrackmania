@@ -10,7 +10,7 @@ from torch.nn.init import kaiming_uniform_
 from torch.nn.parameter import Parameter
 
 # local imports
-from util import partial
+from tmrl.util import partial
 
 
 def detach(x):

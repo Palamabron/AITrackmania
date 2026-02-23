@@ -2,9 +2,9 @@ import cv2
 import numpy as np
 from gymnasium import spaces
 
-import config.config_constants as cfg
-from custom.interfaces.TM2020Interface import TM2020Interface
-from custom.utils.control_mouse import mouse_save_replay_tm20
+import tmrl.config.config_constants as cfg
+from tmrl.custom.interfaces.TM2020Interface import TM2020Interface
+from tmrl.custom.utils.control_mouse import mouse_save_replay_tm20
 
 
 class TM2020InterfaceIMPALA(TM2020Interface):

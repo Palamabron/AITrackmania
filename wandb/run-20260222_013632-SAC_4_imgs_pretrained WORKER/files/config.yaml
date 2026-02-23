@@ -1,0 +1,199 @@
+_wandb:
+    value:
+        cli_version: 0.25.0
+        e:
+            y0j80wnt7p2lijmqn70sabeaqr4foiwn:
+                args:
+                    - --worker
+                cpu_count: 24
+                cpu_count_logical: 32
+                cudaVersion: "13.0"
+                disk:
+                    /:
+                        total: "517484634112"
+                        used: "476406108160"
+                email: compte.tmrl@gmail.com
+                executable: C:\Users\szulc\AppData\Local\Microsoft\WindowsApps\PythonSoftwareFoundation.Python.3.12_qbz5n2kfra8p0\python.exe
+                gpu: NVIDIA GeForce RTX 4090
+                gpu_count: 1
+                gpu_nvidia:
+                    - architecture: Ada
+                      cudaCores: 16384
+                      memoryTotal: "25757220864"
+                      name: NVIDIA GeForce RTX 4090
+                      uuid: GPU-5cfcc243-4733-b78b-04ea-bae244b58099
+                host: DESKTOP-SPNB49S
+                memory:
+                    total: "137190760448"
+                os: Windows-11-10.0.26200-SP0
+                program: -m tmrl.__main__
+                python: CPython 3.12.10
+                root: H:\Studia\inzynierskie\inzynierkav2\AITrackmania
+                startedAt: "2026-02-22T00:36:32.964158Z"
+                writerId: y0j80wnt7p2lijmqn70sabeaqr4foiwn
+        m: []
+        python_version: 3.12.10
+        t:
+            "1":
+                - 1
+                - 5
+                - 53
+                - 105
+            "2":
+                - 1
+                - 5
+                - 53
+                - 105
+            "3":
+                - 14
+                - 16
+            "4": 3.12.10
+            "5": 0.25.0
+            "8":
+                - 3
+            "12": 0.25.0
+            "13": windows-amd64
+ACTOR_WEIGHT_DECAY:
+    value: 0
+ADAM_EPS:
+    value: 1e-08
+ALGORITHM:
+    value: SAC
+API_LAYERNORM:
+    value: true
+API_MLP_SIZE0:
+    value: 256
+API_MLP_SIZE1:
+    value: 256
+API_MLP_SIZES:
+    value:
+        - 256
+        - 256
+BATCH_SIZE:
+    value: 256
+CHECKPOINT_COOLDOWN:
+    value: 0
+CHECKPOINT_REWARD:
+    value: 0
+CLIP_WEIGHTS_VALUE:
+    value: 1
+CLIPPING_WEIGHTS:
+    value: false
+CNN_FILTER0:
+    value: 32
+CNN_FILTER1:
+    value: 64
+CNN_FILTER2:
+    value: 64
+CNN_FILTER3:
+    value: 64
+CNN_FILTERS:
+    value:
+        - 32
+        - 64
+        - 64
+        - 64
+CNN_OUTPUT_SIZE:
+    value: 256
+CONSTANT_PENALTY:
+    value: 0
+CRASH_COOLDOWN:
+    value: 0
+CRASH_PENALTY:
+    value: 0
+CRITIC_WEIGHT_DECAY:
+    value: 0
+ENVIRONMENT_STEPS_BEFORE_TRAINING:
+    value: 1000
+GAMMA:
+    value: 0.995
+IMG_GRAYSCALE:
+    value: true
+IMG_HEIGHT:
+    value: 64
+IMG_HIST_LEN:
+    value: 4
+IMG_WIDTH:
+    value: 64
+LAP_COOLDOWN:
+    value: 0
+LAP_REWARD:
+    value: 0
+LEARN_ENTROPY_COEF:
+    value: false
+LR_ACTOR:
+    value: 1e-05
+LR_CRITIC:
+    value: 5e-05
+LR_CRITIC_DIVIDED_BY_LR_ACTOR:
+    value: 5
+LR_ENTROPY:
+    value: 0.0003
+MAX_NB_ZERO_REW_BEFORE_FAILURE:
+    value: 0
+MAX_TRAINING_STEPS_PER_ENVIRONMENT_STEP:
+    value: 4
+MEMORY_SIZE:
+    value: 1000000
+MIN_NB_STEPS_BEFORE_FAILURE:
+    value: 0
+MIN_NB_ZERO_REW_BEFORE_FAILURE:
+    value: 0
+N_STEPS:
+    value: 1
+NOISY_LINEAR_ACTOR:
+    value: false
+NOISY_LINEAR_CRITIC:
+    value: false
+OSCILLATION_PERIOD:
+    value: 0
+POINTS_DISTANCE:
+    value: 0
+POINTS_NUMBER:
+    value: 0
+POLYAK:
+    value: 0.995
+QUANTILES_NUMBER:
+    value: 1
+R2D2_REWIND:
+    value: 0
+REWARD_END_OF_TRACK:
+    value: 0
+RNN_DROPOUT:
+    value: 0
+RNN_LEN0:
+    value: 1
+RNN_LENS:
+    value:
+        - 1
+RNN_SIZE0:
+    value: 64
+RNN_SIZES:
+    value:
+        - 64
+SAVE_MODEL_EVERY:
+    value: 0
+SCHEDULER_T_0:
+    value: 100
+SCHEDULER_T_mult:
+    value: 2
+SCHEDULER_eta_min:
+    value: 1e-06
+SCHEDULER_last_epoch:
+    value: -1
+SPEED_BONUS:
+    value: 0
+SPEED_MEDIUM_THRESHOLD:
+    value: 0
+SPEED_MIN_THRESHOLD:
+    value: 0
+TARGET_ENTROPY:
+    value: -0.5
+TOP_QUANTILES_TO_DROP:
+    value: 2
+TRAINING_STEPS_PER_ROUND:
+    value: 200
+UPDATE_BUFFER_INTERVAL:
+    value: 200
+UPDATE_MODEL_INTERVAL:
+    value: 200

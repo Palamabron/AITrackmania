@@ -60,7 +60,7 @@ class TM2020InterfaceLidar(TM2020Interface):
         img, speed, data = self.grab_lidar_speed_and_data()
         rew, terminated, failure_counter = self.reward_function.compute_reward(
             pos=np.array([data[2], data[3], data[4]])
-        )
+        )[:3]
         self.img_hist.append(img)
         imgs = np.array(list(self.img_hist), dtype="float32")
         obs = [speed, imgs]

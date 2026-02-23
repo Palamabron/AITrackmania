@@ -6,20 +6,20 @@ from threading import Thread
 from typing import Any
 
 import numpy as np
+import tmrl.config.config_constants as cfg
 import torch
 import torch.nn.functional as F  # noqa: N812
+from tmrl.actor import TorchActorModule
+from tmrl.custom.utils.nn import copy_shared, no_grad
+from tmrl.networking import RolloutWorker, Server, Trainer
+from tmrl.training import TrainingAgent
+from tmrl.util import cached_property, partial, prod
 from torch.optim import Adam
 from tuto_envs.dummy_rc_drone_interface import DUMMY_RC_DRONE_CONFIG
 
-import config.config_constants as cfg
-from actor import TorchActorModule
-from custom.utils.nn import copy_shared, no_grad
 from envs import GenericGymEnv
 from memory import TorchMemory
-from networking import RolloutWorker, Server, Trainer
-from training import TrainingAgent
 from training_offline import TorchTrainingOffline
-from util import cached_property, partial, prod
 
 CRC_DEBUG = False
 

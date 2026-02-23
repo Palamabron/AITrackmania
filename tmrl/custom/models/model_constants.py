@@ -5,7 +5,7 @@ EPSILON = 1e-7
 
 
 def effnetv2_s(**kwargs):
-    from custom.models.EffNetActorCritic import EffNetV2
+    from tmrl.custom.models.EffNetActorCritic import EffNetV2
 
     """
     Constructs a EfficientNetV2-S model
@@ -23,7 +23,7 @@ def effnetv2_s(**kwargs):
 
 
 def effnetv2_m(**kwargs):
-    from custom.models.EffNetActorCritic import EffNetV2
+    from tmrl.custom.models.EffNetActorCritic import EffNetV2
 
     """
     Constructs a EfficientNetV2-M model
@@ -42,7 +42,7 @@ def effnetv2_m(**kwargs):
 
 
 def effnetv2_l(**kwargs):
-    from custom.models.EffNetActorCritic import EffNetV2
+    from tmrl.custom.models.EffNetActorCritic import EffNetV2
 
     """
     Constructs a EfficientNetV2-L model
@@ -61,7 +61,7 @@ def effnetv2_l(**kwargs):
 
 
 def effnetv2_xl(**kwargs):
-    from custom.models.EffNetActorCritic import EffNetV2
+    from tmrl.custom.models.EffNetActorCritic import EffNetV2
 
     """
     Constructs a EfficientNetV2-XL model

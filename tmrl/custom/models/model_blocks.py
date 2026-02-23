@@ -1,4 +1,5 @@
 from math import floor
+from typing import cast
 
 import numpy as np
 import torch
@@ -7,9 +8,9 @@ from torch import nn
 from torch.distributions import Normal
 from torch.nn import Conv2d, Module
 
-import config.config_constants as cfg
-from actor import TorchActorModule
-from custom.models.model_constants import LOG_STD_MAX, LOG_STD_MIN, effnetv2_s
+import tmrl.config.config_constants as cfg
+from tmrl.actor import TorchActorModule
+from tmrl.custom.models.model_constants import LOG_STD_MAX, LOG_STD_MIN, effnetv2_s
 
 
 def combined_shape(length, shape=None):
@@ -134,7 +135,7 @@ class MBConv(nn.Module):
 
 
 class ResidualMLPBlock(nn.Module):
-    """Single residual block: Linear -> LayerNorm -> Swish -> Linear -> LayerNorm -> Swish; out = x + block(x)."""
+    """Residual block: Linear->LN->Swish->Linear->LN->Swish; out = x + block(x)."""
 
     def __init__(self, dim: int):
         super().__init__()
@@ -157,7 +158,7 @@ class ResidualMLPBlock(nn.Module):
         out = self.act(out)
         out = self.linear2(out)
         out = self.ln2(out)
-        return x + self.act(out)
+        return cast(torch.Tensor, x + self.act(out))
 
 
 def residual_mlp_backbone(
@@ -165,14 +166,47 @@ def residual_mlp_backbone(
     hidden_dim: int,
     num_blocks: int,
 ) -> nn.Module:
-    """Build residual MLP backbone: input_proj -> num_blocks x ResidualMLPBlock. Output dim = hidden_dim."""
-    layers = []
+    """Build residual MLP: input_proj -> num_blocks x ResidualMLPBlock. Output dim = hidden_dim."""
+    layers: list[nn.Module] = []
     layers.append(nn.Linear(input_dim, hidden_dim))
     layers.append(nn.LayerNorm(hidden_dim))
     layers.append(SiLU())
     for _ in range(num_blocks):
         layers.append(ResidualMLPBlock(hidden_dim))
     return nn.Sequential(*layers)
+
+
+# -----------------------------------------------------------------------------
+# Frozen small EfficientNet encoder: image -> embeddings for further layers
+# -----------------------------------------------------------------------------
+
+
+class FrozenEfficientNetEncoder(nn.Module):
+    """
+    Small EfficientNetV2-S (width_mult <= 1.0) that outputs a fixed-size embedding.
+    All parameters are frozen (no gradients). Use as a feature extractor whose
+    embeddings are fed to further layers (e.g. residual MLP head).
+    """
+
+    def __init__(
+        self,
+        nb_channels_in: int = 4,
+        embed_dim: int = 256,
+        width_mult: float = 0.5,
+    ):
+        super().__init__()
+        self.embed_dim = embed_dim
+        self._encoder = effnetv2_s(
+            nb_channels_in=nb_channels_in,
+            dim_output=embed_dim,
+            width_mult=width_mult,
+        )
+        for p in self._encoder.parameters():
+            p.requires_grad = False
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Returns (batch, embed_dim) embeddings."""
+        return cast(torch.Tensor, self._encoder(x))
 
 
 def num_flat_features(x):

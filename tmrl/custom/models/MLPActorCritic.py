@@ -4,10 +4,10 @@ import torch.nn.functional as functional
 from torch import nn
 from torch.distributions import Normal
 
-from actor import TorchActorModule
-from custom.models.model_blocks import mlp
-from custom.models.model_constants import LOG_STD_MAX, LOG_STD_MIN
-from util import prod
+from tmrl.actor import TorchActorModule
+from tmrl.custom.models.model_blocks import mlp
+from tmrl.custom.models.model_constants import LOG_STD_MAX, LOG_STD_MIN
+from tmrl.util import prod
 
 
 class SquashedGaussianMLPActor(TorchActorModule):

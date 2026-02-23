@@ -1,0 +1,37 @@
+{
+  "os":  "Windows-11-10.0.26200-SP0",
+  "python":  "CPython 3.12.10",
+  "startedAt":  "2026-02-22T11:28:53.650044Z",
+  "args":  [
+    "--worker"
+  ],
+  "program":  "-m tmrl.__main__",
+  "email":  "szulcak05@gmail.com",
+  "root":  "H:\\Studia\\inzynierskie\\inzynierkav2\\AITrackmania",
+  "host":  "DESKTOP-SPNB49S",
+  "executable":  "C:\\Users\\szulc\\AppData\\Local\\Microsoft\\WindowsApps\\PythonSoftwareFoundation.Python.3.12_qbz5n2kfra8p0\\python.exe",
+  "cpu_count":  24,
+  "cpu_count_logical":  32,
+  "gpu":  "NVIDIA GeForce RTX 4090",
+  "gpu_count":  1,
+  "disk":  {
+    "/":  {
+      "total":  "517484634112",
+      "used":  "476407263232"
+    }
+  },
+  "memory":  {
+    "total":  "137190760448"
+  },
+  "gpu_nvidia":  [
+    {
+      "name":  "NVIDIA GeForce RTX 4090",
+      "memoryTotal":  "25757220864",
+      "cudaCores":  16384,
+      "architecture":  "Ada",
+      "uuid":  "GPU-5cfcc243-4733-b78b-04ea-bae244b58099"
+    }
+  ],
+  "cudaVersion":  "13.0",
+  "writerId":  "q0u9e6jwviqj6w32zylqdbvzd2a89kjv"
+}

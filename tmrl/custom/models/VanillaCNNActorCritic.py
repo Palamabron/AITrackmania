@@ -4,9 +4,9 @@ import torch.nn.functional as functional
 from torch import nn
 from torch.distributions import Normal
 
-from actor import TorchActorModule
-from custom.models.model_blocks import VanillaCNN
-from custom.models.model_constants import LOG_STD_MAX, LOG_STD_MIN
+from tmrl.actor import TorchActorModule
+from tmrl.custom.models.model_blocks import VanillaCNN
+from tmrl.custom.models.model_constants import LOG_STD_MAX, LOG_STD_MIN
 
 
 class SquashedGaussianVanillaCNNActor(TorchActorModule):

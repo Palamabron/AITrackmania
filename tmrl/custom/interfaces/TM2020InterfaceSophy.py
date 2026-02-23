@@ -1,9 +1,9 @@
 import numpy as np
 from gymnasium import spaces
 
-import config.config_constants as cfg
-from custom.interfaces.TM2020Interface import TM2020Interface
-from custom.utils.control_mouse import mouse_save_replay_tm20
+import tmrl.config.config_constants as cfg
+from tmrl.custom.interfaces.TM2020Interface import TM2020Interface
+from tmrl.custom.utils.control_mouse import mouse_save_replay_tm20
 
 
 class TM2020InterfaceIMPALASophy(TM2020Interface):
@@ -14,6 +14,7 @@ class TM2020InterfaceIMPALASophy(TM2020Interface):
         min_nb_steps_before_failure=160,
         record=False,
         save_replay: bool = False,
+        save_replays: bool | None = None,
         grayscale: bool = False,
         resize_to: tuple = (128, 64),
         finish_reward=cfg.END_OF_TRACK_REWARD,
@@ -22,11 +23,15 @@ class TM2020InterfaceIMPALASophy(TM2020Interface):
         checkpoint_reward=cfg.CHECKPOINT_REWARD,
         lap_reward=cfg.LAP_REWARD,
         nb_zero_rew_before_failure=70,
+        min_gas_warm_start=0.0,
     ):
+        if save_replays is not None:
+            save_replay = save_replays
         super().__init__(
             img_hist_len=img_hist_len,
             gamepad=gamepad,
             min_nb_steps_before_failure=min_nb_steps_before_failure,
+            min_gas_warm_start=min_gas_warm_start,
             save_replays=save_replay,
             grayscale=grayscale,
             finish_reward=finish_reward,

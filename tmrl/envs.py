@@ -4,7 +4,7 @@
 import gymnasium
 
 # local imports
-from wrappers import AffineObservationWrapper, Float64ToFloat32
+from tmrl.wrappers import AffineObservationWrapper, Float64ToFloat32
 
 __docformat__ = "google"
 

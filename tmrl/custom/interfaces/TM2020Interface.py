@@ -11,14 +11,20 @@ from loguru import logger
 from rtgym import RealTimeGymInterface
 
 import tmrl.config.config_constants as cfg
-
 from tmrl.custom.tm.utils.compute_reward import RewardFunction
-from tmrl.custom.tm.utils.control_gamepad import control_gamepad, gamepad_reset, gamepad_close_finish_pop_up_tm20
+from tmrl.custom.tm.utils.control_gamepad import (
+    control_gamepad,
+    gamepad_close_finish_pop_up_tm20,
+    gamepad_reset,
+)
 from tmrl.custom.tm.utils.control_keyboard import apply_control, keyres
+from tmrl.custom.tm.utils.control_mouse import (
+    mouse_close_finish_pop_up_tm20,
+    mouse_save_replay_tm20,
+)
 from tmrl.custom.tm.utils.discrete_control import discrete_index_to_control
-from tmrl.custom.tm.utils.control_mouse import mouse_close_finish_pop_up_tm20, mouse_save_replay_tm20
-from tmrl.custom.tm.utils.window import WindowInterface
 from tmrl.custom.tm.utils.tools import Lidar, TM2020OpenPlanetClient, save_ghost
+from tmrl.custom.tm.utils.window import WindowInterface
 
 # Globals ==========================================================================
 
@@ -27,17 +33,26 @@ CHECK_FORWARD = 500  # this allows (and rewards) 50m cuts
 
 # Interface for Trackmania 2020 ====================================================
 
+
 class TM2020Interface(RealTimeGymInterface):
     """
     This is the API needed for the algorithm to control TrackMania 2020
     """
 
-    def __init__(self,
-                 img_hist_len: int = 4,
-                 gamepad: bool = True,
-                 save_replays: bool = False,
-                 grayscale: bool = True,
-                 resize_to=(64, 64)):
+    def __init__(
+        self,
+        img_hist_len: int = 4,
+        gamepad: bool = True,
+        save_replays: bool = False,
+        grayscale: bool = True,
+        resize_to=(64, 64),
+        finish_reward=None,
+        constant_penalty=None,
+        crash_penalty=None,
+        nb_zero_rew_before_failure=None,
+        min_nb_steps_before_failure=None,
+        min_gas_warm_start=0.0,
+    ):
         """
         Base rtgym interface for TrackMania 2020 (Full environment)
 
@@ -47,6 +62,11 @@ class TM2020Interface(RealTimeGymInterface):
             save_replays: bool: whether to save TrackMania replays on successful episodes
             grayscale: bool: whether to output grayscale images or color images
             resize_to: Tuple[int, int]: resize output images to this (width, height)
+            finish_reward: optional override for END_OF_TRACK reward
+            constant_penalty: optional override for CONSTANT_PENALTY
+            crash_penalty: optional override for CRASH_PENALTY
+            nb_zero_rew_before_failure: optional override for FAILURE_COUNTDOWN
+            min_nb_steps_before_failure: optional override for MIN_STEPS
         """
         self.is_crashed = None
         self.last_time = None
@@ -62,36 +82,91 @@ class TM2020Interface(RealTimeGymInterface):
         self.save_replays = save_replays
         self.grayscale = grayscale
         self.resize_to = resize_to
-        self.finish_reward = cfg.REWARD_CONFIG['END_OF_TRACK']
-        self.constant_penalty = cfg.REWARD_CONFIG['CONSTANT_PENALTY']
+        self.finish_reward = (
+            finish_reward if finish_reward is not None else cfg.REWARD_CONFIG["END_OF_TRACK"]
+        )
+        self.constant_penalty = (
+            constant_penalty
+            if constant_penalty is not None
+            else cfg.REWARD_CONFIG["CONSTANT_PENALTY"]
+        )
         self.initialized = False
-        self.crash_penalty = cfg.REWARD_CONFIG.get('CRASH_PENALTY', 10.0)
-        self.nb_zero_rew_before_failure = cfg.REWARD_CONFIG.get('FAILURE_COUNTDOWN', 10)
-        self.min_nb_steps_before_failure = cfg.REWARD_CONFIG.get('MIN_STEPS', 70)
+        self.crash_penalty = (
+            crash_penalty
+            if crash_penalty is not None
+            else cfg.REWARD_CONFIG.get("CRASH_PENALTY", 10.0)
+        )
+        self.nb_zero_rew_before_failure = (
+            nb_zero_rew_before_failure
+            if nb_zero_rew_before_failure is not None
+            else cfg.REWARD_CONFIG.get("FAILURE_COUNTDOWN", 10)
+        )
+        self.min_nb_steps_before_failure = (
+            min_nb_steps_before_failure
+            if min_nb_steps_before_failure is not None
+            else cfg.REWARD_CONFIG.get("MIN_STEPS", 70)
+        )
+        self.min_gas_warm_start = (
+            float(min_gas_warm_start)
+            if min_gas_warm_start is not None and float(min_gas_warm_start) > 0
+            else None
+        )
         self.crash_cooldown = 0
         self.crash_curr = 0
-        self.discrete_action_table = None  # if set, policy action is discrete index -> map to continuous
+        self.discrete_action_table = (
+            None  # if set, policy action is discrete index -> map to continuous
+        )
+        self._send_control_logged = False  # log first send_control for debugging
 
     def initialize_common(self):
         if self.gamepad:
-            import vgamepad as vg
-            self.j = vg.VX360Gamepad()
-            self.j.register_notification(callback_function=self.crash_callback)
-            logger.debug(" virtual joystick in use")
+            try:
+                import vgamepad as vg
+
+                self.j = vg.VX360Gamepad()
+                self.j.register_notification(callback_function=self.crash_callback)
+                logger.info("Virtual gamepad (Xbox 360) initialized for control.")
+            except OSError as e:
+                if "libevdev" in str(e) or "libevdev" in str(e.__cause__ or ""):
+                    raise RuntimeError(
+                        "Virtual gamepad (vgamepad) requires libevdev on Linux. "
+                        "Worker likely in WSL while TrackMania runs on Windows. "
+                        "Run worker on Windows: start server and trainer in WSL, then "
+                        "'python -m tmrl --worker' on Windows. "
+                        "In Windows TmrlData\\config\\config.json set PUBLIC_IP_SERVER to WSL IP "
+                        "(WSL: hostname -I | awk '{print $1}'). See docs/SAME_PC_SETUP.md."
+                    ) from e
+                raise
+            except Exception as e:
+                err_msg = str(e).lower()
+                if platform.system() == "Windows" and (
+                    "vigem" in err_msg or "driver" in err_msg or "device" in err_msg
+                ):
+                    raise RuntimeError(
+                        "Virtual gamepad failed on Windows. Install ViGEmBus driver: "
+                        "https://github.com/ViGEm/ViGEmBus/releases (download and run installer). "
+                        "Then restart and run the worker again."
+                    ) from e
+                raise
+        else:
+            logger.info("Using keyboard for control (VIRTUAL_GAMEPAD=false).")
         self.window_interface = WindowInterface("Trackmania")
         self.window_interface.move_and_resize()
         self.last_time = time.time()
         self.img_hist = deque(maxlen=self.img_hist_len)
         self.img = None
-        self.reward_function = RewardFunction(reward_data_path=cfg.REWARD_PATH,
-                                              nb_obs_forward=cfg.REWARD_CONFIG['CHECK_FORWARD'],
-                                              nb_obs_backward=cfg.REWARD_CONFIG['CHECK_BACKWARD'],
-                                              nb_zero_rew_before_failure=cfg.REWARD_CONFIG['FAILURE_COUNTDOWN'],
-                                              min_nb_steps_before_failure=cfg.REWARD_CONFIG['MIN_STEPS'],
-                                              max_dist_from_traj=cfg.REWARD_CONFIG['MAX_STRAY'],
-                                              crash_penalty=self.crash_penalty,
-                                              constant_penalty=self.constant_penalty)
-        self.client = TM2020OpenPlanetClient()
+        self.reward_function = RewardFunction(
+            reward_data_path=cfg.REWARD_PATH,
+            nb_obs_forward=cfg.REWARD_CONFIG["CHECK_FORWARD"],
+            nb_obs_backward=cfg.REWARD_CONFIG["CHECK_BACKWARD"],
+            nb_zero_rew_before_failure=self.nb_zero_rew_before_failure,
+            min_nb_steps_before_failure=self.min_nb_steps_before_failure,
+            max_dist_from_traj=cfg.REWARD_CONFIG["MAX_STRAY"],
+            crash_penalty=self.crash_penalty,
+            constant_penalty=self.constant_penalty,
+        )
+        if self.client is None:
+            self.client = TM2020OpenPlanetClient()
         self.is_crashed = False
         self.crash_cooldown = 0
         self.crash_curr = self.crash_cooldown
@@ -99,7 +174,7 @@ class TM2020Interface(RealTimeGymInterface):
     def crash_callback(self, client, target, large_motor, small_motor, led_number, user_data):
         self.is_crashed = large_motor > 100 and self.crash_cooldown <= 0
         if self.is_crashed:
-            print(f"crashed: {self.is_crashed}")
+            logger.debug("crashed: True (episode will terminate)")
             self.crash_cooldown = 10
 
     def initialize(self):
@@ -113,25 +188,56 @@ class TM2020Interface(RealTimeGymInterface):
         Applies the action given by the RL policy
         If control is None, does nothing (e.g. to record)
         Args:
-            control: np.array: [forward,backward,right,left] or, if discrete_action_table is set, a single discrete index (int or shape (1,))
+            control: np.array: [forward,backward,right,left] or, if discrete_action_table
+                is set, a single discrete index (int or shape (1,))
         """
         if control is not None and self.discrete_action_table is not None:
             idx = int(np.asarray(control).flat[0])
             control = discrete_index_to_control(idx, self.discrete_action_table)
         if self.gamepad:
             if control is not None:
+                if self.j is None:
+                    logger.error(
+                        "Virtual gamepad (self.j) is None; cannot send control. "
+                        "Check VIRTUAL_GAMEPAD and gamepad init."
+                    )
+                    return
+                c = np.asarray(control, dtype=np.float32).ravel()
+                if self.min_gas_warm_start is not None and len(c) > 0:
+                    warm_remaining = getattr(self, "_warm_start_steps_remaining", 0)
+                    if warm_remaining > 0:
+                        c = np.array(c, dtype=np.float32).copy()
+                        c[0] = max(float(c[0]), self.min_gas_warm_start)
+                        self._warm_start_steps_remaining = warm_remaining - 1
+                        control = c
+                    elif float(c[0]) < self.min_gas_warm_start:
+                        control = np.array(c, dtype=np.float32).copy()
+                        control[0] = self.min_gas_warm_start
+                    else:
+                        control = c
+                else:
+                    control = c
+                if not self._send_control_logged:
+                    self._send_control_logged = True
+                    gas = float(control[0]) if len(control) > 0 else 0
+                    brake = float(control[1]) if len(control) > 1 else 0
+                    steer = float(control[2]) if len(control) > 2 else 0
+                    logger.info(
+                        f"First send_control: gas={gas:.2f} brake={brake:.2f} steer={steer:.2f} "
+                        "(virtual gamepad)"
+                    )
                 control_gamepad(self.j, control)
         else:
             if control is not None:
                 actions = []
                 if control[0] > 0:
-                    actions.append('f')
+                    actions.append("f")
                 if control[1] > 0:
-                    actions.append('b')
+                    actions.append("b")
                 if control[2] > 0.5:
-                    actions.append('r')
+                    actions.append("r")
                 elif control[2] < -0.5:
-                    actions.append('l')
+                    actions.append("l")
                 apply_control(actions)
 
     def grab_data_and_img(self):
@@ -156,9 +262,13 @@ class TM2020Interface(RealTimeGymInterface):
     def reset_common(self):
         if not self.initialized:
             self.initialize()
+        # So that min_gas_warm_start is applied for the first N steps of this run (every run).
+        self._warm_start_steps_remaining = cfg.REWARD_CONFIG.get("MIN_STEPS", 50)
         self.send_control(self.get_default_action())
         self.reset_race()
-        time_sleep = max(0, cfg.SLEEP_TIME_AT_RESET - 0.1) if self.gamepad else cfg.SLEEP_TIME_AT_RESET
+        time_sleep = (
+            max(0, cfg.SLEEP_TIME_AT_RESET - 0.1) if self.gamepad else cfg.SLEEP_TIME_AT_RESET
+        )
         time.sleep(time_sleep)  # must be long enough for image to be refreshed
 
     def reset(self, seed=None, options=None):
@@ -167,15 +277,24 @@ class TM2020Interface(RealTimeGymInterface):
         """
         self.reset_common()
         data, img = self.grab_data_and_img()
-        speed = np.array([
-            data[0],
-        ], dtype='float32')
-        gear = np.array([
-            data[9],
-        ], dtype='float32')
-        rpm = np.array([
-            data[10],
-        ], dtype='float32')
+        speed = np.array(
+            [
+                data[0],
+            ],
+            dtype="float32",
+        )
+        gear = np.array(
+            [
+                data[9],
+            ],
+            dtype="float32",
+        )
+        rpm = np.array(
+            [
+                data[10],
+            ],
+            dtype="float32",
+        )
         for _ in range(self.img_hist_len):
             self.img_hist.append(img)
         imgs = np.array(list(self.img_hist))
@@ -208,17 +327,27 @@ class TM2020Interface(RealTimeGymInterface):
         obs must be a list of numpy arrays
         """
         data, img = self.grab_data_and_img()
-        speed = np.array([
-            data[0],
-        ], dtype='float32')
-        gear = np.array([
-            data[9],
-        ], dtype='float32')
-        rpm = np.array([
-            data[10],
-        ], dtype='float32')
+        speed = np.array(
+            [
+                data[0],
+            ],
+            dtype="float32",
+        )
+        gear = np.array(
+            [
+                data[9],
+            ],
+            dtype="float32",
+        )
+        rpm = np.array(
+            [
+                data[10],
+            ],
+            dtype="float32",
+        )
         reward, terminated, failure_counter, _ = self.reward_function.compute_reward(
-            pos=np.array([data[2], data[3], data[4]]))
+            pos=np.array([data[2], data[3], data[4]])
+        )
         self.img_hist.append(img)
         imgs = np.array(list(self.img_hist))
         observation = [speed, gear, rpm, imgs]
@@ -245,9 +374,13 @@ class TM2020Interface(RealTimeGymInterface):
         else:
             w, h = cfg.WINDOW_HEIGHT, cfg.WINDOW_WIDTH
         if self.grayscale:
-            img = spaces.Box(low=0.0, high=255.0, shape=(self.img_hist_len, h, w))  # cv2 grayscale images are (h, w)
+            img = spaces.Box(
+                low=0.0, high=255.0, shape=(self.img_hist_len, h, w)
+            )  # cv2 grayscale images are (h, w)
         else:
-            img = spaces.Box(low=0.0, high=255.0, shape=(self.img_hist_len, h, w, 3))  # cv2 images are (h, w, c)
+            img = spaces.Box(
+                low=0.0, high=255.0, shape=(self.img_hist_len, h, w, 3)
+            )  # cv2 images are (h, w, c)
         return spaces.Tuple((speed, gear, rpm, img))
 
     def get_action_space(self):
@@ -260,7 +393,7 @@ class TM2020Interface(RealTimeGymInterface):
         """
         initial action at episode start
         """
-        return np.array([0.0, 0.0, 0.0], dtype='float32')
+        return np.array([0.0, 0.0, 0.0], dtype="float32")
 
 
 class TM2020InterfaceLidar(TM2020Interface):
@@ -272,9 +405,12 @@ class TM2020InterfaceLidar(TM2020Interface):
     def grab_lidar_speed_and_data(self):
         img = self.window_interface.screenshot()[:, :, :3]
         data = self.client.retrieve_data()
-        speed = np.array([
-            data[0],
-        ], dtype='float32')
+        speed = np.array(
+            [
+                data[0],
+            ],
+            dtype="float32",
+        )
         lidar = self.lidar.lidar_20(img=img, show=False)
         return lidar, speed, data
 
@@ -292,7 +428,7 @@ class TM2020InterfaceLidar(TM2020Interface):
         img, speed, data = self.grab_lidar_speed_and_data()
         for _ in range(self.img_hist_len):
             self.img_hist.append(img)
-        imgs = np.array(list(self.img_hist), dtype='float32')
+        imgs = np.array(list(self.img_hist), dtype="float32")
         obs = [speed, imgs]
         self.reward_function.reset()
         return obs, {}
@@ -303,9 +439,11 @@ class TM2020InterfaceLidar(TM2020Interface):
         obs must be a list of numpy arrays
         """
         img, speed, data = self.grab_lidar_speed_and_data()
-        rew, terminated = self.reward_function.compute_reward(pos=np.array([data[2], data[3], data[4]]))
+        rew, terminated = self.reward_function.compute_reward(
+            pos=np.array([data[2], data[3], data[4]])
+        )[:2]
         self.img_hist.append(img)
-        imgs = np.array(list(self.img_hist), dtype='float32')
+        imgs = np.array(list(self.img_hist), dtype="float32")
         obs = [speed, imgs]
         end_of_track = bool(data[8])
         info = {}
@@ -320,16 +458,19 @@ class TM2020InterfaceLidar(TM2020Interface):
         """
         must be a Tuple
         """
-        speed = spaces.Box(low=0.0, high=1000.0, shape=(1, ))
-        imgs = spaces.Box(low=0.0, high=np.inf, shape=(
-            self.img_hist_len,
-            19,
-        ))  # lidars
+        speed = spaces.Box(low=0.0, high=1000.0, shape=(1,))
+        imgs = spaces.Box(
+            low=0.0,
+            high=np.inf,
+            shape=(
+                self.img_hist_len,
+                19,
+            ),
+        )  # lidars
         return spaces.Tuple((speed, imgs))
 
 
 class TM2020InterfaceLidarProgress(TM2020InterfaceLidar):
-
     def reset(self, seed=None, options=None):
         """
         obs must be a list of numpy arrays
@@ -338,8 +479,8 @@ class TM2020InterfaceLidarProgress(TM2020InterfaceLidar):
         img, speed, data = self.grab_lidar_speed_and_data()
         for _ in range(self.img_hist_len):
             self.img_hist.append(img)
-        imgs = np.array(list(self.img_hist), dtype='float32')
-        progress = np.array([0], dtype='float32')
+        imgs = np.array(list(self.img_hist), dtype="float32")
+        progress = np.array([0], dtype="float32")
         obs = [speed, progress, imgs]
         self.reward_function.reset()
         return obs, {}
@@ -350,10 +491,14 @@ class TM2020InterfaceLidarProgress(TM2020InterfaceLidar):
         obs must be a list of numpy arrays
         """
         img, speed, data = self.grab_lidar_speed_and_data()
-        rew, terminated = self.reward_function.compute_reward(pos=np.array([data[2], data[3], data[4]]))
-        progress = np.array([self.reward_function.cur_idx / self.reward_function.datalen], dtype='float32')
+        rew, terminated = self.reward_function.compute_reward(
+            pos=np.array([data[2], data[3], data[4]])
+        )[:2]
+        progress = np.array(
+            [self.reward_function.cur_idx / self.reward_function.datalen], dtype="float32"
+        )
         self.img_hist.append(img)
-        imgs = np.array(list(self.img_hist), dtype='float32')
+        imgs = np.array(list(self.img_hist), dtype="float32")
         obs = [speed, progress, imgs]
         end_of_track = bool(data[8])
         info = {}
@@ -368,12 +513,16 @@ class TM2020InterfaceLidarProgress(TM2020InterfaceLidar):
         """
         must be a Tuple
         """
-        speed = spaces.Box(low=0.0, high=1000.0, shape=(1, ))
+        speed = spaces.Box(low=0.0, high=1000.0, shape=(1,))
         progress = spaces.Box(low=0.0, high=1.0, shape=(1,))
-        imgs = spaces.Box(low=0.0, high=np.inf, shape=(
-            self.img_hist_len,
-            19,
-        ))  # lidars
+        imgs = spaces.Box(
+            low=0.0,
+            high=np.inf,
+            shape=(
+                self.img_hist_len,
+                19,
+            ),
+        )  # lidars
         return spaces.Tuple((speed, progress, imgs))
 
 

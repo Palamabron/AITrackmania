@@ -3,7 +3,7 @@ from abc import ABC, abstractmethod
 
 import torch
 
-from util import collate_torch
+from tmrl.util import collate_torch
 
 __docformat__ = "google"
 

@@ -14,9 +14,9 @@ This module reads config_constants (which loads config.json) and selects:
 Selection logic:
   - Observation type: PRAGMA_LIDAR (Lidar) vs image-based (Full, IMPALA, Sophy, TrackMap).
   - Interface: chosen from RTGYM_INTERFACE (Lidar, LidarProgress, TrackMap, IMPALA, Sophy, Full).
-  - Memory: Lidar → MemoryTMLidar* ; IMPALA/Best → MemoryTMBest ; 
+  - Memory: Lidar → MemoryTMLidar* ; IMPALA/Best → MemoryTMBest ;
   MTQC+images → MemoryR2D2 ; else MemoryTMFull.
-  - Model: Lidar+RNN → RNNActorCritic ; Lidar → MLP or REDQ MLP ; MTQC → IMPALA/Sophy ; 
+  - Model: Lidar+RNN → RNNActorCritic ; Lidar → MLP or REDQ MLP ; MTQC → IMPALA/Sophy ;
   else Vanilla CNN.
 """
 
@@ -40,17 +40,21 @@ from tmrl.custom.custom_memories import (
     MemoryTMFull,
     MemoryTMLidar,
     MemoryTMLidarProgress,
+    MemoryTMLidarProgressImages,
     get_local_buffer_sample_lidar,
     get_local_buffer_sample_lidar_progress,
+    get_local_buffer_sample_lidar_progress_images,
     get_local_buffer_sample_mobilenet,
     get_local_buffer_sample_tm20_imgs,
 )
 from tmrl.custom.custom_models import (
+    FrozenEffNetResidualActorCritic,
     MLPActorCritic,
     REDQMLPActorCritic,
     REDQResidualMLPActorCritic,
     ResidualMLPActorCritic,
     RNNActorCritic,
+    SquashedGaussianFrozenEffNetResidualActor,
     SquashedGaussianMLPActor,
     SquashedGaussianResidualMLPActor,
     SquashedGaussianRNNActor,
@@ -62,14 +66,20 @@ from tmrl.custom.custom_models import (
 from tmrl.custom.interfaces.TM2020Interface import TM2020Interface
 from tmrl.custom.interfaces.TM2020InterfaceIMPALA import TM2020InterfaceIMPALA
 from tmrl.custom.interfaces.TM2020InterfaceLidar import TM2020InterfaceLidar
+from tmrl.custom.interfaces.TM2020InterfaceLidarImages import TM2020InterfaceLidarProgressImages
 from tmrl.custom.interfaces.TM2020InterfaceLidarProgress import TM2020InterfaceLidarProgress
 from tmrl.custom.interfaces.TM2020InterfaceSophy import TM2020InterfaceIMPALASophy
+from tmrl.custom.interfaces.TM2020InterfaceTQC import TM2020InterfaceTQC
 from tmrl.custom.interfaces.TM2020InterfaceTrackMap import TM2020InterfaceTrackMap
+from tmrl.custom.interfaces.TM2020InterfaceTrackMapImages import TM2020InterfaceTrackMapImages
+from tmrl.custom.models.Sophy import SophyResidualActorCritic, SquashedActorSophyResidual
 from tmrl.custom.tm.tm_preprocessors import (
+    obs_preprocessor_lidar_progress_images_act_in_obs,
     obs_preprocessor_mobilenet_act_in_obs,
     obs_preprocessor_tm_act_in_obs,
     obs_preprocessor_tm_lidar_act_in_obs,
     obs_preprocessor_tm_lidar_progress_act_in_obs,
+    obs_preprocessor_tqcgrab_act_in_obs,
 )
 from tmrl.envs import GenericGymEnv
 from tmrl.training_offline import TorchTrainingOffline
@@ -92,10 +102,20 @@ assert ALG_NAME in ["SAC", "REDQSAC", "TQC"], (
 # -----------------------------------------------------------------------------
 
 if cfg.PRAGMA_LIDAR:
-    if cfg.PRAGMA_RNN:
+    if (cfg.PRAGMA_LIDAR_PROGRESS_IMAGES or cfg.PRAGMA_TRACKMAP_IMAGES) and ALG_NAME == "SAC":
+        _lidar_images_kw = dict(
+            image_index=3,
+            embed_dim=cfg.FROZEN_EFFNET_EMBED_DIM,
+            hidden_dim=cfg.RESIDUAL_MLP_HIDDEN_DIM,
+            num_blocks=cfg.RESIDUAL_MLP_NUM_BLOCKS,
+            width_mult=cfg.FROZEN_EFFNET_WIDTH_MULT,
+        )
+        TRAIN_MODEL: Any = partial(FrozenEffNetResidualActorCritic, **_lidar_images_kw)
+        POLICY: Any = partial(SquashedGaussianFrozenEffNetResidualActor, **_lidar_images_kw)
+    elif cfg.PRAGMA_RNN:
         assert ALG_NAME == "SAC", f"{ALG_NAME} is not implemented here."
-        TRAIN_MODEL: type[Any] = RNNActorCritic
-        POLICY: type[Any] = SquashedGaussianRNNActor
+        TRAIN_MODEL = RNNActorCritic
+        POLICY = SquashedGaussianRNNActor
     elif cfg.USE_RESIDUAL_MLP:
         _residual_kw = dict(
             hidden_dim=cfg.RESIDUAL_MLP_HIDDEN_DIM,
@@ -111,11 +131,32 @@ if cfg.PRAGMA_LIDAR:
         TRAIN_MODEL = MLPActorCritic if ALG_NAME == "SAC" else REDQMLPActorCritic
         POLICY = SquashedGaussianMLPActor
 else:
-    if cfg.PRAGMA_MBEST_TQC:
+    if cfg.PRAGMA_MBEST_TQC or cfg.PRAGMA_TQC_GRAB:
         assert ALG_NAME in ("TQC", "SAC"), f"{ALG_NAME} is not implemented here."
-        if cfg.USE_IMAGES:
+        if (
+            cfg.USE_IMAGES
+            and not cfg.PRAGMA_TQC_GRAB
+            and cfg.USE_FROZEN_EFFNET
+            and ALG_NAME == "SAC"
+        ):
+            _frozen_effnet_kw = dict(
+                embed_dim=cfg.FROZEN_EFFNET_EMBED_DIM,
+                hidden_dim=cfg.RESIDUAL_MLP_HIDDEN_DIM,
+                num_blocks=cfg.RESIDUAL_MLP_NUM_BLOCKS,
+                width_mult=cfg.FROZEN_EFFNET_WIDTH_MULT,
+            )
+            TRAIN_MODEL = partial(FrozenEffNetResidualActorCritic, **_frozen_effnet_kw)
+            POLICY = partial(SquashedGaussianFrozenEffNetResidualActor, **_frozen_effnet_kw)
+        elif cfg.USE_IMAGES and not cfg.PRAGMA_TQC_GRAB:
             TRAIN_MODEL = impala.QRCNNActorCritic
             POLICY = impala.SquashedActorQRCNN
+        elif cfg.PRAGMA_TQC_GRAB and not cfg.USE_IMAGES and cfg.USE_RESIDUAL_SOPHY:
+            _res_sophy_kw = dict(
+                hidden_dim=cfg.RESIDUAL_MLP_HIDDEN_DIM,
+                num_blocks=cfg.RESIDUAL_MLP_NUM_BLOCKS,
+            )
+            TRAIN_MODEL = partial(SophyResidualActorCritic, **_res_sophy_kw)
+            POLICY = partial(SquashedActorSophyResidual, **_res_sophy_kw)
         else:
             TRAIN_MODEL = impalaWoImages.SophyActorCritic
             POLICY = impalaWoImages.SquashedActorSophy
@@ -134,7 +175,23 @@ else:
 # -----------------------------------------------------------------------------
 
 if cfg.PRAGMA_LIDAR:
-    if cfg.PRAGMA_PROGRESS:
+    if cfg.PRAGMA_TRACKMAP_IMAGES:
+        INT = partial(
+            TM2020InterfaceTrackMapImages,
+            img_hist_len=cfg.IMG_HIST_LEN,
+            gamepad=cfg.PRAGMA_GAMEPAD,
+            grayscale=cfg.GRAYSCALE,
+            resize_to=(cfg.IMG_WIDTH, cfg.IMG_HEIGHT),
+        )
+    elif cfg.PRAGMA_LIDAR_PROGRESS_IMAGES:
+        INT = partial(
+            TM2020InterfaceLidarProgressImages,
+            img_hist_len=cfg.IMG_HIST_LEN,
+            gamepad=cfg.PRAGMA_GAMEPAD,
+            grayscale=cfg.GRAYSCALE,
+            resize_to=(cfg.IMG_WIDTH, cfg.IMG_HEIGHT),
+        )
+    elif cfg.PRAGMA_PROGRESS:
         INT = partial(
             TM2020InterfaceLidarProgress,
             img_hist_len=cfg.IMG_HIST_LEN,
@@ -153,7 +210,21 @@ if cfg.PRAGMA_LIDAR:
             gamepad=cfg.PRAGMA_GAMEPAD,
         )
 else:
-    if cfg.PRAGMA_CUSTOM or cfg.PRAGMA_BEST or cfg.PRAGMA_BEST_TQC or cfg.PRAGMA_MBEST_TQC:
+    if cfg.PRAGMA_TQC_GRAB:
+        INT = partial(
+            TM2020InterfaceTQC,
+            img_hist_len=cfg.IMG_HIST_LEN,
+            gamepad=cfg.PRAGMA_GAMEPAD,
+            grayscale=cfg.GRAYSCALE,
+            resize_to=(cfg.IMG_WIDTH, cfg.IMG_HEIGHT),
+            crash_penalty=cfg.CRASH_PENALTY,
+            constant_penalty=cfg.CONSTANT_PENALTY,
+            checkpoint_reward=cfg.CHECKPOINT_REWARD,
+            lap_reward=cfg.LAP_REWARD,
+            min_nb_steps_before_failure=cfg.MIN_NB_STEPS_BEFORE_FAILURE,
+            min_gas_warm_start=cfg.MIN_GAS_WARM_START,
+        )
+    elif cfg.PRAGMA_CUSTOM or cfg.PRAGMA_BEST or cfg.PRAGMA_BEST_TQC or cfg.PRAGMA_MBEST_TQC:
         if cfg.USE_IMAGES:
             INT = partial(
                 TM2020InterfaceIMPALA,
@@ -179,6 +250,7 @@ else:
                 checkpoint_reward=cfg.CHECKPOINT_REWARD,
                 lap_reward=cfg.LAP_REWARD,
                 min_nb_steps_before_failure=cfg.MIN_NB_STEPS_BEFORE_FAILURE,
+                min_gas_warm_start=cfg.MIN_GAS_WARM_START,
             )
     else:
         INT = partial(
@@ -201,12 +273,20 @@ for k, v in CONFIG_DICT_MODIFIERS.items():
 # -----------------------------------------------------------------------------
 
 if cfg.PRAGMA_LIDAR:
-    if cfg.PRAGMA_PROGRESS:
+    if cfg.PRAGMA_LIDAR_PROGRESS_IMAGES or cfg.PRAGMA_TRACKMAP_IMAGES:
+        SAMPLE_COMPRESSOR = get_local_buffer_sample_lidar_progress_images
+    elif cfg.PRAGMA_PROGRESS:
         SAMPLE_COMPRESSOR = get_local_buffer_sample_lidar_progress
     else:
         SAMPLE_COMPRESSOR = get_local_buffer_sample_lidar
 else:
-    if cfg.PRAGMA_CUSTOM or cfg.PRAGMA_BEST or cfg.PRAGMA_BEST_TQC or cfg.PRAGMA_MBEST_TQC:
+    if (
+        cfg.PRAGMA_CUSTOM
+        or cfg.PRAGMA_BEST
+        or cfg.PRAGMA_BEST_TQC
+        or cfg.PRAGMA_MBEST_TQC
+        or cfg.PRAGMA_TQC_GRAB
+    ):
         SAMPLE_COMPRESSOR = get_local_buffer_sample_mobilenet
     else:
         SAMPLE_COMPRESSOR = get_local_buffer_sample_tm20_imgs
@@ -216,13 +296,25 @@ else:
 # -----------------------------------------------------------------------------
 
 if cfg.PRAGMA_LIDAR:
-    if cfg.PRAGMA_PROGRESS:
+    if cfg.PRAGMA_LIDAR_PROGRESS_IMAGES or cfg.PRAGMA_TRACKMAP_IMAGES:
+        OBS_PREPROCESSOR = obs_preprocessor_lidar_progress_images_act_in_obs
+    elif cfg.PRAGMA_PROGRESS:
         OBS_PREPROCESSOR = obs_preprocessor_tm_lidar_progress_act_in_obs
     else:
         OBS_PREPROCESSOR = obs_preprocessor_tm_lidar_act_in_obs
 else:
-    if cfg.PRAGMA_CUSTOM or cfg.PRAGMA_BEST or cfg.PRAGMA_BEST_TQC or cfg.PRAGMA_MBEST_TQC:
-        OBS_PREPROCESSOR = obs_preprocessor_mobilenet_act_in_obs
+    if (
+        cfg.PRAGMA_CUSTOM
+        or cfg.PRAGMA_BEST
+        or cfg.PRAGMA_BEST_TQC
+        or cfg.PRAGMA_MBEST_TQC
+        or cfg.PRAGMA_TQC_GRAB
+    ):
+        OBS_PREPROCESSOR = (
+            obs_preprocessor_tqcgrab_act_in_obs
+            if cfg.PRAGMA_TQC_GRAB
+            else obs_preprocessor_mobilenet_act_in_obs
+        )
     else:
         OBS_PREPROCESSOR = obs_preprocessor_tm_act_in_obs
 
@@ -237,15 +329,17 @@ assert not cfg.PRAGMA_RNN, "RNNs not supported yet"
 if cfg.PRAGMA_LIDAR:
     if cfg.PRAGMA_RNN:
         raise AssertionError("not implemented")
-    if cfg.PRAGMA_PROGRESS:
-        MEM: type[Any] = MemoryTMLidarProgress
+    if cfg.PRAGMA_LIDAR_PROGRESS_IMAGES or cfg.PRAGMA_TRACKMAP_IMAGES:
+        MEM: type[Any] = MemoryTMLidarProgressImages
+    elif cfg.PRAGMA_PROGRESS:
+        MEM = MemoryTMLidarProgress
     else:
         MEM = MemoryTMLidar
 else:
     if cfg.PRAGMA_CUSTOM or cfg.PRAGMA_BEST or cfg.PRAGMA_BEST_TQC:
         MEM = MemoryTMBest
-    elif cfg.PRAGMA_MBEST_TQC:
-        MEM = MemoryR2D2 if cfg.USE_IMAGES else MemoryR2D2woImages
+    elif cfg.PRAGMA_MBEST_TQC or cfg.PRAGMA_TQC_GRAB:
+        MEM = MemoryR2D2 if (cfg.USE_IMAGES and not cfg.PRAGMA_TQC_GRAB) else MemoryR2D2woImages
     else:
         MEM = MemoryTMFull
 
