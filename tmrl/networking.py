@@ -4,10 +4,14 @@ import datetime
 import itertools
 import json
 import os
+import pickle
 import shutil
 import socket
+import sys
 import tempfile
+import threading
 import time
+import urllib.request
 from collections.abc import Callable
 from os.path import exists
 from typing import Any
@@ -17,6 +21,7 @@ import numpy as np
 from loguru import logger
 from requests import get  # type: ignore[import-untyped]
 from tlspyo import Endpoint, Relay
+from tlspyo.server import Server as TlspyoServer
 
 import tmrl.config.config_constants as cfg
 import tmrl.config.config_objects as cfg_obj
@@ -26,6 +31,39 @@ from tmrl.actor import ActorModule
 from tmrl.util import dump, load, partial_to_dict
 
 __docformat__ = "google"
+_DEBUG_LOG_PATH = "/mnt/h/Studia/inzynierskie/inzynierkav2/AITrackmania/.cursor/debug-d15068.log"
+_DEBUG_SESSION_ID = "d15068"
+_DEBUG_SERVER_ENDPOINT = "http://127.0.0.1:7566/ingest/0443f120-2774-444e-af19-880f730b8552"
+
+
+def _debug_log(hypothesis_id: str, location: str, message: str, data: dict):
+    payload = {
+        "sessionId": _DEBUG_SESSION_ID,
+        "runId": "initial-debug",
+        "hypothesisId": hypothesis_id,
+        "location": location,
+        "message": message,
+        "data": data,
+        "timestamp": int(time.time() * 1000),
+    }
+    try:
+        with open(_DEBUG_LOG_PATH, "a", encoding="utf-8") as f:
+            f.write(json.dumps(payload, ensure_ascii=True) + "\n")
+    except Exception:
+        pass
+    try:
+        req = urllib.request.Request(
+            _DEBUG_SERVER_ENDPOINT,
+            data=json.dumps(payload, ensure_ascii=True).encode("utf-8"),
+            headers={
+                "Content-Type": "application/json",
+                "X-Debug-Session-Id": _DEBUG_SESSION_ID,
+            },
+            method="POST",
+        )
+        urllib.request.urlopen(req, timeout=0.5).read()
+    except Exception:
+        pass
 
 
 def print_with_timestamp(message: str) -> None:
@@ -38,6 +76,74 @@ def print_ip():
     public_ip = get("http://api.ipify.org").text
     local_ip = socket.gethostbyname(socket.gethostname())
     print_with_timestamp(f"public IP: {public_ip}, local IP: {local_ip}")
+
+
+def _start_relay_windows_tcp(
+    port: int,
+    password: str,
+    local_port: int,
+    header_size: int,
+    max_workers: int,
+):
+    """Run tlspyo relay server in a thread on Windows when TLS is disabled.
+
+    The default tlspyo Relay uses a subprocess for the server; on Windows the child's
+    stderr is often not visible, so bind failures (e.g. port in use) are silent. This
+    runs the same server logic in a thread so any exception is visible in the same process.
+    """
+    local_srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    local_srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    local_srv.bind(("127.0.0.1", local_port))
+    local_srv.listen()
+
+    accepted_groups = {
+        "trainers": {"max_count": 1, "max_consumables": None},
+        "workers": {"max_count": max_workers, "max_consumables": None},
+    }
+    server = TlspyoServer(
+        port=port,
+        password=password,
+        serializer=pickle.dumps,
+        deserializer=pickle.loads,
+        accepted_groups=accepted_groups,
+        local_com_port=local_port,
+        header_size=header_size,
+        security="TCP",
+        keys_dir=None,
+    )
+
+    def run_server():
+        # Twisted's reactor.run() installs signal handlers by default; that only works in the
+        # main thread (ValueError on Windows/CPython). Patch the global reactor so the relay
+        # thread runs with installSignalHandlers=0.
+        from twisted.internet import reactor
+
+        _orig_run = reactor.run
+
+        def run_without_signals(install_signal_handlers=0):
+            return _orig_run(installSignalHandlers=install_signal_handlers)
+
+        reactor.run = run_without_signals
+        try:
+            server.run()
+        except Exception as e:
+            logger.exception(
+                "Relay server thread failed (this is the process that should bind to port {}): {}",
+                port,
+                e,
+            )
+            raise
+
+    thread = threading.Thread(target=run_server, daemon=False)
+    thread.start()
+
+    conn, _ = local_srv.accept()
+    msg = server.serializer(("TEST", None))
+    header = bytes(f"{len(msg):<{header_size}}", "utf-8")
+    conn.sendall(header + msg)
+
+    # Keep references so they are not GC'd; thread and conn must stay alive
+    return type("_WindowsTcpRelay", (), {"_thread": thread, "_conn": conn, "_srv": local_srv})()
 
 
 # BUFFER: ===========================================
@@ -129,18 +235,72 @@ class Server:
             keys_dir (str): tlspyo credentials directory
             max_workers (int): max number of accepted workers
         """
-        self.__relay = Relay(
-            port=port,
-            password=password,
-            accepted_groups={
-                "trainers": {"max_count": 1, "max_consumables": None},
-                "workers": {"max_count": max_workers, "max_consumables": None},
-            },
-            local_com_port=local_port,
-            header_size=header_size,
-            security=security,
-            keys_dir=keys_dir,
+        if sys.platform == "win32" and security is None:
+            # On Windows with TCP, run relay server in a thread so bind errors are visible
+            # (tlspyo's Process-based relay often hides child stderr on Windows).
+            self.__relay = _start_relay_windows_tcp(
+                port=port,
+                password=password,
+                local_port=local_port,
+                header_size=header_size,
+                max_workers=max_workers,
+            )
+        else:
+            self.__relay = Relay(
+                port=port,
+                password=password,
+                accepted_groups={
+                    "trainers": {"max_count": 1, "max_consumables": None},
+                    "workers": {"max_count": max_workers, "max_consumables": None},
+                },
+                local_com_port=local_port,
+                header_size=header_size,
+                security=security,
+                keys_dir=keys_dir,
+            )
+        # So that "Connected." and "New client with groups" from tlspyo appear in the server console
+        import logging
+
+        logging.getLogger("tlspyo").setLevel(logging.INFO)
+        print_with_timestamp(
+            f"TMRL server listening on port {port} (trainers + workers). "
+            "Leave this process running."
         )
+        try:
+            config_path = str(cfg.CONFIG_FILE_PATH)
+        except AttributeError:
+            config_path = "(config path not available)"
+        print_with_timestamp(
+            f"Config: {config_path} (ensure server, trainer, worker use this same config)."
+        )
+        # Verify the relay subprocess actually bound to the port (e.g. no port conflict)
+        time.sleep(0.5)
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.settimeout(2.0)
+                s.connect(("127.0.0.1", port))
+            print_with_timestamp(f"Port {port} is open and accepting connections.")
+        except OSError as e:
+            print_with_timestamp(
+                f"WARNING: Could not connect to 127.0.0.1:{port}. "
+                f"Relay subprocess may have failed to bind (port in use or firewall). Error: {e}"
+            )
+
+    def stop(self):
+        """Stop the server so the process can exit (e.g. after Ctrl+C)."""
+        relay = getattr(self, "_Server__relay", None)
+        if relay is None:
+            return
+        if hasattr(relay, "_thread"):
+            # Windows TCP in-thread relay: stop Twisted reactor and wait for thread
+            try:
+                from twisted.internet import reactor
+
+                reactor.callFromThread(reactor.stop)
+            except Exception:
+                pass
+            relay._thread.join(timeout=5.0)
+        # If using tlspyo Relay subprocess, we don't hold a handle here; process exit will kill it
 
 
 # TRAINER: ==========================================
@@ -205,6 +365,8 @@ class TrainerInterface:
         for buf in buffers:
             res += buf
         self.__endpoint.notify(groups={"trainers": -1})  # retrieve everything
+        if len(res) > 0:
+            logger.debug("retrieve_buffer: got {} samples from server", len(res))
         return res
 
 
@@ -342,6 +504,7 @@ def run_with_wandb(
             else:
                 time.sleep(10.0)
     # logger.info(config)
+    global_step = 0
     for stats in iterate_epochs(
         run_cls,
         interface,
@@ -352,7 +515,13 @@ def run_with_wandb(
         updater_fn,
     ):
         for s in stats:
-            wandb.log(json.loads(s.to_json()))
+            log_dict = json.loads(s.to_json())
+            # Ensure wandb receives serializable values (no NaN/Inf)
+            for k, v in list(log_dict.items()):
+                if isinstance(v, float) and (v != v or v == float("inf") or v == float("-inf")):
+                    log_dict[k] = None
+            wandb.log(log_dict, step=global_step)
+            global_step += 1
 
 
 def run(
@@ -679,6 +848,19 @@ class RolloutWorker:
         if collect_samples:
             if last_step and not terminated:
                 truncated = True
+                # #region agent log
+                _debug_log(
+                    hypothesis_id="H4",
+                    location="networking.py:801",
+                    message="Worker set truncated due max_samples last_step",
+                    data={
+                        "last_step": bool(last_step),
+                        "terminated_from_env": bool(terminated),
+                        "truncated_final": bool(truncated),
+                        "max_samples_per_episode": int(self.max_samples_per_episode),
+                    },
+                )
+                # #endregion
             if self.crc_debug:
                 self.debug_ts_cpt += 1
                 self.debug_ts_res_cpt += 1
@@ -693,6 +875,20 @@ class RolloutWorker:
             self.buffer.append_sample(
                 sample
             )  # CAUTION: in the buffer, act is for the PREVIOUS transition (act, obs(act))
+        # #region agent log
+        if terminated or truncated:
+            _debug_log(
+                hypothesis_id="H4",
+                location="networking.py:816",
+                message="Worker observed episode boundary",
+                data={
+                    "terminated": bool(terminated),
+                    "truncated": bool(truncated),
+                    "collect_samples": bool(collect_samples),
+                    "last_step_flag": bool(last_step),
+                },
+            )
+        # #endregion
         return new_obs, rew, terminated, truncated, info
 
     def collect_train_episode(self, max_samples=None):

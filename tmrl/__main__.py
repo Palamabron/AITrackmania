@@ -1,9 +1,12 @@
 """TMRL entrypoint: server, trainer, rollout worker, and utilities.
 
-Use tyro CLI: e.g. python -m tmrl --server, python -m tmrl --trainer --wandb
+Use tyro CLI: e.g. python -m tmrl --server, python -m tmrl --trainer
+(wandb on by default; use --no-wandb to disable).
 """
 
 import json
+import signal
+import sys
 import time
 from dataclasses import dataclass
 
@@ -65,19 +68,39 @@ class TmrlCli:
     check_env: bool = False
     """Verify environment (Lidar/Full/TrackMap) works."""
 
-    wandb: bool = False
-    """Enable Weights & Biases logging (use with --trainer)."""
+    wandb: bool = True
+    """Enable Weights & Biases logging on trainer (default True; use --no-wandb to disable)."""
 
     config: str = "{}"
     """JSON dict of rtgym config overrides, e.g. -d '{\"time_step_duration\": 0.1}'."""
+
+    wsl_ip: bool = False
+    """Print this machine's IP (for PUBLIC_IP_SERVER when worker runs on Windows)."""
 
 
 def main(cli: TmrlCli) -> None:
     """Dispatch to the selected mode (server, trainer, worker, or utility)."""
     if cli.server:
-        Server()
-        while True:
-            time.sleep(1.0)
+        server = Server()
+        shutdown = [False]  # use list so closure can mutate
+
+        def _handle_int(_signum, _frame):
+            shutdown[0] = True
+
+        try:
+            signal.signal(signal.SIGINT, _handle_int)
+            signal.signal(signal.SIGTERM, _handle_int)
+        except ValueError:
+            pass  # signal only works in main thread
+        try:
+            while not shutdown[0]:
+                time.sleep(0.5)
+        except KeyboardInterrupt:
+            shutdown[0] = True  # Ctrl+C can raise this instead of calling the handler
+        if shutdown[0]:
+            logger.info("Shutting down server (Ctrl+C or SIGTERM).")
+            server.stop()
+            sys.exit(0)
     elif cli.worker or cli.test or cli.benchmark or cli.expert:
         env_config = cfg_obj.CONFIG_DICT.copy()
         try:
@@ -87,13 +110,17 @@ def main(cli: TmrlCli) -> None:
             raise
         for key, value in config_overrides.items():
             env_config[key] = value
+        # Worker episode cap: use env's ep_max_length when set so increasing it stops early resets
+        _max_samp = env_config.get("ep_max_length")
+        if _max_samp is None:
+            _max_samp = cfg.RW_MAX_SAMPLES_PER_EPISODE
         rollout_worker = RolloutWorker(
             env_cls=partial(GenericGymEnv, id=cfg.RTGYM_VERSION, gym_kwargs={"config": env_config}),
             actor_module_cls=cfg_obj.POLICY,
             sample_compressor=cfg_obj.SAMPLE_COMPRESSOR,
             device="cuda" if cfg.CUDA_INFERENCE else "cpu",
             server_ip=cfg.SERVER_IP_FOR_WORKER,
-            max_samples_per_episode=cfg.RW_MAX_SAMPLES_PER_EPISODE,
+            max_samples_per_episode=_max_samp,
             model_path=cfg.MODEL_PATH_WORKER,
             obs_preprocessor=cfg_obj.OBS_PREPROCESSOR,
             crc_debug=cfg.CRC_DEBUG,
@@ -142,6 +169,14 @@ def main(cli: TmrlCli) -> None:
         record_episode()
     elif cli.install:
         logger.info(f"TMRL folder: {cfg.TMRL_FOLDER}")
+    elif cli.wsl_ip:
+        import socket
+
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(("8.8.8.8", 80))
+            ip = s.getsockname()[0]
+        print(ip)
+        logger.info(f"Set PUBLIC_IP_SERVER to this in Windows TmrlData\\config\\config.json: {ip}")
     else:
         raise ValueError(
             "No mode selected."
@@ -154,7 +189,8 @@ def main(cli: TmrlCli) -> None:
             " --benchmark, "
             " --expert, "
             " --record-reward, "
-            " --check-environment."
+            " --check-environment, "
+            " --wsl-ip."
         )
 
 
