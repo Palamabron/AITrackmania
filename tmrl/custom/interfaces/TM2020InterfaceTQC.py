@@ -1,9 +1,5 @@
 """Interface for TQC_GrabData OpenPlanet plugin (20 floats: API state + isCrashed + gear)."""
 
-import json
-import time
-import urllib.request
-
 import numpy as np
 
 import tmrl.config.config_constants as cfg
@@ -20,39 +16,6 @@ TQC_GRAB_NB_FLOATS = 20
 _DEFAULT_MIN_STEPS_END_OF_TRACK = 50
 # Hard guarantee: never end episode before this many steps (avoids any source of early reset).
 _MIN_EPISODE_LENGTH_GUARANTEED = 100
-_DEBUG_LOG_PATH = "/mnt/h/Studia/inzynierskie/inzynierkav2/AITrackmania/.cursor/debug-d15068.log"
-_DEBUG_SESSION_ID = "d15068"
-_DEBUG_SERVER_ENDPOINT = "http://127.0.0.1:7566/ingest/0443f120-2774-444e-af19-880f730b8552"
-
-
-def _debug_log(hypothesis_id: str, location: str, message: str, data: dict):
-    payload = {
-        "sessionId": _DEBUG_SESSION_ID,
-        "runId": "initial-debug",
-        "hypothesisId": hypothesis_id,
-        "location": location,
-        "message": message,
-        "data": data,
-        "timestamp": int(time.time() * 1000),
-    }
-    try:
-        with open(_DEBUG_LOG_PATH, "a", encoding="utf-8") as f:
-            f.write(json.dumps(payload, ensure_ascii=True) + "\n")
-    except Exception:
-        pass
-    try:
-        req = urllib.request.Request(
-            _DEBUG_SERVER_ENDPOINT,
-            data=json.dumps(payload, ensure_ascii=True).encode("utf-8"),
-            headers={
-                "Content-Type": "application/json",
-                "X-Debug-Session-Id": _DEBUG_SESSION_ID,
-            },
-            method="POST",
-        )
-        urllib.request.urlopen(req, timeout=0.5).read()
-    except Exception:
-        pass
 
 
 class TM2020InterfaceTQC(TM2020InterfaceIMPALASophy):
@@ -166,25 +129,6 @@ class TM2020InterfaceTQC(TM2020InterfaceIMPALASophy):
         )
         if self._steps_since_reset < min_length:
             terminated = False
-        # #region agent log
-        if end_of_track or terminated:
-            _debug_log(
-                hypothesis_id="H3",
-                location="TM2020InterfaceTQC.py:130",
-                message="Interface emitted end_of_track/terminated",
-                data={
-                    "end_of_track": bool(end_of_track),
-                    "terminated_after_guards": bool(terminated),
-                    "steps_since_reset": int(self._steps_since_reset),
-                    "min_steps_before_finish": int(min_steps_before_finish),
-                    "min_length": int(min_length),
-                    "speed_kmh": float(speed[0]),
-                    "cur_cp": int(cur_cp),
-                    "cur_lap": int(cur_lap),
-                    "reward_sum": float(reward_sum),
-                },
-            )
-        # #endregion
 
         reward = np.float32(rew)
         return total_obs, reward, terminated, info
@@ -197,23 +141,6 @@ class TM2020InterfaceTQC(TM2020InterfaceIMPALASophy):
             and getattr(self.reward_function, "step_counter", 0) > 0
             and not getattr(self.reward_function, "_logged_run_this_episode", False)
         ):
-            # #region agent log
-            _debug_log(
-                hypothesis_id="H4",
-                location="TM2020InterfaceTQC.py:154",
-                message="Reset called before run was logged",
-                data={
-                    "reward_step_counter": int(getattr(self.reward_function, "step_counter", -1)),
-                    "reward_episode_reward": float(
-                        getattr(self.reward_function, "episode_reward", 0.0)
-                    ),
-                    "reward_logged_flag": bool(
-                        getattr(self.reward_function, "_logged_run_this_episode", False)
-                    ),
-                    "last_step_debug": getattr(self, "_dbg_last_step", None),
-                },
-            )
-            # #endregion
             self.reward_function.log_model_run(terminated=True, end_of_track=False)
         self.reset_common()
         self._steps_since_reset = 0

@@ -11,7 +11,6 @@ import sys
 import tempfile
 import threading
 import time
-import urllib.request
 from collections.abc import Callable
 from os.path import exists
 from typing import Any
@@ -31,39 +30,6 @@ from tmrl.actor import ActorModule
 from tmrl.util import dump, load, partial_to_dict
 
 __docformat__ = "google"
-_DEBUG_LOG_PATH = "/mnt/h/Studia/inzynierskie/inzynierkav2/AITrackmania/.cursor/debug-d15068.log"
-_DEBUG_SESSION_ID = "d15068"
-_DEBUG_SERVER_ENDPOINT = "http://127.0.0.1:7566/ingest/0443f120-2774-444e-af19-880f730b8552"
-
-
-def _debug_log(hypothesis_id: str, location: str, message: str, data: dict):
-    payload = {
-        "sessionId": _DEBUG_SESSION_ID,
-        "runId": "initial-debug",
-        "hypothesisId": hypothesis_id,
-        "location": location,
-        "message": message,
-        "data": data,
-        "timestamp": int(time.time() * 1000),
-    }
-    try:
-        with open(_DEBUG_LOG_PATH, "a", encoding="utf-8") as f:
-            f.write(json.dumps(payload, ensure_ascii=True) + "\n")
-    except Exception:
-        pass
-    try:
-        req = urllib.request.Request(
-            _DEBUG_SERVER_ENDPOINT,
-            data=json.dumps(payload, ensure_ascii=True).encode("utf-8"),
-            headers={
-                "Content-Type": "application/json",
-                "X-Debug-Session-Id": _DEBUG_SESSION_ID,
-            },
-            method="POST",
-        )
-        urllib.request.urlopen(req, timeout=0.5).read()
-    except Exception:
-        pass
 
 
 def print_with_timestamp(message: str) -> None:
@@ -848,19 +814,6 @@ class RolloutWorker:
         if collect_samples:
             if last_step and not terminated:
                 truncated = True
-                # #region agent log
-                _debug_log(
-                    hypothesis_id="H4",
-                    location="networking.py:801",
-                    message="Worker set truncated due max_samples last_step",
-                    data={
-                        "last_step": bool(last_step),
-                        "terminated_from_env": bool(terminated),
-                        "truncated_final": bool(truncated),
-                        "max_samples_per_episode": int(self.max_samples_per_episode),
-                    },
-                )
-                # #endregion
             if self.crc_debug:
                 self.debug_ts_cpt += 1
                 self.debug_ts_res_cpt += 1
@@ -875,20 +828,6 @@ class RolloutWorker:
             self.buffer.append_sample(
                 sample
             )  # CAUTION: in the buffer, act is for the PREVIOUS transition (act, obs(act))
-        # #region agent log
-        if terminated or truncated:
-            _debug_log(
-                hypothesis_id="H4",
-                location="networking.py:816",
-                message="Worker observed episode boundary",
-                data={
-                    "terminated": bool(terminated),
-                    "truncated": bool(truncated),
-                    "collect_samples": bool(collect_samples),
-                    "last_step_flag": bool(last_step),
-                },
-            )
-        # #endregion
         return new_obs, rew, terminated, truncated, info
 
     def collect_train_episode(self, max_samples=None):

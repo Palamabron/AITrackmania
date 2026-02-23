@@ -1,13 +1,11 @@
 # standard library imports
 import atexit
-import json
 import math
 import os
 import pickle
 import shutil
 import tempfile
 import time
-import urllib.request
 
 # third-party imports
 import numpy as np
@@ -17,40 +15,6 @@ from sklearn.linear_model import LinearRegression
 
 import tmrl.config.config_constants as cfg
 import wandb
-
-_DEBUG_LOG_PATH = "/mnt/h/Studia/inzynierskie/inzynierkav2/AITrackmania/.cursor/debug-d15068.log"
-_DEBUG_SESSION_ID = "d15068"
-_DEBUG_SERVER_ENDPOINT = "http://127.0.0.1:7566/ingest/0443f120-2774-444e-af19-880f730b8552"
-
-
-def _debug_log(hypothesis_id: str, location: str, message: str, data: dict):
-    payload = {
-        "sessionId": _DEBUG_SESSION_ID,
-        "runId": "initial-debug",
-        "hypothesisId": hypothesis_id,
-        "location": location,
-        "message": message,
-        "data": data,
-        "timestamp": int(time.time() * 1000),
-    }
-    try:
-        with open(_DEBUG_LOG_PATH, "a", encoding="utf-8") as f:
-            f.write(json.dumps(payload, ensure_ascii=True) + "\n")
-    except Exception:
-        pass
-    try:
-        req = urllib.request.Request(
-            _DEBUG_SERVER_ENDPOINT,
-            data=json.dumps(payload, ensure_ascii=True).encode("utf-8"),
-            headers={
-                "Content-Type": "application/json",
-                "X-Debug-Session-Id": _DEBUG_SESSION_ID,
-            },
-            method="POST",
-        )
-        urllib.request.urlopen(req, timeout=0.5).read()
-    except Exception:
-        pass
 
 
 class RewardFunction:
@@ -321,7 +285,6 @@ class RewardFunction:
             # Use 2x max_dist so a different racing line (~100–200m off) still gets progress.
             if min_dist > 2.0 * self.max_dist_from_traj:
                 reward = 0.0
-        progress_reward = reward
 
         if (
             best_index == self.cur_idx
@@ -453,7 +416,6 @@ class RewardFunction:
 
         # clipping reward (maps values above 6 and below -6 to 1 and -1)
         # reward = math.tanh(6 / (1 + np.exp(-0.7 * reward)) - 3)
-        reward_before_tanh = float(reward)
         reward = math.tanh(reward)
         race_progress = self.compute_race_progress()
 
@@ -464,30 +426,6 @@ class RewardFunction:
             self.send_reward.append(reward)
 
         self.episode_reward += reward
-        # #region agent log
-        if terminated:
-            _debug_log(
-                hypothesis_id="H1_H2",
-                location="compute_reward.py:427",
-                message="Reward function set terminated",
-                data={
-                    "term_reason": term_reason,
-                    "step_counter": int(self.step_counter),
-                    "speed_kmh": float(speed) if speed is not None else None,
-                    "min_dist": float(min_dist),
-                    "max_dist_from_traj": float(self.max_dist_from_traj),
-                    "failure_counter": int(self.failure_counter),
-                    "low_speed_steps": int(self.low_speed_steps),
-                    "nb_zero_rew_before_failure": int(self.nb_zero_rew_before_failure),
-                    "min_nb_steps_before_failure": int(self.min_nb_steps_before_failure),
-                    "cur_idx": int(self.cur_idx),
-                    "best_index": int(best_index),
-                    "progress_reward": float(progress_reward),
-                    "reward_before_tanh": float(reward_before_tanh),
-                    "episode_reward": float(self.episode_reward),
-                },
-            )
-        # #endregion
 
         return reward, terminated, self.failure_counter, self.episode_reward
 
