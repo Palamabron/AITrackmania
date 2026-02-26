@@ -104,7 +104,24 @@ class RewardFunction:
         )
         # Deviation threshold scales with point spacing; sparse trajectories less penalized
         self._deviation_threshold = max(17.5, self.average_distance * 1.5)
+        # Speed bonus only when on track; reckless penalty when off track + high speed
+        speed_safe_ratio = float(cfg.REWARD_CONFIG.get("SPEED_SAFE_DEVIATION_RATIO", 0.6))
+        self._speed_safe_deviation = speed_safe_ratio * self.max_dist_from_traj
+        self._reckless_speed_threshold = float(cfg.REWARD_CONFIG.get("RECKLESS_SPEED_THRESHOLD", 120))
+        self._reckless_penalty_factor = float(cfg.REWARD_CONFIG.get("RECKLESS_PENALTY_FACTOR", 0.002))
         self.speed_bonus = cfg.SPEED_BONUS
+        # Wall-hugging / slow-progress penalty params
+        self._wall_hug_speed_threshold = float(
+            cfg.REWARD_CONFIG.get("WALL_HUG_SPEED_THRESHOLD", 10.0)
+        )
+        self._wall_hug_penalty_factor = float(
+            cfg.REWARD_CONFIG.get("WALL_HUG_PENALTY_FACTOR", 0.005)
+        )
+        self._proximity_reward_shaping = float(
+            cfg.REWARD_CONFIG.get("PROXIMITY_REWARD_SHAPING", 0.5)
+        )
+        self._reward_scale = float(cfg.REWARD_CONFIG.get("REWARD_SCALE", 3.0))
+        self._no_progress_steps = 0
         self.crash_penalty = crash_penalty
         # self.crash_counter = 1
         self.constant_penalty = constant_penalty
@@ -240,11 +257,16 @@ class RewardFunction:
         speed: float | None = None,
         next_cp: bool = False,
         next_lap: bool = False,
-        end_of_tack: bool = False,
+        end_of_track: bool = False,
     ):
         """
         Calculates the reward based on the car's position, speed, and track progress.
         Handles penalties for crashes, speed bonuses, lap completions, etc.
+
+        Reward scale: progress is scaled so a full lap is ~100 raw; then
+        reward = tanh(REWARD_SCALE * raw). So raw values > ~0.4 already saturate
+        (tanh(3*0.4) ≈ 0.83). END_OF_TRACK_REWARD and LAP_REWARD only need to be
+        on the order of 1.0–2.0 to give a strong finish signal; 100 is excessive.
         """
         terminated = False
         term_reason = None
@@ -281,10 +303,15 @@ class RewardFunction:
             dist_best = self._cumulative_dist[min(best_index, self.datalen - 1)]
             distance_gained = max(0.0, float(dist_best - dist_cur))
             reward = float(distance_gained * (100.0 / self._total_traj_length))
-            # Zero progress only when very far off (avoids huge reward for one-step "snap").
-            # Use 2x max_dist so a different racing line (~100–200m off) still gets progress.
             if min_dist > 2.0 * self.max_dist_from_traj:
                 reward = 0.0
+            elif min_dist > self._speed_safe_deviation and self._proximity_reward_shaping > 0:
+                proximity_ratio = 1.0 - min(
+                    1.0,
+                    (min_dist - self._speed_safe_deviation)
+                    / max(self.max_dist_from_traj - self._speed_safe_deviation, 1.0),
+                )
+                reward *= max(1.0 - self._proximity_reward_shaping, proximity_ratio)
 
         if (
             best_index == self.cur_idx
@@ -303,9 +330,6 @@ class RewardFunction:
                 if index <= 0 or temp <= 0:
                     break
             if not getattr(self, "_dummy_trajectory", False):
-                # Only count "no progress" as failure when the car is actually stalled (low speed).
-                # If the car is moving (e.g. 50 km/h) but trajectory index didn't advance (e.g.
-                # different line), do not terminate — otherwise we kill runs that are driving fine.
                 _speed_kmh = float(speed) if speed is not None else 0.0
                 _stall_threshold_kmh = 5.0
                 if (
@@ -318,27 +342,61 @@ class RewardFunction:
                         term_reason = "failure_counter"
                 else:
                     self.failure_counter = 0
+                # Wall-hug detection: moving but no trajectory progress while off-track
+                if (
+                    _speed_kmh > self._wall_hug_speed_threshold
+                    and min_dist > self._speed_safe_deviation
+                ):
+                    self._no_progress_steps += 1
+                    wall_hug_penalty = (
+                        self._wall_hug_penalty_factor
+                        * self._no_progress_steps
+                        * (min_dist / max(self._speed_safe_deviation, 1.0))
+                    )
+                    reward -= wall_hug_penalty
+                    if (
+                        self._no_progress_steps > self.nb_zero_rew_before_failure * 3
+                        and self.step_counter > self.min_nb_steps_before_failure
+                    ):
+                        terminated = True
+                        term_reason = "wall_hug_no_progress"
+                else:
+                    self._no_progress_steps = max(0, self._no_progress_steps - 1)
             else:
                 self.failure_counter = 0
         else:
             self.failure_counter = 0
+            self._no_progress_steps = max(0, self._no_progress_steps - 2)
         self.cur_idx = best_index
 
         if self.episode_reward != 0.0:
             reward -= abs(self.constant_penalty)
-            if speed is not None and speed > cfg.SPEED_MIN_THRESHOLD:
-                speed_reward = (
-                    speed - cfg.SPEED_MIN_THRESHOLD
-                ) * self.speed_bonus  # x / 250 * 0.04 = 0.00016 * x
-                reward += speed_reward
-                # print(f"speed_reward: {speed_reward}")
-
-            elif speed is not None and speed > cfg.SPEED_MEDIUM_THRESHOLD:
-                speed_reward = (speed - cfg.SPEED_MEDIUM_THRESHOLD * 0.75) * self.speed_bonus * 2
-                reward += speed_reward
-            elif speed is not None and speed < -0.5:
-                penalty = 1 / (1 + np.exp(-0.1 * speed - 3)) - 1
+            _speed_kmh = float(speed) if speed is not None else 0.0
+            # Speed bonus only when on track (min_dist <= safe deviation)
+            if min_dist <= self._speed_safe_deviation and self.speed_bonus > 0:
+                if _speed_kmh > cfg.SPEED_MIN_THRESHOLD:
+                    speed_reward = (_speed_kmh - cfg.SPEED_MIN_THRESHOLD) * self.speed_bonus
+                    reward += speed_reward
+                elif _speed_kmh > cfg.SPEED_MEDIUM_THRESHOLD:
+                    speed_reward = (
+                        _speed_kmh - cfg.SPEED_MEDIUM_THRESHOLD * 0.75
+                    ) * self.speed_bonus * 2
+                    reward += speed_reward
+            elif _speed_kmh < -0.5:
+                penalty = 1 / (1 + np.exp(-0.1 * _speed_kmh - 3)) - 1
                 reward += penalty
+            # Reckless penalty: high speed + far from trajectory (off track)
+            if (
+                min_dist > self._deviation_threshold
+                and _speed_kmh > self._reckless_speed_threshold
+                and self._reckless_penalty_factor > 0
+            ):
+                reckless_penalty = (
+                    self._reckless_penalty_factor
+                    * (_speed_kmh - self._reckless_speed_threshold)
+                    * (min_dist / max(self._deviation_threshold, 1.0))
+                )
+                reward -= reckless_penalty
 
         if not getattr(self, "_dummy_trajectory", False):
             _speed_kmh = float(speed) if speed is not None else 0.0
@@ -371,14 +429,24 @@ class RewardFunction:
         # deviation_penalty: threshold/strength scale with trajectory density
         deviation_penalty_applied = 0.0
         if min_dist > self._deviation_threshold:
-            # Excess distance in "segment-length" units so penalty is comparable across densities
             excess = min_dist - self._deviation_threshold
             scale = max(self.average_distance, 1.0)
             deviation_penalty_applied = abs((2 / (1 + np.exp(-0.15 * (excess / scale)))) - 1)
-            # When making progress along the track, use half penalty so progress still nets positive
-            if distance_gained > 0:
-                deviation_penalty_applied *= 0.5
             reward -= deviation_penalty_applied
+        # Off-track speed penalty: penalize any driving far from trajectory
+        _speed_kmh_ot = float(speed) if speed is not None else 0.0
+        if (
+            min_dist > self._speed_safe_deviation
+            and _speed_kmh_ot > 5.0
+            and self._wall_hug_penalty_factor > 0
+        ):
+            off_track_speed_penalty = (
+                self._wall_hug_penalty_factor
+                * 0.5
+                * (_speed_kmh_ot / 50.0)
+                * (min_dist / max(self._speed_safe_deviation, 1.0))
+            )
+            reward -= off_track_speed_penalty
 
         if next_lap and self.cur_idx > self.prev_idx:
             self.new_lap = True
@@ -414,8 +482,13 @@ class RewardFunction:
             reward -= abs(self.crash_penalty)
             # self.crash_counter += 1
 
-        # clipping reward (maps values above 6 and below -6 to 1 and -1)
-        # reward = math.tanh(6 / (1 + np.exp(-0.7 * reward)) - 3)
+        # When the agent made progress along the trajectory, do not allow penalties
+        # to push the step reward below zero (so progressing runs get positive totals).
+        if distance_gained > 0:
+            reward = max(0.0, reward)
+
+        # Scale reward then soft-clip: preserves gradient contrast better than raw tanh
+        reward = reward * self._reward_scale
         reward = math.tanh(reward)
         race_progress = self.compute_race_progress()
 
@@ -567,6 +640,7 @@ class RewardFunction:
         self.step_counter = 0
         self.failure_counter = 0
         self.low_speed_steps = 0
+        self._no_progress_steps = 0
         self.episode_reward = 0.0
         # self.crash_counter = 1
         self.lap_cur_cooldown = cfg.LAP_COOLDOWN

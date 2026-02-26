@@ -123,6 +123,10 @@ if platform.system() == "Windows":
         press_key(DEL)
         release_key(DEL)
 
+    def is_del_pressed() -> bool:
+        """Non-blocking check: True if Del key is currently pressed."""
+        return bool(ctypes.windll.user32.GetAsyncKeyState(0xD3) & 0x8000)
+
     def keysavereplay():  # TODO: debug
         """Saves a replay with key sequences and mouse actions."""
         import keyboard
@@ -195,6 +199,10 @@ elif platform.system() == "Linux":
         press_key(KEY_BACKSPACE)
         release_key(KEY_BACKSPACE)
 
+    def is_del_pressed() -> bool:
+        """Non-blocking check: True if Del key is currently pressed (Linux: not implemented)."""
+        return False
+
 else:
 
     def apply_control(action: Any, window_id: Any = None):
@@ -202,3 +210,6 @@ else:
 
     def keyres():
         pass
+
+    def is_del_pressed() -> bool:
+        return False

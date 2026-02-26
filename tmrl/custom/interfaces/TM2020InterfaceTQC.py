@@ -59,7 +59,7 @@ class TM2020InterfaceTQC(TM2020InterfaceIMPALASophy):
             speed=speed[0],
             next_cp=self.cur_checkpoint < cur_cp,
             next_lap=self.cur_lap < cur_lap,
-            end_of_tack=end_of_track,
+            end_of_track=end_of_track,
         )
         self._dbg_last_step = {
             "terminated": bool(terminated),

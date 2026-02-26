@@ -23,7 +23,8 @@ class TM2020InterfaceIMPALASophy(TM2020Interface):
         checkpoint_reward=cfg.CHECKPOINT_REWARD,
         lap_reward=cfg.LAP_REWARD,
         nb_zero_rew_before_failure=70,
-        min_gas_warm_start=0.0,
+        record_human: bool = False,
+        **kwargs,
     ):
         if save_replays is not None:
             save_replay = save_replays
@@ -31,7 +32,6 @@ class TM2020InterfaceIMPALASophy(TM2020Interface):
             img_hist_len=img_hist_len,
             gamepad=gamepad,
             min_nb_steps_before_failure=min_nb_steps_before_failure,
-            min_gas_warm_start=min_gas_warm_start,
             save_replays=save_replay,
             grayscale=grayscale,
             finish_reward=finish_reward,
@@ -39,6 +39,7 @@ class TM2020InterfaceIMPALASophy(TM2020Interface):
             constant_penalty=constant_penalty,
             crash_penalty=crash_penalty,
             nb_zero_rew_before_failure=nb_zero_rew_before_failure,
+            record_human=record_human,
         )
         self.record = record
         self.window_interface = None
@@ -148,7 +149,7 @@ class TM2020InterfaceIMPALASophy(TM2020Interface):
             speed=speed[0],
             next_cp=self.cur_checkpoint < cur_cp,
             next_lap=self.cur_lap < cur_lap,
-            end_of_tack=end_of_track,
+            end_of_track=end_of_track,
         )
 
         race_progress = self.reward_function.compute_race_progress()

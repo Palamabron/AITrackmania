@@ -1102,13 +1102,23 @@ class TQCAgent(TrainingAgent):
             cur_z = torch.stack((q1_pi, q2_pi), dim=1)[:truncated_batch_size]
         else:
             cur_z = torch.stack((q1_pi, q2_pi), dim=1)
+        if cfg.BACKUP_CLIP_RANGE > 0:
+            backup = backup.clamp(-cfg.BACKUP_CLIP_RANGE, cfg.BACKUP_CLIP_RANGE)
+
         critic_loss = self.quantile_huber_loss_f(cur_z, backup)
 
         self.critic_optimizer.zero_grad()
         critic_loss.backward()
+        if cfg.GRAD_CLIP_CRITIC > 0:
+            critic_grad_norm = torch.nn.utils.clip_grad_norm_(
+                itertools.chain(self.model.q1.parameters(), self.model.q2.parameters()),
+                cfg.GRAD_CLIP_CRITIC,
+            )
+        else:
+            critic_grad_norm = None
         self.critic_optimizer.step()
 
-        new_action, log_pi = self.get_actor()(o)
+        new_action, log_pi = self.model.actor(o)
         q1_pi = self.model.q1(o, new_action)
         q2_pi = self.model.q2(o, new_action)
         new_critic = torch.stack((q1_pi, q2_pi), dim=1)
@@ -1124,6 +1134,13 @@ class TQCAgent(TrainingAgent):
 
         self.actor_optimizer.zero_grad()
         actor_loss.backward()
+        if cfg.GRAD_CLIP_ACTOR > 0:
+            actor_grad_norm = torch.nn.utils.clip_grad_norm_(
+                self.model.actor.parameters(),
+                cfg.GRAD_CLIP_ACTOR,
+            )
+        else:
+            actor_grad_norm = None
         self.actor_optimizer.step()
 
         if len(cfg.SCHEDULER_CONFIG["NAME"]) > 0:
@@ -1149,6 +1166,10 @@ class TQCAgent(TrainingAgent):
             ret_dict["losses/loss_critic"] = critic_loss.detach()
             ret_dict["lrs/actor_lr"] = self.actor_optimizer.param_groups[0]["lr"]
             ret_dict["lrs/critic_lr"] = self.critic_optimizer.param_groups[0]["lr"]
+            if critic_grad_norm is not None:
+                ret_dict["debug/critic_grad_norm"] = float(critic_grad_norm)
+            if actor_grad_norm is not None:
+                ret_dict["debug/actor_grad_norm"] = float(actor_grad_norm)
             if cfg.WANDB_DEBUG:
                 ret_dict["debug/log_pi"] = logp_pi.detach().mean()
                 ret_dict["debug/log_pi_std"] = logp_pi.detach().std()

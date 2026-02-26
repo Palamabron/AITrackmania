@@ -337,6 +337,44 @@ class R2D2Memory(Memory, ABC):
         self.batch_size = batch_size
         self.rewind = cfg.TMRL_CONFIG["ALG"]["R2D2_REWIND"]
         assert 0.1 <= self.rewind <= 0.9, "R2D2 REWIND CONST SHOULD BE BETWEEN 0.1 AND 0.9"
+        self._demo_sampling_weight_initial = cfg.PLAYER_RUNS_DEMO_SAMPLING_WEIGHT
+        self._demo_weight_decay_samples = cfg.PLAYER_RUNS_DEMO_WEIGHT_DECAY_SAMPLES
+        self.last_sample_demo_fraction = 0.0
+
+    @property
+    def demo_sampling_weight(self) -> float:
+        """Decay demo weight from initial value towards 1.0 as buffer fills."""
+        initial = getattr(self, "_demo_sampling_weight_initial", cfg.PLAYER_RUNS_DEMO_SAMPLING_WEIGHT)
+        decay = getattr(self, "_demo_weight_decay_samples", cfg.PLAYER_RUNS_DEMO_WEIGHT_DECAY_SAMPLES)
+        if decay <= 0 or initial <= 1.0:
+            return initial
+        total = len(self)
+        progress = min(1.0, total / decay)
+        return 1.0 + (initial - 1.0) * (1.0 - progress)
+
+    @staticmethod
+    def _is_demo_info_entry(info_entry: Any) -> bool:
+        if not isinstance(info_entry, dict):
+            return False
+        value = info_entry.get("is_demo", False)
+        return bool(value)
+
+    def _set_last_sample_demo_fraction(self, indices: tuple[int, ...]) -> None:
+        if len(indices) == 0 or len(self.data) <= self.rewards_index:
+            self.last_sample_demo_fraction = 0.0
+            return
+        info_stream = self.data[self.rewards_index]
+        demo_count = 0
+        total_count = 0
+        for idx in indices:
+            idx_now = idx + self.min_samples
+            if 0 <= idx_now < len(info_stream):
+                total_count += 1
+                if self._is_demo_info_entry(info_stream[idx_now]):
+                    demo_count += 1
+        self.last_sample_demo_fraction = (
+            float(demo_count) / float(total_count) if total_count > 0 else 0.0
+        )
 
     def collate(self, batch, device):
         """
@@ -393,6 +431,10 @@ class R2D2Memory(Memory, ABC):
             self.data[self.rewards_index][index]["reward_sum"]
             for index in self.end_episodes_indices
         ]
+        episode_demo_flags = [
+            self._is_demo_info_entry(self.data[self.rewards_index][index])
+            for index in self.end_episodes_indices
+        ]
         batch_size = self.batch_size
 
         if len(self.end_episodes_indices) == 0:
@@ -400,15 +442,18 @@ class R2D2Memory(Memory, ABC):
                 self.cur_idx += int(batch_size * self.rewind)
 
                 result = tuple(range(0, self.cur_idx))
+                self._set_last_sample_demo_fraction(result)
                 return result
             else:
                 if self.cur_idx + batch_size < len(self):
                     result = tuple(range(self.cur_idx, self.cur_idx + batch_size))
                     self.cur_idx += int(batch_size * self.rewind)
+                    self._set_last_sample_demo_fraction(result)
                     return result
                 else:
-                    result = tuple(range(len(self) - batch_size, len(self) - 1))
+                    result = tuple(range(len(self) - batch_size, len(self)))
                     self.cur_idx = 0
+                    self._set_last_sample_demo_fraction(result)
                     return result
         else:
             if self.isNewEpisode:
@@ -416,16 +461,23 @@ class R2D2Memory(Memory, ABC):
                     self.chosen_episode = self.end_episodes_indices[0]
                     self.previous_episode = 0
                 else:
-                    if sum(self.reward_sums) > 0:
-                        self.chosen_episode = random.choices(
-                            self.end_episodes_indices, weights=self.reward_sums, k=1
-                        )[0]
-                    else:
-                        self.chosen_episode = random.choices(
-                            self.end_episodes_indices,
-                            weights=self.normalize_list(self.reward_sums),
-                            k=1,
-                        )[0]
+                    sampling_weights = (
+                        list(self.reward_sums)
+                        if sum(self.reward_sums) > 0
+                        else self.normalize_list(self.reward_sums)
+                    )
+                    if self.demo_sampling_weight > 1.0:
+                        sampling_weights = [
+                            w * self.demo_sampling_weight if is_demo else w
+                            for w, is_demo in zip(sampling_weights, episode_demo_flags)
+                        ]
+                    if sum(sampling_weights) <= 0:
+                        sampling_weights = [1.0] * len(self.end_episodes_indices)
+                    self.chosen_episode = random.choices(
+                        self.end_episodes_indices,
+                        weights=sampling_weights,
+                        k=1,
+                    )[0]
                     previous_episode_index = (
                         sorted(self.end_episodes_indices).index(self.chosen_episode) - 1
                     )
@@ -451,7 +503,7 @@ class R2D2Memory(Memory, ABC):
                         start_idx = max(0, end_idx - batch_size)
 
                     result = tuple(range(start_idx, end_idx))
-
+                    self._set_last_sample_demo_fraction(result)
                     return result
                 else:
                     if self.previous_episode < 0:
@@ -462,6 +514,7 @@ class R2D2Memory(Memory, ABC):
 
                     self.cur_idx += batch_size
                     self.isNewEpisode = False
+                    self._set_last_sample_demo_fraction(result)
                     return result
             else:
                 self.cur_idx -= int(batch_size * self.rewind)
@@ -471,11 +524,13 @@ class R2D2Memory(Memory, ABC):
 
                     result = tuple(range(self.chosen_episode - batch_size, self.chosen_episode))
                     self.cur_idx = self.chosen_episode
+                    self._set_last_sample_demo_fraction(result)
                     return result
                 else:
                     self.isNewEpisode = False
                     result = tuple(range(self.cur_idx, self.cur_idx + batch_size))
                     self.cur_idx += batch_size
+                    self._set_last_sample_demo_fraction(result)
                     return result
 
     def __len__(self):

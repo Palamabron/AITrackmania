@@ -26,6 +26,7 @@ import os
 import platform
 from pathlib import Path
 
+from dotenv import load_dotenv
 from loguru import logger
 from packaging import version
 from pydantic import BaseModel, Field
@@ -47,9 +48,22 @@ TMRL_FOLDER = Path.home() / "TmrlData"
 if not TMRL_FOLDER.exists():
     raise RuntimeError(f"Missing folder: {TMRL_FOLDER}")
 
+# Load .env secrets from current working dir and TmrlData.
+load_dotenv()
+load_dotenv(TMRL_FOLDER / ".env")
+load_dotenv(TMRL_FOLDER / "config" / ".env")
+
 CONFIG_FILE_PATH = TMRL_FOLDER / "config" / "config.json"
 with open(CONFIG_FILE_PATH) as f:
     TMRL_CONFIG = json.load(f)
+
+# Environment variables take precedence over config for sensitive values.
+env_wandb_key = os.getenv("WANDB_API_KEY") or os.getenv("WANDB_KEY")
+if env_wandb_key:
+    TMRL_CONFIG["WANDB_KEY"] = env_wandb_key
+env_password = os.getenv("TMRL_PASSWORD")
+if env_password:
+    TMRL_CONFIG["PASSWORD"] = env_password
 
 
 def _deep_merge_defaults(cfg: dict, default: dict) -> None:
@@ -83,6 +97,14 @@ _DEFAULT_TMRL_CONFIG = {
     "WANDB_GRADIENTS": False,
     "WANDB_DEBUG_REWARD": True,
     "WANDB_WORKER": True,
+    "PLAYER_RUNS": {
+        "ONLINE_INJECTION": False,
+        "SOURCE_PATH": "",
+        "CONSUME_ON_READ": True,
+        "MAX_FILES_PER_UPDATE": 1,
+        "DEMO_INJECTION_REPEAT": 1,
+        "DEMO_SAMPLING_WEIGHT": 1.0,
+    },
     "PORT": 55555,
     "LOCAL_PORT_SERVER": 55556,
     "LOCAL_PORT_TRAINER": 55557,
@@ -153,6 +175,9 @@ _DEFAULT_TMRL_CONFIG = {
         "BETAS_CRITIC": [0.9, 0.999],
         "L2_ACTOR": 0.0,
         "L2_CRITIC": 0.0,
+        "GRAD_CLIP_ACTOR": 1.0,
+        "GRAD_CLIP_CRITIC": 1.0,
+        "BACKUP_CLIP_RANGE": 100.0,
     },
 }
 _deep_merge_defaults(TMRL_CONFIG, _DEFAULT_TMRL_CONFIG)
@@ -286,9 +311,13 @@ _default_env = {
     "LINUX_X_OFFSET": 64,
     "LINUX_Y_OFFSET": 70,
     "IMG_SCALE_CHECK_ENV": 1.0,
-    "MIN_GAS_WARM_START": 0.0,
     "INIT_GAS_BIAS": 0.0,
-    "REWARD_CONFIG": {},
+    "REWARD_CONFIG": {
+        "WALL_HUG_SPEED_THRESHOLD": 10.0,
+        "WALL_HUG_PENALTY_FACTOR": 0.005,
+        "PROXIMITY_REWARD_SHAPING": 0.5,
+        "REWARD_SCALE": 3.0,
+    },
 }
 if "RTGYM_CONFIG" not in _raw_env:
     _default_env["RTGYM_CONFIG"] = {
@@ -363,7 +392,6 @@ IMG_HEIGHT = _raw_env.get("IMG_HEIGHT", 64)
 LINUX_X_OFFSET = _raw_env.get("LINUX_X_OFFSET", 64)
 LINUX_Y_OFFSET = _raw_env.get("LINUX_Y_OFFSET", 70)
 IMG_SCALE_CHECK_ENV = _raw_env.get("IMG_SCALE_CHECK_ENV", 1.0)
-MIN_GAS_WARM_START = _raw_env.get("MIN_GAS_WARM_START", 0.0)
 INIT_GAS_BIAS = _raw_env.get("INIT_GAS_BIAS", 0.0)
 
 # -----------------------------------------------------------------------------
@@ -424,6 +452,21 @@ DATASET_PATH = str(DATASET_FOLDER)
 REWARD_PATH = str(REWARD_FOLDER / ("reward_" + MAP_NAME + ".pkl"))
 TRACK_PATH_LEFT = str(TRACK_FOLDER / ("track_" + MAP_NAME + "_left.pkl"))
 TRACK_PATH_RIGHT = str(TRACK_FOLDER / ("track_" + MAP_NAME + "_right.pkl"))
+
+# Player runs: recording/importing/injection
+PLAYER_RUNS_FOLDER = TMRL_FOLDER / "player_runs"
+_player_runs_cfg = TMRL_CONFIG.get("PLAYER_RUNS", {})
+PLAYER_RUNS_ONLINE_INJECTION = bool(_player_runs_cfg.get("ONLINE_INJECTION", False))
+PLAYER_RUNS_SOURCE_PATH = (
+    str(_player_runs_cfg.get("SOURCE_PATH"))
+    if _player_runs_cfg.get("SOURCE_PATH")
+    else str(PLAYER_RUNS_FOLDER)
+)
+PLAYER_RUNS_CONSUME_ON_READ = bool(_player_runs_cfg.get("CONSUME_ON_READ", False))
+PLAYER_RUNS_MAX_FILES_PER_UPDATE = int(_player_runs_cfg.get("MAX_FILES_PER_UPDATE", 1))
+PLAYER_RUNS_DEMO_INJECTION_REPEAT = max(1, int(_player_runs_cfg.get("DEMO_INJECTION_REPEAT", 1)))
+PLAYER_RUNS_DEMO_SAMPLING_WEIGHT = max(1.0, float(_player_runs_cfg.get("DEMO_SAMPLING_WEIGHT", 1.0)))
+PLAYER_RUNS_DEMO_WEIGHT_DECAY_SAMPLES = int(_player_runs_cfg.get("DEMO_WEIGHT_DECAY_SAMPLES", 200000))
 
 # -----------------------------------------------------------------------------
 # Weights & Biases (config.json → WANDB_*)
@@ -502,6 +545,9 @@ SPEED_BONUS = ALG_CONFIG["SPEED_BONUS"]
 SPEED_MIN_THRESHOLD = ALG_CONFIG["SPEED_MIN_THRESHOLD"]
 SPEED_MEDIUM_THRESHOLD = ALG_CONFIG["SPEED_MEDIUM_THRESHOLD"]
 ADAM_EPS = ALG_CONFIG["ADAM_EPS"]
+GRAD_CLIP_ACTOR = float(ALG_CONFIG.get("GRAD_CLIP_ACTOR", 1.0))
+GRAD_CLIP_CRITIC = float(ALG_CONFIG.get("GRAD_CLIP_CRITIC", 1.0))
+BACKUP_CLIP_RANGE = float(ALG_CONFIG.get("BACKUP_CLIP_RANGE", 100.0))
 
 
 # -----------------------------------------------------------------------------

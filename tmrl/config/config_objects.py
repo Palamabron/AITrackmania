@@ -222,7 +222,6 @@ else:
             checkpoint_reward=cfg.CHECKPOINT_REWARD,
             lap_reward=cfg.LAP_REWARD,
             min_nb_steps_before_failure=cfg.MIN_NB_STEPS_BEFORE_FAILURE,
-            min_gas_warm_start=cfg.MIN_GAS_WARM_START,
         )
     elif cfg.PRAGMA_CUSTOM or cfg.PRAGMA_BEST or cfg.PRAGMA_BEST_TQC or cfg.PRAGMA_MBEST_TQC:
         if cfg.USE_IMAGES:
@@ -250,7 +249,6 @@ else:
                 checkpoint_reward=cfg.CHECKPOINT_REWARD,
                 lap_reward=cfg.LAP_REWARD,
                 min_nb_steps_before_failure=cfg.MIN_NB_STEPS_BEFORE_FAILURE,
-                min_gas_warm_start=cfg.MIN_GAS_WARM_START,
             )
     else:
         INT = partial(

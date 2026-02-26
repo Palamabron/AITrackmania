@@ -51,7 +51,8 @@ class TM2020Interface(RealTimeGymInterface):
         crash_penalty=None,
         nb_zero_rew_before_failure=None,
         min_nb_steps_before_failure=None,
-        min_gas_warm_start=0.0,
+        record_human: bool = False,
+        **kwargs,
     ):
         """
         Base rtgym interface for TrackMania 2020 (Full environment)
@@ -78,6 +79,7 @@ class TM2020Interface(RealTimeGymInterface):
         self.gamepad = gamepad
         self.j = None
         self.window_interface = None
+        self.record_human = record_human
         self.small_window = None
         self.save_replays = save_replays
         self.grayscale = grayscale
@@ -105,11 +107,6 @@ class TM2020Interface(RealTimeGymInterface):
             min_nb_steps_before_failure
             if min_nb_steps_before_failure is not None
             else cfg.REWARD_CONFIG.get("MIN_STEPS", 70)
-        )
-        self.min_gas_warm_start = (
-            float(min_gas_warm_start)
-            if min_gas_warm_start is not None and float(min_gas_warm_start) > 0
-            else None
         )
         self.crash_cooldown = 0
         self.crash_curr = 0
@@ -187,10 +184,13 @@ class TM2020Interface(RealTimeGymInterface):
         Non-blocking function
         Applies the action given by the RL policy
         If control is None, does nothing (e.g. to record)
+        If record_human is True, does nothing so human can control via physical gamepad
         Args:
             control: np.array: [forward,backward,right,left] or, if discrete_action_table
                 is set, a single discrete index (int or shape (1,))
         """
+        if self.record_human:
+            return
         if control is not None and self.discrete_action_table is not None:
             idx = int(np.asarray(control).flat[0])
             control = discrete_index_to_control(idx, self.discrete_action_table)
@@ -203,20 +203,7 @@ class TM2020Interface(RealTimeGymInterface):
                     )
                     return
                 c = np.asarray(control, dtype=np.float32).ravel()
-                if self.min_gas_warm_start is not None and len(c) > 0:
-                    warm_remaining = getattr(self, "_warm_start_steps_remaining", 0)
-                    if warm_remaining > 0:
-                        c = np.array(c, dtype=np.float32).copy()
-                        c[0] = max(float(c[0]), self.min_gas_warm_start)
-                        self._warm_start_steps_remaining = warm_remaining - 1
-                        control = c
-                    elif float(c[0]) < self.min_gas_warm_start:
-                        control = np.array(c, dtype=np.float32).copy()
-                        control[0] = self.min_gas_warm_start
-                    else:
-                        control = c
-                else:
-                    control = c
+                control = c
                 if not self._send_control_logged:
                     self._send_control_logged = True
                     gas = float(control[0]) if len(control) > 0 else 0
@@ -262,9 +249,12 @@ class TM2020Interface(RealTimeGymInterface):
     def reset_common(self):
         if not self.initialized:
             self.initialize()
-        # So that min_gas_warm_start is applied for the first N steps of this run (every run).
-        self._warm_start_steps_remaining = cfg.REWARD_CONFIG.get("MIN_STEPS", 50)
-        self.send_control(self.get_default_action())
+        if self.record_human:
+            self.record_human = False
+            self.send_control(np.array([0.0, 0.0, 0.0], dtype=np.float32))
+            self.record_human = True
+        else:
+            self.send_control(self.get_default_action())
         self.reset_race()
         time_sleep = (
             max(0, cfg.SLEEP_TIME_AT_RESET - 0.1) if self.gamepad else cfg.SLEEP_TIME_AT_RESET

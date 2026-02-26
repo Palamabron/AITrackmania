@@ -482,10 +482,24 @@ def run_with_wandb(
     ):
         for s in stats:
             log_dict = json.loads(s.to_json())
-            # Ensure wandb receives serializable values (no NaN/Inf)
+            # Ensure wandb receives serializable values (no NaN/Inf). Use 0.0 for
+            # numeric metrics so curves are always plotted (WandB skips None).
             for k, v in list(log_dict.items()):
-                if isinstance(v, float) and (v != v or v == float("inf") or v == float("-inf")):
-                    log_dict[k] = None
+                is_invalid = (
+                    v is None
+                    or (isinstance(v, float) and (v != v or v == float("inf") or v == float("-inf")))
+                )
+                if is_invalid:
+                    log_dict[k] = 0.0 if (k.startswith("losses/") or k in (
+                        "return_test", "return_train", "episode_length_test", "episode_length_train"
+                    )) else None
+            # Ensure key metrics exist (e.g. first round can have no batches → no keys)
+            for key in (
+                "losses/loss_actor", "losses/loss_critic",
+                "return_test", "return_train", "episode_length_test", "episode_length_train",
+            ):
+                if key not in log_dict or log_dict[key] is None:
+                    log_dict[key] = 0.0
             wandb.log(log_dict, step=global_step)
             global_step += 1
 

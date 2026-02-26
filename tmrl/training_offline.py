@@ -11,6 +11,8 @@ from loguru import logger
 from pandas import DataFrame
 
 # local imports
+import tmrl.config.config_constants as cfg
+from tmrl.tools.player_runs import poll_player_runs_for_injection
 from tmrl.util import pandas_dict
 
 __docformat__ = "google"
@@ -106,7 +108,18 @@ class TrainingOffline:
             observation_space=observation_space, action_space=action_space, device=device
         )
         self.total_samples = len(self.memory)
+        self._injected_player_run_ids: set[str] = set()
+        self._best_return_train: float = float("-inf")
+        self._best_epoch: int = -1
         logger.info(f" Initial total_samples:{self.total_samples}")
+        if cfg.PLAYER_RUNS_ONLINE_INJECTION:
+            from pathlib import Path
+            _pr_path = Path(cfg.PLAYER_RUNS_SOURCE_PATH)
+            logger.info(
+                " Player runs online injection: SOURCE_PATH={} (exists={})",
+                cfg.PLAYER_RUNS_SOURCE_PATH,
+                _pr_path.exists(),
+            )
 
     def update_buffer(self, interface):
         """
@@ -119,6 +132,29 @@ class TrainingOffline:
         buffer = interface.retrieve_buffer()
         self.memory.append(buffer)
         self.total_samples += len(buffer)
+
+        if not cfg.PLAYER_RUNS_ONLINE_INJECTION:
+            return
+
+        demo_buffer, imported_ids, imported_files = poll_player_runs_for_injection(
+            source_dir=cfg.PLAYER_RUNS_SOURCE_PATH,
+            seen_run_ids=self._injected_player_run_ids,
+            max_files=cfg.PLAYER_RUNS_MAX_FILES_PER_UPDATE,
+            consume_on_read=cfg.PLAYER_RUNS_CONSUME_ON_READ,
+        )
+        if len(demo_buffer) > 0:
+            repeat = cfg.PLAYER_RUNS_DEMO_INJECTION_REPEAT
+            for _ in range(repeat):
+                self.memory.append(demo_buffer)
+                self.total_samples += len(demo_buffer)
+            logger.info(
+                " Injected {} player-run sample(s) from {} file(s), repeat x{} (effective: {}). run_ids={}",
+                len(demo_buffer),
+                len(imported_files),
+                repeat,
+                len(demo_buffer) * repeat,
+                sorted(imported_ids),
+            )
 
     def check_ratio(self, interface):
         """
@@ -223,6 +259,14 @@ class TrainingOffline:
             stats_training_dict["episode_length_train"] = self.memory.stat_train_steps
             stats_training_dict["sampling_duration"] = t_sample - t_sample_prev
             stats_training_dict["training_step_duration"] = t_train - t_update_buffer
+            if hasattr(self.memory, "last_sample_demo_fraction"):
+                stats_training_dict["debug/demo_fraction_in_batch"] = float(
+                    self.memory.last_sample_demo_fraction
+                )
+            if hasattr(self.memory, "demo_sampling_weight"):
+                stats_training_dict["debug/demo_sampling_weight"] = float(
+                    self.memory.demo_sampling_weight
+                )
             stats_training += (_stats_dict_to_numeric(stats_training_dict),)
             self.total_updates += 1
             if self.total_updates % self.update_model_interval == 0:
@@ -303,12 +347,32 @@ class TrainingOffline:
                 pro.stop()
                 logger.info(pro.output_text(unicode=True, color=False, show_all=True))
 
-        # if len(self.memory.end_episodes_indices) > 1:
-        # print(f"end_episodes_indices: {self.memory.end_episodes_indices}")
-        # print(f"reward_sums: {self.memory.reward_sums}")
-
+        self._maybe_save_best_checkpoint(stats)
         self.epoch += 1
         return stats
+
+    def _maybe_save_best_checkpoint(self, stats):
+        """Save actor weights when epoch-average return_train improves."""
+        try:
+            returns = [s.get("return_train", float("nan")) for s in stats if hasattr(s, "get")]
+            valid = [r for r in returns if r == r]  # filter nan
+            if not valid:
+                return
+            mean_ret = sum(valid) / len(valid)
+            if mean_ret > self._best_return_train and mean_ret > 0:
+                self._best_return_train = mean_ret
+                self._best_epoch = self.epoch
+                best_path = cfg.WEIGHTS_FOLDER / "best_actor.pth"
+                import torch
+                torch.save(self.agent.get_actor().state_dict(), str(best_path))
+                logger.info(
+                    " New best return_train={:.2f} at epoch {} -> saved {}",
+                    mean_ret,
+                    self.epoch,
+                    best_path,
+                )
+        except Exception as e:
+            logger.warning(" Failed to save best checkpoint: {}", e)
 
 
 class TorchTrainingOffline(TrainingOffline):

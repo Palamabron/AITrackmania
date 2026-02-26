@@ -22,6 +22,7 @@ from tmrl.tools.check_environment import (
     check_env_tm20full,
     check_env_tm20lidar,
 )
+from tmrl.tools.import_player_runs import import_player_runs
 from tmrl.tools.record_reward import record_reward_dist
 from tmrl.util import partial
 
@@ -64,6 +65,30 @@ class TmrlCli:
 
     record_episode: bool = False
     """Record an episode into the replay buffer."""
+
+    record_episode_count: int = 1
+    """Number of episodes to record when using --record-episode."""
+
+    record_episode_output_dir: str = ""
+    """Output folder for player-run files (default: ~/TmrlData/player_runs)."""
+
+    record_episode_max_samples: int = 0
+    """Max samples per recorded episode (0 uses config default)."""
+
+    import_player_runs: bool = False
+    """Import recorded player-run files into dataset data.pkl."""
+
+    player_runs_paths: str = ""
+    """Comma-separated list of player-run .pkl files to import."""
+
+    player_runs_overwrite: bool = False
+    """Overwrite dataset instead of appending when importing player runs."""
+
+    player_runs_max_samples: int = 0
+    """Max raw samples to keep after import (0 keeps all)."""
+
+    player_runs_dry_run: bool = False
+    """Validate import only, without writing dataset."""
 
     check_env: bool = False
     """Verify environment (Lidar/Full/TrackMap) works."""
@@ -166,7 +191,22 @@ def main(cli: TmrlCli) -> None:
     elif cli.record_episode:
         from tmrl.tools.record_episode import record_episode
 
-        record_episode()
+        record_episode(
+            nb_episodes=cli.record_episode_count,
+            output_dir=cli.record_episode_output_dir or None,
+            max_samples_per_episode=(
+                None if cli.record_episode_max_samples <= 0 else cli.record_episode_max_samples
+            ),
+        )
+    elif cli.import_player_runs:
+        if not cli.player_runs_paths:
+            raise ValueError("--player-runs-paths is required with --import-player-runs")
+        import_player_runs(
+            paths=[p.strip() for p in cli.player_runs_paths.split(",") if p.strip()],
+            overwrite=cli.player_runs_overwrite,
+            max_samples=None if cli.player_runs_max_samples <= 0 else cli.player_runs_max_samples,
+            dry_run=cli.player_runs_dry_run,
+        )
     elif cli.install:
         logger.info(f"TMRL folder: {cfg.TMRL_FOLDER}")
     elif cli.wsl_ip:
@@ -189,6 +229,8 @@ def main(cli: TmrlCli) -> None:
             " --benchmark, "
             " --expert, "
             " --record-reward, "
+            " --record-episode, "
+            " --import-player-runs, "
             " --check-environment, "
             " --wsl-ip."
         )

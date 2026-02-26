@@ -385,13 +385,31 @@ class SophyActorCritic(nn.Module):
 
         # build policy and value functions
         self.actor = SquashedActorSophy(
-            observation_space, action_space, rnn_sizes, rnn_lens, mlp_branch_sizes, activation
+            observation_space,
+            action_space,
+            rnn_sizes,
+            rnn_lens,
+            mlp_branch_sizes,
+            activation,
+            seed=seed,
         )
         self.q1 = QRCNNSophy(
-            observation_space, action_space, rnn_sizes, rnn_lens, mlp_branch_sizes, activation
+            observation_space,
+            action_space,
+            rnn_sizes,
+            rnn_lens,
+            mlp_branch_sizes,
+            activation,
+            seed=seed,
         )
         self.q2 = QRCNNSophy(
-            observation_space, action_space, rnn_sizes, rnn_lens, mlp_branch_sizes, activation
+            observation_space,
+            action_space,
+            rnn_sizes,
+            rnn_lens,
+            mlp_branch_sizes,
+            activation,
+            seed=seed + 1,
         )
 
 
@@ -580,7 +598,11 @@ class SophyResidualActorCritic(nn.Module):
             observation_space, action_space, hidden_dim=hidden_dim, num_blocks=num_blocks, seed=seed
         )
         self.q2 = QRCNNSophyResidual(
-            observation_space, action_space, hidden_dim=hidden_dim, num_blocks=num_blocks, seed=seed
+            observation_space,
+            action_space,
+            hidden_dim=hidden_dim,
+            num_blocks=num_blocks,
+            seed=seed + 1,
         )
 
     def act(self, obs, test=False):
