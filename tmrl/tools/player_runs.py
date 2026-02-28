@@ -159,7 +159,6 @@ def import_player_runs_to_dataset(
     if not run_paths:
         raise ValueError("No player-run paths were provided.")
 
-
     memory = memory_factory(nb_steps=1, device="cpu")
     if overwrite:
         memory.data = []

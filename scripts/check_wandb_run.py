@@ -1,5 +1,6 @@
 """Check if a wandb run is currently training (running). Uses WANDB_API_KEY from .env."""
 
+import importlib
 import os
 import sys
 
@@ -21,7 +22,7 @@ if os.path.isfile(_env):
 # Avoid loading local wandb package
 if _repo_root in sys.path:
     sys.path.remove(_repo_root)
-import wandb
+wandb = importlib.import_module("wandb")
 
 api = wandb.Api()
 
@@ -85,7 +86,8 @@ try:
                     print("  → Tak, model się uczył (nagroda rosła).")
                 else:
                     print(
-                        "  → Nagroda nie rosła w tym runie (może za mało kroków albo trudna konfiguracja)."
+                        "  → Nagroda nie rosła w tym runie "
+                        "(może za mało kroków albo trudna konfiguracja)."
                     )
 except Exception as e:
     print(f"\nNie udało się pobrać historii (pominąć ten błąd): {e}")

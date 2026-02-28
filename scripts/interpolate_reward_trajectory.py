@@ -4,10 +4,12 @@ Finer spacing gives a more granular progress signal (e.g. on difficult turns)
 without changing total reward scale: progress is still (distance_gained * 100 / total_length).
 
 Usage:
-  python scripts/interpolate_reward_trajectory.py /path/to/reward_<MAP_NAME>.pkl [--factor 10] [--out path] [--dry-run]
+  python scripts/interpolate_reward_trajectory.py /path/to/reward_<MAP_NAME>.pkl
+      [--factor 10] [--out path] [--dry-run]
 
 Example (TmrlData on Windows WSL):
-  python scripts/interpolate_reward_trajectory.py /mnt/c/Users/szulc/TmrlData/reward/reward_test-3.pkl --factor 10
+  python scripts/interpolate_reward_trajectory.py
+      /mnt/c/Users/szulc/TmrlData/reward/reward_test-3.pkl --factor 10
 """
 
 from __future__ import annotations

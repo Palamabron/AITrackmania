@@ -444,7 +444,6 @@ class R2D2Memory(Memory, ABC):
         Logic involves selecting indices based on episode lengths, rewards, and episode transitions.
         """
         self._refresh_episode_metadata()
-        episode_demo_flags = self.episode_demo_flags
         batch_size = self.batch_size
 
         if len(self.end_episodes_indices) == 0:

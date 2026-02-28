@@ -1,10 +1,11 @@
 # standard library imports
 import datetime
+import math
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from numbers import Number
-from typing import Any
+from numbers import Real
+from typing import Any, cast
 
 # third-party imports
 import gymnasium
@@ -35,7 +36,7 @@ def _observation_space_from_sample(observation) -> gymnasium.spaces.Space:
                     low=np.float32(-np.inf),
                     high=np.float32(np.inf),
                     shape=arr.shape,
-                    dtype=arr.dtype,
+                    dtype=np.float32,
                 )
             )
         return gymnasium.spaces.Tuple(tuple(spaces_list))
@@ -45,26 +46,27 @@ def _observation_space_from_sample(observation) -> gymnasium.spaces.Space:
             low=np.float32(-np.inf),
             high=np.float32(np.inf),
             shape=arr.shape,
-            dtype=arr.dtype,
+            dtype=np.float32,
         )
 
 
 def _observation_dim(space: gymnasium.spaces.Space) -> int:
     """Total dimension of an observation space (Tuple of Box or single Box)."""
     if isinstance(space, gymnasium.spaces.Tuple):
-        return sum(int(np.prod(s.shape)) for s in space.spaces)
-    return int(np.prod(space.shape))
+        return sum(math.prod(s.shape or ()) for s in space.spaces)
+    return math.prod(space.shape or ())
 
 
 def _one_obs_from_batch(batch_obs) -> np.ndarray | tuple:
     """Extract a single observation (numpy) from batch observation (tensor or tuple of tensors)."""
     if isinstance(batch_obs, (list, tuple)):
         return tuple(
-            t[0].cpu().numpy() if hasattr(t, "cpu") else np.asarray(t[0]) for t in batch_obs
+            cast(np.ndarray, t[0].cpu().numpy() if hasattr(t, "cpu") else np.asarray(t[0]))
+            for t in batch_obs
         )
     if hasattr(batch_obs, "cpu"):
-        return batch_obs[0].cpu().numpy()
-    return np.asarray(batch_obs[0])
+        return cast(np.ndarray, batch_obs[0].cpu().numpy())
+    return cast(np.ndarray, np.asarray(batch_obs[0]))
 
 
 def _stats_dict_to_numeric(d: dict) -> dict:
@@ -84,7 +86,7 @@ def _mean_stats_dicts(items: list[dict[str, Any]]) -> dict[str, float]:
     counts: dict[str, int] = {}
     for row in items:
         for k, v in row.items():
-            if isinstance(v, Number):
+            if isinstance(v, Real):
                 vf = float(v)
                 # skip NaN/Inf to mimic skipna behavior
                 if vf == vf and vf not in (float("inf"), float("-inf")):
@@ -248,7 +250,8 @@ class TrainingOffline:
         else:
             return
         logger.info(
-            " Building agent from data (observation dim=%s); observation_space independent of config.",
+            " Building agent from data (observation dim=%s); "
+            "observation_space independent of config.",
             dim,
         )
         device = self.device or "cpu"

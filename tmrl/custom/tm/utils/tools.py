@@ -134,7 +134,8 @@ class TM2020OpenPlanetClient:
 
         # FIX GLITCHES: replace [0,0,0] position with the last known good position
         if data is not None:
-            # Determine position indices based on the struct size (usually TQC=20 floats uses 3,4,5; old uses 2,3,4)
+            # Determine position indices from struct size:
+            # TQC=20 floats uses [3,4,5], older formats use [2,3,4].
             pos_start_idx = 3 if self.nb_floats >= 20 else 2
             pos_x, pos_y, pos_z = (
                 data[pos_start_idx],

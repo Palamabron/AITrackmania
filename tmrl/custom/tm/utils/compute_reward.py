@@ -16,7 +16,10 @@ import wandb
 
 
 def _resample_polyline_by_arc_length(points: np.ndarray, num_points: int) -> np.ndarray:
-    """Resample polyline to num_points uniformly by arc length (for matching track boundaries to reward length)."""
+    """Resample polyline to `num_points` uniformly by arc length.
+
+    Used to match track boundaries to reward trajectory length.
+    """
     points = np.asarray(points, dtype=np.float64)
     n = len(points)
     if n <= 1 or num_points <= 1:
@@ -586,7 +589,8 @@ class RewardFunction:
             if self.datalen > 1 and self._total_traj_length > 0:
                 dist_best = self._cumulative_dist[min(best_index, self.datalen - 1)]
                 remaining_dist = max(0.0, float(self._total_traj_length - dist_best))
-                # Note: DO NOT multiply by self._reward_scale here, because it gets multiplied on line 561!
+                # Note: do not multiply by self._reward_scale here;
+                # reward scaling is applied later once to the whole step reward.
                 remaining_reward = remaining_dist * (100.0 / self._total_traj_length)
                 reward += remaining_reward
 
@@ -633,7 +637,9 @@ class RewardFunction:
             # Assuming ~20 steps per second (0.05s per step)
             run_time_seconds = self.step_counter * 0.05
             print(
-                f"Total reward of the run: {self.episode_reward:.4f} (Steps: {self.step_counter}, Time: {run_time_seconds:.2f}s)"
+                "Total reward of the run: "
+                f"{self.episode_reward:.4f} "
+                f"(Steps: {self.step_counter}, Time: {run_time_seconds:.2f}s)"
             )
             if self._use_wandb:
                 self._episode_count = getattr(self, "_episode_count", 0) + 1

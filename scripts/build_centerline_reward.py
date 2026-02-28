@@ -108,8 +108,6 @@ def _pair_cross_section(left_pts: np.ndarray, right_pts: np.ndarray) -> np.ndarr
     cuts.  Constraining the search to a ±WINDOW_FRAC window in normalised
     arc-length prevents this.
     """
-    n_right = len(right_pts)
-
     cum_left = _cumulative_distances(left_pts)
     cum_right = _cumulative_distances(right_pts)
     total_left = cum_left[-1] if cum_left[-1] > 0 else 1.0
@@ -117,13 +115,13 @@ def _pair_cross_section(left_pts: np.ndarray, right_pts: np.ndarray) -> np.ndarr
     frac_left = cum_left / total_left
     frac_right = cum_right / total_right
 
-    WINDOW_FRAC = 0.10
+    window_frac = 0.10
 
     right_paired = np.empty_like(left_pts)
     for i in range(len(left_pts)):
         f = frac_left[i]
-        lo = int(np.searchsorted(frac_right, f - WINDOW_FRAC))
-        hi = int(np.searchsorted(frac_right, f + WINDOW_FRAC))
+        lo = int(np.searchsorted(frac_right, f - window_frac))
+        hi = int(np.searchsorted(frac_right, f + window_frac))
         if lo >= hi:
             idx = int(np.argmin(np.abs(frac_right - f)))
             right_paired[i] = right_pts[idx]
@@ -225,17 +223,34 @@ def _save_debug_plot(
         idx = np.linspace(0, len(arr) - 1, max_plot, dtype=int)
         return arr[idx]
 
-    l, r, c = _ds(left), _ds(right), _ds(center)
+    left_ds, right_ds, center_ds = _ds(left), _ds(right), _ds(center)
     cr = _ds(center_raw) if center_raw is not None else None
 
     fig = plt.figure(figsize=(12, 10))
     ax = fig.add_subplot(111, projection="3d")
-    ax.plot(l[:, 0], l[:, 1], l[:, 2], "b-", alpha=0.7, label="left", linewidth=0.8)
-    ax.plot(r[:, 0], r[:, 1], r[:, 2], "C1-", alpha=0.7, label="right", linewidth=0.8)
+    ax.plot(
+        left_ds[:, 0], left_ds[:, 1], left_ds[:, 2], "b-", alpha=0.7, label="left", linewidth=0.8
+    )
+    ax.plot(
+        right_ds[:, 0],
+        right_ds[:, 1],
+        right_ds[:, 2],
+        "C1-",
+        alpha=0.7,
+        label="right",
+        linewidth=0.8,
+    )
     if cr is not None:
         ax.plot(cr[:, 0], cr[:, 1], cr[:, 2], "g-", alpha=0.9, linewidth=1.5, label="center (raw)")
     ax.plot(
-        c[:, 0], c[:, 1], c[:, 2], "c--", alpha=0.9, linewidth=1.2, label="center (final)", zorder=4
+        center_ds[:, 0],
+        center_ds[:, 1],
+        center_ds[:, 2],
+        "c--",
+        alpha=0.9,
+        linewidth=1.2,
+        label="center (final)",
+        zorder=4,
     )
     ax.scatter(left[0, 0], left[0, 1], left[0, 2], c="b", s=80, marker="o", zorder=5)
     ax.scatter(right[0, 0], right[0, 1], right[0, 2], c="C1", s=80, marker="o", zorder=5)
@@ -256,11 +271,19 @@ def _save_debug_plot(
         (path_2d[0] + "_topdown." + path_2d[1]) if len(path_2d) == 2 else (path + "_topdown.png")
     )
     fig2, ax2 = plt.subplots(figsize=(10, 10))
-    ax2.plot(l[:, 0], l[:, 2], "b-", alpha=0.7, label="left", linewidth=0.8)
-    ax2.plot(r[:, 0], r[:, 2], "C1-", alpha=0.7, label="right", linewidth=0.8)
+    ax2.plot(left_ds[:, 0], left_ds[:, 2], "b-", alpha=0.7, label="left", linewidth=0.8)
+    ax2.plot(right_ds[:, 0], right_ds[:, 2], "C1-", alpha=0.7, label="right", linewidth=0.8)
     if cr is not None:
         ax2.plot(cr[:, 0], cr[:, 2], "g-", alpha=0.9, linewidth=1.5, label="center (raw)")
-    ax2.plot(c[:, 0], c[:, 2], "c--", alpha=0.9, linewidth=1.2, label="center (final)", zorder=4)
+    ax2.plot(
+        center_ds[:, 0],
+        center_ds[:, 2],
+        "c--",
+        alpha=0.9,
+        linewidth=1.2,
+        label="center (final)",
+        zorder=4,
+    )
     ax2.plot(left[0, 0], left[0, 2], "bo", markersize=8)
     ax2.plot(right[0, 0], right[0, 2], "o", color="C1", markersize=8)
     ax2.set_xlabel("X")

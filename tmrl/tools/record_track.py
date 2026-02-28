@@ -2,6 +2,7 @@
 import os
 import pickle
 import time
+from typing import cast
 
 # third-party imports
 import keyboard
@@ -39,12 +40,12 @@ def _filter_origin_points(positions: np.ndarray) -> np.ndarray:
     No jump-distance filter — it caused false positives when the first buffered
     point was stale and all real positions got rejected as "jumps".
     """
-    pts = np.asarray(positions, dtype=np.float64)
+    pts = cast(np.ndarray, np.asarray(positions, dtype=np.float64))
     if len(pts) < 2:
         return pts
     norms = np.linalg.norm(pts, axis=1)
     mask = norms >= 1.0
-    filtered = pts[mask]
+    filtered = cast(np.ndarray, pts[mask])
     if len(filtered) < 2:
         return pts
     return filtered
@@ -69,12 +70,14 @@ def record_track(path_track=cfg.TRACK_PATH_LEFT):
             if keyboard.is_pressed("q"):
                 if len(positions) < MIN_POSITIONS_FOR_TRACK:
                     logger.warning(
-                        f"Too few positions ({len(positions)}). Drive the full track, then press Q. Need at least {MIN_POSITIONS_FOR_TRACK}."
+                        f"Too few positions ({len(positions)}). Drive the full track, "
+                        f"then press Q. Need at least {MIN_POSITIONS_FOR_TRACK}."
                     )
                     continue
                 if length_m < MIN_TRACK_LENGTH_M:
                     logger.warning(
-                        f"Track too short ({length_m:.0f} m). Drive at least {MIN_TRACK_LENGTH_M:.0f} m, then press Q."
+                        f"Track too short ({length_m:.0f} m). "
+                        f"Drive at least {MIN_TRACK_LENGTH_M:.0f} m, then press Q."
                     )
                     continue
                 logger.info("Computing reward function checkpoints from captured positions...")
@@ -88,8 +91,9 @@ def record_track(path_track=cfg.TRACK_PATH_LEFT):
                     f"After filtering: {len(positions)} positions, path length {length_after:.0f} m"
                 )
 
-                # We don't need the `line` and `while` loop anymore since we just rely on space_points
-                # to do the exact correct arc-length resampling using the filtered chronologically ordered points.
+                # We no longer need the old `line` + `while` loop.
+                # `space_points` now does exact arc-length resampling on filtered,
+                # chronologically ordered points.
                 spaced_points = space_points(positions)
                 smoothed_points = smooth_points(spaced_points)
 
@@ -109,7 +113,8 @@ def record_track(path_track=cfg.TRACK_PATH_LEFT):
 
 
 # Dense spacing (m) for track boundaries so geometry is preserved (arcs, 180° turns).
-# Previously space_points used len(reward_file), which under-sampled and turned curves into sharp corners.
+# Previously, `space_points` used `len(reward_file)`, which under-sampled
+# and turned curves into sharp corners.
 TRACK_BOUNDARY_SPACING_M = 0.25
 
 

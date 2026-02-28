@@ -1,5 +1,6 @@
 """Fetch wandb run history and print metrics summary for report. Uses WANDB_API_KEY from .env."""
 
+import importlib
 import json
 import os
 import sys
@@ -20,7 +21,7 @@ if os.path.isfile(_env):
 
 if _repo_root in sys.path:
     sys.path.remove(_repo_root)
-import wandb
+wandb = importlib.import_module("wandb")
 
 api = wandb.Api()
 path = "tmrl/tmrl/SophyResidual_runv23_RUN_L TRAINER"
@@ -40,7 +41,7 @@ cols = [c for c in h.columns if not c.startswith("_")]
 print(cols)
 
 
-def summarize(series, name):
+def summarize(series):
     s = series.dropna()
     if len(s) < 2:
         return None
@@ -61,9 +62,9 @@ summaries = {}
 for c in cols:
     try:
         s = h[c]
-        sum = summarize(s, c)
-        if sum:
-            summaries[c] = sum
+        summary = summarize(s)
+        if summary:
+            summaries[c] = summary
     except Exception as e:
         summaries[c] = {"error": str(e)}
 

@@ -515,7 +515,8 @@ if _track_pct > 0 and _track_spacing > 0 and os.path.exists(REWARD_PATH):
                 _nb = int(math.ceil(_L * (_track_pct / 100.0) / _track_spacing))
                 TRACK_POINTS_NUMBER = min(200, max(1, _nb))
                 logger.info(
-                    "Track look-ahead: TRACK_LOOK_AHEAD_PCT={:.2f}%, TRACK_POINT_SPACING_M={:.2f} m, "
+                    "Track look-ahead: TRACK_LOOK_AHEAD_PCT={:.2f}%, "
+                    "TRACK_POINT_SPACING_M={:.2f} m, "
                     "trajectory length={:.1f} m -> POINTS_NUMBER={}",
                     _track_pct,
                     _track_spacing,

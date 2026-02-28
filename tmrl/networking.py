@@ -170,9 +170,9 @@ class Buffer:
         """
         if speed_scale <= 0 or len(self.memory) == 0:
             return
-        T = len(self.memory)
-        bonus_per_step = speed_scale / (T * T)
-        total_bonus = bonus_per_step * T  # = speed_scale / T
+        num_steps = len(self.memory)
+        bonus_per_step = speed_scale / (num_steps * num_steps)
+        total_bonus = bonus_per_step * num_steps  # = speed_scale / num_steps
         new_memory = []
         old_total = 0.0
         for i, sample in enumerate(self.memory):
