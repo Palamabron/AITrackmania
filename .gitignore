@@ -104,6 +104,8 @@ celerybeat-schedule
 # Environments
 .env
 .venv
+.venv-linux/
+.venv-windows/
 .venv_fetch/
 env/
 venv/

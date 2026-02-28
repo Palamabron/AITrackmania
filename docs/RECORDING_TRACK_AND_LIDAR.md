@@ -32,6 +32,22 @@ Used for **progress-based reward** (e.g. LIDARPROGRESS, LIDARPROGRESSIMAGES): th
   (`MAP_NAME` comes from `ENV.MAP_NAME` in your config, e.g. `tmrl-test` → `reward_tmrl-test.pkl`).
 - **Config:** The path is set in `tmrl/config/config_constants.py` as `REWARD_PATH` (from `REWARD_FOLDER` and `MAP_NAME`). Ensure `TmrlData/reward/` exists and that the filename matches your `MAP_NAME`.
 
+### Denser trajectory (e.g. for a difficult turn)
+
+To get a **finer progress signal** on the track (e.g. more points through a turn), you can interpolate the existing reward trajectory to add more points: run `scripts/interpolate_reward_trajectory.py` (see script help). It loads a `reward_<MAP_NAME>.pkl`, interpolates along the polyline (e.g. 10× more points), checks that the reward scale stays consistent, and overwrites or saves the pkl. No re-recording in-game needed.
+
+### Centerline from track left + right (SOTA: środek trasy)
+
+Zamiast nagrywać przejazd dla reward trajectory możesz **wygenerować oś referencyjną** ze środka toru: `(track_left + track_right) / 2`. To podejście (Gran Turismo Sophy, F1Tenth) daje gładką oś, symetryczne granice i pozwala agentowi samodzielnie odkryć optymalną linię. Granice toru są wtedy definiowane przez left/right (dotknięcie „funkcji” tych punktów = ocieranie o barierki); **MAX_TRACK_WIDTH** można wtedy zastąpić sprawdzaniem „poza pasem” (odległość do left/right).
+
+- **Skrypt:** `scripts/build_centerline_reward.py`
+- **Wejście:** `track_<MAP_NAME>_left.pkl`, `track_<MAP_NAME>_right.pkl` (lub ścieżki `--left` / `--right`). Obsługiwane też pliki `.csv` (N,2) x,z.
+- **Wyjście:** `reward_<MAP_NAME>.pkl` (lub `--out`). Opcja `--smooth` wygładza centerline splajnami (stabilna styczna → stabilny cos(θ_error) w nagrodzie projected velocity).
+- **Użycie:**  
+  `python scripts/build_centerline_reward.py` (ścieżki z TmrlData/config)  
+  lub  
+  `python scripts/build_centerline_reward.py --left path/left.pkl --right path/right.pkl --out path/reward_map.pkl --smooth`
+
 ---
 
 ## Track boundaries (left / right) — “points in space” including after corners

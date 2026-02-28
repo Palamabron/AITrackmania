@@ -31,6 +31,7 @@ class TM2020OpenPlanetClient:
         self.__lock = Lock()
         self.__data = None
         self._received_once = False  # used for longer first-packet timeout
+        self._last_good_pos = None  # Buffer to replace [0, 0, 0] glitches from the plugin
         self._client_connected = (
             False  # True when connect() succeeded (may still be waiting for first frame)
         )
@@ -130,6 +131,30 @@ class TM2020OpenPlanetClient:
                     "(3) IN A MAP with car on track (not menu/loading)."
                 )
                 time.sleep(sleep_if_empty)
+
+        # FIX GLITCHES: replace [0,0,0] position with the last known good position
+        if data is not None:
+            # Determine position indices based on the struct size (usually TQC=20 floats uses 3,4,5; old uses 2,3,4)
+            pos_start_idx = 3 if self.nb_floats >= 20 else 2
+            pos_x, pos_y, pos_z = (
+                data[pos_start_idx],
+                data[pos_start_idx + 1],
+                data[pos_start_idx + 2],
+            )
+
+            # If position is exactly at or very near origin, consider it a glitch
+            if math.sqrt(pos_x**2 + pos_y**2 + pos_z**2) < 1.0:
+                if self._last_good_pos is not None:
+                    # Create a new tuple with the patched position
+                    data_list = list(data)
+                    data_list[pos_start_idx] = self._last_good_pos[0]
+                    data_list[pos_start_idx + 1] = self._last_good_pos[1]
+                    data_list[pos_start_idx + 2] = self._last_good_pos[2]
+                    data = tuple(data_list)
+            else:
+                # Update last known good position
+                self._last_good_pos = (pos_x, pos_y, pos_z)
+
         return data
 
 

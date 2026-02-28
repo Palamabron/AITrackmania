@@ -1,5 +1,6 @@
 import pickle
 from abc import ABC, abstractmethod
+from io import BytesIO
 
 import torch
 
@@ -88,6 +89,14 @@ class ActorModule(ABC):
         """
         return self
 
+    def save_to_bytes(self) -> bytes:
+        """Serialize actor to bytes for network transport."""
+        return pickle.dumps(self, protocol=pickle.HIGHEST_PROTOCOL)
+
+    def load_from_bytes(self, payload: bytes, device):
+        """Deserialize actor from bytes (default pickle-based implementation)."""
+        return pickle.loads(payload)
+
     @abstractmethod
     def act(self, obs, test=False):
         """
@@ -143,6 +152,17 @@ class TorchActorModule(ActorModule, torch.nn.Module, ABC):
     def load(self, path, device):
         self.device = device
         self.load_state_dict(torch.load(path, map_location=self.device, weights_only=True))
+        return self
+
+    def save_to_bytes(self) -> bytes:
+        buffer = BytesIO()
+        torch.save(self.state_dict(), buffer)
+        return buffer.getvalue()
+
+    def load_from_bytes(self, payload: bytes, device):
+        self.device = device
+        buffer = BytesIO(payload)
+        self.load_state_dict(torch.load(buffer, map_location=self.device, weights_only=True))
         return self
 
     def act_(self, obs, test=False):

@@ -84,9 +84,7 @@ class TM2020Interface(RealTimeGymInterface):
         self.save_replays = save_replays
         self.grayscale = grayscale
         self.resize_to = resize_to
-        self.finish_reward = (
-            finish_reward if finish_reward is not None else cfg.REWARD_CONFIG["END_OF_TRACK"]
-        )
+        self.finish_reward = finish_reward if finish_reward is not None else cfg.END_OF_TRACK_REWARD
         self.constant_penalty = (
             constant_penalty
             if constant_penalty is not None
@@ -114,6 +112,38 @@ class TM2020Interface(RealTimeGymInterface):
             None  # if set, policy action is discrete index -> map to continuous
         )
         self._send_control_logged = False  # log first send_control for debugging
+        self._img_buf: np.ndarray | None = None
+        self._img_hist_count = 0
+        self._img_hist_cursor = 0
+        self._speed_arr = np.zeros((1,), dtype=np.float32)
+        self._gear_arr = np.zeros((1,), dtype=np.float32)
+        self._rpm_arr = np.zeros((1,), dtype=np.float32)
+
+    def _push_img(self, img: np.ndarray) -> None:
+        if self._img_buf is None or self._img_buf.shape[1:] != img.shape:
+            self._img_buf = np.zeros((self.img_hist_len, *img.shape), dtype=img.dtype)
+            self._img_hist_count = 0
+            self._img_hist_cursor = 0
+        assert self._img_buf is not None
+        self._img_buf[self._img_hist_cursor] = img
+        self._img_hist_cursor = (self._img_hist_cursor + 1) % self.img_hist_len
+        if self._img_hist_count < self.img_hist_len:
+            self._img_hist_count += 1
+
+    def _get_img_hist_array(self) -> np.ndarray:
+        if self._img_buf is None or self._img_hist_count == 0:
+            return np.zeros((self.img_hist_len, 1, 1), dtype=np.uint8)
+        if self._img_hist_count < self.img_hist_len:
+            # Before warm-up completes, keep behavior deterministic by repeating first frame.
+            res = np.repeat(self._img_buf[:1], self.img_hist_len, axis=0)
+            res[-self._img_hist_count :] = self._img_buf[: self._img_hist_count]
+            return res
+        if self._img_hist_cursor == 0:
+            return self._img_buf.copy()
+        idx = (
+            np.arange(self.img_hist_len, dtype=np.int64) + self._img_hist_cursor
+        ) % self.img_hist_len
+        return self._img_buf[idx]
 
     def initialize_common(self):
         if self.gamepad:
@@ -152,6 +182,9 @@ class TM2020Interface(RealTimeGymInterface):
         self.last_time = time.time()
         self.img_hist = deque(maxlen=self.img_hist_len)
         self.img = None
+        self._img_buf = None
+        self._img_hist_count = 0
+        self._img_hist_cursor = 0
         self.reward_function = RewardFunction(
             reward_data_path=cfg.REWARD_PATH,
             nb_obs_forward=cfg.REWARD_CONFIG["CHECK_FORWARD"],
@@ -267,28 +300,13 @@ class TM2020Interface(RealTimeGymInterface):
         """
         self.reset_common()
         data, img = self.grab_data_and_img()
-        speed = np.array(
-            [
-                data[0],
-            ],
-            dtype="float32",
-        )
-        gear = np.array(
-            [
-                data[9],
-            ],
-            dtype="float32",
-        )
-        rpm = np.array(
-            [
-                data[10],
-            ],
-            dtype="float32",
-        )
+        self._speed_arr[0] = data[0]
+        self._gear_arr[0] = data[9]
+        self._rpm_arr[0] = data[10]
         for _ in range(self.img_hist_len):
-            self.img_hist.append(img)
-        imgs = np.array(list(self.img_hist))
-        obs = [speed, gear, rpm, imgs]
+            self._push_img(img)
+        imgs = self._get_img_hist_array()
+        obs = [self._speed_arr.copy(), self._gear_arr.copy(), self._rpm_arr.copy(), imgs]
         self.reward_function.reset()
         return obs, {}
 
@@ -317,30 +335,15 @@ class TM2020Interface(RealTimeGymInterface):
         obs must be a list of numpy arrays
         """
         data, img = self.grab_data_and_img()
-        speed = np.array(
-            [
-                data[0],
-            ],
-            dtype="float32",
-        )
-        gear = np.array(
-            [
-                data[9],
-            ],
-            dtype="float32",
-        )
-        rpm = np.array(
-            [
-                data[10],
-            ],
-            dtype="float32",
-        )
+        self._speed_arr[0] = data[0]
+        self._gear_arr[0] = data[9]
+        self._rpm_arr[0] = data[10]
         reward, terminated, failure_counter, _ = self.reward_function.compute_reward(
             pos=np.array([data[2], data[3], data[4]])
         )
-        self.img_hist.append(img)
-        imgs = np.array(list(self.img_hist))
-        observation = [speed, gear, rpm, imgs]
+        self._push_img(img)
+        imgs = self._get_img_hist_array()
+        observation = [self._speed_arr.copy(), self._gear_arr.copy(), self._rpm_arr.copy(), imgs]
         end_of_track = bool(data[8])
         info = {}
         if end_of_track:

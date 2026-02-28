@@ -156,6 +156,38 @@ class Buffer:
         """
         self.memory = []
 
+    def apply_speed_bonus(self, speed_scale: float) -> None:
+        """
+        Spread a "progress/time" bonus over all rewards in this episode (in-place).
+        Each step gets speed_scale / T^2 so the total bonus is speed_scale / T;
+        faster episodes (smaller T) get a higher total and every step carries the signal.
+
+        Call this after collecting a full episode, before sending the buffer.
+        No-op if speed_scale <= 0 or buffer is empty.
+
+        Args:
+            speed_scale: REWARD_CONFIG SPEED_TERMINAL_SCALE (e.g. 100_000).
+        """
+        if speed_scale <= 0 or len(self.memory) == 0:
+            return
+        T = len(self.memory)
+        bonus_per_step = speed_scale / (T * T)
+        total_bonus = bonus_per_step * T  # = speed_scale / T
+        new_memory = []
+        old_total = 0.0
+        for i, sample in enumerate(self.memory):
+            act, obs, rew, term, trunc, info = sample
+            old_total += rew
+            new_rew = rew + bonus_per_step
+            new_info = dict(info) if isinstance(info, dict) else info
+            new_memory.append((act, obs, new_rew, term, trunc, new_info))
+        new_total = old_total + total_bonus
+        # Last transition's info["reward_sum"] is used by memory for episode return
+        if new_memory and isinstance(new_memory[-1][5], dict):
+            new_memory[-1][5]["reward_sum"] = new_total
+        self.memory = new_memory
+        self.stat_train_return = new_total
+
     def __len__(self):
         return len(self.memory)
 
@@ -317,9 +349,12 @@ class TrainerInterface:
         model must be an ActorModule
         broadcasts the model's weights to all connected RolloutWorkers
         """
-        model.save(self.model_path)
-        with open(self.model_path, "rb") as f:
-            weights = f.read()
+        if hasattr(model, "save_to_bytes"):
+            weights = model.save_to_bytes()
+        else:
+            model.save(self.model_path)
+            with open(self.model_path, "rb") as f:
+                weights = f.read()
         self.__endpoint.broadcast(weights, "workers")
 
     def retrieve_buffer(self):
@@ -485,18 +520,32 @@ def run_with_wandb(
             # Ensure wandb receives serializable values (no NaN/Inf). Use 0.0 for
             # numeric metrics so curves are always plotted (WandB skips None).
             for k, v in list(log_dict.items()):
-                is_invalid = (
-                    v is None
-                    or (isinstance(v, float) and (v != v or v == float("inf") or v == float("-inf")))
+                is_invalid = v is None or (
+                    isinstance(v, float) and (v != v or v == float("inf") or v == float("-inf"))
                 )
                 if is_invalid:
-                    log_dict[k] = 0.0 if (k.startswith("losses/") or k in (
-                        "return_test", "return_train", "episode_length_test", "episode_length_train"
-                    )) else None
+                    log_dict[k] = (
+                        0.0
+                        if (
+                            k.startswith("losses/")
+                            or k
+                            in (
+                                "return_test",
+                                "return_train",
+                                "episode_length_test",
+                                "episode_length_train",
+                            )
+                        )
+                        else None
+                    )
             # Ensure key metrics exist (e.g. first round can have no batches → no keys)
             for key in (
-                "losses/loss_actor", "losses/loss_critic",
-                "return_test", "return_train", "episode_length_test", "episode_length_train",
+                "losses/loss_actor",
+                "losses/loss_critic",
+                "return_test",
+                "return_train",
+                "episode_length_test",
+                "episode_length_train",
             ):
                 if key not in log_dict or log_dict[key] is None:
                     log_dict[key] = 0.0
@@ -1178,8 +1227,6 @@ class RolloutWorker:
         nb_received = len(weights_list)
         if nb_received > 0:
             weights = weights_list[-1]
-            with open(self.model_path, "wb") as f:
-                f.write(weights)
             if self.model_history:
                 self._cur_hist_cpt += 1
                 if self._cur_hist_cpt == self.model_history:
@@ -1192,7 +1239,12 @@ class RolloutWorker:
                     self._cur_hist_cpt = 0
                     if verbose:
                         print_with_timestamp("model weights saved in history")
-            self.actor = self.actor.load(self.model_path, device=self.device)
+            if hasattr(self.actor, "load_from_bytes"):
+                self.actor = self.actor.load_from_bytes(weights, device=self.device)
+            else:
+                with open(self.model_path, "wb") as f:
+                    f.write(weights)
+                self.actor = self.actor.load(self.model_path, device=self.device)
             if verbose:
                 print_with_timestamp("model weights have been updated")
         return nb_received

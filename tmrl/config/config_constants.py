@@ -103,7 +103,6 @@ _DEFAULT_TMRL_CONFIG = {
         "CONSUME_ON_READ": True,
         "MAX_FILES_PER_UPDATE": 1,
         "DEMO_INJECTION_REPEAT": 1,
-        "DEMO_SAMPLING_WEIGHT": 1.0,
     },
     "PORT": 55555,
     "LOCAL_PORT_SERVER": 55556,
@@ -178,6 +177,8 @@ _DEFAULT_TMRL_CONFIG = {
         "GRAD_CLIP_ACTOR": 1.0,
         "GRAD_CLIP_CRITIC": 1.0,
         "BACKUP_CLIP_RANGE": 100.0,
+        "MIXED_PRECISION": True,
+        "MIXED_PRECISION_DTYPE": "bfloat16",
     },
 }
 _deep_merge_defaults(TMRL_CONFIG, _DEFAULT_TMRL_CONFIG)
@@ -284,6 +285,30 @@ class EnvConfig(BaseModel):
 
 
 _raw_env = dict(TMRL_CONFIG["ENV"])
+# Migrate legacy finish reward key from REWARD_CONFIG into ENV.END_OF_TRACK_REWARD.
+# Keep backward compatibility for old configs while enforcing one canonical key at runtime.
+_legacy_finish_reward = None
+if isinstance(_raw_env.get("REWARD_CONFIG"), dict):
+    _legacy_finish_reward = _raw_env["REWARD_CONFIG"].get("END_OF_TRACK")
+if "END_OF_TRACK_REWARD" not in _raw_env and _legacy_finish_reward is not None:
+    _raw_env["END_OF_TRACK_REWARD"] = _legacy_finish_reward
+if _legacy_finish_reward is not None and "END_OF_TRACK_REWARD" in _raw_env:
+    try:
+        if float(_legacy_finish_reward) != float(_raw_env["END_OF_TRACK_REWARD"]):
+            logger.warning(
+                "Config contains both ENV.END_OF_TRACK_REWARD={} and legacy "
+                "ENV.REWARD_CONFIG.END_OF_TRACK={}. Using END_OF_TRACK_REWARD.",
+                _raw_env["END_OF_TRACK_REWARD"],
+                _legacy_finish_reward,
+            )
+    except Exception:
+        logger.warning(
+            "Could not compare END_OF_TRACK_REWARD and legacy REWARD_CONFIG.END_OF_TRACK. "
+            "Using END_OF_TRACK_REWARD."
+        )
+# Remove legacy key to avoid redundant configuration branches in runtime code.
+if isinstance(_raw_env.get("REWARD_CONFIG"), dict):
+    _raw_env["REWARD_CONFIG"].pop("END_OF_TRACK", None)
 # Fill missing ENV keys with defaults (handles older or incomplete config.json)
 _default_env = {
     "SEED": 0,
@@ -315,8 +340,20 @@ _default_env = {
     "REWARD_CONFIG": {
         "WALL_HUG_SPEED_THRESHOLD": 10.0,
         "WALL_HUG_PENALTY_FACTOR": 0.005,
-        "PROXIMITY_REWARD_SHAPING": 0.5,
+        "PROXIMITY_REWARD_SHAPING": 0.1,
         "REWARD_SCALE": 3.0,
+        "SPEED_TERMINAL_SCALE": 0.0,
+        "PROJECTED_VELOCITY_SCALE": 0.1,
+        "STEERING_DELTA_PENALTY": 0.1,
+        "MAX_TRACK_WIDTH": 23.5,
+        "BOUNDARY_PENALTY_WEIGHT": 2.0,
+        "BOUNDARY_CRASH_PENALTY": 10.0,
+        "REWARD_CLIP_FLOOR": 10.0,
+        "TIME_BONUS_SCALE": 0.0,
+        "CONDITIONAL_PENALTY_WHEN_BRAKING": False,
+        "BRAKE_THRESHOLD": 0.3,
+        "TRACK_LOOK_AHEAD_PCT": 0.0,
+        "TRACK_POINT_SPACING_M": 0.0,
     },
 }
 if "RTGYM_CONFIG" not in _raw_env:
@@ -453,6 +490,41 @@ REWARD_PATH = str(REWARD_FOLDER / ("reward_" + MAP_NAME + ".pkl"))
 TRACK_PATH_LEFT = str(TRACK_FOLDER / ("track_" + MAP_NAME + "_left.pkl"))
 TRACK_PATH_RIGHT = str(TRACK_FOLDER / ("track_" + MAP_NAME + "_right.pkl"))
 
+# Track look-ahead: when TRACK_LOOK_AHEAD_PCT and TRACK_POINT_SPACING_M are both > 0,
+# points_number is derived from trajectory length (see k% of track ahead, point every D m).
+TRACK_POINTS_NUMBER = None
+_reward_cfg = _raw_env.get("REWARD_CONFIG", {})
+_track_pct = float(_reward_cfg.get("TRACK_LOOK_AHEAD_PCT", 0.0))
+_track_spacing = float(_reward_cfg.get("TRACK_POINT_SPACING_M", 0.0))
+if _track_pct > 0 and _track_spacing > 0 and os.path.exists(REWARD_PATH):
+    try:
+        import math
+        import pickle
+
+        with open(REWARD_PATH, "rb") as _f:
+            _traj = pickle.load(_f)
+        if hasattr(_traj, "__len__") and len(_traj) > 1:
+            import numpy as _np
+
+            _traj = _np.asarray(_traj)
+            _diffs = _np.linalg.norm(_np.diff(_traj, axis=0), axis=1)
+            _cum = _np.zeros(len(_traj))
+            _np.cumsum(_diffs, out=_cum[1:])
+            _L = float(_cum[-1])
+            if _L >= _track_spacing:
+                _nb = int(math.ceil(_L * (_track_pct / 100.0) / _track_spacing))
+                TRACK_POINTS_NUMBER = min(200, max(1, _nb))
+                logger.info(
+                    "Track look-ahead: TRACK_LOOK_AHEAD_PCT={:.2f}%, TRACK_POINT_SPACING_M={:.2f} m, "
+                    "trajectory length={:.1f} m -> POINTS_NUMBER={}",
+                    _track_pct,
+                    _track_spacing,
+                    _L,
+                    TRACK_POINTS_NUMBER,
+                )
+    except Exception:
+        pass
+
 # Player runs: recording/importing/injection
 PLAYER_RUNS_FOLDER = TMRL_FOLDER / "player_runs"
 _player_runs_cfg = TMRL_CONFIG.get("PLAYER_RUNS", {})
@@ -465,8 +537,12 @@ PLAYER_RUNS_SOURCE_PATH = (
 PLAYER_RUNS_CONSUME_ON_READ = bool(_player_runs_cfg.get("CONSUME_ON_READ", False))
 PLAYER_RUNS_MAX_FILES_PER_UPDATE = int(_player_runs_cfg.get("MAX_FILES_PER_UPDATE", 1))
 PLAYER_RUNS_DEMO_INJECTION_REPEAT = max(1, int(_player_runs_cfg.get("DEMO_INJECTION_REPEAT", 1)))
-PLAYER_RUNS_DEMO_SAMPLING_WEIGHT = max(1.0, float(_player_runs_cfg.get("DEMO_SAMPLING_WEIGHT", 1.0)))
-PLAYER_RUNS_DEMO_WEIGHT_DECAY_SAMPLES = int(_player_runs_cfg.get("DEMO_WEIGHT_DECAY_SAMPLES", 200000))
+PLAYER_RUNS_DEMO_WEIGHT_DECAY_SLOWDOWN = max(
+    0.1, float(_player_runs_cfg.get("DEMO_WEIGHT_DECAY_SLOWDOWN", 1.0))
+)
+# PER-like sampling: when > 0, episode sampling weights = (reward_sum + eps)^PER_ALPHA.
+# 0 = off (use reward_sums as-is), 0.6 = moderate prioritization of high-return episodes.
+PLAYER_RUNS_PER_ALPHA = max(0.0, float(_player_runs_cfg.get("PER_ALPHA", 0.0)))
 
 # -----------------------------------------------------------------------------
 # Weights & Biases (config.json → WANDB_*)
@@ -539,7 +615,9 @@ WEIGHT_CLIPPING_ENABLED = ALG_CONFIG["CLIPPING_WEIGHTS"]
 WEIGHT_CLIPPING_VALUE = 1.0 if not WEIGHT_CLIPPING_ENABLED else ALG_CONFIG["CLIP_WEIGHTS_VALUE"]
 ACTOR_WEIGHT_DECAY = ALG_CONFIG["ACTOR_WEIGHT_DECAY"]
 CRITIC_WEIGHT_DECAY = ALG_CONFIG["CRITIC_WEIGHT_DECAY"]
-POINTS_NUMBER = ALG_CONFIG["NUMBER_OF_POINTS"]
+POINTS_NUMBER = (
+    TRACK_POINTS_NUMBER if TRACK_POINTS_NUMBER is not None else ALG_CONFIG["NUMBER_OF_POINTS"]
+)
 POINTS_DISTANCE = ALG_CONFIG["POINTS_DISTANCE"]
 SPEED_BONUS = ALG_CONFIG["SPEED_BONUS"]
 SPEED_MIN_THRESHOLD = ALG_CONFIG["SPEED_MIN_THRESHOLD"]
@@ -651,7 +729,7 @@ def create_config() -> dict:
     training_config["CLIP_WEIGHTS_VALUE"] = (
         1.0 if not training_config["CLIPPING_WEIGHTS"] else alg_config["CLIP_WEIGHTS_VALUE"]
     )
-    training_config["POINTS_NUMBER"] = alg_config["NUMBER_OF_POINTS"]
+    training_config["POINTS_NUMBER"] = POINTS_NUMBER
     training_config["POINTS_DISTANCE"] = alg_config["POINTS_DISTANCE"]
     training_config["SPEED_BONUS"] = alg_config["SPEED_BONUS"]
     training_config["SPEED_MIN_THRESHOLD"] = alg_config["SPEED_MIN_THRESHOLD"]

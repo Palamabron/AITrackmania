@@ -1,0 +1,403 @@
+"""
+Build reward trajectory (centerline) from track left + track right.
+
+Reference points = (track_left + track_right) / 2 — środek trasy (SOTA: Gran Turismo Sophy,
+F1Tenth). Daje gładką oś, symetryczne granice i pozwala agentowi samodzielnie odkryć
+optymalną linię. Granice toru są wtedy definiowane przez left/right; MAX_TRACK_WIDTH
+może być usunięty na rzecz sprawdzania „poza pasem" (odległość do left/right).
+
+Punkty wyjściowe rozmieszczone co --spacing-m metrów (domyślnie 0.2 m = 20 cm).
+Opcjonalnie --base-reward <path>: ta sama liczba punktów co w pliku reward (np. reward_test-3.pkl).
+
+Domyślnie align=cross-section: każdy punkt left jest łączony z najbliższym punktem right
+(w tym samym „przekroju" toru), bo left/right nagrywane start–meta mają różne długości
+(banda wewnętrzna vs zewnętrzna) — samo left[i]+right[i] dawałoby zły środek.
+
+Usage:
+  python scripts/build_centerline_reward.py [--spacing-m 0.2] [--smooth]
+  python scripts/build_centerline_reward.py --debug-plot centerline_debug.png
+  python scripts/build_centerline_reward.py --base-reward /path/to/reward_test-3.pkl
+
+Formaty wejścia: .pkl (N,3) x,y,z (jak record_track: data[3], data[4], data[5]) lub .csv (N,2) x,z.
+Wyjście: reward_<MAP>.pkl (N,3), gotowy do RewardFunction.
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import pickle
+import sys
+import time
+
+import numpy as np
+
+
+def _timer(label: str, t0: float) -> float:
+    t1 = time.perf_counter()
+    print(f"  [{label}] {t1 - t0:.3f}s")
+    return t1
+
+
+def _ensure_3d(points: np.ndarray) -> np.ndarray:
+    points = np.asarray(points, dtype=np.float64)
+    if points.ndim != 2:
+        raise ValueError(f"Expected 2D array (N,2) or (N,3), got shape {points.shape}")
+    if points.shape[1] == 2:
+        return np.column_stack([points[:, 0], np.zeros(len(points)), points[:, 1]])
+    if points.shape[1] != 3:
+        raise ValueError(f"Expected 2 or 3 columns, got {points.shape[1]}")
+    return points
+
+
+MAX_TRACK_POINTS_LOAD = 100_000
+
+
+def _cumulative_distances(points: np.ndarray) -> np.ndarray:
+    if len(points) < 2:
+        return np.zeros(max(1, len(points)))
+    diffs = np.linalg.norm(np.diff(points, axis=0), axis=1)
+    out = np.zeros(len(points))
+    np.cumsum(diffs, out=out[1:])
+    return out
+
+
+def resample_by_arc_length(points: np.ndarray, num_points: int) -> np.ndarray:
+    """Vectorized resample: np.searchsorted + vectorized lerp."""
+    points = np.asarray(points, dtype=np.float64)
+    n = len(points)
+    if n < 2 or num_points < 2:
+        return points.copy()
+    cum = _cumulative_distances(points)
+    total = float(cum[-1])
+    if total <= 0:
+        return points.copy()
+    s_values = np.linspace(0.0, total, num_points, endpoint=True)
+    # Find segment index for each s value
+    seg_idx = np.searchsorted(cum, s_values, side="right") - 1
+    seg_idx = np.clip(seg_idx, 0, n - 2)
+    seg_start = cum[seg_idx]
+    seg_end = cum[seg_idx + 1]
+    seg_len = seg_end - seg_start
+    seg_len[seg_len <= 0] = 1.0  # avoid div by zero
+    t = np.clip((s_values - seg_start) / seg_len, 0.0, 1.0)
+    result = (1.0 - t[:, None]) * points[seg_idx] + t[:, None] * points[seg_idx + 1]
+    return result
+
+
+def resample_by_spacing_m(points: np.ndarray, spacing_m: float) -> np.ndarray:
+    points = np.asarray(points, dtype=np.float64)
+    if len(points) < 2 or spacing_m <= 0:
+        return points.copy()
+    cum = _cumulative_distances(points)
+    total = float(cum[-1])
+    if total <= 0:
+        return points.copy()
+    num_points = max(2, int(round(total / spacing_m)))
+    return resample_by_arc_length(points, num_points)
+
+
+def _pair_cross_section(left_pts: np.ndarray, right_pts: np.ndarray) -> np.ndarray:
+    """
+    For each left point find the closest right point that lies at a similar
+    arc-length fraction (same "cross-section" of the track).
+
+    Pure nearest-neighbor matching fails when the track loops back near itself:
+    a left point on one section gets paired with a right point from a
+    geometrically close but topologically different section, producing diagonal
+    cuts.  Constraining the search to a ±WINDOW_FRAC window in normalised
+    arc-length prevents this.
+    """
+    n_right = len(right_pts)
+
+    cum_left = _cumulative_distances(left_pts)
+    cum_right = _cumulative_distances(right_pts)
+    total_left = cum_left[-1] if cum_left[-1] > 0 else 1.0
+    total_right = cum_right[-1] if cum_right[-1] > 0 else 1.0
+    frac_left = cum_left / total_left
+    frac_right = cum_right / total_right
+
+    WINDOW_FRAC = 0.10
+
+    right_paired = np.empty_like(left_pts)
+    for i in range(len(left_pts)):
+        f = frac_left[i]
+        lo = int(np.searchsorted(frac_right, f - WINDOW_FRAC))
+        hi = int(np.searchsorted(frac_right, f + WINDOW_FRAC))
+        if lo >= hi:
+            idx = int(np.argmin(np.abs(frac_right - f)))
+            right_paired[i] = right_pts[idx]
+        else:
+            segment = right_pts[lo:hi]
+            dists = np.linalg.norm(segment - left_pts[i], axis=1)
+            right_paired[i] = segment[np.argmin(dists)]
+    return right_paired
+
+
+def smooth_centerline(points: np.ndarray, sigma: float = 2.0) -> np.ndarray:
+    points = np.asarray(points, dtype=np.float64)
+    if len(points) < 3:
+        return points.copy()
+    from scipy.ndimage import gaussian_filter1d
+
+    sigma = max(0.5, min(sigma, len(points) / 4))
+    smoothed = np.zeros_like(points)
+    for col in range(points.shape[1]):
+        smoothed[:, col] = gaussian_filter1d(points[:, col], sigma=sigma, mode="nearest")
+    return smoothed
+
+
+def load_track(path: str) -> np.ndarray:
+    path = os.path.abspath(path)
+    if not os.path.isfile(path):
+        raise FileNotFoundError(path)
+    ext = os.path.splitext(path)[1].lower()
+    if ext == ".pkl":
+        with open(path, "rb") as f:
+            data = pickle.load(f)
+        points = _ensure_3d(np.asarray(data))
+    elif ext == ".csv":
+        data = np.loadtxt(path, delimiter=",")
+        points = _ensure_3d(data)
+    else:
+        raise ValueError(f"Unsupported format: {path} (use .pkl or .csv)")
+    if len(points) > MAX_TRACK_POINTS_LOAD:
+        print(f"  Resampling {len(points)} -> {MAX_TRACK_POINTS_LOAD} points ({path})")
+        points = resample_by_arc_length(points, MAX_TRACK_POINTS_LOAD)
+    return points
+
+
+def build_centerline(
+    left: np.ndarray,
+    right: np.ndarray,
+    target_points: int | None = None,
+    spacing_m: float | None = None,
+    smooth: bool = False,
+    align: str = "cross-section",
+) -> np.ndarray:
+    left = _ensure_3d(np.asarray(left, dtype=np.float64))
+    right = _ensure_3d(np.asarray(right, dtype=np.float64))
+    n_l, n_r = len(left), len(right)
+    if n_l < 2 or n_r < 2:
+        raise ValueError("Both left and right need at least 2 points.")
+    if target_points is None:
+        target_points = min(n_l, n_r)
+    target_points = max(2, target_points)
+
+    if align == "cross-section":
+        left_r = resample_by_arc_length(left, target_points)
+        right_paired = _pair_cross_section(left_r, right)
+        center = (left_r + right_paired) * 0.5
+    else:
+        left_r = resample_by_arc_length(left, target_points) if n_l != target_points else left
+        right_r = resample_by_arc_length(right, target_points) if n_r != target_points else right
+        center = (left_r + right_r) * 0.5
+
+    if smooth:
+        center = smooth_centerline(center)
+    if spacing_m is not None and spacing_m > 0:
+        center = resample_by_spacing_m(center, spacing_m)
+    return center
+
+
+def _save_debug_plot(
+    left: np.ndarray,
+    right: np.ndarray,
+    center: np.ndarray,
+    path: str,
+    align: str,
+    center_raw: np.ndarray | None = None,
+) -> None:
+    try:
+        import matplotlib
+
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except ImportError:
+        print("Warning: matplotlib not found, skipping --debug-plot", file=sys.stderr)
+        return
+    # Downsample for plotting if too many points (matplotlib gets slow above ~50k)
+    max_plot = 20_000
+
+    def _ds(arr):
+        if len(arr) <= max_plot:
+            return arr
+        idx = np.linspace(0, len(arr) - 1, max_plot, dtype=int)
+        return arr[idx]
+
+    l, r, c = _ds(left), _ds(right), _ds(center)
+    cr = _ds(center_raw) if center_raw is not None else None
+
+    fig = plt.figure(figsize=(12, 10))
+    ax = fig.add_subplot(111, projection="3d")
+    ax.plot(l[:, 0], l[:, 1], l[:, 2], "b-", alpha=0.7, label="left", linewidth=0.8)
+    ax.plot(r[:, 0], r[:, 1], r[:, 2], "C1-", alpha=0.7, label="right", linewidth=0.8)
+    if cr is not None:
+        ax.plot(cr[:, 0], cr[:, 1], cr[:, 2], "g-", alpha=0.9, linewidth=1.5, label="center (raw)")
+    ax.plot(
+        c[:, 0], c[:, 1], c[:, 2], "c--", alpha=0.9, linewidth=1.2, label="center (final)", zorder=4
+    )
+    ax.scatter(left[0, 0], left[0, 1], left[0, 2], c="b", s=80, marker="o", zorder=5)
+    ax.scatter(right[0, 0], right[0, 1], right[0, 2], c="C1", s=80, marker="o", zorder=5)
+    ax.set_xlabel("X")
+    ax.set_ylabel("Y (up)")
+    ax.set_zlabel("Z")
+    ax.set_title(f"Centerline debug (align={align})")
+    try:
+        ax.set_box_aspect([1, 0.01, 1])
+    except Exception:
+        pass
+    ax.legend(loc="best", fontsize=8)
+    fig.savefig(path, dpi=120, bbox_inches="tight")
+    plt.close(fig)
+
+    path_2d = path.rsplit(".", 1)
+    path_2d = (
+        (path_2d[0] + "_topdown." + path_2d[1]) if len(path_2d) == 2 else (path + "_topdown.png")
+    )
+    fig2, ax2 = plt.subplots(figsize=(10, 10))
+    ax2.plot(l[:, 0], l[:, 2], "b-", alpha=0.7, label="left", linewidth=0.8)
+    ax2.plot(r[:, 0], r[:, 2], "C1-", alpha=0.7, label="right", linewidth=0.8)
+    if cr is not None:
+        ax2.plot(cr[:, 0], cr[:, 2], "g-", alpha=0.9, linewidth=1.5, label="center (raw)")
+    ax2.plot(c[:, 0], c[:, 2], "c--", alpha=0.9, linewidth=1.2, label="center (final)", zorder=4)
+    ax2.plot(left[0, 0], left[0, 2], "bo", markersize=8)
+    ax2.plot(right[0, 0], right[0, 2], "o", color="C1", markersize=8)
+    ax2.set_xlabel("X")
+    ax2.set_ylabel("Z")
+    ax2.set_aspect("equal")
+    ax2.legend(loc="best", fontsize=8)
+    ax2.grid(True, alpha=0.3)
+    ax2.set_title("Top-down (X-Z). Raw = before smooth/spacing.")
+    fig2.savefig(path_2d, dpi=120, bbox_inches="tight")
+    plt.close(fig2)
+    print(f"  Debug plot saved: {path} and {path_2d}")
+
+
+def main() -> int:
+    t_total = time.perf_counter()
+
+    parser = argparse.ArgumentParser(
+        description="Build reward trajectory (centerline) from track_left + track_right."
+    )
+    parser.add_argument("--left", type=str, default=None)
+    parser.add_argument("--right", type=str, default=None)
+    parser.add_argument("--out", type=str, default=None)
+    parser.add_argument(
+        "--spacing-m",
+        type=float,
+        default=0.2,
+        metavar="M",
+        help="Point spacing in meters (default: 0.2 = 20 cm)",
+    )
+    parser.add_argument("--base-reward", type=str, default=None, metavar="PATH")
+    parser.add_argument(
+        "--align", type=str, choices=("cross-section", "index"), default="cross-section"
+    )
+    parser.add_argument("--smooth", action="store_true", default=True)
+    parser.add_argument("--no-smooth", dest="smooth", action="store_false")
+    parser.add_argument("--debug-plot", type=str, default=None, metavar="PATH")
+    parser.add_argument("--dry-run", action="store_true")
+    args = parser.parse_args()
+
+    if args.left is None or args.right is None:
+        try:
+            import tmrl.config.config_constants as cfg
+
+            args.left = args.left or cfg.TRACK_PATH_LEFT
+            args.right = args.right or cfg.TRACK_PATH_RIGHT
+            default_out = cfg.REWARD_PATH
+            map_name = cfg.MAP_NAME
+        except Exception as e:
+            print(
+                "Error: --left and --right required when TmrlData config unavailable.",
+                file=sys.stderr,
+            )
+            print(f"  {e}", file=sys.stderr)
+            return 1
+    else:
+        default_out = None
+        map_name = "unknown"
+
+    t0 = time.perf_counter()
+    try:
+        left = load_track(args.left)
+        right = load_track(args.right)
+    except (FileNotFoundError, ValueError) as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+    t0 = _timer("Load tracks", t0)
+
+    n_l, n_r = len(left), len(right)
+    spacing_m = None
+    target_points = None
+    if args.base_reward:
+        base_path = os.path.abspath(args.base_reward)
+        if not os.path.isfile(base_path):
+            print(f"Error: base-reward file not found: {base_path}", file=sys.stderr)
+            return 1
+        with open(base_path, "rb") as f:
+            base_data = pickle.load(f)
+        target_points = len(np.asarray(base_data))
+        print(f"  Base reward: {base_path} ({target_points} points)")
+    else:
+        spacing_m = float(args.spacing_m)
+        if spacing_m <= 0:
+            print("Error: --spacing-m must be positive", file=sys.stderr)
+            return 1
+        target_points = max(n_l, n_r, 2)
+
+    center = build_centerline(
+        left,
+        right,
+        target_points=target_points,
+        spacing_m=spacing_m,
+        smooth=args.smooth,
+        align=args.align,
+    )
+    t0 = _timer("Build centerline", t0)
+
+    if args.debug_plot:
+        center_raw = build_centerline(
+            left,
+            right,
+            target_points=target_points,
+            spacing_m=None,
+            smooth=False,
+            align=args.align,
+        )
+        _save_debug_plot(
+            left, right, center, os.path.abspath(args.debug_plot), args.align, center_raw=center_raw
+        )
+        t0 = _timer("Debug plot", t0)
+
+    cum = _cumulative_distances(center)
+    total_len = float(cum[-1]) if len(center) >= 2 else 0.0
+    avg_seg = total_len / (len(center) - 1) if len(center) > 1 else 0.0
+
+    print(f"Track left:  {args.left} ({n_l} pts)")
+    print(f"Track right: {args.right} ({n_r} pts)")
+    mode = f"spacing {args.spacing_m} m" if not args.base_reward else "match base-reward count"
+    print(f"Centerline:  {len(center)} pts ({mode}){' (smoothed)' if args.smooth else ''}")
+    print(f"  total length: {total_len:.2f} m, avg segment: {avg_seg:.4f} m")
+
+    if args.dry_run:
+        print("(dry-run: not writing file)")
+        return 0
+
+    out_path = args.out or default_out
+    if not out_path:
+        out_path = f"reward_{map_name}.pkl"
+    out_path = os.path.abspath(out_path)
+    os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
+    with open(out_path, "wb") as f:
+        pickle.dump(center, f, protocol=pickle.HIGHEST_PROTOCOL)
+    t0 = _timer("Save pkl", t0)
+    print(f"Saved to: {out_path}")
+
+    print(f"  [TOTAL] {time.perf_counter() - t_total:.3f}s")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

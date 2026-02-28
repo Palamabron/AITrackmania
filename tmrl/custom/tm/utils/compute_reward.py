@@ -9,12 +9,40 @@ import time
 
 # third-party imports
 import numpy as np
-import pandas as pd
 from loguru import logger
-from sklearn.linear_model import LinearRegression
 
 import tmrl.config.config_constants as cfg
 import wandb
+
+
+def _resample_polyline_by_arc_length(points: np.ndarray, num_points: int) -> np.ndarray:
+    """Resample polyline to num_points uniformly by arc length (for matching track boundaries to reward length)."""
+    points = np.asarray(points, dtype=np.float64)
+    n = len(points)
+    if n <= 1 or num_points <= 1:
+        return points.copy()
+    diffs = np.linalg.norm(np.diff(points, axis=0), axis=1)
+    cum = np.zeros(n)
+    np.cumsum(diffs, out=cum[1:])
+    total = float(cum[-1])
+    if total <= 0:
+        return points.copy()
+    s_values = np.linspace(0.0, total, num_points, endpoint=True)
+    out = []
+    j = 0
+    for s in s_values:
+        if s >= total:
+            out.append(points[-1].copy())
+            continue
+        while j + 1 < n and cum[j + 1] < s:
+            j += 1
+        if j + 1 >= n:
+            out.append(points[-1].copy())
+            continue
+        t = (s - cum[j]) / (cum[j + 1] - cum[j]) if cum[j + 1] > cum[j] else 0.0
+        t = np.clip(t, 0.0, 1.0)
+        out.append((1.0 - t) * points[j] + t * points[j + 1])
+    return np.array(out, dtype=np.float64)
 
 
 class RewardFunction:
@@ -64,20 +92,30 @@ class RewardFunction:
                     f"Reward file {reward_data_path} has only {len(self.data)} points; "
                     "treating as dummy (no distance/progress termination)."
                 )
+        self.datalen = len(self.data)
 
         if not os.path.exists(cfg.TRACK_PATH_LEFT):
             logger.debug(f" track not found at path:{cfg.TRACK_PATH_LEFT}")
             self.left_track = np.array([[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]])  # dummy
         else:
             with open(cfg.TRACK_PATH_LEFT, "rb") as f:
-                self.left_track = pickle.load(f)
+                self.left_track = np.asarray(pickle.load(f), dtype=np.float64)
 
         if not os.path.exists(cfg.TRACK_PATH_RIGHT):
             logger.debug(f" track not found at path:{cfg.TRACK_PATH_RIGHT}")
             self.right_track = np.array([[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]])  # dummy
         else:
             with open(cfg.TRACK_PATH_RIGHT, "rb") as f:
-                self.right_track = pickle.load(f)
+                self.right_track = np.asarray(pickle.load(f), dtype=np.float64)
+
+        # Track boundaries may be saved with dense spacing (record_track); reward uses fixed length.
+        # Resample left/right to reward length so get_track_info(pos_index) indices match.
+        self.datalen = len(self.data)
+        if self.datalen >= 2 and len(self.left_track) >= 2 and len(self.right_track) >= 2:
+            if len(self.left_track) != self.datalen:
+                self.left_track = _resample_polyline_by_arc_length(self.left_track, self.datalen)
+            if len(self.right_track) != self.datalen:
+                self.right_track = _resample_polyline_by_arc_length(self.right_track, self.datalen)
 
         self.cur_idx = 0
         self.prev_idx = 0
@@ -92,7 +130,6 @@ class RewardFunction:
         self.step_counter = 0
         self.failure_counter = 0
         self.low_speed_steps = 0  # consecutive steps with speed below stall threshold
-        self.datalen = len(self.data)
         self.average_distance = self.calculate_average_distance()
         # Cumulative arc length along trajectory (density-robust progress)
         self._cumulative_dist = np.zeros(max(1, self.datalen))
@@ -107,8 +144,17 @@ class RewardFunction:
         # Speed bonus only when on track; reckless penalty when off track + high speed
         speed_safe_ratio = float(cfg.REWARD_CONFIG.get("SPEED_SAFE_DEVIATION_RATIO", 0.6))
         self._speed_safe_deviation = speed_safe_ratio * self.max_dist_from_traj
-        self._reckless_speed_threshold = float(cfg.REWARD_CONFIG.get("RECKLESS_SPEED_THRESHOLD", 120))
-        self._reckless_penalty_factor = float(cfg.REWARD_CONFIG.get("RECKLESS_PENALTY_FACTOR", 0.002))
+        # Guard against too aggressive "off-track" penalties when safe deviation is configured tiny.
+        # We keep proximity shaping on _speed_safe_deviation, but gate hard penalties on this value.
+        self._off_track_penalty_distance = max(
+            self._speed_safe_deviation, self._deviation_threshold
+        )
+        self._reckless_speed_threshold = float(
+            cfg.REWARD_CONFIG.get("RECKLESS_SPEED_THRESHOLD", 120)
+        )
+        self._reckless_penalty_factor = float(
+            cfg.REWARD_CONFIG.get("RECKLESS_PENALTY_FACTOR", 0.002)
+        )
         self.speed_bonus = cfg.SPEED_BONUS
         # Wall-hugging / slow-progress penalty params
         self._wall_hug_speed_threshold = float(
@@ -121,6 +167,25 @@ class RewardFunction:
             cfg.REWARD_CONFIG.get("PROXIMITY_REWARD_SHAPING", 0.5)
         )
         self._reward_scale = float(cfg.REWARD_CONFIG.get("REWARD_SCALE", 3.0))
+        # Legacy post-episodic bonus (default 0 = disabled; replaced by projected velocity).
+        self._speed_terminal_scale = float(cfg.REWARD_CONFIG.get("SPEED_TERMINAL_SCALE", 0.0))
+        # SOTA projected velocity reward: v * cos(theta_error) * dt
+        self._projected_velocity_scale = float(
+            cfg.REWARD_CONFIG.get("PROJECTED_VELOCITY_SCALE", 0.1)
+        )
+        self._dt = 0.05
+        self._track_tangents = self._precompute_track_tangents()
+        # SOTA steering delta (jerk) penalty
+        self._steering_delta_penalty = float(cfg.REWARD_CONFIG.get("STEERING_DELTA_PENALTY", 0.1))
+        self._prev_steer = 0.0
+        # SOTA boundary penalty (GT Sophy / DeepRacer style)
+        self._max_track_width = float(cfg.REWARD_CONFIG.get("MAX_TRACK_WIDTH", max_dist_from_traj))
+        self._boundary_penalty_weight = float(cfg.REWARD_CONFIG.get("BOUNDARY_PENALTY_WEIGHT", 2.0))
+        self._boundary_crash_penalty = float(cfg.REWARD_CONFIG.get("BOUNDARY_CRASH_PENALTY", 10.0))
+        self._reward_clip_floor = float(cfg.REWARD_CONFIG.get("REWARD_CLIP_FLOOR", 10.0))
+        # Optional: bonus at finish = TIME_BONUS_SCALE / steps (so fewer steps = higher bonus).
+        # Use 0 to disable. E.g. 2000 gives ~2.7 raw for 729 steps, ~2.7 for 735 (small nudge).
+        self._time_bonus_scale = float(cfg.REWARD_CONFIG.get("TIME_BONUS_SCALE", 0.0))
         self._no_progress_steps = 0
         self.crash_penalty = crash_penalty
         # self.crash_counter = 1
@@ -156,11 +221,29 @@ class RewardFunction:
         self.amplitude = (self.max_value - self.min_value) / 2
         self.oscillation_period = cfg.OSCILLATION_PERIOD
         self.index_divider = 100.0 / self.datalen
-        print(f"n: {self.n}")
         self.furthest_race_progress = 0
         self.medium_speed_bonus = cfg.SPEED_BONUS / 2
         self._logged_run_this_episode = False  # avoid repeating "Total reward" until next reset
         self._use_wandb = getattr(cfg, "WANDB_WORKER", True)
+
+        # Track look-ahead: k% of track length ahead, one point every D meters (from config).
+        _track_pct = float(cfg.REWARD_CONFIG.get("TRACK_LOOK_AHEAD_PCT", 0.0))
+        _track_spacing = float(cfg.REWARD_CONFIG.get("TRACK_POINT_SPACING_M", 0.0))
+        if _track_pct > 0 and _track_spacing > 0 and self.datalen > 1:
+            look_ahead_dist = self._total_traj_length * (_track_pct / 100.0)
+            self._points_number = min(200, max(1, math.ceil(look_ahead_dist / _track_spacing)))
+            self._point_spacing_m = _track_spacing
+            logger.info(
+                "RewardFunction track look-ahead: {:.2f}% of {:.1f} m, spacing {:.2f} m -> "
+                "points_number={} (track info points ahead)",
+                _track_pct,
+                self._total_traj_length,
+                _track_spacing,
+                self._points_number,
+            )
+        else:
+            self._point_spacing_m = 0.0
+            self._points_number = None
 
         if cfg.WANDB_DEBUG_REWARD:
             self.send_reward = []
@@ -212,15 +295,37 @@ class RewardFunction:
     def get_track_info(self, pos, points_number):
         """
         Fetches track info (left, center, right positions) for the next checkpoints.
+        When TRACK_LOOK_AHEAD_PCT and TRACK_POINT_SPACING_M are set, indices are
+        chosen by distance along the trajectory (one point every D m), otherwise
+        by fixed index stride (points_number points, stride self.n).
         """
-        next_indices = [self.cur_idx + i * self.n + 1 for i in range(points_number)]
-        left_track_positions, center_track_positions, right_track_positions = [], [], []
-        # Clamp to valid range for all arrays we index (data, left_track, right_track)
         max_idx = min(len(self.data), len(self.left_track), len(self.right_track)) - 1
-        for i in range(len(next_indices)):
-            if next_indices[i] > max_idx:
-                next_indices[i] = max_idx
+        if getattr(self, "_point_spacing_m", 0) > 0 and getattr(self, "_points_number", 0) > 0:
+            # Distance-based: walk trajectory so consecutive points are ~_point_spacing_m apart.
+            next_indices = []
+            cur_i = self.cur_idx
+            cur_dist = self._cumulative_dist[min(cur_i, self.datalen - 1)]
+            for _ in range(self._points_number):
+                if cur_i > max_idx:
+                    next_indices.append(max_idx)
+                    continue
+                next_indices.append(min(cur_i, max_idx))
+                target_dist = cur_dist + self._point_spacing_m
+                while cur_i < self.datalen - 1 and self._cumulative_dist[cur_i + 1] <= target_dist:
+                    cur_i += 1
+                if cur_i < self.datalen - 1:
+                    cur_i += 1
+                    cur_dist = self._cumulative_dist[cur_i]
+                else:
+                    cur_dist = self._cumulative_dist[-1] + self._point_spacing_m
+            points_number = len(next_indices)
+        else:
+            next_indices = [self.cur_idx + i * self.n + 1 for i in range(points_number)]
+            for i in range(len(next_indices)):
+                if next_indices[i] > max_idx:
+                    next_indices[i] = max_idx
 
+        left_track_positions, center_track_positions, right_track_positions = [], [], []
         for pos_index in next_indices:
             for i in (0, -1):
                 left = self.left_track[pos_index][i]
@@ -250,6 +355,18 @@ class RewardFunction:
 
         return average_distance
 
+    def _precompute_track_tangents(self):
+        """Precompute tangent angle at each trajectory point (horizontal X-Z plane)."""
+        if self.datalen <= 2:
+            return np.zeros(max(1, self.datalen))
+        prev_pts = np.roll(self.data, 1, axis=0)
+        next_pts = np.roll(self.data, -1, axis=0)
+        prev_pts[0] = self.data[0]
+        next_pts[-1] = self.data[-1]
+        dx = next_pts[:, 0] - prev_pts[:, 0]
+        dz = next_pts[:, 2] - prev_pts[:, 2]
+        return np.arctan2(dx, dz)
+
     def compute_reward(
         self,
         pos,
@@ -258,18 +375,26 @@ class RewardFunction:
         next_cp: bool = False,
         next_lap: bool = False,
         end_of_track: bool = False,
+        input_brake: float | None = None,
+        aim_yaw: float | None = None,
+        input_steer: float | None = None,
     ):
         """
-        Calculates the reward based on the car's position, speed, and track progress.
-        Handles penalties for crashes, speed bonuses, lap completions, etc.
+        SOTA reward combining dense projected-velocity, geometric progress,
+        quadratic boundary penalty, and steering-jerk penalty.
 
-        Reward scale: progress is scaled so a full lap is ~100 raw; then
-        reward = tanh(REWARD_SCALE * raw). So raw values > ~0.4 already saturate
-        (tanh(3*0.4) ≈ 0.83). END_OF_TRACK_REWARD and LAP_REWARD only need to be
-        on the order of 1.0–2.0 to give a strong finish signal; 100 is excessive.
+        Key components:
+        - Progress reward: distance along trajectory (density-robust, full lap ~100).
+        - Projected velocity: v * cos(theta_error) * dt -- dense per-step speed
+          signal replacing post-episodic K/T^2. Naturally penalizes reverse and
+          wall-banging (cos -> 0 when heading perpendicular to track).
+        - Boundary penalty: quadratic penalty increasing with deviation from track
+          center, hard termination beyond MAX_TRACK_WIDTH.
+        - Steering delta: -beta * |steer_t - steer_{t-1}| to suppress bang-bang.
         """
         terminated = False
         term_reason = None
+        deviation_penalty_applied = 0.0
         self.step_counter += 1
         self.prev_idx = self.cur_idx
         min_dist = np.inf
@@ -305,13 +430,16 @@ class RewardFunction:
             reward = float(distance_gained * (100.0 / self._total_traj_length))
             if min_dist > 2.0 * self.max_dist_from_traj:
                 reward = 0.0
-            elif min_dist > self._speed_safe_deviation and self._proximity_reward_shaping > 0:
-                proximity_ratio = 1.0 - min(
-                    1.0,
-                    (min_dist - self._speed_safe_deviation)
-                    / max(self.max_dist_from_traj - self._speed_safe_deviation, 1.0),
-                )
-                reward *= max(1.0 - self._proximity_reward_shaping, proximity_ratio)
+            # Disabled proximity_reward_shaping because scaling down distance_gained when the car
+            # is off-center destroys the conservation of total progress reward (sum != 100) and
+            # directly punishes taking optimal racing lines.
+            # elif min_dist > self._speed_safe_deviation and self._proximity_reward_shaping > 0:
+            #     proximity_ratio = 1.0 - min(
+            #         1.0,
+            #         (min_dist - self._speed_safe_deviation)
+            #         / max(self.max_dist_from_traj - self._speed_safe_deviation, 1.0),
+            #     )
+            #     reward *= max(1.0 - self._proximity_reward_shaping, proximity_ratio)
 
         if (
             best_index == self.cur_idx
@@ -345,13 +473,13 @@ class RewardFunction:
                 # Wall-hug detection: moving but no trajectory progress while off-track
                 if (
                     _speed_kmh > self._wall_hug_speed_threshold
-                    and min_dist > self._speed_safe_deviation
+                    and min_dist > self._off_track_penalty_distance
                 ):
                     self._no_progress_steps += 1
                     wall_hug_penalty = (
                         self._wall_hug_penalty_factor
                         * self._no_progress_steps
-                        * (min_dist / max(self._speed_safe_deviation, 1.0))
+                        * (min_dist / max(self._off_track_penalty_distance, 1.0))
                     )
                     reward -= wall_hug_penalty
                     if (
@@ -369,49 +497,31 @@ class RewardFunction:
             self._no_progress_steps = max(0, self._no_progress_steps - 2)
         self.cur_idx = best_index
 
+        _speed_kmh = float(speed) if speed is not None else 0.0
+        _conditional_braking = bool(
+            cfg.REWARD_CONFIG.get("CONDITIONAL_PENALTY_WHEN_BRAKING", False)
+        )
+        _brake_threshold = float(cfg.REWARD_CONFIG.get("BRAKE_THRESHOLD", 0.3))
+        _is_braking = input_brake is not None and float(input_brake) >= _brake_threshold
+
+        # SOTA projected velocity: v * cos(theta_error) * dt
+        # Dense per-step speed signal. Naturally penalizes reverse (cos > pi/2 → negative)
+        # and wall-banging (heading perpendicular → cos ≈ 0).
+        if aim_yaw is not None and speed is not None and self._projected_velocity_scale > 0:
+            track_tangent = float(self._track_tangents[min(self.cur_idx, self.datalen - 1)])
+            theta_error = float(aim_yaw) - track_tangent
+            speed_ms = abs(_speed_kmh) / 3.6
+            proj_vel_reward = speed_ms * math.cos(theta_error) * self._dt
+            reward += proj_vel_reward * self._projected_velocity_scale
+
         if self.episode_reward != 0.0:
-            reward -= abs(self.constant_penalty)
-            _speed_kmh = float(speed) if speed is not None else 0.0
-            # Speed bonus only when on track (min_dist <= safe deviation)
-            if min_dist <= self._speed_safe_deviation and self.speed_bonus > 0:
-                if _speed_kmh > cfg.SPEED_MIN_THRESHOLD:
-                    speed_reward = (_speed_kmh - cfg.SPEED_MIN_THRESHOLD) * self.speed_bonus
-                    reward += speed_reward
-                elif _speed_kmh > cfg.SPEED_MEDIUM_THRESHOLD:
-                    speed_reward = (
-                        _speed_kmh - cfg.SPEED_MEDIUM_THRESHOLD * 0.75
-                    ) * self.speed_bonus * 2
-                    reward += speed_reward
-            elif _speed_kmh < -0.5:
-                penalty = 1 / (1 + np.exp(-0.1 * _speed_kmh - 3)) - 1
-                reward += penalty
-            # Reckless penalty: high speed + far from trajectory (off track)
-            if (
-                min_dist > self._deviation_threshold
-                and _speed_kmh > self._reckless_speed_threshold
-                and self._reckless_penalty_factor > 0
-            ):
-                reckless_penalty = (
-                    self._reckless_penalty_factor
-                    * (_speed_kmh - self._reckless_speed_threshold)
-                    * (min_dist / max(self._deviation_threshold, 1.0))
-                )
-                reward -= reckless_penalty
+            if not (_conditional_braking and _is_braking):
+                reward -= abs(self.constant_penalty)
 
         if not getattr(self, "_dummy_trajectory", False):
             _speed_kmh = float(speed) if speed is not None else 0.0
             _stall_threshold_kmh = 5.0
-            # Only terminate for stray (off trajectory) when moving slowly; avoid resetting at speed
-            _stray_speed_kmh = 15.0
-            if (
-                self.step_counter > self.min_nb_steps_before_failure
-                and min_dist > self.max_dist_from_traj
-                and _speed_kmh < _stray_speed_kmh
-            ):
-                terminated = True
-                term_reason = "stray"
 
-            # End episode when car is stuck (speed near zero for too long)
             if _speed_kmh < _stall_threshold_kmh:
                 self.low_speed_steps += 1
                 if (
@@ -426,27 +536,22 @@ class RewardFunction:
         else:
             self.low_speed_steps = 0
 
-        # deviation_penalty: threshold/strength scale with trajectory density
+        # SOTA boundary penalty: quadratic penalty, hard termination beyond MAX_TRACK_WIDTH.
+        # Never reduced by speed -- prevents wall-banging / noseboost exploits.
         deviation_penalty_applied = 0.0
         if min_dist > self._deviation_threshold:
-            excess = min_dist - self._deviation_threshold
-            scale = max(self.average_distance, 1.0)
-            deviation_penalty_applied = abs((2 / (1 + np.exp(-0.15 * (excess / scale)))) - 1)
-            reward -= deviation_penalty_applied
-        # Off-track speed penalty: penalize any driving far from trajectory
-        _speed_kmh_ot = float(speed) if speed is not None else 0.0
-        if (
-            min_dist > self._speed_safe_deviation
-            and _speed_kmh_ot > 5.0
-            and self._wall_hug_penalty_factor > 0
-        ):
-            off_track_speed_penalty = (
-                self._wall_hug_penalty_factor
-                * 0.5
-                * (_speed_kmh_ot / 50.0)
-                * (min_dist / max(self._speed_safe_deviation, 1.0))
-            )
-            reward -= off_track_speed_penalty
+            if min_dist > self._max_track_width:
+                reward = -abs(self._boundary_crash_penalty)
+                if self.step_counter > self.min_nb_steps_before_failure:
+                    terminated = True
+                    if term_reason is None:
+                        term_reason = "off_track"
+            else:
+                normalized_dev = (min_dist - self._deviation_threshold) / max(
+                    self._max_track_width - self._deviation_threshold, 1.0
+                )
+                deviation_penalty_applied = self._boundary_penalty_weight * (normalized_dev**2)
+                reward -= deviation_penalty_applied
 
         if next_lap and self.cur_idx > self.prev_idx:
             self.new_lap = True
@@ -457,11 +562,9 @@ class RewardFunction:
         if self.new_lap and self.lap_cur_cooldown > 0:
             reward += cfg.LAP_REWARD * self.lap_cur_cooldown / cfg.LAP_COOLDOWN
             self.lap_cur_cooldown -= 1
-            print(f"lap reward added: {reward}")
 
         if next_cp:
             reward += cfg.CHECKPOINT_REWARD
-            print(f"checkpoint reward added: {reward}")
             # self.new_checkpoint = False
 
         if self.near_finish and self.lap_cur_cooldown > 0:
@@ -472,24 +575,39 @@ class RewardFunction:
             )
             reward += near_finish_bonus
             self.lap_cur_cooldown -= 1
-            print(f"finish reward added: {near_finish_bonus}")
 
         if self.near_finish or self.new_lap and 5 < self.cur_idx < len(self.data) * 0.1:
             self.new_lap = False
             self.near_finish = False
 
+        if end_of_track:
+            # Add reward for any remaining trajectory distance not yet claimed,
+            # ensuring all finishing runs get exactly the same total progress reward.
+            if self.datalen > 1 and self._total_traj_length > 0:
+                dist_best = self._cumulative_dist[min(best_index, self.datalen - 1)]
+                remaining_dist = max(0.0, float(self._total_traj_length - dist_best))
+                # Note: DO NOT multiply by self._reward_scale here, because it gets multiplied on line 561!
+                remaining_reward = remaining_dist * (100.0 / self._total_traj_length)
+                reward += remaining_reward
+
+            # Additional small bonus for finishing (also gets scaled by reward_scale later)
+            reward += 10.0 / self._reward_scale
+            # Time bonus: reward fewer steps (faster wall-clock time) so faster laps score higher
+            if self._time_bonus_scale > 0 and self.step_counter > 0:
+                reward += self._time_bonus_scale / float(self.step_counter)
+
         if crashed:
             reward -= abs(self.crash_penalty)
-            # self.crash_counter += 1
 
-        # When the agent made progress along the trajectory, do not allow penalties
-        # to push the step reward below zero (so progressing runs get positive totals).
-        if distance_gained > 0:
-            reward = max(0.0, reward)
+        # Steering delta (jerk) penalty: suppress bang-bang oscillations
+        if input_steer is not None and self._steering_delta_penalty > 0:
+            steer_delta = abs(float(input_steer) - self._prev_steer)
+            reward -= self._steering_delta_penalty * steer_delta
+            self._prev_steer = float(input_steer)
 
-        # Scale reward then soft-clip: preserves gradient contrast better than raw tanh
         reward = reward * self._reward_scale
-        reward = math.tanh(reward)
+
+        reward = max(-self._reward_clip_floor, reward)
         race_progress = self.compute_race_progress()
 
         if race_progress > self.furthest_race_progress:
@@ -512,7 +630,11 @@ class RewardFunction:
             if end_of_track:
                 self.furthest_race_progress = 1.0
             # Always print and log to wandb once per episode (including zero reward)
-            print(f"Total reward of the run: {self.episode_reward}")
+            # Assuming ~20 steps per second (0.05s per step)
+            run_time_seconds = self.step_counter * 0.05
+            print(
+                f"Total reward of the run: {self.episode_reward:.4f} (Steps: {self.step_counter}, Time: {run_time_seconds:.2f}s)"
+            )
             if self._use_wandb:
                 self._episode_count = getattr(self, "_episode_count", 0) + 1
                 if (
@@ -520,36 +642,20 @@ class RewardFunction:
                     and getattr(self, "send_reward", None)
                     and len(self.send_reward) > 0
                 ):
-                    send_reward_df = pd.DataFrame({"Reward": self.send_reward})
-                    summary_stats = send_reward_df.describe()
-                    summary_stats = summary_stats.reset_index()
-                    q1_value = float(
-                        summary_stats.loc[summary_stats["index"] == "25%", "Reward"].iloc[0]
-                    )
-                    q2_value = float(
-                        summary_stats.loc[summary_stats["index"] == "50%", "Reward"].iloc[0]
-                    )
-                    q3_value = float(
-                        summary_stats.loc[summary_stats["index"] == "75%", "Reward"].iloc[0]
-                    )
-                    mean_value = float(
-                        summary_stats.loc[summary_stats["index"] == "mean", "Reward"].iloc[0]
-                    )
-                    max_value = float(
-                        summary_stats.loc[summary_stats["index"] == "max", "Reward"].iloc[0]
-                    )
-                    min_value = float(
-                        summary_stats.loc[summary_stats["index"] == "min", "Reward"].iloc[0]
-                    )
-                    count_value = float(
-                        summary_stats.loc[summary_stats["index"] == "count", "Reward"].iloc[0]
-                    )
-                    std_value = float(
-                        summary_stats.loc[summary_stats["index"] == "std", "Reward"].iloc[0]
-                    )
+                    rewards = np.asarray(self.send_reward, dtype=np.float32)
+                    q1_value, q2_value, q3_value = [
+                        float(v) for v in np.percentile(rewards, [25, 50, 75])
+                    ]
+                    mean_value = float(np.mean(rewards))
+                    max_value = float(np.max(rewards))
+                    min_value = float(np.min(rewards))
+                    count_value = float(rewards.size)
+                    std_value = float(np.std(rewards))
                     wandb.log(
                         {
                             "run/Run reward": self.episode_reward,
+                            "run/Run time": run_time_seconds,
+                            "run/Steps": self.step_counter,
                             "run/Q1": q1_value,
                             "run/Q2": q2_value,
                             "run/Q3": q3_value,
@@ -564,7 +670,14 @@ class RewardFunction:
                     )
                     self.send_reward.clear()
                 else:
-                    wandb.log({"Run reward": self.episode_reward}, step=self._episode_count)
+                    wandb.log(
+                        {
+                            "Run reward": self.episode_reward,
+                            "Run time": run_time_seconds,
+                            "Steps": self.step_counter,
+                        },
+                        step=self._episode_count,
+                    )
             if self.episode_reward != 0.0:
                 self.reward_sum_list.append(self.episode_reward)
                 # wandb.log({"Run reward": self.reward_sum})
@@ -602,6 +715,8 @@ class RewardFunction:
 
     @staticmethod
     def check_linear_coefficent(data):
+        from sklearn.linear_model import LinearRegression
+
         x = np.arange(len(data)).reshape(-1, 1)
         y = np.array(data).reshape(-1, 1)
         model = LinearRegression().fit(x, y)
@@ -641,8 +756,8 @@ class RewardFunction:
         self.failure_counter = 0
         self.low_speed_steps = 0
         self._no_progress_steps = 0
+        self._prev_steer = 0.0
         self.episode_reward = 0.0
-        # self.crash_counter = 1
         self.lap_cur_cooldown = cfg.LAP_COOLDOWN
         # self.checkpoint_cur_cooldown = cfg.CHECKPOINT_COOLDOWN
 

@@ -88,14 +88,19 @@ Documentation = "https://tmrl.readthedocs.io"
 Repository = "https://github.com/trackmania-rl/tmrl"
 
 [tool.uv]
-# RTX 4090 + CUDA 12: PyTorch from cu124 index (works with CUDA 12.0+)
-# Consider all indexes so e.g. requests>=2.31 comes from PyPI, torch from cu124
+# RTX 4090 + CUDA 12: only torch/torchvision from cu124 (see [tool.uv.sources]);
+# other packages resolve from PyPI to avoid wrong wheels (e.g. markupsafe cp314-only on cu124).
 index-strategy = "unsafe-best-match"
-extra-index-url = ["https://download.pytorch.org/whl/cu124"]
 
 [tool.uv.sources]
 torch = { index = "pytorch-cuda" }
 torchvision = { index = "pytorch-cuda" }
+# Force from PyPI; cu124 index only has cp314 wheels for markupsafe
+markupsafe = { index = "pypi" }
+
+[[tool.uv.index]]
+name = "pypi"
+url = "https://pypi.org/simple/"
 
 [[tool.uv.index]]
 name = "pytorch-cuda"

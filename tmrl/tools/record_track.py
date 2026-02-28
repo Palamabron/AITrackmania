@@ -7,17 +7,52 @@ import time
 import keyboard
 import numpy as np
 from loguru import logger
-from matplotlib import pyplot as plt
 from scipy.interpolate import CubicSpline
 from scipy.ndimage import gaussian_filter1d
 
 import tmrl.config.config_constants as cfg
 from tmrl.custom.tm.utils.tools import TM2020OpenPlanetClient
 
+# Must match TQC_GrabData plugin (20 floats). Default 19 misaligns the byte stream
+# after the first frame and corrupts all subsequent data.
+TQC_GRAB_NB_FLOATS = 20
+
+MIN_POSITIONS_FOR_TRACK = 50
+MIN_TRACK_LENGTH_M = (
+    100.0  # Only stop when you've driven at least this far (avoids saving "start line only")
+)
+
+
+def _track_length_m(positions):
+    if len(positions) < 2:
+        return 0.0
+    pts = np.asarray(positions)
+    diffs = np.linalg.norm(np.diff(pts, axis=0), axis=1)
+    return float(np.sum(diffs))
+
+
+def _filter_origin_points(positions: np.ndarray) -> np.ndarray:
+    """
+    Remove only [0,0,0] glitch points (norm < 1.0).
+    retrieve_data() already patches most of these, but the very first packets
+    before _last_good_pos is set can slip through.
+    No jump-distance filter — it caused false positives when the first buffered
+    point was stale and all real positions got rejected as "jumps".
+    """
+    pts = np.asarray(positions, dtype=np.float64)
+    if len(pts) < 2:
+        return pts
+    norms = np.linalg.norm(pts, axis=1)
+    mask = norms >= 1.0
+    filtered = pts[mask]
+    if len(filtered) < 2:
+        return pts
+    return filtered
+
 
 def record_track(path_track=cfg.TRACK_PATH_LEFT):
     positions = []
-    client = TM2020OpenPlanetClient()
+    client = TM2020OpenPlanetClient(port=9000, nb_floats=TQC_GRAB_NB_FLOATS)
     path = path_track
 
     is_recording = False
@@ -29,41 +64,41 @@ def record_track(path_track=cfg.TRACK_PATH_LEFT):
             data = client.retrieve_data(
                 sleep_if_empty=0.01
             )  # we need many points to build a smooth curve
-            terminated = bool(data[9])
-            if keyboard.is_pressed("q") or terminated:
+            length_m = _track_length_m(positions)
+            # Stop only when user presses Q (ignore game 'terminated')
+            if keyboard.is_pressed("q"):
+                if len(positions) < MIN_POSITIONS_FOR_TRACK:
+                    logger.warning(
+                        f"Too few positions ({len(positions)}). Drive the full track, then press Q. Need at least {MIN_POSITIONS_FOR_TRACK}."
+                    )
+                    continue
+                if length_m < MIN_TRACK_LENGTH_M:
+                    logger.warning(
+                        f"Track too short ({length_m:.0f} m). Drive at least {MIN_TRACK_LENGTH_M:.0f} m, then press Q."
+                    )
+                    continue
                 logger.info("Computing reward function checkpoints from captured positions...")
                 logger.info(f"Initial number of captured positions: {len(positions)}")
                 positions = np.array(positions)
 
-                final_positions = [positions[0]]
-                dist_between_points = 0.85
-                j = 1
-                move_by = dist_between_points
-                pt1 = final_positions[-1]
-                while j < len(positions):
-                    pt2 = positions[j]
-                    pt, dst = line(pt1, pt2, move_by)
-                    if pt is not None:  # a point was created
-                        final_positions.append(pt)  # add the point to the list
-                        move_by = dist_between_points
-                        pt1 = pt
-                    else:  # we passed pt2 without creating a new point
-                        pt1 = pt2
-                        j += 1
-                        move_by = dst  # remaining distance
+                positions = _filter_origin_points(positions)
 
-                final_positions = np.array(final_positions)
-                upsampled_arr = interp_points_with_cubic_spline(final_positions)
-                spaced_points = space_points(upsampled_arr)
+                length_after = _track_length_m(positions)
+                logger.info(
+                    f"After filtering: {len(positions)} positions, path length {length_after:.0f} m"
+                )
+
+                # We don't need the `line` and `while` loop anymore since we just rely on space_points
+                # to do the exact correct arc-length resampling using the filtered chronologically ordered points.
+                spaced_points = space_points(positions)
                 smoothed_points = smooth_points(spaced_points)
-                print(f"final_positions: {final_positions}", end="\n\n")
-                print(f"upsampled_arr: {upsampled_arr}", end="\n\n")
-                print(f"spaced_points: {spaced_points}", end="\n\n")
-                print(f"smoothed_points: {smoothed_points}", end="\n\n")
+
                 logger.info(
                     f"Final number of checkpoints of recorded track: {len(smoothed_points)}"
                 )
-
+                if len(smoothed_points) < 2:
+                    logger.error("Not enough distinct points. Drive the full track, then press Q.")
+                    continue
                 pickle.dump(smoothed_points, open(path, "wb"))
                 logger.info("All done")
                 return
@@ -73,57 +108,68 @@ def record_track(path_track=cfg.TRACK_PATH_LEFT):
             time.sleep(0.05)  # waiting for user to press E
 
 
-def space_points(points):
-    with open(cfg.REWARD_PATH, "rb") as f:
-        data = pickle.load(f)
-    # Extract x, y, and z coordinates from the input points
+# Dense spacing (m) for track boundaries so geometry is preserved (arcs, 180° turns).
+# Previously space_points used len(reward_file), which under-sampled and turned curves into sharp corners.
+TRACK_BOUNDARY_SPACING_M = 0.25
+
+
+def space_points(points, spacing_m=TRACK_BOUNDARY_SPACING_M):
+    """
+    Resample track boundary by arc length with dense spacing so curves stay smooth.
+    Uses spacing_m (default 0.25 m).
+    """
+    if len(points) < 2:
+        return points.copy()
+
+    # Calculate exact distance between consecutive points
+    distances = np.linalg.norm(np.diff(points, axis=0), axis=1)
+
+    # Filter out duplicate points (distance == 0) to avoid CubicSpline errors
+    mask = distances > 1e-6
+    if not np.any(mask):
+        return points.copy()
+
+    valid_points = [points[0]]
+    for i, m in enumerate(mask):
+        if m:
+            valid_points.append(points[i + 1])
+    points = np.array(valid_points)
+
+    if len(points) < 2:
+        return points.copy()
+
     x = points[:, 0]
     y = points[:, 1]
     z = points[:, 2]
 
-    # Calculate the cumulative distance between consecutive points, considering all coordinates
-    distances = np.sqrt(np.diff(x) ** 2 + np.diff(y) ** 2 + np.diff(z) ** 2)
+    distances = np.linalg.norm(np.diff(points, axis=0), axis=1)
     cumulative_distances = np.cumsum(distances)
-    cumulative_distances = np.insert(
-        cumulative_distances, 0, 0
-    )  # Add a starting point distance of 0
-
-    # Create cubic spline interpolations for x, y, and z
+    cumulative_distances = np.insert(cumulative_distances, 0, 0)
+    total_length = float(cumulative_distances[-1])
+    if total_length <= 0:
+        return points
+    # Dense geometry by spacing_m; cap to avoid huge outputs if path length is wrong
+    desired_num_points = max(2, int(round(total_length / spacing_m)))
+    desired_num_points = min(desired_num_points, 200_000)
+    new_distances = np.linspace(0, total_length, desired_num_points, endpoint=True)
     cs_x = CubicSpline(cumulative_distances, x)
     cs_y = CubicSpline(cumulative_distances, y)
     cs_z = CubicSpline(cumulative_distances, z)
-
-    # Define the desired number of points (same as the input list)
-    # desired_num_points = len(points)
-    desired_num_points = len(data)
-
-    # Generate evenly spaced points along the spline with the desired number of points
-    new_distances = np.linspace(0, cumulative_distances[-1], desired_num_points)
     new_x = cs_x(new_distances)
     new_y = cs_y(new_distances)
     new_z = cs_z(new_distances)
-
-    # Combine the new x, y, and z coordinates into a 2D array
-    new_points = np.column_stack((new_x, new_y, new_z))
-
-    # Plot the input and output lists
-    plt.figure(figsize=(30, 20))
-
-    # Input points
-    plt.scatter(x, y, label="Input Points", color="blue", marker="o")
-
-    # Output points (interpolated)
-    plt.plot(new_x, new_y, label="Output Points (Interpolated)", color="red", marker="x")
-
-    return new_points
+    return np.column_stack((new_x, new_y, new_z))
 
 
 def interp_points_with_cubic_spline(sub_array, data_density=3):
+    if len(sub_array) < 2:
+        return sub_array.copy()
     original_x, original_y, original_z = sub_array.T
 
     # Calculate the new x-values based on data density (e.g., double the points)
     original_i = np.arange(0, int(data_density * len(original_x)), step=data_density)
-
+    if len(original_i) < 2:
+        return sub_array.copy()
     new_i = np.arange(0, int(data_density * len(original_x) - 1))
 
     print("Original i:", len(original_i))
@@ -151,7 +197,7 @@ def interp_points_with_cubic_spline(sub_array, data_density=3):
     return new_data
 
 
-def smooth_points(points, sigma=12):
+def smooth_points(points, sigma=3):
     """
     Smooths the given points using a Gaussian filter.
 

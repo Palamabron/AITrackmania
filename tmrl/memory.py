@@ -6,7 +6,6 @@ import zlib
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from pathlib import Path
-from random import randint
 from typing import Any
 
 # third-party imports
@@ -238,7 +237,10 @@ class Memory(ABC):
         return prev_obs, new_act, rew, new_obs, terminated, truncated
 
     def sample_indices(self):
-        return (randint(0, len(self) - 1) for _ in range(self.batch_size))
+        length = len(self)
+        if length <= 0:
+            return ()
+        return np.random.randint(0, length, size=self.batch_size, dtype=np.int64)
 
 
 class TorchMemory(Memory, ABC):
@@ -332,25 +334,15 @@ class R2D2Memory(Memory, ABC):
         self.isNewEpisode = True
         self.chosen_burn_in = 0
         self.reward_sums: list[dict[str, Any]] = []
+        self.episode_demo_flags: list[bool] = []
         self.indices: list[int] = []
         self.cur_idx = 0
         self.batch_size = batch_size
         self.rewind = cfg.TMRL_CONFIG["ALG"]["R2D2_REWIND"]
         assert 0.1 <= self.rewind <= 0.9, "R2D2 REWIND CONST SHOULD BE BETWEEN 0.1 AND 0.9"
-        self._demo_sampling_weight_initial = cfg.PLAYER_RUNS_DEMO_SAMPLING_WEIGHT
-        self._demo_weight_decay_samples = cfg.PLAYER_RUNS_DEMO_WEIGHT_DECAY_SAMPLES
         self.last_sample_demo_fraction = 0.0
-
-    @property
-    def demo_sampling_weight(self) -> float:
-        """Decay demo weight from initial value towards 1.0 as buffer fills."""
-        initial = getattr(self, "_demo_sampling_weight_initial", cfg.PLAYER_RUNS_DEMO_SAMPLING_WEIGHT)
-        decay = getattr(self, "_demo_weight_decay_samples", cfg.PLAYER_RUNS_DEMO_WEIGHT_DECAY_SAMPLES)
-        if decay <= 0 or initial <= 1.0:
-            return initial
-        total = len(self)
-        progress = min(1.0, total / decay)
-        return 1.0 + (initial - 1.0) * (1.0 - progress)
+        self.min_samples = 0  # overridden by subclasses (e.g. custom_memories.MemoryR2D2)
+        self._episode_metadata_dirty = True
 
     @staticmethod
     def _is_demo_info_entry(info_entry: Any) -> bool:
@@ -402,6 +394,31 @@ class R2D2Memory(Memory, ABC):
 
         return zero_rewards_indices
 
+    def _refresh_episode_metadata(self) -> None:
+        """Refresh cached episode metadata once per buffer append, not per sampled batch."""
+        if not self._episode_metadata_dirty:
+            return
+        if len(self.data) <= self.rewards_index:
+            self.end_episodes_indices = []
+            self.reward_sums = []
+            self.episode_demo_flags = []
+            self._episode_metadata_dirty = False
+            return
+        reward_stream = self.data[self.rewards_index]
+        self.end_episodes_indices = self.find_zero_rewards_indices(reward_stream)
+        self.reward_sums = [
+            reward_stream[index]["reward_sum"] for index in self.end_episodes_indices
+        ]
+        self.episode_demo_flags = [
+            self._is_demo_info_entry(reward_stream[index]) for index in self.end_episodes_indices
+        ]
+        self._episode_metadata_dirty = False
+
+    def append(self, buffer):
+        super().append(buffer)
+        if len(buffer) > 0:
+            self._episode_metadata_dirty = True
+
     @staticmethod
     def normalize_list(input_list):
         """
@@ -426,15 +443,8 @@ class R2D2Memory(Memory, ABC):
         Generates indices for sampling from the memory based on various conditions.
         Logic involves selecting indices based on episode lengths, rewards, and episode transitions.
         """
-        self.end_episodes_indices = self.find_zero_rewards_indices(self.data[self.rewards_index])
-        self.reward_sums = [
-            self.data[self.rewards_index][index]["reward_sum"]
-            for index in self.end_episodes_indices
-        ]
-        episode_demo_flags = [
-            self._is_demo_info_entry(self.data[self.rewards_index][index])
-            for index in self.end_episodes_indices
-        ]
+        self._refresh_episode_metadata()
+        episode_demo_flags = self.episode_demo_flags
         batch_size = self.batch_size
 
         if len(self.end_episodes_indices) == 0:
@@ -466,10 +476,12 @@ class R2D2Memory(Memory, ABC):
                         if sum(self.reward_sums) > 0
                         else self.normalize_list(self.reward_sums)
                     )
-                    if self.demo_sampling_weight > 1.0:
+                    # PER-like: prioritize high-return episodes with (w + eps)^alpha
+                    per_alpha = getattr(cfg, "PLAYER_RUNS_PER_ALPHA", 0.0)
+                    if per_alpha > 0:
+                        _eps = 1e-6
                         sampling_weights = [
-                            w * self.demo_sampling_weight if is_demo else w
-                            for w, is_demo in zip(sampling_weights, episode_demo_flags)
+                            (max(0.0, float(w)) + _eps) ** per_alpha for w in sampling_weights
                         ]
                     if sum(sampling_weights) <= 0:
                         sampling_weights = [1.0] * len(self.end_episodes_indices)

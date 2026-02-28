@@ -3,12 +3,14 @@ import datetime
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from numbers import Number
 from typing import Any
 
 # third-party imports
+import gymnasium
+import numpy as np
 import torch
 from loguru import logger
-from pandas import DataFrame
 
 # local imports
 import tmrl.config.config_constants as cfg
@@ -16,6 +18,53 @@ from tmrl.tools.player_runs import poll_player_runs_for_injection
 from tmrl.util import pandas_dict
 
 __docformat__ = "google"
+
+
+def _observation_space_from_sample(observation) -> gymnasium.spaces.Space:
+    """Build a gymnasium observation space from a single observation (e.g. tuple of arrays).
+
+    Use this when the replay buffer already has data so the model is built with the same
+    observation shape as the data (avoids LayerNorm / backbone shape mismatch).
+    """
+    if isinstance(observation, (list, tuple)):
+        spaces_list = []
+        for s in observation:
+            arr = np.asarray(s)
+            spaces_list.append(
+                gymnasium.spaces.Box(
+                    low=np.float32(-np.inf),
+                    high=np.float32(np.inf),
+                    shape=arr.shape,
+                    dtype=arr.dtype,
+                )
+            )
+        return gymnasium.spaces.Tuple(tuple(spaces_list))
+    else:
+        arr = np.asarray(observation)
+        return gymnasium.spaces.Box(
+            low=np.float32(-np.inf),
+            high=np.float32(np.inf),
+            shape=arr.shape,
+            dtype=arr.dtype,
+        )
+
+
+def _observation_dim(space: gymnasium.spaces.Space) -> int:
+    """Total dimension of an observation space (Tuple of Box or single Box)."""
+    if isinstance(space, gymnasium.spaces.Tuple):
+        return sum(int(np.prod(s.shape)) for s in space.spaces)
+    return int(np.prod(space.shape))
+
+
+def _one_obs_from_batch(batch_obs) -> np.ndarray | tuple:
+    """Extract a single observation (numpy) from batch observation (tensor or tuple of tensors)."""
+    if isinstance(batch_obs, (list, tuple)):
+        return tuple(
+            t[0].cpu().numpy() if hasattr(t, "cpu") else np.asarray(t[0]) for t in batch_obs
+        )
+    if hasattr(batch_obs, "cpu"):
+        return batch_obs[0].cpu().numpy()
+    return np.asarray(batch_obs[0])
 
 
 def _stats_dict_to_numeric(d: dict) -> dict:
@@ -27,6 +76,21 @@ def _stats_dict_to_numeric(d: dict) -> dict:
         else:
             out[k] = v
     return out
+
+
+def _mean_stats_dicts(items: list[dict[str, Any]]) -> dict[str, float]:
+    """Fast mean aggregation without pandas DataFrame construction."""
+    sums: dict[str, float] = {}
+    counts: dict[str, int] = {}
+    for row in items:
+        for k, v in row.items():
+            if isinstance(v, Number):
+                vf = float(v)
+                # skip NaN/Inf to mimic skipna behavior
+                if vf == vf and vf not in (float("inf"), float("-inf")):
+                    sums[k] = sums.get(k, 0.0) + vf
+                    counts[k] = counts.get(k, 0) + 1
+    return {k: (sums[k] / counts[k]) for k in sums if counts.get(k, 0) > 0}
 
 
 @dataclass(eq=False)
@@ -83,13 +147,9 @@ class TrainingOffline:
 
     def __post_init__(self):
         """
-        Initializes various attributes and objects after the instance is created.
-        Args: self (instance of the class)
-        Actions:
-        Sets epoch to 0. Inits memory (memory_cls) with nb_steps and device.
-        Gets observation_space and action_space from env_cls.
-        Inits agent (training_agent_cls) with those spaces and device.
-        Logs the initial total samples in the memory.
+        Initializes memory and spaces. The agent is built from actual replay data
+        (buffer or first batch), not from env/config, so observation dimension
+        always matches the data used for training.
         """
         device = self.device or "cpu"
         self.epoch = 0
@@ -100,26 +160,103 @@ class TrainingOffline:
         )
         self.memory = self.memory_cls(nb_steps=self.steps, device=device)
         if isinstance(self.env_cls, tuple):
-            observation_space, action_space = self.env_cls
+            _, action_space = self.env_cls
         else:
             with self.env_cls() as env:
-                observation_space, action_space = env.observation_space, env.action_space
-        self.agent = self.training_agent_cls(
-            observation_space=observation_space, action_space=action_space, device=device
-        )
+                action_space = env.action_space
+        self._action_space = action_space
+        # Build agent only when we have data: observation_space is inferred from
+        # buffer/batch so it never depends on config (e.g. POINTS_NUMBER / track length).
+        if len(self.memory) > 0:
+            prev_obs, *_ = self.memory.get_transition(0)
+            observation_space = _observation_space_from_sample(prev_obs)
+            dim = _observation_dim(observation_space)
+            logger.info(
+                " Inferred observation_space from replay buffer at init (dim=%s), building agent.",
+                dim,
+            )
+            self.agent = self.training_agent_cls(
+                observation_space=observation_space,
+                action_space=action_space,
+                device=device,
+            )
+        else:
+            self.agent = None
+            logger.info(
+                " Replay buffer empty at init; agent will be built from first available data "
+                "(buffer or batch) so observation_space matches training data."
+            )
         self.total_samples = len(self.memory)
         self._injected_player_run_ids: set[str] = set()
         self._best_return_train: float = float("-inf")
         self._best_epoch: int = -1
+        self._perf_acc = dict(
+            sample_s=0.0,
+            update_buffer_s=0.0,
+            train_s=0.0,
+            wait_ratio_s=0.0,
+            broadcast_s=0.0,
+            batches=0,
+        )
         logger.info(f" Initial total_samples:{self.total_samples}")
         if cfg.PLAYER_RUNS_ONLINE_INJECTION:
             from pathlib import Path
+
             _pr_path = Path(cfg.PLAYER_RUNS_SOURCE_PATH)
             logger.info(
                 " Player runs online injection: SOURCE_PATH={} (exists={})",
                 cfg.PLAYER_RUNS_SOURCE_PATH,
                 _pr_path.exists(),
             )
+
+    def _ensure_agent_from_data(self, batch=None):
+        """
+        Build or rebuild the agent so observation_space matches the data we train on.
+        When a batch is provided, if its observation dim differs from the current agent,
+        the agent is rebuilt from the batch (handles mixed buffer: e.g. 369 from workers,
+        363 from player runs).
+        """
+        if batch is not None:
+            one_obs = _one_obs_from_batch(batch[0])
+            batch_obs_space = _observation_space_from_sample(one_obs)
+            batch_dim = _observation_dim(batch_obs_space)
+            if self.agent is not None:
+                current_dim = _observation_dim(self.agent.observation_space)
+                if batch_dim == current_dim:
+                    return
+                logger.warning(
+                    " Observation dim from batch (%s) != agent (%s); rebuilding agent from batch.",
+                    batch_dim,
+                    current_dim,
+                )
+            observation_space = batch_obs_space
+            dim = batch_dim
+        elif self.agent is not None:
+            return
+        elif len(self.memory) > 0:
+            prev_obs, *_ = self.memory.get_transition(0)
+            if isinstance(prev_obs, (list, tuple)):
+                one_obs = tuple(
+                    (t.cpu().numpy() if hasattr(t, "cpu") else np.asarray(t)).squeeze()
+                    for t in prev_obs
+                )
+            else:
+                arr = prev_obs.cpu().numpy() if hasattr(prev_obs, "cpu") else np.asarray(prev_obs)
+                one_obs = arr.squeeze()
+            observation_space = _observation_space_from_sample(one_obs)
+            dim = _observation_dim(observation_space)
+        else:
+            return
+        logger.info(
+            " Building agent from data (observation dim=%s); observation_space independent of config.",
+            dim,
+        )
+        device = self.device or "cpu"
+        self.agent = self.training_agent_cls(
+            observation_space=observation_space,
+            action_space=self._action_space,
+            device=device,
+        )
 
     def update_buffer(self, interface):
         """
@@ -132,6 +269,8 @@ class TrainingOffline:
         buffer = interface.retrieve_buffer()
         self.memory.append(buffer)
         self.total_samples += len(buffer)
+
+        self._ensure_agent_from_data()
 
         if not cfg.PLAYER_RUNS_ONLINE_INJECTION:
             return
@@ -148,7 +287,8 @@ class TrainingOffline:
                 self.memory.append(demo_buffer)
                 self.total_samples += len(demo_buffer)
             logger.info(
-                " Injected {} player-run sample(s) from {} file(s), repeat x{} (effective: {}). run_ids={}",
+                " Injected {} player-run sample(s) from {} file(s), repeat x{} "
+                "(effective: {}). run_ids={}",
                 len(demo_buffer),
                 len(imported_files),
                 repeat,
@@ -156,7 +296,7 @@ class TrainingOffline:
                 sorted(imported_ids),
             )
 
-    def check_ratio(self, interface):
+    def check_ratio(self, interface) -> float:
         """
         Checks the ratio of updates to total samples and waits for new samples if needed.
          Args: interface (an object to retrieve buffer data)
@@ -168,6 +308,7 @@ class TrainingOffline:
             if self.total_samples > 0.0 and self.total_samples >= self.start_training
             else -1.0
         )
+        waited_s = 0.0
         if ratio > self.max_training_steps_per_env_step or ratio == -1.0:
             logger.info(
                 " Waiting for new samples (total_samples={}, need >= {} to start)",
@@ -175,6 +316,7 @@ class TrainingOffline:
                 self.start_training,
             )
             wait_attempts = 0
+            t_wait_start = time.perf_counter()
             while ratio > self.max_training_steps_per_env_step or ratio == -1.0:
                 samples_before = self.total_samples
                 self.update_buffer(interface)
@@ -199,6 +341,8 @@ class TrainingOffline:
                         )
                     time.sleep(self.sleep_between_buffer_retrieval_attempts)
             logger.info(" Resuming training")
+            waited_s = time.perf_counter() - t_wait_start
+        return waited_s
 
     def run_round(self, interface, stats_training, t_sample_prev):
         """
@@ -217,39 +361,36 @@ class TrainingOffline:
             stats_training: List to append per-batch training stats (returns, durations, etc.).
             t_sample_prev: Timestamp of previous sample (used for sampling duration in stats).
         """
-        for batch_index, batch in enumerate(self.memory):  # this samples a fixed number of batches
+        num_elements = 5
+        step_size = max(1, int(self.steps / (num_elements - 1)))
+        batch_index_checkpoints = {i * step_size for i in range(num_elements)}
+        for batch_index in range(self.steps):
+            t_sample_start = time.perf_counter()
+            batch = self.memory.sample()
             t_sample = time.time()
+            self._perf_acc["sample_s"] += time.perf_counter() - t_sample_start
 
             if self.total_updates % self.update_buffer_interval == 0:
                 # retrieve local buffer in replay memory
+                t_update_buffer_start = time.perf_counter()
                 self.update_buffer(interface)
-                self.memory.end_episodes_indices = self.memory.find_zero_rewards_indices(
-                    self.memory.data[self.memory.rewards_index]
-                )
-                self.memory.reward_sums = [
-                    self.memory.data[self.memory.rewards_index][index]["reward_sum"]
-                    for index in self.memory.end_episodes_indices
-                ]
+                self._perf_acc["update_buffer_s"] += time.perf_counter() - t_update_buffer_start
 
             t_update_buffer = time.time()
 
             if self.total_updates == 0:
                 logger.info("starting training")
 
-            num_elements = 5
-
-            # Calculate the step size between elements
-            step_size = int(self.steps / (num_elements - 1))
-
-            # Create a list of five equally spaced elements
-            batch_index_checkpoints = [i * step_size for i in range(num_elements)]
-
             if batch_index in batch_index_checkpoints:
                 logger.info(
                     f"batch {batch_index}/{self.steps} finished at: {datetime.datetime.now()}"
                 )
 
+            self._ensure_agent_from_data(batch=batch)
+
+            t_train_start = time.perf_counter()
             stats_training_dict = self.agent.train(batch, self.epoch, batch_index, len(self.memory))
+            self._perf_acc["train_s"] += time.perf_counter() - t_train_start
 
             t_train = time.time()
 
@@ -263,16 +404,15 @@ class TrainingOffline:
                 stats_training_dict["debug/demo_fraction_in_batch"] = float(
                     self.memory.last_sample_demo_fraction
                 )
-            if hasattr(self.memory, "demo_sampling_weight"):
-                stats_training_dict["debug/demo_sampling_weight"] = float(
-                    self.memory.demo_sampling_weight
-                )
             stats_training += (_stats_dict_to_numeric(stats_training_dict),)
             self.total_updates += 1
+            self._perf_acc["batches"] += 1
             if self.total_updates % self.update_model_interval == 0:
                 # broadcast model weights
+                t_broadcast_start = time.perf_counter()
                 interface.broadcast_model(self.agent.get_actor())
-            self.check_ratio(interface)
+                self._perf_acc["broadcast_s"] += time.perf_counter() - t_broadcast_start
+            self._perf_acc["wait_ratio_s"] += self.check_ratio(interface)
 
             t_sample_prev = time.time()
 
@@ -293,8 +433,13 @@ class TrainingOffline:
             List of per-round stat dicts (e.g. round_time, memory_len, return_test).
         """
         stats = []
+        self._ensure_agent_from_data()
 
-        if self.agent_scheduler is not None and callable(self.agent_scheduler):
+        if (
+            self.agent_scheduler is not None
+            and callable(self.agent_scheduler)
+            and self.agent is not None
+        ):
             self.agent_scheduler(self.agent, self.epoch)
 
         for rnd in range(self.rounds):
@@ -337,11 +482,23 @@ class TrainingOffline:
                     memory_len=len(self.memory),
                     round_time=round_time,
                     idle_time=idle_time,
-                    **DataFrame(stats_training).mean(skipna=True),
+                    **_mean_stats_dicts(stats_training),
                 ),
             )
 
             logger.info(stats[-1].add_prefix("  ").to_string() + "\n")
+            if self._perf_acc["batches"] > 0:
+                batches = float(self._perf_acc["batches"])
+                logger.info(
+                    " Perf avg [ms/batch] sample={:.2f} update_buf={:.2f} train={:.2f} "
+                    "broadcast={:.2f} wait_ratio={:.2f} (batches={})",
+                    1000.0 * self._perf_acc["sample_s"] / batches,
+                    1000.0 * self._perf_acc["update_buffer_s"] / batches,
+                    1000.0 * self._perf_acc["train_s"] / batches,
+                    1000.0 * self._perf_acc["broadcast_s"] / batches,
+                    1000.0 * self._perf_acc["wait_ratio_s"] / batches,
+                    self._perf_acc["batches"],
+                )
 
             if self.python_profiling:
                 pro.stop()
@@ -364,6 +521,7 @@ class TrainingOffline:
                 self._best_epoch = self.epoch
                 best_path = cfg.WEIGHTS_FOLDER / "best_actor.pth"
                 import torch
+
                 torch.save(self.agent.get_actor().state_dict(), str(best_path))
                 logger.info(
                     " New best return_train={:.2f} at epoch {} -> saved {}",

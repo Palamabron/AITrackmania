@@ -439,6 +439,7 @@ class SquashedActorSophyResidual(TorchActorModule):
         dim_obs = sum(math.prod(s for s in space.shape) for space in observation_space)
         dim_act = action_space.shape[0]
         act_limit = action_space.high[0]
+        self._dim_obs = dim_obs
 
         self.layernorm_api: nn.LayerNorm | None = (
             nn.LayerNorm(dim_obs) if cfg.API_LAYERNORM else None
@@ -468,6 +469,16 @@ class SquashedActorSophyResidual(TorchActorModule):
         for index, _ in enumerate(observation):
             observation[index] = observation[index].view(batch_size, -1)
         obs_seq_cat = torch.cat(observation, -1).view(batch_size, -1).float()
+        obs_dim = obs_seq_cat.shape[-1]
+        if obs_dim != self._dim_obs:
+            raise ValueError(
+                f"SophyResidual actor expected observation dimension {self._dim_obs} (from "
+                f"observation_space at init), but got {obs_dim}. This usually means the replay "
+                "buffer was recorded with a different config (e.g. NUMBER_OF_POINTS) than the "
+                "one used when starting the trainer. Fix: use the same config when collecting "
+                "data and training, or pre-load the dataset so observation_space is inferred "
+                "from the buffer (trainer does this when len(memory) > 0 at init)."
+            )
 
         if self.layernorm_api is not None:
             obs_seq_cat = self.layernorm_api(obs_seq_cat)

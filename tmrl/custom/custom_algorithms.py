@@ -1,5 +1,6 @@
 # standard library imports
 import itertools
+from contextlib import nullcontext
 from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any
@@ -35,6 +36,51 @@ def set_seed(seed=cfg.SEED):
         torch.cuda.manual_seed_all(seed)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
+
+
+def _amp_enabled(device: str | None) -> bool:
+    use_mp = bool(cfg.ALG_CONFIG.get("MIXED_PRECISION", False))
+    return use_mp and torch.cuda.is_available() and str(device).startswith("cuda")
+
+
+def _amp_dtype():
+    return (
+        torch.bfloat16
+        if str(cfg.ALG_CONFIG.get("MIXED_PRECISION_DTYPE", "float16")).lower() == "bfloat16"
+        else torch.float16
+    )
+
+
+def _compute_n_step_return_and_bootstrap_mask(
+    rewards: torch.Tensor, dones: torch.Tensor, gamma: float, n_steps: int
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Vectorized n-step return and bootstrap mask for 1D tensors."""
+    rewards = rewards.reshape(-1)
+    dones = dones.reshape(-1)
+    batch_size = rewards.shape[0]
+
+    if n_steps <= 1:
+        ones = torch.ones_like(rewards)
+        return rewards, ones
+
+    step_offsets = torch.arange(n_steps, device=rewards.device)
+    start_indices = torch.arange(batch_size, device=rewards.device).unsqueeze(1)
+    all_indices = start_indices + step_offsets.unsqueeze(0)
+    valid = all_indices < batch_size
+    clamped_indices = all_indices.clamp(max=batch_size - 1)
+
+    reward_windows = rewards[clamped_indices]
+    done_windows = dones[clamped_indices]
+    not_done_windows = (done_windows != 1.0).to(rewards.dtype)
+
+    # Match the previous "break before adding reward at done step" semantics.
+    continue_mask = torch.cumprod(not_done_windows, dim=1) * valid.to(rewards.dtype)
+    discounted = torch.pow(
+        torch.as_tensor(gamma, device=rewards.device, dtype=rewards.dtype), step_offsets
+    )
+    n_step_returns = (reward_windows * discounted.unsqueeze(0) * continue_mask).sum(dim=1)
+    bootstrap_not_done = continue_mask[:, n_steps - 1]
+    return n_step_returns, bootstrap_not_done
 
 
 @dataclass(eq=False)
@@ -367,6 +413,9 @@ class REDQSACAgent(TrainingAgent):
         ]
         self.criterion = torch.nn.MSELoss()
         self.loss_pi = torch.zeros((1,), device=device)
+        self.use_mixed_precision = _amp_enabled(device)
+        self.amp_dtype = _amp_dtype()
+        self.grad_scaler = torch.cuda.amp.GradScaler(enabled=self.use_mixed_precision)
 
         self.i_update = 0  # for UTD ratio
 
@@ -412,8 +461,16 @@ class REDQSACAgent(TrainingAgent):
         o, a, r, o2, d, _ = batch
         pi, logp_pi = None, None
 
+        def autocast_ctx():
+            return (
+                torch.autocast(device_type="cuda", dtype=self.amp_dtype, enabled=True)
+                if self.use_mixed_precision
+                else nullcontext()
+            )
+
         if update_policy:
-            pi, logp_pi = self.model.actor(o)
+            with autocast_ctx():
+                pi, logp_pi = self.model.actor(o)
         # FIXME? log_prob = log_prob.reshape(-1, 1)
 
         loss_alpha = None
@@ -429,48 +486,65 @@ class REDQSACAgent(TrainingAgent):
             self.alpha_optimizer.step()
 
         with torch.no_grad():
-            a2, logp_a2 = self.model.actor(o2)
+            with autocast_ctx():
+                a2, logp_a2 = self.model.actor(o2)
 
-            sample_idxs = np.random.choice(self.n, self.m, replace=False)
+                sample_idxs = np.random.choice(self.n, self.m, replace=False)
 
-            q_prediction_next_list = [self.model_target.qs[i](o2, a2) for i in sample_idxs]
-            q_prediction_next_cat = torch.stack(q_prediction_next_list, -1)
-            min_q, _ = torch.min(q_prediction_next_cat, dim=1, keepdim=True)
-            backup = r.unsqueeze(dim=-1) + self.gamma * (1 - d.unsqueeze(dim=-1)) * (
-                min_q - alpha_t * logp_a2.unsqueeze(dim=-1)
-            )
+                q_prediction_next_list = [self.model_target.qs[i](o2, a2) for i in sample_idxs]
+                q_prediction_next_cat = torch.stack(q_prediction_next_list, -1)
+                min_q, _ = torch.min(q_prediction_next_cat, dim=1, keepdim=True)
+                backup = r.unsqueeze(dim=-1) + self.gamma * (1 - d.unsqueeze(dim=-1)) * (
+                    min_q - alpha_t * logp_a2.unsqueeze(dim=-1)
+                )
 
-        q_prediction_list = [q(o, a) for q in self.model.qs]
-        q_prediction_cat = torch.stack(q_prediction_list, -1)
-        backup = backup.expand((-1, self.n)) if backup.shape[1] == 1 else backup
+        with autocast_ctx():
+            q_prediction_list = [q(o, a) for q in self.model.qs]
+            q_prediction_cat = torch.stack(q_prediction_list, -1)
+            backup = backup.expand((-1, self.n)) if backup.shape[1] == 1 else backup
 
-        loss_q = self.criterion(
-            q_prediction_cat, backup
-        )  # * self.n  # averaged for homogeneity with SAC
+            loss_q = self.criterion(
+                q_prediction_cat, backup
+            )  # * self.n  # averaged for homogeneity with SAC
 
         for q in self.q_optimizer_list:
             q.zero_grad()
-        loss_q.backward()
+        if self.use_mixed_precision:
+            self.grad_scaler.scale(loss_q).backward()
+        else:
+            loss_q.backward()
 
         if update_policy:
             for q in self.model.qs:
                 q.requires_grad_(False)
 
-            qs_pi = [q(o, pi) for q in self.model.qs]
-            qs_pi_cat = torch.stack(qs_pi, -1)
-            ave_q = torch.mean(qs_pi_cat, dim=1, keepdim=True)
-            loss_pi = (alpha_t * logp_pi.unsqueeze(dim=-1) - ave_q).mean()
+            with autocast_ctx():
+                qs_pi = [q(o, pi) for q in self.model.qs]
+                qs_pi_cat = torch.stack(qs_pi, -1)
+                ave_q = torch.mean(qs_pi_cat, dim=1, keepdim=True)
+                loss_pi = (alpha_t * logp_pi.unsqueeze(dim=-1) - ave_q).mean()
             self.pi_optimizer.zero_grad()
-            loss_pi.backward()
+            if self.use_mixed_precision:
+                self.grad_scaler.scale(loss_pi).backward()
+            else:
+                loss_pi.backward()
 
             for q in self.model.qs:
                 q.requires_grad_(True)
 
         for q_optimizer in self.q_optimizer_list:
-            q_optimizer.step()
+            if self.use_mixed_precision:
+                self.grad_scaler.step(q_optimizer)
+            else:
+                q_optimizer.step()
 
         if update_policy:
-            self.pi_optimizer.step()
+            if self.use_mixed_precision:
+                self.grad_scaler.step(self.pi_optimizer)
+            else:
+                self.pi_optimizer.step()
+        if self.use_mixed_precision:
+            self.grad_scaler.update()
 
         with torch.no_grad():
             for p, p_targ in zip(self.model.parameters(), self.model_target.parameters()):
@@ -549,6 +623,9 @@ class SpinupSacAgentConfig(TrainingAgent):
             weight_decay=cfg.CRITIC_WEIGHT_DECAY,
             eps=cfg.ADAM_EPS,
         )
+        self.use_mixed_precision = _amp_enabled(device)
+        self.amp_dtype = _amp_dtype()
+        self.grad_scaler = torch.cuda.amp.GradScaler(enabled=self.use_mixed_precision)
 
         if len(cfg.SCHEDULER_CONFIG["NAME"]) > 0:
             self.actor_scheduler = CosineAnnealingWarmRestarts(
@@ -609,8 +686,17 @@ class SpinupSacAgentConfig(TrainingAgent):
         Updates target networks by polyak averaging.
         Provides debugging information if specified in the configuration.
         """
-        torch.autograd.set_detect_anomaly(True)
+        # Anomaly detection is extremely expensive; enable only in debug mode.
+        if cfg.DEBUG_MODE:
+            torch.autograd.set_detect_anomaly(True)
         o, a, r, o2, d, _ = batch
+
+        def autocast_ctx():
+            return (
+                torch.autocast(device_type="cuda", dtype=self.amp_dtype, enabled=True)
+                if self.use_mixed_precision
+                else nullcontext()
+            )
 
         batch_size = r.shape[0]
         if self.n_steps <= 1:
@@ -618,7 +704,8 @@ class SpinupSacAgentConfig(TrainingAgent):
         else:
             truncated_batch_size = batch_size - self.n_steps
 
-        pi, logp_pi = self.model.actor(o)
+        with autocast_ctx():
+            pi, logp_pi = self.model.actor(o)
 
         # loss_alpha:
 
@@ -645,44 +732,43 @@ class SpinupSacAgentConfig(TrainingAgent):
 
         # loss_q:
 
-        q1 = self.model.q1(o, a)[:truncated_batch_size]
-        q2 = self.model.q2(o, a)[:truncated_batch_size]
+        with autocast_ctx():
+            q1 = self.model.q1(o, a)[:truncated_batch_size]
+            q2 = self.model.q2(o, a)[:truncated_batch_size]
 
+        n_step_not_done = None
         if self.n_steps > 1:
-            # print(f"r: {r}")
-            n_step_return = torch.zeros(batch_size, device=r.device)
-            for i in range(len(r)):
-                for step in range(self.n_steps):
-                    if i + step < len(r):
-                        if d[i + step] == 1.0:
-                            break
-                        # Accumulate reward for each step, considering if the state is not terminal
-                        n_step_return[i] += (self.gamma**step) * r[i + step]
-            # print(f"Final n_step_return: {n_step_return}")
-
+            n_step_return, n_step_not_done = _compute_n_step_return_and_bootstrap_mask(
+                r, d, self.gamma, self.n_steps
+            )
             r = n_step_return[:truncated_batch_size]
             o = o[:truncated_batch_size]
             o2 = o2[:truncated_batch_size]
-            d = d[:truncated_batch_size]
+            n_step_not_done = n_step_not_done[:truncated_batch_size]
 
         # Bellman backup for Q functions
         with torch.no_grad():
             # Target actions come from *current* policy
-            a2, logp_a2 = self.model.actor(o2)
+            with autocast_ctx():
+                a2, logp_a2 = self.model.actor(o2)
 
             # Target Q-values
             if self.n_steps > 1:
                 logp_a2 = logp_a2[:truncated_batch_size]
                 # Compute and cut quantiles at the next state
-                q1_pi_targ = self.model_target.q1(o2, a2)[:truncated_batch_size]
-                q2_pi_targ = self.model_target.q2(o2, a2)[:truncated_batch_size]
+                with autocast_ctx():
+                    q1_pi_targ = self.model_target.q1(o2, a2)[:truncated_batch_size]
+                    q2_pi_targ = self.model_target.q2(o2, a2)[:truncated_batch_size]
             else:
                 # Compute and cut quantiles at the next state
-                q1_pi_targ = self.model_target.q1(o2, a2)
-                q2_pi_targ = self.model_target.q2(o2, a2)
+                with autocast_ctx():
+                    q1_pi_targ = self.model_target.q1(o2, a2)
+                    q2_pi_targ = self.model_target.q2(o2, a2)
             q_pi_targ = torch.min(q1_pi_targ, q2_pi_targ)  # (batch size)
             if self.n_steps > 1:
-                backup = r + (1 - d) * (q_pi_targ.sub_(alpha_t * logp_a2))
+                backup = r + (self.gamma**self.n_steps) * n_step_not_done * (
+                    q_pi_targ.sub_(alpha_t * logp_a2)
+                )
                 # backup = r + (1 - d) * (q_pi_targ - alpha_t * logp_a2)
             else:
                 # backup = r + gamma * (1-d) * (q_pi_targ - alpha_t * logp_a2)
@@ -691,13 +777,18 @@ class SpinupSacAgentConfig(TrainingAgent):
         # MSE loss against Bellman backup
         # loss_q1 = ((q1 - backup) ** 2).mean()
         # loss_q2 = ((q2 - backup) ** 2).mean()
-        loss_q1 = q1.sub_(backup).pow_(2).mean()
-        loss_q2 = q2.sub_(backup).pow_(2).mean()
-        loss_critic = loss_q1.add_(loss_q2).div_(2)  # averaged for homogeneity with REDQ
+        with autocast_ctx():
+            loss_q1 = q1.sub_(backup).pow_(2).mean()
+            loss_q2 = q2.sub_(backup).pow_(2).mean()
+            loss_critic = loss_q1.add_(loss_q2).div_(2)  # averaged for homogeneity with REDQ
 
         self.critic_optimizer.zero_grad()
-        loss_critic.backward()
-        self.critic_optimizer.step()
+        if self.use_mixed_precision:
+            self.grad_scaler.scale(loss_critic).backward()
+            self.grad_scaler.step(self.critic_optimizer)
+        else:
+            loss_critic.backward()
+            self.critic_optimizer.step()
 
         # Freeze Q-networks so you don't waste computational effort
         # computing gradients for them during the policy learning step.
@@ -713,16 +804,23 @@ class SpinupSacAgentConfig(TrainingAgent):
         # loss_pi:
 
         # pi, logp_pi = self.model.actor(o)
-        q1_pi = self.model.q1(o, pi)[:truncated_batch_size]
-        q2_pi = self.model.q2(o, pi)[:truncated_batch_size]
-        q_pi = torch.min(q1_pi, q2_pi)
+        with autocast_ctx():
+            q1_pi = self.model.q1(o, pi)[:truncated_batch_size]
+            q2_pi = self.model.q2(o, pi)[:truncated_batch_size]
+            q_pi = torch.min(q1_pi, q2_pi)
 
         # Entropy-regularized policy loss
-        loss_actor = (alpha_t * logp_pi[:truncated_batch_size] - q_pi).mean()
+        with autocast_ctx():
+            loss_actor = (alpha_t * logp_pi[:truncated_batch_size] - q_pi).mean()
 
         self.actor_optimizer.zero_grad()  # actor
-        loss_actor.backward()
-        self.actor_optimizer.step()
+        if self.use_mixed_precision:
+            self.grad_scaler.scale(loss_actor).backward()
+            self.grad_scaler.step(self.actor_optimizer)
+            self.grad_scaler.update()
+        else:
+            loss_actor.backward()
+            self.actor_optimizer.step()
 
         if len(cfg.SCHEDULER_CONFIG["NAME"]) > 0:
             self.actor_scheduler.step(epoch + batch_index / iters)  # TODO: check if it correct
@@ -900,6 +998,9 @@ class TQCAgent(TrainingAgent):
             lr=self.lr_critic,
             weight_decay=cfg.CRITIC_WEIGHT_DECAY,
         )
+        self.use_mixed_precision = _amp_enabled(device)
+        self.amp_dtype = _amp_dtype()
+        self.grad_scaler = torch.cuda.amp.GradScaler(enabled=self.use_mixed_precision)
 
         if len(cfg.SCHEDULER_CONFIG["NAME"]) > 0:
             self.actor_scheduler = CosineAnnealingWarmRestarts(
@@ -1005,12 +1106,20 @@ class TQCAgent(TrainingAgent):
         """
         o, a, r, o2, d, _ = batch
 
+        def autocast_ctx():
+            return (
+                torch.autocast(device_type="cuda", dtype=self.amp_dtype, enabled=True)
+                if self.use_mixed_precision
+                else nullcontext()
+            )
+
         batch_size = r.shape[0]
         if self.n_steps <= 1:
             truncated_batch_size = batch_size
         else:
             truncated_batch_size = batch_size - self.n_steps
-        pi, logp_pi = self.model.actor(o)
+        with autocast_ctx():
+            pi, logp_pi = self.model.actor(o)
 
         # loss_alpha:
         alpha_loss = None
@@ -1030,11 +1139,12 @@ class TQCAgent(TrainingAgent):
             alpha_loss.backward()
             self.alpha_optimizer.step()
 
-        q1_pi = self.model.q1(o, pi)
-        q2_pi = self.model.q2(o, pi)
+        with autocast_ctx():
+            q1_pi = self.model.q1(o, pi)
+            q2_pi = self.model.q2(o, pi)
 
-        q1 = self.model.q1(o, a)
-        q2 = self.model.q2(o, a)
+            q1 = self.model.q1(o, a)
+            q2 = self.model.q2(o, a)
 
         # print(f"Initial rewards: {r}")
         # print(f"Initial dones: {d}")
@@ -1043,41 +1153,38 @@ class TQCAgent(TrainingAgent):
         # TODO: check if it correct
         # https://arxiv.org/pdf/1901.07510.pdf
         n_step_return = None
+        n_step_not_done = None
         if self.n_steps > 1:
-            n_step_return = torch.zeros(batch_size, device=r.device)
-            for i in range(len(r)):
-                for step in range(self.n_steps):
-                    if i + step < len(r):
-                        if d[i + step] == 1.0:
-                            break
-                        # Accumulate reward for each step, considering if the state is not terminal
-                        n_step_return[i] += (self.gamma**step) * r[i + step]
-                # print(f"Step {step}: n_step_return = {n_step_return}, ...")
-            # print(f"Final n_step_return: {n_step_return}")
+            n_step_return, n_step_not_done = _compute_n_step_return_and_bootstrap_mask(
+                r, d, self.gamma, self.n_steps
+            )
 
             n_step_return = n_step_return[:truncated_batch_size]
             o = o[:truncated_batch_size]
             o2 = o2[:truncated_batch_size]
-            d = d[:truncated_batch_size]
+            n_step_not_done = n_step_not_done[:truncated_batch_size]
 
         # https://github.com/Stable-Baselines-Team/stable-baselines3-contrib/.../tqc.py :
         # TODO: check if it correct
         # https://arxiv.org/pdf/2005.04269.pdf
         with torch.no_grad():
-            a2, logp_a2 = self.model.actor(o2)  # Tensor(batch x 3), Tensor(batch)
+            with autocast_ctx():
+                a2, logp_a2 = self.model.actor(o2)  # Tensor(batch x 3), Tensor(batch)
             if self.n_steps > 1:
                 logp_a2 = logp_a2[:truncated_batch_size]
                 # Compute and cut quantiles at the next state
-                q1_pi_targ = self.model_target.q1(o2, a2)[
-                    :truncated_batch_size
-                ]  # Tensor(batch x quantiles)
-                q2_pi_targ = self.model_target.q2(o2, a2)[
-                    :truncated_batch_size
-                ]  # Tensor(batch x quantiles)
+                with autocast_ctx():
+                    q1_pi_targ = self.model_target.q1(o2, a2)[
+                        :truncated_batch_size
+                    ]  # Tensor(batch x quantiles)
+                    q2_pi_targ = self.model_target.q2(o2, a2)[
+                        :truncated_batch_size
+                    ]  # Tensor(batch x quantiles)
             else:
                 # Compute and cut quantiles at the next state
-                q1_pi_targ = self.model_target.q1(o2, a2)  # Tensor(batch x quantiles)
-                q2_pi_targ = self.model_target.q2(o2, a2)  # Tensor(batch x quantiles)
+                with autocast_ctx():
+                    q1_pi_targ = self.model_target.q1(o2, a2)  # Tensor(batch x quantiles)
+                    q2_pi_targ = self.model_target.q2(o2, a2)  # Tensor(batch x quantiles)
             next_z = torch.stack(
                 (q1_pi_targ, q2_pi_targ), dim=1
             )  # Tensor(batch x nets x quantiles)
@@ -1086,14 +1193,14 @@ class TQCAgent(TrainingAgent):
             )  # Tensor(batch x [nets * quantiles])
             sorted_z_part = sorted_z[:, : self.quantiles_total - self.top_quantiles_to_drop]
             q_pi_targ = sorted_z_part - alpha_t * logp_a2.reshape(-1, 1)
-            not_done = 1 - d
+            not_done = (1 - d) if self.n_steps <= 1 else n_step_not_done
             tmp = q_pi_targ * not_done[:, None]
             if self.n_steps > 1:
                 backup = (
                     n_step_return.unsqueeze(1).expand(
                         -1, self.quantiles_total - self.top_quantiles_to_drop
                     )
-                    + tmp
+                    + (self.gamma**self.n_steps) * tmp
                 )
             else:
                 backup = r.unsqueeze(1) + self.gamma * tmp
@@ -1105,10 +1212,15 @@ class TQCAgent(TrainingAgent):
         if cfg.BACKUP_CLIP_RANGE > 0:
             backup = backup.clamp(-cfg.BACKUP_CLIP_RANGE, cfg.BACKUP_CLIP_RANGE)
 
-        critic_loss = self.quantile_huber_loss_f(cur_z, backup)
+        with autocast_ctx():
+            critic_loss = self.quantile_huber_loss_f(cur_z, backup)
 
         self.critic_optimizer.zero_grad()
-        critic_loss.backward()
+        if self.use_mixed_precision:
+            self.grad_scaler.scale(critic_loss).backward()
+            self.grad_scaler.unscale_(self.critic_optimizer)
+        else:
+            critic_loss.backward()
         if cfg.GRAD_CLIP_CRITIC > 0:
             critic_grad_norm = torch.nn.utils.clip_grad_norm_(
                 itertools.chain(self.model.q1.parameters(), self.model.q2.parameters()),
@@ -1116,14 +1228,18 @@ class TQCAgent(TrainingAgent):
             )
         else:
             critic_grad_norm = None
-        self.critic_optimizer.step()
+        if self.use_mixed_precision:
+            self.grad_scaler.step(self.critic_optimizer)
+        else:
+            self.critic_optimizer.step()
 
-        new_action, log_pi = self.model.actor(o)
-        q1_pi = self.model.q1(o, new_action)
-        q2_pi = self.model.q2(o, new_action)
-        new_critic = torch.stack((q1_pi, q2_pi), dim=1)
-        q_pi = new_critic.mean(2).mean(1, keepdim=True)
-        actor_loss = (alpha_t * log_pi - q_pi).mean()
+        with autocast_ctx():
+            new_action, log_pi = self.model.actor(o)
+            q1_pi = self.model.q1(o, new_action)
+            q2_pi = self.model.q2(o, new_action)
+            new_critic = torch.stack((q1_pi, q2_pi), dim=1)
+            q_pi = new_critic.mean(2).mean(1, keepdim=True)
+            actor_loss = (alpha_t * log_pi - q_pi).mean()
 
         self.model.q1.requires_grad_(False)
         self.model.q2.requires_grad_(False)
@@ -1133,7 +1249,11 @@ class TQCAgent(TrainingAgent):
             self.clip_model_weights(self.model.q2)
 
         self.actor_optimizer.zero_grad()
-        actor_loss.backward()
+        if self.use_mixed_precision:
+            self.grad_scaler.scale(actor_loss).backward()
+            self.grad_scaler.unscale_(self.actor_optimizer)
+        else:
+            actor_loss.backward()
         if cfg.GRAD_CLIP_ACTOR > 0:
             actor_grad_norm = torch.nn.utils.clip_grad_norm_(
                 self.model.actor.parameters(),
@@ -1141,7 +1261,11 @@ class TQCAgent(TrainingAgent):
             )
         else:
             actor_grad_norm = None
-        self.actor_optimizer.step()
+        if self.use_mixed_precision:
+            self.grad_scaler.step(self.actor_optimizer)
+            self.grad_scaler.update()
+        else:
+            self.actor_optimizer.step()
 
         if len(cfg.SCHEDULER_CONFIG["NAME"]) > 0:
             self.actor_scheduler.step(epoch + batch_index / iters)  # TODO: check if it correct

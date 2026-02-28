@@ -125,7 +125,7 @@ if platform.system() == "Windows":
 
     def is_del_pressed() -> bool:
         """Non-blocking check: True if Del key is currently pressed."""
-        return bool(ctypes.windll.user32.GetAsyncKeyState(0xD3) & 0x8000)
+        return bool(ctypes.windll.user32.GetAsyncKeyState(0xD3) & 0x8000)  # type: ignore[attr-defined]
 
     def keysavereplay():  # TODO: debug
         """Saves a replay with key sequences and mouse actions."""

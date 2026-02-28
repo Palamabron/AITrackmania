@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import os
-from datetime import datetime, timezone
+from collections.abc import Sequence
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
-from loguru import logger
 import numpy as np
+from loguru import logger
 
 from tmrl.util import dump, load
 
@@ -17,6 +18,10 @@ if TYPE_CHECKING:
     from tmrl.networking import Buffer
 
 PLAYER_RUN_FORMAT = "tmrl_player_run_v1"
+
+# State for poll_player_runs_for_injection one-time warnings (avoid spamming logs)
+_poll_warned_missing_paths: set[str] = set()
+_poll_logged_empty_dir: bool = False
 
 
 def default_player_runs_dir() -> Path:
@@ -27,7 +32,7 @@ def default_player_runs_dir() -> Path:
 
 
 def _utc_now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+    return datetime.now(UTC).isoformat(timespec="seconds")
 
 
 def _normalize_payload(obj: Any, source: Path) -> dict[str, Any]:
@@ -142,7 +147,7 @@ def _trim_memory_data(memory: Any, max_samples: int) -> int:
 
 
 def import_player_runs_to_dataset(
-    run_paths: list[str | os.PathLike[str]],
+    run_paths: Sequence[str | os.PathLike[str]],
     *,
     memory_factory: Any,
     dataset_path: str | os.PathLike[str],
@@ -153,6 +158,7 @@ def import_player_runs_to_dataset(
     """Import player runs into the configured replay dataset format."""
     if not run_paths:
         raise ValueError("No player-run paths were provided.")
+
 
     memory = memory_factory(nb_steps=1, device="cpu")
     if overwrite:
@@ -208,27 +214,26 @@ def poll_player_runs_for_injection(
     """Poll pending player runs and return a merged buffer for trainer injection."""
     from tmrl.networking import Buffer
 
+    global _poll_warned_missing_paths, _poll_logged_empty_dir
     root = Path(source_dir).resolve()
     if not root.exists():
-        _warned = getattr(poll_player_runs_for_injection, "_warned_missing_paths", set())
-        if str(root) not in _warned:
+        if str(root) not in _poll_warned_missing_paths:
             logger.warning(
                 "Player runs SOURCE_PATH does not exist (trainer must see this path): {}",
                 root,
             )
-            _warned.add(str(root))
-            poll_player_runs_for_injection._warned_missing_paths = _warned
+            _poll_warned_missing_paths.add(str(root))
         return Buffer(), set(), []
 
     files = sorted(p for p in root.glob("*.pkl") if p.is_file())
     if not files:
         _has_imported = any(root.glob("*.pkl.imported"))
-        if not _has_imported and not getattr(poll_player_runs_for_injection, "_logged_empty_dir", False):
+        if not _has_imported and not _poll_logged_empty_dir:
             logger.info(
                 "Player runs: no .pkl files in {} (add recordings or run --record-episode)",
                 root,
             )
-            poll_player_runs_for_injection._logged_empty_dir = True
+            _poll_logged_empty_dir = True
     if max_files > 0:
         files = files[:max_files]
 
@@ -244,12 +249,13 @@ def poll_player_runs_for_injection(
         seen_run_ids.add(run_id)
         imported_ids.add(run_id)
         imported_files.append(str(path))
-        merged += _append_samples_to_buffer(payload["samples"], run_id=run_id)
+        buf = _append_samples_to_buffer(payload["samples"], run_id=run_id)
+        merged += buf
 
         if consume_on_read:
             imported_path = path.with_suffix(path.suffix + ".imported")
             os.replace(path, imported_path)
 
     if imported_files:
-        poll_player_runs_for_injection._logged_empty_dir = False
+        _poll_logged_empty_dir = False
     return merged, imported_ids, imported_files

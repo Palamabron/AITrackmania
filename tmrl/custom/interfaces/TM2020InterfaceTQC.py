@@ -60,6 +60,9 @@ class TM2020InterfaceTQC(TM2020InterfaceIMPALASophy):
             next_cp=self.cur_checkpoint < cur_cp,
             next_lap=self.cur_lap < cur_lap,
             end_of_track=end_of_track,
+            input_brake=float(data[8]),
+            aim_yaw=float(data[12]),
+            input_steer=float(data[6]),
         )
         self._dbg_last_step = {
             "terminated": bool(terminated),
