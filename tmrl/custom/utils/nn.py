@@ -1,9 +1,11 @@
 # standard library imports
 from copy import deepcopy
+from typing import cast
 
 # third-party imports
 import numpy as np
 import torch
+import torch.nn as nn
 from torch.distributions import Distribution, Normal
 from torch.nn import Module
 from torch.nn.init import kaiming_uniform_
@@ -45,7 +47,23 @@ def exponential_moving_average(averages, values, factor):
 
 def copy_shared(model_a):
     """Deepcopy of model with state_dict shared. E.g. useful with `no_grad`."""
-    model_b = deepcopy(model_a)
+    import copy as copy_module
+
+    # torch.cuda.Stream cannot be pickled/deepcopied; make deepcopy replace it with None
+    # (copied model will recreate streams on first use where needed)
+    stream_type = getattr(getattr(torch, "cuda", None), "Stream", None)
+    old_dispatch = None
+    if stream_type is not None:
+        old_dispatch = copy_module._deepcopy_dispatch.get(stream_type)
+        copy_module._deepcopy_dispatch[stream_type] = lambda obj, memo: None
+    try:
+        model_b = deepcopy(model_a)
+    finally:
+        if stream_type is not None:
+            if old_dispatch is not None:
+                copy_module._deepcopy_dispatch[stream_type] = old_dispatch
+            else:
+                copy_module._deepcopy_dispatch.pop(stream_type, None)
     sda = model_a.state_dict(keep_vars=True)
     sdb = model_b.state_dict(keep_vars=True)
     for key in sda:
@@ -303,3 +321,82 @@ def hd_conv(n):
         torch.nn.Conv2d(128, 128, 4, stride=2),
         torch.nn.LeakyReLU(),
     )
+
+
+# Clamp gSDE log_std so policy never becomes fully deterministic (entropy collapse).
+# -3 matches model_constants.LOG_STD_MIN: std >= exp(-3) ~ 0.05 keeps meaningful exploration.
+# -5 allowed too much determinism -> spinning in place (see INVESTIGATION_REPORT_Dv3).
+GSDE_LOG_STD_MIN = -3.0
+GSDE_LOG_STD_MAX = 2.0
+
+
+class GSDEModule(nn.Module):
+    """Generalized State-Dependent Exploration (gSDE) noise module.
+
+    Implements the noise exploration matrix from the gSDE paper
+    (https://arxiv.org/abs/2005.05719). Noise is correlated with
+    latent features so similar states get similar exploration patterns.
+
+    Args:
+        latent_dim: Dimension of the latent features (backbone output).
+        action_dim: Dimension of the continuous action space.
+        log_std_init: Initial value for the log standard deviation parameter.
+        full_std: If True, use (latent_dim x action_dim) parameters for std.
+            If False, use (latent_dim x 1) and broadcast.
+    """
+
+    def __init__(
+        self,
+        latent_dim: int,
+        action_dim: int,
+        log_std_init: float = -3.0,
+        full_std: bool = True,
+    ):
+        super().__init__()
+        self.latent_dim = latent_dim
+        self.action_dim = action_dim
+        self.full_std = full_std
+        self.epsilon = 1e-6
+
+        if full_std:
+            self.log_std = nn.Parameter(torch.ones(latent_dim, action_dim) * log_std_init)
+        else:
+            self.log_std = nn.Parameter(torch.ones(latent_dim, 1) * log_std_init)
+
+        self.register_buffer(
+            "exploration_mat", torch.zeros(latent_dim, action_dim), persistent=False
+        )
+        self.register_buffer(
+            "exploration_matrices", torch.zeros(1, latent_dim, action_dim), persistent=False
+        )
+        self.reset_noise()
+
+    def get_std(self) -> torch.Tensor:
+        log_std = torch.clamp(self.log_std, GSDE_LOG_STD_MIN, GSDE_LOG_STD_MAX)
+        std = torch.exp(log_std)
+        if self.full_std:
+            return std
+        return torch.ones(self.latent_dim, self.action_dim, device=std.device) * std
+
+    def reset_noise(self, batch_size: int = 1) -> None:
+        """Sample new exploration matrix weights from N(0, std)."""
+        std = self.get_std()
+        weights_dist = Normal(torch.zeros_like(std), std)
+        # .detach() so the samples are graph leaves — deepcopy-safe and
+        # correct because log_std gradients flow through get_variance(), not
+        # through the sampled noise itself.
+        self.exploration_mat = weights_dist.rsample().detach()
+        self.exploration_matrices = weights_dist.rsample((batch_size,)).detach()
+
+    def get_noise(self, latent_sde: torch.Tensor) -> torch.Tensor:
+        """Compute state-dependent noise: latent @ exploration_matrix."""
+        if len(latent_sde) == 1 or len(latent_sde) != len(self.exploration_matrices):
+            return latent_sde @ self.exploration_mat
+        latent_sde_3d = latent_sde.unsqueeze(1)
+        noise = torch.bmm(latent_sde_3d, self.exploration_matrices)
+        return cast(torch.Tensor, noise.squeeze(1))
+
+    def get_variance(self, latent_sde: torch.Tensor) -> torch.Tensor:
+        """Compute action variance: latent^2 @ std^2."""
+        std = self.get_std()
+        return cast(torch.Tensor, (latent_sde**2) @ (std**2))

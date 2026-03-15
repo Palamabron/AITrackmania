@@ -13,7 +13,7 @@ from dataclasses import dataclass
 import tyro
 from loguru import logger
 
-import tmrl.config.config_constants as cfg
+import tmrl.config as cfg
 import tmrl.config.config_objects as cfg_obj
 from tmrl.envs import GenericGymEnv
 from tmrl.networking import RolloutWorker, Server, Trainer
@@ -139,6 +139,7 @@ def main(cli: TmrlCli) -> None:
         _max_samp = env_config.get("ep_max_length")
         if _max_samp is None:
             _max_samp = cfg.RW_MAX_SAMPLES_PER_EPISODE
+        logger.info(" Worker: interface={}", cfg_obj.INTERFACE_DISPLAY_NAME)
         rollout_worker = RolloutWorker(
             env_cls=partial(GenericGymEnv, id=cfg.RTGYM_VERSION, gym_kwargs={"config": env_config}),
             actor_module_cls=cfg_obj.POLICY,
@@ -152,7 +153,10 @@ def main(cli: TmrlCli) -> None:
             standalone=cli.test,
         )
         if cli.worker:
-            rollout_worker.run()
+            rollout_worker.run(
+                test_episode_interval=cfg.RW_TEST_EPISODE_INTERVAL,
+                verbose=True,
+            )
         elif cli.expert:
             rollout_worker.run(expert=True)
         elif cli.benchmark:
@@ -160,6 +164,10 @@ def main(cli: TmrlCli) -> None:
         else:
             rollout_worker.run_episodes(10000)
     elif cli.trainer:
+        logger.info(
+            " Trainer: interface={} (env_cls from same config)",
+            cfg_obj.INTERFACE_DISPLAY_NAME,
+        )
         trainer = Trainer(
             training_cls=cfg_obj.TRAINER,
             server_ip=cfg.SERVER_IP_FOR_TRAINER,

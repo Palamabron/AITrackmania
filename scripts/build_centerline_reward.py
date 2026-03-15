@@ -1,41 +1,44 @@
 """
 Build reward trajectory (centerline) from track left + track right.
 
-Reference points = (track_left + track_right) / 2 — środek trasy (SOTA: Gran Turismo Sophy,
-F1Tenth). Daje gładką oś, symetryczne granice i pozwala agentowi samodzielnie odkryć
-optymalną linię. Granice toru są wtedy definiowane przez left/right; MAX_TRACK_WIDTH
-może być usunięty na rzecz sprawdzania „poza pasem" (odległość do left/right).
+Reference points = (track_left + track_right) / 2 -- center of track (SOTA: Gran Turismo Sophy,
+F1Tenth). Produces a smooth axis, symmetric boundaries; agent discovers optimal racing line
+on its own. Track boundaries defined by left/right; MAX_TRACK_WIDTH can be replaced by
+checking distance to left/right.
 
-Punkty wyjściowe rozmieszczone co --spacing-m metrów (domyślnie 0.2 m = 20 cm).
-Opcjonalnie --base-reward <path>: ta sama liczba punktów co w pliku reward (np. reward_test-3.pkl).
+Points spaced every --spacing-m meters (default 0.2 m = 20 cm).
+Optionally --base-reward <path>: same number of points as in that reward file.
 
-Domyślnie align=cross-section: każdy punkt left jest łączony z najbliższym punktem right
-(w tym samym „przekroju" toru), bo left/right nagrywane start–meta mają różne długości
-(banda wewnętrzna vs zewnętrzna) — samo left[i]+right[i] dawałoby zły środek.
+Default align=cross-section: each left point is paired with the closest right point in the
+same "cross-section" of the track, because left/right recorded start-to-finish have
+different lengths (inner vs outer barrier) -- naive left[i]+right[i] produces a bad center.
 
 Usage:
   python scripts/build_centerline_reward.py [--spacing-m 0.2] [--smooth]
   python scripts/build_centerline_reward.py --debug-plot centerline_debug.png
   python scripts/build_centerline_reward.py --base-reward /path/to/reward_test-3.pkl
 
-Formaty wejścia: .pkl (N,3) x,y,z (jak record_track: data[3], data[4], data[5]) lub .csv (N,2) x,z.
-Wyjście: reward_<MAP>.pkl (N,3), gotowy do RewardFunction.
+Input formats: .pkl (N,3) x,y,z or .csv (N,2) x,z.
+Output: reward_<MAP>.pkl (N,3), ready for RewardFunction.
 """
 
 from __future__ import annotations
 
-import argparse
 import os
 import pickle
 import sys
 import time
+from dataclasses import dataclass
+from typing import Literal
 
 import numpy as np
+import tyro
+from loguru import logger
 
 
 def _timer(label: str, t0: float) -> float:
     t1 = time.perf_counter()
-    print(f"  [{label}] {t1 - t0:.3f}s")
+    logger.debug("[{}] {:.3f}s", label, t1 - t0)
     return t1
 
 
@@ -73,13 +76,12 @@ def resample_by_arc_length(points: np.ndarray, num_points: int) -> np.ndarray:
     if total <= 0:
         return points.copy()
     s_values = np.linspace(0.0, total, num_points, endpoint=True)
-    # Find segment index for each s value
     seg_idx = np.searchsorted(cum, s_values, side="right") - 1
     seg_idx = np.clip(seg_idx, 0, n - 2)
     seg_start = cum[seg_idx]
     seg_end = cum[seg_idx + 1]
     seg_len = seg_end - seg_start
-    seg_len[seg_len <= 0] = 1.0  # avoid div by zero
+    seg_len[seg_len <= 0] = 1.0
     t = np.clip((s_values - seg_start) / seg_len, 0.0, 1.0)
     result = (1.0 - t[:, None]) * points[seg_idx] + t[:, None] * points[seg_idx + 1]
     return result
@@ -105,7 +107,7 @@ def _pair_cross_section(left_pts: np.ndarray, right_pts: np.ndarray) -> np.ndarr
     Pure nearest-neighbor matching fails when the track loops back near itself:
     a left point on one section gets paired with a right point from a
     geometrically close but topologically different section, producing diagonal
-    cuts.  Constraining the search to a ±WINDOW_FRAC window in normalised
+    cuts.  Constraining the search to a +/- WINDOW_FRAC window in normalised
     arc-length prevents this.
     """
     cum_left = _cumulative_distances(left_pts)
@@ -160,7 +162,7 @@ def load_track(path: str) -> np.ndarray:
     else:
         raise ValueError(f"Unsupported format: {path} (use .pkl or .csv)")
     if len(points) > MAX_TRACK_POINTS_LOAD:
-        print(f"  Resampling {len(points)} -> {MAX_TRACK_POINTS_LOAD} points ({path})")
+        logger.info("Resampling {} -> {} points ({})", len(points), MAX_TRACK_POINTS_LOAD, path)
         points = resample_by_arc_length(points, MAX_TRACK_POINTS_LOAD)
     return points
 
@@ -212,9 +214,8 @@ def _save_debug_plot(
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
     except ImportError:
-        print("Warning: matplotlib not found, skipping --debug-plot", file=sys.stderr)
+        logger.warning("matplotlib not found, skipping --debug-plot")
         return
-    # Downsample for plotting if too many points (matplotlib gets slow above ~50k)
     max_plot = 20_000
 
     def _ds(arr):
@@ -294,34 +295,44 @@ def _save_debug_plot(
     ax2.set_title("Top-down (X-Z). Raw = before smooth/spacing.")
     fig2.savefig(path_2d, dpi=120, bbox_inches="tight")
     plt.close(fig2)
-    print(f"  Debug plot saved: {path} and {path_2d}")
+    logger.info("Debug plot saved: {} and {}", path, path_2d)
+
+
+@dataclass
+class CenterlineArgs:
+    """Build reward trajectory (centerline) from track_left + track_right."""
+
+    left: str | None = None
+    """Path to left track boundary (.pkl or .csv). Default: from TmrlData config."""
+
+    right: str | None = None
+    """Path to right track boundary (.pkl or .csv). Default: from TmrlData config."""
+
+    out: str | None = None
+    """Output path. Default: TmrlData reward path or reward_<MAP>.pkl."""
+
+    spacing_m: float = 0.2
+    """Point spacing in meters (default: 0.2 = 20 cm)."""
+
+    base_reward: str | None = None
+    """Match point count from this existing reward file instead of using --spacing-m."""
+
+    align: Literal["cross-section", "index"] = "cross-section"
+    """How to pair left/right points: cross-section (nearest in same track section) or index."""
+
+    smooth: bool = True
+    """Apply Gaussian smoothing to the centerline."""
+
+    debug_plot: str | None = None
+    """Save 3D + top-down debug plot to this path."""
+
+    dry_run: bool = False
+    """Only print stats, do not write file."""
 
 
 def main() -> int:
     t_total = time.perf_counter()
-
-    parser = argparse.ArgumentParser(
-        description="Build reward trajectory (centerline) from track_left + track_right."
-    )
-    parser.add_argument("--left", type=str, default=None)
-    parser.add_argument("--right", type=str, default=None)
-    parser.add_argument("--out", type=str, default=None)
-    parser.add_argument(
-        "--spacing-m",
-        type=float,
-        default=0.2,
-        metavar="M",
-        help="Point spacing in meters (default: 0.2 = 20 cm)",
-    )
-    parser.add_argument("--base-reward", type=str, default=None, metavar="PATH")
-    parser.add_argument(
-        "--align", type=str, choices=("cross-section", "index"), default="cross-section"
-    )
-    parser.add_argument("--smooth", action="store_true", default=True)
-    parser.add_argument("--no-smooth", dest="smooth", action="store_false")
-    parser.add_argument("--debug-plot", type=str, default=None, metavar="PATH")
-    parser.add_argument("--dry-run", action="store_true")
-    args = parser.parse_args()
+    args = tyro.cli(CenterlineArgs)
 
     if args.left is None or args.right is None:
         try:
@@ -332,11 +343,7 @@ def main() -> int:
             default_out = cfg.REWARD_PATH
             map_name = cfg.MAP_NAME
         except Exception as e:
-            print(
-                "Error: --left and --right required when TmrlData config unavailable.",
-                file=sys.stderr,
-            )
-            print(f"  {e}", file=sys.stderr)
+            logger.error("--left and --right required when TmrlData config unavailable: {}", e)
             return 1
     else:
         default_out = None
@@ -347,7 +354,7 @@ def main() -> int:
         left = load_track(args.left)
         right = load_track(args.right)
     except (FileNotFoundError, ValueError) as e:
-        print(f"Error: {e}", file=sys.stderr)
+        logger.error("{}", e)
         return 1
     t0 = _timer("Load tracks", t0)
 
@@ -357,16 +364,16 @@ def main() -> int:
     if args.base_reward:
         base_path = os.path.abspath(args.base_reward)
         if not os.path.isfile(base_path):
-            print(f"Error: base-reward file not found: {base_path}", file=sys.stderr)
+            logger.error("base-reward file not found: {}", base_path)
             return 1
         with open(base_path, "rb") as f:
             base_data = pickle.load(f)
         target_points = len(np.asarray(base_data))
-        print(f"  Base reward: {base_path} ({target_points} points)")
+        logger.info("Base reward: {} ({} points)", base_path, target_points)
     else:
         spacing_m = float(args.spacing_m)
         if spacing_m <= 0:
-            print("Error: --spacing-m must be positive", file=sys.stderr)
+            logger.error("--spacing-m must be positive")
             return 1
         target_points = max(n_l, n_r, 2)
 
@@ -398,14 +405,16 @@ def main() -> int:
     total_len = float(cum[-1]) if len(center) >= 2 else 0.0
     avg_seg = total_len / (len(center) - 1) if len(center) > 1 else 0.0
 
-    print(f"Track left:  {args.left} ({n_l} pts)")
-    print(f"Track right: {args.right} ({n_r} pts)")
+    logger.info("Track left:  {} ({} pts)", args.left, n_l)
+    logger.info("Track right: {} ({} pts)", args.right, n_r)
     mode = f"spacing {args.spacing_m} m" if not args.base_reward else "match base-reward count"
-    print(f"Centerline:  {len(center)} pts ({mode}){' (smoothed)' if args.smooth else ''}")
-    print(f"  total length: {total_len:.2f} m, avg segment: {avg_seg:.4f} m")
+    logger.info(
+        "Centerline:  {} pts ({}){}", len(center), mode, " (smoothed)" if args.smooth else ""
+    )
+    logger.info("  total length: {:.2f} m, avg segment: {:.4f} m", total_len, avg_seg)
 
     if args.dry_run:
-        print("(dry-run: not writing file)")
+        logger.info("(dry-run: not writing file)")
         return 0
 
     out_path = args.out or default_out
@@ -416,9 +425,9 @@ def main() -> int:
     with open(out_path, "wb") as f:
         pickle.dump(center, f, protocol=pickle.HIGHEST_PROTOCOL)
     t0 = _timer("Save pkl", t0)
-    print(f"Saved to: {out_path}")
+    logger.info("Saved to: {}", out_path)
 
-    print(f"  [TOTAL] {time.perf_counter() - t_total:.3f}s")
+    logger.debug("[TOTAL] {:.3f}s", time.perf_counter() - t_total)
     return 0
 
 

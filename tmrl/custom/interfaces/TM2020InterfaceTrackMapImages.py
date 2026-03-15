@@ -8,7 +8,7 @@ import numpy as np
 from gymnasium import spaces
 from scipy import spatial
 
-import tmrl.config.config_constants as cfg
+import tmrl.config as cfg
 from tmrl.custom.interfaces.TM2020InterfaceLidarProgress import TM2020InterfaceLidarProgress
 
 

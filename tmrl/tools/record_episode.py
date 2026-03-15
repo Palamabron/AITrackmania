@@ -8,7 +8,7 @@ from pathlib import Path
 import numpy as np
 from loguru import logger
 
-import tmrl.config.config_constants as cfg
+import tmrl.config as cfg
 import tmrl.config.config_objects as cfg_obj
 from tmrl.custom.tm.utils.control_keyboard import is_del_pressed
 from tmrl.envs import GenericGymEnv

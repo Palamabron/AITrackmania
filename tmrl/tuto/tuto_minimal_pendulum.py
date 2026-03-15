@@ -10,10 +10,10 @@ import time
 from threading import Thread
 from typing import Any
 
-import tmrl.config.config_constants as cfg
+import tmrl.config as cfg
 from tmrl.custom.custom_algorithms import SpinupSacAgent
-from tmrl.custom.custom_memories import GenericTorchMemory
-from tmrl.custom.custom_models import MLPActorCritic, SquashedGaussianMLPActor
+from tmrl.custom.memories import GenericTorchMemory
+from tmrl.custom.models import MLPActorCritic, SquashedGaussianMLPActor
 from tmrl.envs import GenericGymEnv
 
 # TMRL imports:

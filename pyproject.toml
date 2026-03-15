@@ -34,6 +34,7 @@ classifiers = [
 requires-python = ">=3.12"
 dependencies = [
     "chardet",
+    "einops>=0.7",
     "gymnasium>=0.29",
     "loguru>=0.7",
     "tyro>=0.8",
@@ -123,6 +124,12 @@ ignore = [
     "N999",  # allow PascalCase module names (e.g. TM2020Interface.py)
     "N812",  # allow F for torch.nn.functional (PyTorch convention)
 ]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
 
 [tool.mypy]
 python_version = "3.12"

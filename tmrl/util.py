@@ -1,4 +1,5 @@
 # standard library imports
+import contextlib
 import functools
 import inspect
 import json
@@ -7,8 +8,9 @@ import os
 import pickle
 import signal
 import subprocess
+import threading
 import weakref
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Sequence
 from importlib import import_module
 from pathlib import Path
 from typing import Any, TypeVar, cast
@@ -34,58 +36,69 @@ def shallow_copy[T](obj: T) -> T:
 # === collate, partition, etc =====================================================================
 
 
-def collate_torch(batch, device=None):
-    """
-    Turns a batch of nested structures with numpy arrays as leaves into into a single element of
-    the same nested structure with batched torch tensors as leaves.
+def collate_torch(batch: Sequence[Any], device: Any = None) -> Any:
+    """Collate a batch of nested structures (numpy/tensor leaves) to batched torch tensors.
 
     Args:
-        batch: The batch to collate.
-        device: The device to use for the collated batch.
+        batch: Sequence of samples with the same nested structure.
+        device: Optional device to move the collated tensors to.
 
     Returns:
-        The collated batch.
+        Single nested structure with leaves as batched torch tensors on device.
     """
+    non_blocking = device is not None and (
+        (isinstance(device, torch.device) and device.type == "cuda")
+        or (isinstance(device, str) and device.startswith("cuda"))
+    )
     elem = batch[0]
     if isinstance(elem, torch.Tensor):
-        # return torch.stack(batch, 0).to(device, non_blocking=non_blocking)
         if elem.numel() < 20000:  # TODO: link to the relevant profiling that lead to this threshold
-            return torch.stack(batch).to(device)
+            stacked = torch.stack(cast(list[torch.Tensor], batch))
+            # Use pinned memory for async GPU transfers when non_blocking is enabled
+            if non_blocking and device is not None:
+                stacked = stacked.pin_memory()
+            return stacked.to(device, non_blocking=non_blocking)
         else:
-            return torch.stack([b.contiguous().to(device) for b in batch], 0)
+            # For large tensors, pin memory before transfer for async GPU copy
+            if non_blocking and device is not None:
+                batch = [b.contiguous().pin_memory() for b in batch]
+            return torch.stack([b.to(device, non_blocking=non_blocking) for b in batch], 0)
     elif isinstance(elem, np.ndarray):
         if elem.dtype == np.object_:
             return collate_torch(tuple(torch.from_numpy(b) for b in batch), device)
         try:
-            stacked = np.stack(batch, axis=0)
+            arr = np.stack(batch, axis=0)
         except ValueError:
-            stacked = np.array(batch)
-        return torch.as_tensor(stacked).to(device)
+            arr = np.array(batch)
+        tensor = torch.as_tensor(arr)
+        # Use pinned memory for async GPU transfers when non_blocking is enabled
+        if non_blocking and device is not None:
+            tensor = tensor.pin_memory()
+        return tensor.to(device, non_blocking=non_blocking)
     elif hasattr(elem, "__torch_tensor__"):
-        return torch.stack([b.__torch_tensor__().to(device) for b in batch], 0)
-    elif isinstance(elem, Sequence):
+        tensors = [b.__torch_tensor__() for b in batch]
+        if non_blocking and device is not None:
+            tensors = [t.pin_memory() for t in tensors]
+        return torch.stack([t.to(device, non_blocking=non_blocking) for t in tensors], 0)
+    elif isinstance(elem, (list, tuple)):
         transposed = zip(*batch)
         return type(elem)(collate_torch(samples, device) for samples in transposed)
-    elif isinstance(elem, Mapping):
-        return type(elem)(
-            (key, collate_torch(tuple(d[key] for d in batch), device)) for key in elem
-        )
+    elif isinstance(elem, dict):
+        return {key: collate_torch(tuple(d[key] for d in batch), device) for key in elem}
     else:
-        return torch.from_numpy(
-            np.array(batch)
-        ).to(
-            device
-        )  # we create a numpy array first to work around https://github.com/pytorch/pytorch/issues/24200
+        tensor = torch.from_numpy(np.array(batch))
+        # Use pinned memory for async GPU transfers when non_blocking is enabled
+        if non_blocking and device is not None:
+            tensor = tensor.pin_memory()
+        return tensor.to(device, non_blocking=non_blocking)
 
 
-# === catched property =============================================================================
-
-
-# noinspection PyPep8Naming
 class cached_property:  # noqa: N801
-    """Similar to `property` but after calling the getter/init function the result is cached.
-    It can be used to create object attributes that aren't stored in the object's __dict__.
-    This is useful if we want to exclude certain attributes from being pickled."""
+    """Property-like descriptor that caches the result of the getter.
+
+    The value is keyed by instance id; when the instance is garbage collected
+    the cache entry is removed. Useful for attributes that should not be pickled.
+    """
 
     def __init__(self, init=None):
         self.cache = {}
@@ -99,15 +112,12 @@ class cached_property:  # noqa: N801
         return self.cache[id(instance)][0]
 
     def __set__(self, instance, value):
-        # Cache the attribute value based on the instance id.
-        # If instance is garbage collected its cached value is removed.
         self.cache[id(instance)] = (
             value,
             weakref.ref(instance, functools.partial(self.cache.pop, id(instance))),
         )
 
 
-# === partial ======================================================================================
 def default():
     raise ValueError("This is a dummy function and not meant to be called.")
 
@@ -132,20 +142,19 @@ def partial[T](
 FKEY = "+"
 
 
-def partial_to_dict(p: functools.partial, version="3"):
-    """
-    Only for wandb.
-
-    This function has become lenient to work with Gymnasium.
-    """
-    assert not p.args, "So far only keyword arguments are supported, here"
-    fields = {k: v.default for k, v in inspect.signature(p.func).parameters.items()}
+def partial_to_dict(partial_obj: functools.partial, version: str = "3") -> dict:
+    """Serialize a partial (e.g. for wandb config). Supports nested partials and Gymnasium."""
+    assert not partial_obj.args, "So far only keyword arguments are supported"
+    fields = {k: v.default for k, v in inspect.signature(partial_obj.func).parameters.items()}
     fields = {k: v for k, v in fields.items() if v is not inspect.Parameter.empty}
-
-    fields.update(p.keywords)
+    fields.update(partial_obj.keywords)
     nested = {k: partial_to_dict(partial(v), version="") for k, v in fields.items() if callable(v)}
     simple = {k: v for k, v in fields.items() if k not in nested}
-    output = {FKEY: p.func.__module__ + ":" + p.func.__qualname__, **simple, **nested}
+    output = {
+        FKEY: partial_obj.func.__module__ + ":" + partial_obj.func.__qualname__,
+        **simple,
+        **nested,
+    }
     return dict(output, __format_version__=version) if version else output
 
 
@@ -181,9 +190,6 @@ def partial_from_args(func: str | Callable[..., Any], kwargs: dict[str, str]):
     return partial(func, **keywords)
 
 
-# === git ======================================================================================
-
-
 def get_output(*args, default="", **kwargs):
     try:
         output = subprocess.check_output(*args, universal_newlines=True, **kwargs)
@@ -203,7 +209,6 @@ def git_info(path=None):
     Returns:
         A dict with information about the git repo.
     """
-    # third-party imports
     import __main__
 
     path = path or os.path.dirname(__main__.__file__)
@@ -250,18 +255,19 @@ def git_info(path=None):
     )
 
 
-# === serialization ================================================================
-
-
 def dump(obj, path):
     path = Path(path)
     tmp_path = path.with_suffix(".tmp")
-    with (
+    # DelayInterrupt uses signal.signal(), which only works in the main thread.
+    ctx = (
         DelayInterrupt()
-    ):  # Continue to save even if SIGINT or SIGTERM is sent and raise KeyboardInterrupt afterwards.
-        with open(tmp_path, "wb") as f:
-            pickle.dump(obj, f, pickle.HIGHEST_PROTOCOL)  # dump temporary file (can fail)
-        os.replace(tmp_path, path)  # replace with definitive name (this is supposedly atomic)
+        if threading.current_thread() is threading.main_thread()
+        else contextlib.nullcontext()
+    )
+    with ctx:
+        with open(tmp_path, "wb") as file:
+            pickle.dump(obj, file, pickle.HIGHEST_PROTOCOL)
+        os.replace(tmp_path, path)
 
 
 def load(path):
@@ -277,9 +283,6 @@ def save_json(d, path):
 def load_json(path):
     with open(path, encoding="utf-8") as f:
         return json.load(f)
-
-
-# === signal handling ================================================================
 
 
 class DelayInterrupt:
@@ -303,9 +306,6 @@ class DelayInterrupt:
         [signal.signal(s, d) for s, d in zip(self.signals, self.default_handlers)]
         if self.signal_received:
             raise KeyboardInterrupt()
-
-
-# === operations ===================================================================================
 
 
 def prod(iterable):

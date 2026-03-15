@@ -4,7 +4,14 @@ import torch
 from torch import nn
 
 from tmrl.custom.models.MLPActorCritic import MLPQFunction, SquashedGaussianMLPActor
-from tmrl.custom.models.model_blocks import MBConv, _make_divisible, conv_1x1_bn, conv_3x3_bn, mlp
+from tmrl.custom.models.model_blocks import (
+    MBConv,
+    _make_divisible,
+    conv_1x1_bn,
+    conv_3x3_bn,
+    conv_dw_3x3_bn,
+    mlp,
+)
 from tmrl.util import prod
 
 
@@ -13,7 +20,7 @@ class EffNetV2(nn.Module):
     Description: Defines an EfficientNetV2-style convolutional neural network architecture.
     """
 
-    def __init__(self, cfgs, nb_channels_in=3, dim_output=1, width_mult=1.0):
+    def __init__(self, cfgs, nb_channels_in=3, dim_output=1, width_mult=1.0, use_dw_stem=False):
         """
         Description: Initializes an EfficientNetV2-style convolutional neural network.
         Arguments:
@@ -21,14 +28,19 @@ class EffNetV2(nn.Module):
         nb_channels_in: Number of input channels (default: 3 for RGB).
         dim_output: Dimension of the output (default: 1).
         width_mult: Width multiplier for controlling the model width (default: 1.0).
+        use_dw_stem: If True, use depthwise-separable first conv (faster, slightly fewer params).
         """
         super().__init__()
         self.cfgs = cfgs
 
-        # building first layer
         input_channel = _make_divisible(24 * width_mult, 8)
-        layers = [conv_3x3_bn(nb_channels_in, input_channel, 2)]
-        # building inverted residual blocks
+        stem = (
+            conv_dw_3x3_bn(nb_channels_in, input_channel, 2)
+            if use_dw_stem
+            else conv_3x3_bn(nb_channels_in, input_channel, 2)
+        )
+        layers = [stem]
+
         block = MBConv
         for t, c, n, s, use_se in self.cfgs:
             output_channel = _make_divisible(c * width_mult, 8)
@@ -36,7 +48,7 @@ class EffNetV2(nn.Module):
                 layers.append(block(input_channel, output_channel, s if i == 0 else 1, t, use_se))
                 input_channel = output_channel
         self.features = nn.Sequential(*layers)
-        # building last several layers
+
         output_channel = _make_divisible(1792 * width_mult, 8) if width_mult > 1.0 else 1792
         self.conv = conv_1x1_bn(input_channel, output_channel)
         self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
@@ -59,10 +71,6 @@ class EffNetV2(nn.Module):
         return x
 
     def _initialize_weights(self):
-        """
-        Description: Initializes the weights for various layers in the network.
-        No Arguments or Returns: Handles weight initialization within the network.
-        """
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
                 n = m.kernel_size[0] * m.kernel_size[1] * m.out_channels
@@ -119,11 +127,6 @@ class EffNetActorCritic(nn.Module):
         """
         super().__init__()
 
-        # obs_dim = observation_space.shape[0]
-        # act_dim = action_space.shape[0]
-        # act_limit = action_space.high[0]
-
-        # build policy and value functions
         self.actor = SquashedGaussianMLPActor(
             observation_space, action_space, hidden_sizes, activation
         )

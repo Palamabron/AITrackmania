@@ -6,7 +6,7 @@ from threading import Thread
 from typing import Any
 
 import numpy as np
-import tmrl.config.config_constants as cfg
+import tmrl.config as cfg
 import torch
 import torch.nn.functional as F  # noqa: N812
 from tmrl.actor import TorchActorModule

@@ -22,10 +22,32 @@ class AffineObservationWrapper(gymnasium.ObservationWrapper):
         return (observation + self.shift) * self.scale
 
 
+def _space_to_float32(space):
+    """Return a copy of the space with float Box dtypes set to np.float32."""
+    if isinstance(space, gymnasium.spaces.Box):
+        if np.issubdtype(space.dtype, np.floating):
+            return gymnasium.spaces.Box(
+                low=space.low,
+                high=space.high,
+                shape=space.shape,
+                dtype=np.float32,
+            )
+        return space
+    if isinstance(space, gymnasium.spaces.Dict):
+        return gymnasium.spaces.Dict({k: _space_to_float32(v) for k, v in space.spaces.items()})
+    if isinstance(space, gymnasium.spaces.Tuple):
+        return gymnasium.spaces.Tuple([_space_to_float32(s) for s in space.spaces])
+    return space
+
+
 class Float64ToFloat32(gymnasium.ObservationWrapper):
     """Converts np.float64 arrays in the observations to np.float32 arrays."""
 
-    # TODO: change observation/action spaces to correct dtype
+    def __init__(self, env):
+        super().__init__(env)
+        self.observation_space = _space_to_float32(env.observation_space)
+        self.action_space = _space_to_float32(env.action_space)
+
     def observation(self, observation):
         observation = deepmap(
             {

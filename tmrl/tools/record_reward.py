@@ -10,7 +10,7 @@ from matplotlib import pyplot as plt
 from scipy.interpolate import CubicSpline
 from scipy.ndimage import gaussian_filter1d
 
-import tmrl.config.config_constants as cfg
+import tmrl.config as cfg
 from tmrl.custom.tm.utils.tools import TM2020OpenPlanetClient
 
 # Must match TQC_GrabData plugin (20 floats). Default 19 would misalign and corrupt trajectory.

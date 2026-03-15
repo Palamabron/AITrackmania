@@ -14,9 +14,7 @@ if platform.system() in ("Windows", "Linux"):
         Handles triggers and joystick movements accordingly.
         Updates the gamepad state.
         """
-        assert all(-1.0 <= c <= 1.0 for c in control), (
-            "This function accepts only controls between -1.0 and 1.0"
-        )
+        control = [float(np.clip(np.nan_to_num(c, nan=0.0), -1.0, 1.0)) for c in control]
         if control[0] > 0.0:  # gas
             mapped_value = 0.165 * control[0] + 0.835  # f(-0.515)=0.75
             gamepad.right_trigger_float(value_float=mapped_value)  # car starts driving from 0.75

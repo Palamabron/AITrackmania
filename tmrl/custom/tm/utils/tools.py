@@ -10,7 +10,7 @@ import cv2
 import numpy as np
 
 # local imports
-from tmrl.config.config_constants import LIDAR_BLACK_THRESHOLD
+from tmrl.config import LIDAR_BLACK_THRESHOLD
 
 
 class TM2020OpenPlanetClient:
@@ -32,6 +32,12 @@ class TM2020OpenPlanetClient:
         self.__data = None
         self._received_once = False  # used for longer first-packet timeout
         self._last_good_pos = None  # Buffer to replace [0, 0, 0] glitches from the plugin
+        self._last_retrieve_position_patched = (
+            False  # True when position was patched (for interface)
+        )
+        self._last_retrieve_invalid = (
+            False  # True when sanity check failed (interface should terminate)
+        )
         self._client_connected = (
             False  # True when connect() succeeded (may still be waiting for first frame)
         )
@@ -92,6 +98,11 @@ class TM2020OpenPlanetClient:
         Blocks if nothing has been received so far.
         Uses first_packet_timeout until the first packet is received (allows time for
         connection/reconnect); then uses timeout for subsequent waits.
+
+        Timeouts and the post-return sanity check (speed range) are the first line of
+        defense against corrupted samples entering the replay buffer. The interface
+        should check _last_retrieve_invalid and _last_retrieve_position_patched and
+        terminate the episode or flag the transition when appropriate.
         """
         c = True
         t_start = None
@@ -133,6 +144,8 @@ class TM2020OpenPlanetClient:
                 time.sleep(sleep_if_empty)
 
         # FIX GLITCHES: replace [0,0,0] position with the last known good position
+        self._last_retrieve_position_patched = False
+        self._last_retrieve_invalid = False
         if data is not None:
             # Determine position indices from struct size:
             # TQC=20 floats uses [3,4,5], older formats use [2,3,4].
@@ -152,10 +165,21 @@ class TM2020OpenPlanetClient:
                     data_list[pos_start_idx + 1] = self._last_good_pos[1]
                     data_list[pos_start_idx + 2] = self._last_good_pos[2]
                     data = tuple(data_list)
+                    self._last_retrieve_position_patched = True
             else:
                 # Update last known good position
                 self._last_good_pos = (pos_x, pos_y, pos_z)
 
+            # Sanity check: speed (index 2 in TQC format) should be in a plausible range.
+            # Corrupted frames (e.g. all zeros or garbage) can otherwise enter the replay buffer.
+            speed_idx = 2
+            if speed_idx < len(data):
+                try:
+                    speed_val = float(data[speed_idx])
+                    if not (0 <= speed_val <= 2500.0):
+                        self._last_retrieve_invalid = True
+                except (TypeError, ValueError):
+                    self._last_retrieve_invalid = True
         return data
 
 

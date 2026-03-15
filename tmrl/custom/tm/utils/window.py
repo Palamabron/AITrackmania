@@ -3,7 +3,7 @@ import platform
 import numpy as np
 from loguru import logger
 
-import tmrl.config.config_constants as cfg
+import tmrl.config as cfg
 
 if platform.system() == "Windows":
     import win32con

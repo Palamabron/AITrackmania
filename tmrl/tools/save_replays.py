@@ -5,7 +5,7 @@ from dataclasses import dataclass
 import numpy as np
 import tyro
 
-import tmrl.config.config_constants as cfg
+import tmrl.config as cfg
 import tmrl.config.config_objects as cfg_obj
 from tmrl.envs import GenericGymEnv
 from tmrl.networking import RolloutWorker

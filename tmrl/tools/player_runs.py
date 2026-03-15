@@ -26,7 +26,7 @@ _poll_logged_empty_dir: bool = False
 
 def default_player_runs_dir() -> Path:
     """Return the default folder for player-run files."""
-    import tmrl.config.config_constants as cfg
+    import tmrl.config as cfg
 
     return cfg.TMRL_FOLDER / "player_runs"
 

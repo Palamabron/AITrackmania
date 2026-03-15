@@ -45,6 +45,6 @@ def get_environment():
     Returns:
         gymnasium.Env: An instance of the default TMRL Gymnasium environment
     """
-    import tmrl.config.config_constants as cfg
+    import tmrl.config as config
 
-    return GenericGymEnv(id=cfg.RTGYM_VERSION, gym_kwargs={"config": CONFIG_DICT})
+    return GenericGymEnv(id=config.RTGYM_VERSION, gym_kwargs={"config": CONFIG_DICT})

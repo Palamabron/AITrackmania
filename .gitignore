@@ -82,6 +82,9 @@ instance/
 # Sphinx documentation
 docs/source/_build/
 
+# Reports and analysis files (not part of Sphinx docs)
+docs/reports/
+
 # PyBuilder
 target/
 

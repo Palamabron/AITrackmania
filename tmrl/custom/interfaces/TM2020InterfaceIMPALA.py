@@ -2,7 +2,7 @@ import cv2
 import numpy as np
 from gymnasium import spaces
 
-import tmrl.config.config_constants as cfg
+import tmrl.config as cfg
 from tmrl.custom.interfaces.TM2020Interface import TM2020Interface
 from tmrl.custom.utils.control_mouse import mouse_save_replay_tm20
 
@@ -50,6 +50,7 @@ class TM2020InterfaceIMPALA(TM2020Interface):
             observation_space: gymnasium.spaces.Tuple
 
         Note: Do NOT put the action buffer here (automated).
+        Ensure rtgym config has act_buf_len and reset_act_buf set appropriately for RT-MDP.
         """
         speed = spaces.Box(low=0.0, high=1000.0, shape=(1,))
 
@@ -191,6 +192,11 @@ class TM2020InterfaceIMPALA(TM2020Interface):
 
         failure_counter = np.array([float(failure_counter)])
         info = {"reward_sum": reward_sum}
+        if getattr(self.client, "_last_retrieve_invalid", False):
+            terminated = True
+            info["telemetry_invalid"] = True
+        if getattr(self.client, "_last_retrieve_position_patched", False):
+            info["position_patched"] = True
 
         observation = [
             speed,

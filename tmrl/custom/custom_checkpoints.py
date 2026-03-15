@@ -8,7 +8,7 @@ import torch
 from loguru import logger
 from torch.optim import Adam
 
-import tmrl.config.config_constants as cfg
+import tmrl.config as cfg
 from tmrl.util import dump, load
 
 
@@ -101,9 +101,9 @@ def update_run_instance(run_instance, training_cls):
     # update training Agent:
     alg_config = cfg.TMRL_CONFIG["ALG"]
     alg_name = alg_config["ALGORITHM"]
-    assert alg_name in ["SAC", "REDQSAC", "TQC"], (
-        f"{alg_name} is not supported by this checkpoint updater."
-    )
+    if alg_name not in ["SAC", "REDQSAC", "TQC"]:
+        run_instance = update_memory(run_instance)
+        return run_instance
 
     if alg_name in ["SAC", "REDQSAC", "TQC"]:
         lr_actor = alg_config["LR_ACTOR"]
@@ -115,86 +115,94 @@ def update_run_instance(run_instance, training_cls):
         target_entropy = alg_config["TARGET_ENTROPY"]
         alpha = alg_config["ALPHA"]
 
-        if alg_name in ("SAC", "TQC"):
-            if run_instance.agent.lr_actor != lr_actor:
-                old = run_instance.agent.lr_actor
-                run_instance.agent.lr_actor = lr_actor
-                run_instance.agent.actor_optimizer = Adam(
-                    run_instance.agent.model.actor.parameters(), lr=lr_actor
-                )
-                logger.info(
-                    f"Actor optimizer reinitialized with new lr: {lr_actor} (old lr: {old})."
-                )
-
-            if run_instance.agent.lr_critic != lr_critic:
-                old = run_instance.agent.lr_critic
-                run_instance.agent.lr_critic = lr_critic
-                run_instance.agent.critic_optimizer = Adam(
-                    itertools.chain(
-                        run_instance.agent.model.q1.parameters(),
-                        run_instance.agent.model.q2.parameters(),
-                    ),
-                    lr=lr_critic,
-                )
-                logger.info(
-                    f"Critic optimizer reinitialized with new lr: {lr_critic} (old lr: {old})."
-                )
-
-        if run_instance.agent.learn_entropy_coef != learn_entropy_coef:
-            logger.warning("Cannot switch entropy learning.")
-
-        if run_instance.agent.lr_entropy != lr_entropy or run_instance.agent.alpha != alpha:
-            run_instance.agent.lr_entropy = lr_entropy
-            run_instance.agent.alpha = alpha
-            device = run_instance.device or ("cuda" if torch.cuda.is_available() else "cpu")
-            if run_instance.agent.learn_entropy_coef:
-                run_instance.agent.log_alpha = (
-                    torch.log(torch.ones(1) * run_instance.agent.alpha)
-                    .to(device)
-                    .requires_grad_(True)
-                )
-                run_instance.agent.alpha_optimizer = Adam(
-                    [run_instance.agent.log_alpha], lr=lr_entropy
-                )
-                logger.info("Entropy optimizer reinitialized.")
-            else:
-                run_instance.agent.alpha_t = torch.tensor(float(run_instance.agent.alpha)).to(
-                    device
-                )
-                logger.info(f"Alpha changed to {alpha}.")
-
-        if run_instance.agent.gamma != gamma:
-            old = run_instance.agent.gamma
-            run_instance.agent.gamma = gamma
-            logger.info(f"Gamma coefficient changed to {gamma} (old: {old}).")
-
-        if run_instance.agent.polyak != polyak:
-            old = run_instance.agent.polyak
-            run_instance.agent.polyak = polyak
-            logger.info(f"Polyak coefficient changed to {polyak} (old: {old}).")
-
-        if target_entropy is None:  # automatic entropy coefficient
-            action_space = run_instance.agent.action_space
-            run_instance.agent.target_entropy = -np.prod(action_space.shape)  # .astype(np.float32)
+        agent = getattr(run_instance, "agent", None)
+        if agent is None:
+            logger.debug(
+                "Checkpoint has no agent (e.g. empty buffer at save); skipping agent config update."
+            )
         else:
-            run_instance.agent.target_entropy = float(target_entropy)
-        logger.info(f"Target entropy: {run_instance.agent.target_entropy}.")
+            if alg_name in ("SAC", "TQC"):
+                if run_instance.agent.lr_actor != lr_actor:
+                    old = run_instance.agent.lr_actor
+                    run_instance.agent.lr_actor = lr_actor
+                    run_instance.agent.actor_optimizer = Adam(
+                        run_instance.agent.model.actor.parameters(), lr=lr_actor
+                    )
+                    logger.info(
+                        f"Actor optimizer reinitialized with new lr: {lr_actor} (old lr: {old})."
+                    )
 
-        if alg_name == "REDQSAC":
-            m = alg_config["REDQ_M"]
-            q_updates_per_policy_update = alg_config["REDQ_Q_UPDATES_PER_POLICY_UPDATE"]
+                if run_instance.agent.lr_critic != lr_critic:
+                    old = run_instance.agent.lr_critic
+                    run_instance.agent.lr_critic = lr_critic
+                    run_instance.agent.critic_optimizer = Adam(
+                        itertools.chain(
+                            run_instance.agent.model.q1.parameters(),
+                            run_instance.agent.model.q2.parameters(),
+                        ),
+                        lr=lr_critic,
+                    )
+                    logger.info(
+                        f"Critic optimizer reinitialized with new lr: {lr_critic} (old lr: {old})."
+                    )
 
-            if run_instance.agent.q_updates_per_policy_update != q_updates_per_policy_update:
-                old = run_instance.agent.q_updates_per_policy_update
-                run_instance.agent.q_updates_per_policy_update = q_updates_per_policy_update
-                logger.info(
-                    f"Q update ratio switched to {q_updates_per_policy_update} (old: {old})."
-                )
+            if run_instance.agent.learn_entropy_coef != learn_entropy_coef:
+                logger.warning("Cannot switch entropy learning.")
 
-            if run_instance.agent.m != m:
-                old = run_instance.agent.m
-                run_instance.agent.m = m
-                logger.info(f"M switched to {m} (old: {old}).")
+            if run_instance.agent.lr_entropy != lr_entropy or run_instance.agent.alpha != alpha:
+                run_instance.agent.lr_entropy = lr_entropy
+                run_instance.agent.alpha = alpha
+                device = run_instance.device or ("cuda" if torch.cuda.is_available() else "cpu")
+                if run_instance.agent.learn_entropy_coef:
+                    run_instance.agent.log_alpha = (
+                        torch.log(torch.ones(1) * run_instance.agent.alpha)
+                        .to(device)
+                        .requires_grad_(True)
+                    )
+                    run_instance.agent.alpha_optimizer = Adam(
+                        [run_instance.agent.log_alpha], lr=lr_entropy
+                    )
+                    logger.info("Entropy optimizer reinitialized.")
+                else:
+                    run_instance.agent.alpha_t = torch.tensor(float(run_instance.agent.alpha)).to(
+                        device
+                    )
+                    logger.info(f"Alpha changed to {alpha}.")
+
+            if run_instance.agent.gamma != gamma:
+                old = run_instance.agent.gamma
+                run_instance.agent.gamma = gamma
+                logger.info(f"Gamma coefficient changed to {gamma} (old: {old}).")
+
+            if run_instance.agent.polyak != polyak:
+                old = run_instance.agent.polyak
+                run_instance.agent.polyak = polyak
+                logger.info(f"Polyak coefficient changed to {polyak} (old: {old}).")
+
+            if target_entropy is None:  # automatic entropy coefficient
+                action_space = run_instance.agent.action_space
+                run_instance.agent.target_entropy = -np.prod(
+                    action_space.shape
+                )  # .astype(np.float32)
+            else:
+                run_instance.agent.target_entropy = float(target_entropy)
+            logger.info(f"Target entropy: {run_instance.agent.target_entropy}.")
+
+            if alg_name == "REDQSAC":
+                m = alg_config["REDQ_M"]
+                q_updates_per_policy_update = alg_config["REDQ_Q_UPDATES_PER_POLICY_UPDATE"]
+
+                if run_instance.agent.q_updates_per_policy_update != q_updates_per_policy_update:
+                    old = run_instance.agent.q_updates_per_policy_update
+                    run_instance.agent.q_updates_per_policy_update = q_updates_per_policy_update
+                    logger.info(
+                        f"Q update ratio switched to {q_updates_per_policy_update} (old: {old})."
+                    )
+
+                if run_instance.agent.m != m:
+                    old = run_instance.agent.m
+                    run_instance.agent.m = m
+                    logger.info(f"M switched to {m} (old: {old}).")
 
     epochs = cfg.MODEL_CONFIG["MAX_EPOCHS"]
     rounds = cfg.MODEL_CONFIG["ROUNDS_PER_EPOCH"]

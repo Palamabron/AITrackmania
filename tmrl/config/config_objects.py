@@ -1,6 +1,6 @@
 """Build runtime objects from config: interface, memory, agent, trainer.
 
-This module reads config_constants (which loads config.json) and selects:
+This module reads config (which loads config.json) and selects:
   - TRAIN_MODEL / POLICY   : neural net classes (MLP, CNN, RNN, IMPALA, etc.)
   - INT                    : rtgym interface class (TM2020Interface*, partial with kwargs)
   - CONFIG_DICT            : rtgym config dict (interface + RTGYM_CONFIG overrides)
@@ -26,28 +26,17 @@ from typing import Any
 
 import rtgym
 
-import tmrl.config.config_constants as cfg
-import tmrl.custom.models.IMPALA as impala  # noqa: N811
-import tmrl.custom.models.Sophy as impalaWoImages
+import tmrl.config as config  # noqa: F401
+import tmrl.config.constants as cfg
+import tmrl.config.paths as cfg_paths
+import tmrl.custom.models.IMPALA as impala_module  # noqa: N811
+import tmrl.custom.models.Sophy as Sophy_models  # noqa: N813
+from tmrl.custom.custom_algorithms import IQNAgent
 from tmrl.custom.custom_algorithms import REDQSACAgent as REDQ_Agent
 from tmrl.custom.custom_algorithms import SpinupSacAgent as SAC_Agent
 from tmrl.custom.custom_algorithms import TQCAgent as TQC_Agent
 from tmrl.custom.custom_checkpoints import update_run_instance
-from tmrl.custom.custom_memories import (
-    MemoryR2D2,
-    MemoryR2D2woImages,
-    MemoryTMBest,
-    MemoryTMFull,
-    MemoryTMLidar,
-    MemoryTMLidarProgress,
-    MemoryTMLidarProgressImages,
-    get_local_buffer_sample_lidar,
-    get_local_buffer_sample_lidar_progress,
-    get_local_buffer_sample_lidar_progress_images,
-    get_local_buffer_sample_mobilenet,
-    get_local_buffer_sample_tm20_imgs,
-)
-from tmrl.custom.custom_models import (
+from tmrl.custom.models import (
     FrozenEffNetResidualActorCritic,
     MLPActorCritic,
     REDQMLPActorCritic,
@@ -63,6 +52,7 @@ from tmrl.custom.custom_models import (
     VanillaCNNActorCritic,
     VanillaColorCNNActorCritic,
 )
+from tmrl.custom.models.DQNNet import DQNActor
 from tmrl.custom.interfaces.TM2020Interface import TM2020Interface
 from tmrl.custom.interfaces.TM2020InterfaceIMPALA import TM2020InterfaceIMPALA
 from tmrl.custom.interfaces.TM2020InterfaceLidar import TM2020InterfaceLidar
@@ -72,6 +62,20 @@ from tmrl.custom.interfaces.TM2020InterfaceSophy import TM2020InterfaceIMPALASop
 from tmrl.custom.interfaces.TM2020InterfaceTQC import TM2020InterfaceTQC
 from tmrl.custom.interfaces.TM2020InterfaceTrackMap import TM2020InterfaceTrackMap
 from tmrl.custom.interfaces.TM2020InterfaceTrackMapImages import TM2020InterfaceTrackMapImages
+from tmrl.custom.memories import (
+    MemoryR2D2,
+    MemoryR2D2woImages,
+    MemoryTMBest,
+    MemoryTMFull,
+    MemoryTMLidar,
+    MemoryTMLidarProgress,
+    MemoryTMLidarProgressImages,
+    get_local_buffer_sample_lidar,
+    get_local_buffer_sample_lidar_progress,
+    get_local_buffer_sample_lidar_progress_images,
+    get_local_buffer_sample_mobilenet,
+    get_local_buffer_sample_tm20_imgs,
+)
 from tmrl.custom.models.Sophy import SophyResidualActorCritic, SquashedActorSophyResidual
 from tmrl.custom.tm.tm_preprocessors import (
     obs_preprocessor_lidar_progress_images_act_in_obs,
@@ -93,7 +97,7 @@ ALG_CONFIG = cfg.TMRL_CONFIG["ALG"]
 ALG_NAME = ALG_CONFIG["ALGORITHM"]
 MODEL_CONFIG = cfg.TMRL_CONFIG["MODEL"]
 
-assert ALG_NAME in ["SAC", "REDQSAC", "TQC"], (
+assert ALG_NAME in ["SAC", "REDQSAC", "TQC", "IQN"], (
     f"If you wish to implement {ALG_NAME}, do not use 'ALG' in config.json for that."
 )
 
@@ -132,8 +136,21 @@ if cfg.PRAGMA_LIDAR:
         POLICY = SquashedGaussianMLPActor
 else:
     if cfg.PRAGMA_MBEST_TQC or cfg.PRAGMA_TQC_GRAB:
-        assert ALG_NAME in ("TQC", "SAC"), f"{ALG_NAME} is not implemented here."
-        if (
+        assert ALG_NAME in ("TQC", "SAC", "IQN"), f"{ALG_NAME} is not implemented here."
+        if ALG_NAME == "IQN":
+            # IQN is a discrete action algorithm - use DQNActor
+            _iqn_kw = dict(
+                hidden_dim=cfg.RESIDUAL_MLP_HIDDEN_DIM,
+                num_blocks=cfg.RESIDUAL_MLP_NUM_BLOCKS,
+                n_cos=ALG_CONFIG.get("IQN_N_COS", 64),
+                dueling=ALG_CONFIG.get("IQN_DUELING", True),
+                n_actions=ALG_CONFIG.get("IQN_N_ACTIONS", 78),
+                n_quantiles_eval=ALG_CONFIG.get("IQN_NUM_QUANTILES_EVAL", 32),
+                epsilon=ALG_CONFIG.get("IQN_EPSILON_START", 1.0),
+            )
+            TRAIN_MODEL = None  # IQN creates its own network internally
+            POLICY = partial(DQNActor, **_iqn_kw)
+        elif (
             cfg.USE_IMAGES
             and not cfg.PRAGMA_TQC_GRAB
             and cfg.USE_FROZEN_EFFNET
@@ -259,6 +276,26 @@ else:
             resize_to=(cfg.IMG_WIDTH, cfg.IMG_HEIGHT),
         )
 
+# Interface display name for logging
+if cfg.PRAGMA_LIDAR:  # noqa: F821
+    if cfg.PRAGMA_TRACKMAP_IMAGES:  # noqa: F821
+        INTERFACE_DISPLAY_NAME = "TrackMapImages"
+    elif cfg.PRAGMA_LIDAR_PROGRESS_IMAGES:  # noqa: F821
+        INTERFACE_DISPLAY_NAME = "LidarProgressImages"
+    elif cfg.PRAGMA_PROGRESS:  # noqa: F821
+        INTERFACE_DISPLAY_NAME = "LidarProgress"
+    elif cfg.PRAGMA_TRACKMAP:  # noqa: F821
+        INTERFACE_DISPLAY_NAME = "TrackMap"
+    else:
+        INTERFACE_DISPLAY_NAME = "Lidar"
+else:
+    if cfg.PRAGMA_TQC_GRAB:  # noqa: F821
+        INTERFACE_DISPLAY_NAME = "TQCGrab"
+    elif cfg.PRAGMA_CUSTOM or cfg.PRAGMA_BEST or cfg.PRAGMA_BEST_TQC or cfg.PRAGMA_MBEST_TQC:  # noqa: F821
+        INTERFACE_DISPLAY_NAME = "IMPALA" if cfg.USE_IMAGES else "IMPALASophy"  # noqa: F821
+    else:
+        INTERFACE_DISPLAY_NAME = "Full"
+
 # RtGym config dict: default config + our interface + ENV RTGYM_CONFIG overrides
 CONFIG_DICT = rtgym.DEFAULT_CONFIG_DICT.copy()
 CONFIG_DICT["interface"] = INT
@@ -346,7 +383,7 @@ MEMORY = partial(
     memory_size=MODEL_CONFIG["MEMORY_SIZE"],
     batch_size=MODEL_CONFIG["BATCH_SIZE"],
     sample_preprocessor=SAMPLE_PREPROCESSOR,
-    dataset_path=cfg.DATASET_PATH,
+    dataset_path=cfg_paths.DATASET_PATH,
     imgs_obs=cfg.IMG_HIST_LEN,
     act_buf_len=cfg.ACT_BUF_LEN,
     crc_debug=cfg.CRC_DEBUG,
@@ -389,7 +426,7 @@ elif ALG_NAME == "TQC":
         quantiles_number=ALG_CONFIG["QUANTILES_NUMBER"],
         n_steps=ALG_CONFIG["N_STEPS"],
     )
-else:
+elif ALG_NAME == "REDQSAC":
     AGENT = partial(
         REDQ_Agent,
         **_common_agent_kw,
@@ -397,6 +434,30 @@ else:
         m=ALG_CONFIG["REDQ_M"],
         q_updates_per_policy_update=ALG_CONFIG["REDQ_Q_UPDATES_PER_POLICY_UPDATE"],
     )
+elif ALG_NAME == "IQN":
+    # IQN is a discrete action algorithm (DQN-based)
+    # IQNAgent creates its own IQNQNetwork internally, no model_cls needed
+    AGENT = partial(
+        IQNAgent,
+        device=_device,
+        hidden_dim=cfg.RESIDUAL_MLP_HIDDEN_DIM,
+        num_blocks=cfg.RESIDUAL_MLP_NUM_BLOCKS,
+        n_quantiles_train=ALG_CONFIG.get("IQN_NUM_QUANTILES_TRAIN", 64),
+        n_quantiles_target=ALG_CONFIG.get("IQN_NUM_QUANTILES_TARGET", 64),
+        n_quantiles_eval=ALG_CONFIG.get("IQN_NUM_QUANTILES_EVAL", 32),
+        n_cos=ALG_CONFIG.get("IQN_N_COS", 64),
+        lr=ALG_CONFIG.get("IQN_LR", 1.0e-4),
+        gamma=ALG_CONFIG["GAMMA"],
+        epsilon_start=ALG_CONFIG.get("IQN_EPSILON_START", 1.0),
+        epsilon_end=ALG_CONFIG.get("IQN_EPSILON_END", 0.00005),
+        epsilon_decay_steps=ALG_CONFIG.get("IQN_EPSILON_DECAY_STEPS", 500000),
+        n_steps=ALG_CONFIG.get("N_STEPS", 1),
+        target_update_freq=ALG_CONFIG.get("IQN_TARGET_UPDATE_FREQ", 1000),
+        double_dqn=ALG_CONFIG.get("IQN_DOUBLE_DQN", True),
+        dueling=ALG_CONFIG.get("IQN_DUELING", True),
+    )
+else:
+    raise ValueError(f"Unknown algorithm: {ALG_NAME}")
 
 # -----------------------------------------------------------------------------
 # 7. Trainer (TorchTrainingOffline partial: epochs, rounds, steps, intervals)
@@ -432,4 +493,4 @@ TRAINER = partial(TorchTrainingOffline, **_trainer_kw)
 
 DUMP_RUN_INSTANCE_FN = None
 LOAD_RUN_INSTANCE_FN = None
-UPDATER_FN = update_run_instance if ALG_NAME in ["SAC", "REDQSAC", "TQC"] else None
+UPDATER_FN = update_run_instance

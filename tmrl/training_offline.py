@@ -1,4 +1,5 @@
-# standard library imports
+"""Offline training loop: epochs, rounds, buffer retrieval, and model broadcast."""
+
 import datetime
 import math
 import time
@@ -7,14 +8,14 @@ from dataclasses import dataclass
 from numbers import Real
 from typing import Any, cast
 
-# third-party imports
 import gymnasium
 import numpy as np
 import torch
 from loguru import logger
 
-# local imports
-import tmrl.config.config_constants as cfg
+import tmrl.config.constants as cfg
+import tmrl.config.config_objects as cfg_obj
+import tmrl.config.paths as cfg_paths
 from tmrl.tools.player_runs import poll_player_runs_for_injection
 from tmrl.util import pandas_dict
 
@@ -69,6 +70,29 @@ def _one_obs_from_batch(batch_obs) -> np.ndarray | tuple:
     return cast(np.ndarray, np.asarray(batch_obs[0]))
 
 
+def _batch_observation_dim(batch) -> int:
+    """Total observation dimension from a training batch (batch[0] = prev_obs)."""
+    one_obs = _one_obs_from_batch(batch[0])
+    return _observation_dim(_observation_space_from_sample(one_obs))
+
+
+def _check_observation_integrity(batch) -> None:
+    """Assert batch observations are finite (no NaN/Inf) when OBSERVATION_BOUNDS_CHECK is True."""
+    if not getattr(cfg, "OBSERVATION_BOUNDS_CHECK", False):
+        return
+    for name, obs in (("prev_obs", batch[0]), ("next_obs", batch[3])):
+        if isinstance(obs, (tuple, list)):
+            for i, t in enumerate(obs):
+                if isinstance(t, torch.Tensor) and t.is_floating_point():
+                    if torch.isnan(t).any() or torch.isinf(t).any():
+                        raise ValueError(
+                            f"Observation integrity check failed: {name}[{i}] contains NaN or Inf"
+                        )
+        elif isinstance(obs, torch.Tensor) and obs.is_floating_point():
+            if torch.isnan(obs).any() or torch.isinf(obs).any():
+                raise ValueError(f"Observation integrity check failed: {name} contains NaN or Inf")
+
+
 def _stats_dict_to_numeric(d: dict) -> dict:
     """Convert tensor values in a stats dict to Python scalars so pandas can aggregate."""
     out = {}
@@ -88,11 +112,63 @@ def _mean_stats_dicts(items: list[dict[str, Any]]) -> dict[str, float]:
         for k, v in row.items():
             if isinstance(v, Real):
                 vf = float(v)
-                # skip NaN/Inf to mimic skipna behavior
                 if vf == vf and vf not in (float("inf"), float("-inf")):
                     sums[k] = sums.get(k, 0.0) + vf
                     counts[k] = counts.get(k, 0) + 1
     return {k: (sums[k] / counts[k]) for k in sums if counts.get(k, 0) > 0}
+
+
+def _concat_batches(batches: list[Any]) -> Any:
+    """Concatenate multiple training batches along the batch dimension (dim 0).
+
+    Each batch has the same structure as from memory.sample(): (obs, actions, rewards,
+    next_obs, dones, ...) where obs/next_obs may be tuples of tensors. Used when
+    BATCHES_PER_STEP > 1 to run multiple R2D2 batches through the model in one step.
+    """
+    if len(batches) == 1:
+        return batches[0]
+    n_top = len(batches[0])
+    for bi, b in enumerate(batches):
+        if len(b) != n_top:
+            raise ValueError(
+                f"_concat_batches: batch structure mismatch: batch 0 has {n_top} "
+                f"elements, batch {bi} has {len(b)}. Ensure all replay samples have "
+                "the same format (e.g. same obs tuple length, no mixed worker configs)."
+            )
+    out: list[Any] = []
+    for i in range(n_top):
+        elem = batches[0][i]
+        if isinstance(elem, (list, tuple)):
+            n_inner = min(len(b[i]) for b in batches)
+            if n_inner != len(elem):
+                raise RuntimeError(
+                    f"_concat_batches: tuple length mismatch at index {i}: batch 0 has "
+                    f"{len(elem)} elements, min across batches is {n_inner}. Refusing to "
+                    "truncate (would silently corrupt training). Ensure all workers use "
+                    "the same observation format (e.g. USE_IMAGES) and no corrupted packets. "
+                    "Timeouts and validation in retrieve_data() plus interface handling of "
+                    "telemetry_invalid/position_patched are the first line of defense against "
+                    "corrupted samples entering the replay buffer."
+                )
+            out.append(
+                type(elem)(torch.cat([b[i][j] for b in batches], dim=0) for j in range(n_inner))
+            )
+        elif isinstance(elem, torch.Tensor):
+            out.append(torch.cat([b[i] for b in batches], dim=0))
+        elif isinstance(elem, dict):
+            merged: dict[str, Any] = {}
+            for key in elem:
+                vals = [b[i][key] for b in batches]
+                if isinstance(vals[0], torch.Tensor):
+                    merged[key] = torch.cat(vals, dim=0)
+                elif isinstance(vals[0], (bool, int, float)):
+                    merged[key] = vals[0]
+                else:
+                    merged[key] = vals[0]
+            out.append(merged)
+        else:
+            out.append(torch.cat([torch.as_tensor(b[i]) for b in batches], dim=0))
+    return type(batches[0])(out)
 
 
 @dataclass(eq=False)
@@ -115,36 +191,26 @@ class TrainingOffline:
         agent_scheduler (callable): if not None, f(Agent, epoch) at start of each epoch
         start_training (int): min samples in replay buffer before starting training
         device (str): device for memory to collate samples
+        batches_per_step (int): batches to merge per step (keeps R2D2_NUM_SEQUENCES
+            and R2D2_SEQUENCE_LENGTH per batch; better GPU utilization when > 1).
     """
 
-    env_cls: type[Any] | None = None  # GenericGymEnv or (observation_space, action_space)
-    memory_cls: type[Any] | None = None  # = TorchMemory  # replay memory
-    training_agent_cls: type[Any] | None = None  # = TrainingAgent  # training agent
-    epochs: int = 10  # total number of epochs, we save the agent every epoch
-    rounds: int = 50  # number of rounds per epoch, we generate statistics every round
-    steps: int = 2000  # number of training steps per round
-    update_model_interval: int = 100  # number of training steps between model broadcasts
-    update_buffer_interval: int = (
-        100  # number of training steps between retrieving buffered samples
-    )
-    max_training_steps_per_env_step: float = 1.0  # training will pause when above this ratio
-    sleep_between_buffer_retrieval_attempts: float = (
-        1.0  # algorithm will sleep for this amount of time when waiting
-    )
-    # for needed incoming samples
-    agent_scheduler: Callable[..., Any] | None = (
-        None  # if not None, must be of the form f(Agent, epoch), called at the beginning of
-    )
-    # each epoch
-    start_training: int = (
-        0  # minimum number of samples in the replay buffer before starting training
-    )
-    device: str | None = None  # device on which the model of the TrainingAgent will live
-    python_profiling: bool = (
-        False  # if True, run_epoch will be profiled and the profiling will be printed at the end
-    )
-    # of each epoch
+    env_cls: type[Any] | None = None
+    memory_cls: type[Any] | None = None
+    training_agent_cls: type[Any] | None = None
+    epochs: int = 10
+    rounds: int = 50
+    steps: int = 2000
+    update_model_interval: int = 100
+    update_buffer_interval: int = 100
+    max_training_steps_per_env_step: float = 1.0
+    sleep_between_buffer_retrieval_attempts: float = 1.0
+    agent_scheduler: Callable[..., Any] | None = None
+    start_training: int = 0
+    device: str | None = None
+    python_profiling: bool = False
     pytorch_profiling: bool = False
+    batches_per_step: int = 1
     total_updates = 0
 
     def __post_init__(self):
@@ -163,30 +229,71 @@ class TrainingOffline:
         self.memory = self.memory_cls(nb_steps=self.steps, device=device)
         if isinstance(self.env_cls, tuple):
             _, action_space = self.env_cls
+            self._observation_space_from_env = None
         else:
             with self.env_cls() as env:
                 action_space = env.action_space
+                self._observation_space_from_env = env.observation_space
+                _dim = _observation_dim(env.observation_space)
+                logger.info(
+                    " Trainer env: interface={}, observation_space total_dim={}",
+                    cfg_obj.INTERFACE_DISPLAY_NAME,
+                    _dim,
+                )
         self._action_space = action_space
-        # Build agent only when we have data: observation_space is inferred from
-        # buffer/batch so it never depends on config (e.g. POINTS_NUMBER / track length).
         if len(self.memory) > 0:
-            prev_obs, *_ = self.memory.get_transition(0)
-            observation_space = _observation_space_from_sample(prev_obs)
-            dim = _observation_dim(observation_space)
-            logger.info(
-                " Inferred observation_space from replay buffer at init (dim=%s), building agent.",
-                dim,
-            )
+            if self._observation_space_from_env is not None:
+                observation_space = self._observation_space_from_env
+                env_dim = _observation_dim(observation_space)
+                prev_obs, *_ = self.memory.get_transition(0)
+                buffer_dim = _observation_dim(_observation_space_from_sample(prev_obs))
+                if buffer_dim != env_dim:
+                    logger.warning(
+                        " Buffer observation dim (%s) != env dim (%s); clearing buffer so trainer "
+                        "matches worker (e.g. TRACK_CURVATURE_OBS changed).",
+                        buffer_dim,
+                        env_dim,
+                    )
+                    self.memory.data = []
+                dim = _observation_dim(observation_space)
+                logger.info(
+                    " Building agent from env observation_space (dim=%s), trainer matches worker.",
+                    dim,
+                )
+            else:
+                prev_obs, *_ = self.memory.get_transition(0)
+                observation_space = _observation_space_from_sample(prev_obs)
+                dim = _observation_dim(observation_space)
+                logger.info(
+                    " Inferred observation_space from replay at init (dim=%s), building agent.",
+                    dim,
+                )
+            # Enable TF32 for faster matmul on Ampere+ GPUs
+            if device.startswith("cuda"):
+                torch.backends.cuda.matmul.allow_tf32 = True
+                torch.backends.cudnn.allow_tf32 = True
+                logger.info(" Enabled TF32 for faster CUDA matmul operations")
+
             self.agent = self.training_agent_cls(
                 observation_space=observation_space,
                 action_space=action_space,
                 device=device,
             )
+
+            # Compile model with torch.compile if available (PyTorch 2.0+)
+            if hasattr(torch, "compile") and device.startswith("cuda"):
+                try:
+                    logger.info(" Compiling model with torch.compile (default mode)...")
+                    self.agent.model = torch.compile(self.agent.model, mode="default")
+                    self.agent.model_target = torch.compile(self.agent.model_target, mode="default")
+                    logger.info(" Model compilation complete")
+                except Exception as e:
+                    logger.warning(" Model compilation failed (continuing without compile): {}", e)
         else:
             self.agent = None
             logger.info(
                 " Replay buffer empty at init; agent will be built from first available data "
-                "(buffer or batch) so observation_space matches training data."
+                "(env or buffer) so observation_space matches worker."
             )
         self.total_samples = len(self.memory)
         self._injected_player_run_ids: set[str] = set()
@@ -213,12 +320,34 @@ class TrainingOffline:
 
     def _ensure_agent_from_data(self, batch=None):
         """
-        Build or rebuild the agent so observation_space matches the data we train on.
-        When a batch is provided, if its observation dim differs from the current agent,
-        the agent is rebuilt from the batch (handles mixed buffer: e.g. 369 from workers,
-        363 from player runs).
+        Build or rebuild the agent so observation_space matches the worker (from env_cls)
+        or, when env_cls is a tuple, from replay data.
+        Using env_cls.observation_space when available ensures trainer and worker
+        always use the same model shape (e.g. when TRACK_CURVATURE_OBS or config changes).
         """
-        if batch is not None:
+        observation_space = None
+        if self._observation_space_from_env is not None:
+            observation_space = self._observation_space_from_env
+            dim = _observation_dim(observation_space)
+            if self.agent is not None and _observation_dim(self.agent.observation_space) == dim:
+                return
+            if len(self.memory) > 0:
+                prev_obs, *_ = self.memory.get_transition(0)
+                buffer_dim = _observation_dim(_observation_space_from_sample(prev_obs))
+                if buffer_dim != dim:
+                    logger.warning(
+                        " Buffer observation dim ({}) != env dim ({}); clearing buffer so trainer "
+                        "matches worker (e.g. TRACK_CURVATURE_OBS changed).",
+                        buffer_dim,
+                        dim,
+                    )
+                    self.memory.data = []
+                    self.total_samples = 0
+            logger.info(
+                " Building agent from env observation_space (dim={}) so trainer matches worker.",
+                dim,
+            )
+        elif batch is not None:
             one_obs = _one_obs_from_batch(batch[0])
             batch_obs_space = _observation_space_from_sample(one_obs)
             batch_dim = _observation_dim(batch_obs_space)
@@ -227,12 +356,15 @@ class TrainingOffline:
                 if batch_dim == current_dim:
                     return
                 logger.warning(
-                    " Observation dim from batch (%s) != agent (%s); rebuilding agent from batch.",
+                    " Observation dim from batch ({}) != agent ({}); rebuilding agent from batch.",
                     batch_dim,
                     current_dim,
                 )
             observation_space = batch_obs_space
-            dim = batch_dim
+            logger.info(
+                " Building agent from batch (observation dim={}).",
+                batch_dim,
+            )
         elif self.agent is not None:
             return
         elif len(self.memory) > 0:
@@ -247,15 +379,28 @@ class TrainingOffline:
                 one_obs = arr.squeeze()
             observation_space = _observation_space_from_sample(one_obs)
             dim = _observation_dim(observation_space)
-        else:
+            logger.info(
+                " Building agent from memory (observation dim={}).",
+                dim,
+            )
+        if observation_space is None:
             return
-        logger.info(
-            " Building agent from data (observation dim=%s); "
-            "observation_space independent of config.",
-            dim,
-        )
         device = self.device or "cpu"
-        self.agent = self.training_agent_cls(
+        # Handle case where checkpoint contains old training_agent_cls with incompatible params
+        # (e.g., IQNAgent doesn't accept model_cls/kappa but old checkpoints may have them)
+        agent_cls = self.training_agent_cls
+        if hasattr(agent_cls, 'keywords') and hasattr(agent_cls, 'func'):
+            from functools import partial
+            import inspect
+            sig = inspect.signature(agent_cls.func.__init__)
+            valid_params = set(sig.parameters.keys())
+            # Filter out keywords that the agent class doesn't accept
+            # (excluding 'self' which is always in signature but not passed)
+            invalid_keys = [k for k in agent_cls.keywords if k not in valid_params]
+            if invalid_keys:
+                new_keywords = {k: v for k, v in agent_cls.keywords.items() if k in valid_params}
+                agent_cls = partial(agent_cls.func, *agent_cls.args, **new_keywords)
+        self.agent = agent_cls(
             observation_space=observation_space,
             action_space=self._action_space,
             device=device,
@@ -268,8 +413,23 @@ class TrainingOffline:
         Actions:
         Retrieves buffer data from the interface and appends it to the memory.
         Updates the count of total samples.
+        Buffers whose observation dim does not match env (e.g. old format from server)
+        are discarded so they never enter memory.
         """
         buffer = interface.retrieve_buffer()
+        if len(buffer) > 0 and self._observation_space_from_env is not None:
+            first_obs = buffer.memory[0][1]
+            buffer_dim = _observation_dim(_observation_space_from_sample(first_obs))
+            env_dim = _observation_dim(self._observation_space_from_env)
+            if buffer_dim != env_dim:
+                logger.warning(
+                    " Discarding received buffer: observation dim ({}) != env dim ({}). "
+                    "Server may still have old-format samples; only buffers matching current "
+                    "interface will be accepted.",
+                    buffer_dim,
+                    env_dim,
+                )
+                return
         self.memory.append(buffer)
         self.total_samples += len(buffer)
 
@@ -367,14 +527,29 @@ class TrainingOffline:
         num_elements = 5
         step_size = max(1, int(self.steps / (num_elements - 1)))
         batch_index_checkpoints = {i * step_size for i in range(num_elements)}
+        n_per_step = max(1, int(self.batches_per_step))
+        # Sample synchronously; ThreadPoolExecutor gave no real parallelism due to GIL.
+        # For true parallel sampling, use torch.utils.data.DataLoader with num_workers > 0.
         for batch_index in range(self.steps):
             t_sample_start = time.perf_counter()
-            batch = self.memory.sample()
+            batches = [self.memory.sample() for _ in range(n_per_step)]
+            batch = _concat_batches(batches)
+
+            # --- FIX: Importance Sampling Weight Normalization ---
+            # If the batch contains IS weights (from PER), we MUST normalize by max(w)
+            # to prevent gradient spikes as per the Architectural Review.
+            if len(batch) >= 7 and isinstance(batch[6], dict):
+                info = batch[6]
+                if "is_weight" in info:
+                    weights = info["is_weight"]
+                    # Normalize: w_i = w_i / max(batch_w)
+                    max_w = torch.max(weights) + 1e-8
+                    info["is_weight"] = weights / max_w
+
             t_sample = time.time()
             self._perf_acc["sample_s"] += time.perf_counter() - t_sample_start
 
             if self.total_updates % self.update_buffer_interval == 0:
-                # retrieve local buffer in replay memory
                 t_update_buffer_start = time.perf_counter()
                 self.update_buffer(interface)
                 self._perf_acc["update_buffer_s"] += time.perf_counter() - t_update_buffer_start
@@ -391,18 +566,71 @@ class TrainingOffline:
 
             self._ensure_agent_from_data(batch=batch)
 
+            if self.agent is not None and self._observation_space_from_env is not None:
+                batch_dim = _batch_observation_dim(batch)
+                agent_dim = _observation_dim(self.agent.observation_space)
+                if batch_dim != agent_dim:
+                    logger.warning(
+                        " Batch observation dim ({}) != agent dim ({}) from env. "
+                        "Memory contains stale data from a previous config; "
+                        "clearing replay buffer and waiting for fresh worker data.",
+                        batch_dim,
+                        agent_dim,
+                    )
+                    self.memory.data = []
+                    self.total_samples = 0
+                    break
+
+            _check_observation_integrity(batch)
             t_train_start = time.perf_counter()
             stats_training_dict = self.agent.train(batch, self.epoch, batch_index, len(self.memory))
             self._perf_acc["train_s"] += time.perf_counter() - t_train_start
 
+            if "td_errors" in stats_training_dict and "batch_indices" in stats_training_dict:
+                bi = stats_training_dict["batch_indices"]
+                td = stats_training_dict["td_errors"]
+                if hasattr(self.memory, "update_priorities"):
+                    indices_tuple = (
+                        tuple(bi.tolist()) if hasattr(bi, "tolist") else tuple(int(x) for x in bi)
+                    )
+                    self.memory.update_priorities(indices_tuple, np.asarray(td))
+
+            # Warn when loss is NaN/inf so it is not silently shown as 0 in logs
+            la = stats_training_dict.get("losses/actor")
+            lc = stats_training_dict.get("losses/critic")
+
+            def _is_bad(x):
+                if x is None:
+                    return False
+                if isinstance(x, torch.Tensor):
+                    return bool(torch.isnan(x).any() or torch.isinf(x).any())
+                return math.isnan(x) or math.isinf(x)
+
+            if _is_bad(la) or _is_bad(lc):
+                logger.warning(
+                    " NaN or inf loss (loss_actor={}, loss_critic={}). "
+                    "Try MIXED_PRECISION: false or lower learning rate.",
+                    la,
+                    lc,
+                )
+
             t_train = time.time()
 
-            stats_training_dict["return_test"] = self.memory.stat_test_return
-            stats_training_dict["return_train"] = self.memory.stat_train_return
-            stats_training_dict["episode_length_test"] = self.memory.stat_test_steps
-            stats_training_dict["episode_length_train"] = self.memory.stat_train_steps
-            stats_training_dict["sampling_duration"] = t_sample - t_sample_prev
-            stats_training_dict["training_step_duration"] = t_train - t_update_buffer
+            stats_training_dict["metrics/return_test"] = self.memory.stat_test_return
+            stats_training_dict["metrics/return_train"] = self.memory.stat_train_return
+            stats_training_dict["metrics/episode_length_test"] = self.memory.stat_test_steps
+            stats_training_dict["metrics/episode_length_train"] = self.memory.stat_train_steps
+            # Deterministic eval for separate wandb plots
+            stats_training_dict["eval/return_deterministic"] = self.memory.stat_test_return
+            stats_training_dict["eval/episode_length_deterministic"] = self.memory.stat_test_steps
+            stats_training_dict["eval/finish_time_test_s"] = getattr(
+                self.memory, "stat_test_finish_time", 0.0
+            )
+            stats_training_dict["eval/finished_track_count_test"] = getattr(
+                self.memory, "stat_test_finished_count", 0
+            )
+            stats_training_dict["timing/sampling_duration"] = t_sample - t_sample_prev
+            stats_training_dict["timing/training_step_duration"] = t_train - t_update_buffer
             if hasattr(self.memory, "last_sample_demo_fraction"):
                 stats_training_dict["debug/demo_fraction_in_batch"] = float(
                     self.memory.last_sample_demo_fraction
@@ -411,7 +639,6 @@ class TrainingOffline:
             self.total_updates += 1
             self._perf_acc["batches"] += 1
             if self.total_updates % self.update_model_interval == 0:
-                # broadcast model weights
                 t_broadcast_start = time.perf_counter()
                 interface.broadcast_model(self.agent.get_actor())
                 self._perf_acc["broadcast_s"] += time.perf_counter() - t_broadcast_start
@@ -482,9 +709,12 @@ class TrainingOffline:
             )
             stats += (
                 pandas_dict(
-                    memory_len=len(self.memory),
-                    round_time=round_time,
-                    idle_time=idle_time,
+                    **{
+                        "buffer/memory_len": len(self.memory),
+                        "timing/round_time": round_time,
+                        "timing/idle_time": idle_time,
+                        "step": self.total_updates,
+                    },
                     **_mean_stats_dicts(stats_training),
                 ),
             )
@@ -507,6 +737,10 @@ class TrainingOffline:
                 pro.stop()
                 logger.info(pro.output_text(unicode=True, color=False, show_all=True))
 
+            # PyTorch profiler: log detailed GPU/CPU profiling to file every epoch
+            if self.pytorch_profiling and self.agent is not None:
+                self._log_pytorch_profiler_stats()
+
         self._maybe_save_best_checkpoint(stats)
         self.epoch += 1
         return stats
@@ -514,15 +748,17 @@ class TrainingOffline:
     def _maybe_save_best_checkpoint(self, stats):
         """Save actor weights when epoch-average return_train improves."""
         try:
-            returns = [s.get("return_train", float("nan")) for s in stats if hasattr(s, "get")]
-            valid = [r for r in returns if r == r]  # filter nan
+            returns = [
+                s.get("metrics/return_train", float("nan")) for s in stats if hasattr(s, "get")
+            ]
+            valid = [r for r in returns if r == r]
             if not valid:
                 return
             mean_ret = sum(valid) / len(valid)
             if mean_ret > self._best_return_train and mean_ret > 0:
                 self._best_return_train = mean_ret
                 self._best_epoch = self.epoch
-                best_path = cfg.WEIGHTS_FOLDER / "best_actor.pth"
+                best_path = cfg_paths.WEIGHTS_FOLDER / "best_actor.pth"
                 import torch
 
                 torch.save(self.agent.get_actor().state_dict(), str(best_path))
@@ -534,6 +770,120 @@ class TrainingOffline:
                 )
         except Exception as e:
             logger.warning(" Failed to save best checkpoint: {}", e)
+
+    @staticmethod
+    def _evt_cuda_time(evt) -> float:
+        """Extract CUDA/device time from a profiler event, compatible across PyTorch versions."""
+        attrs = (
+            "cuda_time_total",
+            "self_cuda_time_total",
+            "device_time_total",
+            "self_device_time_total",
+        )
+        for attr in attrs:
+            val = getattr(evt, attr, None)
+            if val is not None:
+                return float(val)
+        return 0.0
+
+    @staticmethod
+    def _evt_cpu_time(evt) -> float:
+        for attr in ("cpu_time_total", "self_cpu_time_total"):
+            val = getattr(evt, attr, None)
+            if val is not None:
+                return float(val)
+        return 0.0
+
+    def _log_pytorch_profiler_stats(self):
+        """Run PyTorch profiler on a single training batch and log results to file."""
+        try:
+            import json
+            from pathlib import Path
+
+            from torch.profiler import ProfilerActivity, profile
+
+            profiler_dir = Path(cfg_paths.WEIGHTS_FOLDER) / "profiler_logs"
+            profiler_dir.mkdir(parents=True, exist_ok=True)
+            log_file = profiler_dir / f"epoch_{self.epoch}_profile.json"
+
+            batch = self.memory.sample()
+
+            with profile(
+                activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
+                with_stack=True,
+                record_shapes=True,
+                profile_memory=True,
+            ) as prof:
+                self.agent.train(batch, self.epoch, 0, len(self.memory))
+
+            stats = {
+                "epoch": self.epoch,
+                "timestamp": datetime.datetime.now().isoformat(),
+                "device": str(self.device),
+                "batch_size": (
+                    self.memory.batch_size if hasattr(self.memory, "batch_size") else "unknown"
+                ),
+                "memory_len": len(self.memory),
+            }
+
+            key_averages = prof.key_averages()
+            if len(key_averages) > 0:
+                cuda_sorted = sorted(key_averages, key=self._evt_cuda_time, reverse=True)[:20]
+                cpu_sorted = sorted(key_averages, key=self._evt_cpu_time, reverse=True)[:20]
+
+                total_cuda = sum(self._evt_cuda_time(e) for e in key_averages)
+                total_cpu = sum(self._evt_cpu_time(e) for e in key_averages)
+
+                stats["top_cuda_ops"] = [
+                    {
+                        "name": evt.key,
+                        "cuda_time_ms": round(self._evt_cuda_time(evt) / 1e3, 3),
+                        "cuda_time_percent": (
+                            round(self._evt_cuda_time(evt) / total_cuda * 100, 2)
+                            if total_cuda > 0
+                            else 0
+                        ),
+                        "calls": evt.count,
+                    }
+                    for evt in cuda_sorted
+                ]
+
+                stats["top_cpu_ops"] = [
+                    {
+                        "name": evt.key,
+                        "cpu_time_ms": round(self._evt_cpu_time(evt) / 1e3, 3),
+                        "cpu_time_percent": (
+                            round(self._evt_cpu_time(evt) / total_cpu * 100, 2)
+                            if total_cpu > 0
+                            else 0
+                        ),
+                        "calls": evt.count,
+                    }
+                    for evt in cpu_sorted
+                ]
+
+                stats["total_cuda_time_ms"] = round(total_cuda / 1e3, 3)
+                stats["total_cpu_time_ms"] = round(total_cpu / 1e3, 3)
+                stats["cuda_cpu_ratio"] = round(total_cuda / total_cpu, 3) if total_cpu > 0 else 0
+
+            with open(log_file, "w") as f:
+                json.dump(stats, f, indent=2)
+
+            logger.info(" PyTorch profiler stats saved to {}", log_file)
+
+            if stats.get("top_cuda_ops"):
+                logger.info(" Top CUDA operations by time:")
+                for i, op in enumerate(stats["top_cuda_ops"][:5], 1):
+                    logger.info(
+                        "  {}. {}: {:.2f}ms ({:.1f}%)",
+                        i,
+                        op["name"],
+                        op["cuda_time_ms"],
+                        op["cuda_time_percent"],
+                    )
+
+        except Exception as e:
+            logger.warning(" PyTorch profiler failed: {}", e)
 
 
 class TorchTrainingOffline(TrainingOffline):
@@ -560,6 +910,7 @@ class TorchTrainingOffline(TrainingOffline):
         agent_scheduler: Callable[..., Any] | None = None,
         start_training: int = 0,
         device: str | None = None,
+        batches_per_step: int = 1,
     ):
         """
         Same as TrainingOffline; device=None selects automatically for torch.
@@ -576,9 +927,11 @@ class TorchTrainingOffline(TrainingOffline):
             max_training_steps_per_env_step (float): pause training when above this ratio
             sleep_between_buffer_retrieval_attempts (float): sleep when waiting for samples
             python_profiling (bool): profile run_epoch and print at end of each epoch
+            pytorch_profiling (bool): profile PyTorch operations and log to file
             agent_scheduler (callable): if not None, f(Agent, epoch) at start of each epoch
             start_training (int): min samples in replay buffer before training
             device (str): device for memory (None = auto)
+            batches_per_step (int): number of batches to merge per training step
         """
         device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         super().__init__(
@@ -597,4 +950,5 @@ class TorchTrainingOffline(TrainingOffline):
             device,
             python_profiling,
             pytorch_profiling,
+            batches_per_step,
         )

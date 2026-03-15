@@ -1,4 +1,4 @@
-.PHONY: fmt lint types check test install-dev
+.PHONY: fmt lint types check test tests install-dev
 
 fmt:
 	uv run ruff format .
@@ -14,6 +14,9 @@ check: lint types
 
 test:
 	uv run pytest
+
+tests:
+	uv run pytest tests/ -v
 
 install-dev:
 	uv sync --group dev

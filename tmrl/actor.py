@@ -2,6 +2,7 @@ import pickle
 from abc import ABC, abstractmethod
 from io import BytesIO
 
+import numpy as np
 import torch
 
 from tmrl.util import collate_torch
@@ -162,13 +163,42 @@ class TorchActorModule(ActorModule, torch.nn.Module, ABC):
     def load_from_bytes(self, payload: bytes, device):
         self.device = device
         buffer = BytesIO(payload)
-        self.load_state_dict(torch.load(buffer, map_location=self.device, weights_only=True))
+        try:
+            state = torch.load(buffer, map_location=self.device, weights_only=True)
+            try:
+                self.load_state_dict(state)
+            except RuntimeError:
+                # Trainer may wrap the actor (e.g. _AsymmetricActorAdapter) which
+                # adds an 'actor.' prefix to every key.  Strip it and retry.
+                prefix = "actor."
+                stripped = {
+                    k[len(prefix) :] if k.startswith(prefix) else k: v for k, v in state.items()
+                }
+                if stripped != state:
+                    self.load_state_dict(stripped)
+                else:
+                    raise
+        except RuntimeError as e:
+            if "size mismatch" in str(e) or "Missing key" in str(e) or "shape" in str(e).lower():
+                from loguru import logger
+
+                logger.warning(
+                    "Ignoring incompatible weights from server (shape mismatch). "
+                    "This is normal after a config change or trainer reset -- the worker "
+                    "will keep its current weights until the trainer broadcasts compatible ones. "
+                    "If this persists, restart server -> trainer -> worker."
+                )
+                return self
+            raise
         return self
 
     def act_(self, obs, test=False):
         obs = collate_torch([obs], device=self.device)
         with torch.no_grad():
             action = self.act(obs, test=test)
+        if action is not None:
+            action = np.nan_to_num(action, nan=0.0)
+            np.clip(action, -1.0, 1.0, out=action)
         return action
 
     # noinspection PyMethodOverriding

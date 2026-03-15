@@ -1,7 +1,7 @@
 import numpy as np
 from gymnasium import spaces
 
-import tmrl.config.config_constants as cfg
+import tmrl.config as cfg
 from tmrl.custom.interfaces.TM2020Interface import TM2020Interface
 from tmrl.custom.utils.control_mouse import mouse_save_replay_tm20
 
@@ -21,7 +21,6 @@ class TM2020InterfaceIMPALAwoImages(TM2020Interface):
         crash_penalty=cfg.CRASH_PENALTY,
         checkpoint_reward=cfg.CHECKPOINT_REWARD,
         lap_reward=cfg.LAP_REWARD,
-        nb_zero_rew_before_failure=70,
     ):
         super().__init__(
             img_hist_len=img_hist_len,
@@ -33,7 +32,6 @@ class TM2020InterfaceIMPALAwoImages(TM2020Interface):
             resize_to=resize_to,
             constant_penalty=constant_penalty,
             crash_penalty=crash_penalty,
-            nb_zero_rew_before_failure=nb_zero_rew_before_failure,
         )
         self.record = record
         self.window_interface = None
@@ -51,6 +49,7 @@ class TM2020InterfaceIMPALAwoImages(TM2020Interface):
             observation_space: gymnasium.spaces.Tuple
 
         Note: Do NOT put the action buffer here (automated).
+        Ensure rtgym config has act_buf_len and reset_act_buf set appropriately for RT-MDP.
         """
         speed = spaces.Box(low=0.0, high=1000.0, shape=(1,))
 
@@ -105,7 +104,6 @@ class TM2020InterfaceIMPALAwoImages(TM2020Interface):
         obs must be a list of numpy arrays
         """
         data = self.grab_data()
-        # print(f"data: {data}")
         cur_cp = int(data[0])
         cur_lap = int(data[1])
 
@@ -129,19 +127,24 @@ class TM2020InterfaceIMPALAwoImages(TM2020Interface):
 
         gear = np.array([data[18]], dtype="float32")
 
+        end_of_track = bool(data[9])
+
         rew, terminated, failure_counter, reward_sum = self.reward_function.compute_reward(
-            pos=pos,  # position x,y,z
+            pos=pos,
             crashed=bool(self.is_crashed),
             speed=speed[0],
             next_cp=self.cur_checkpoint < cur_cp,
             next_lap=self.cur_lap < cur_lap,
+            end_of_track=end_of_track,
+            input_brake=float(input_brake[0]),
+            aim_yaw=float(aim_yaw[0]),
+            input_steer=float(input_steer[0]),
+            gear=float(gear[0]),
         )
 
         race_progress = self.reward_function.compute_race_progress()
 
         next_checkpoints = self.reward_function.get_n_next_checkpoints_xy(pos, self.points_number)
-
-        end_of_track = bool(data[9])
 
         if not self.is_crashed:
             self.crash_cooldown -= 1
@@ -156,6 +159,11 @@ class TM2020InterfaceIMPALAwoImages(TM2020Interface):
 
         failure_counter = np.array([float(failure_counter)])
         info = {"reward_sum": reward_sum}
+        if getattr(self.client, "_last_retrieve_invalid", False):
+            terminated = True
+            info["telemetry_invalid"] = True
+        if getattr(self.client, "_last_retrieve_position_patched", False):
+            info["position_patched"] = True
 
         observation = [
             speed,

@@ -6,7 +6,7 @@ import time
 import numpy as np
 from loguru import logger
 
-import tmrl.config.config_constants as cfg
+import tmrl.config as cfg
 from tmrl.custom.tm.utils.tools import TM2020OpenPlanetClient
 
 PATH_REWARD = cfg.REWARD_PATH

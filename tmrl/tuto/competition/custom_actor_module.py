@@ -59,7 +59,7 @@ from math import floor
 
 # And a couple external libraries:
 import numpy as np
-import tmrl.config.config_constants as cfg
+import tmrl.config as cfg
 
 # Useful classes:
 import tmrl.config.config_objects as cfg_obj

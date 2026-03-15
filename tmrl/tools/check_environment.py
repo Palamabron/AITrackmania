@@ -4,7 +4,7 @@ import gymnasium
 from loguru import logger
 from rtgym.envs.real_time_env import DEFAULT_CONFIG_DICT
 
-import tmrl.config.config_constants as cfg
+import tmrl.config as cfg
 
 # local imports
 from tmrl.custom.interfaces.TM2020Interface import TM2020Interface

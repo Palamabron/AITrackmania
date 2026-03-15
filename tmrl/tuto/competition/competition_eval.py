@@ -5,7 +5,7 @@ and that your ActorModule class is named "MyActorModule".
 Set "SLEEP_TIME_AT_RESET" to 0.0 in config.json when using this script.
 """
 
-import tmrl.config.config_constants as cfg
+import tmrl.config as cfg
 import tmrl.config.config_objects as cfg_obj
 from tmrl.envs import GenericGymEnv
 from tmrl.networking import RolloutWorker

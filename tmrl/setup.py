@@ -9,7 +9,7 @@ from zipfile import ZipFile
 
 from setuptools import find_packages, setup
 
-import config.config_constants as cfg
+import config as cfg
 
 RESOURCES_URL = "https://github.com/trackmania-rl/tmrl/releases/download/v0.4.2/resources.zip"
 

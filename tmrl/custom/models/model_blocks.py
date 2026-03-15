@@ -8,9 +8,9 @@ from torch import nn
 from torch.distributions import Normal
 from torch.nn import Conv2d, Module
 
-import tmrl.config.config_constants as cfg
+import tmrl.config as cfg
 from tmrl.actor import TorchActorModule
-from tmrl.custom.models.model_constants import LOG_STD_MAX, LOG_STD_MIN, effnetv2_s
+from tmrl.custom.models.model_constants import LOG_STD_MAX, LOG_STD_MIN, effnetv2_s, effnetv2_xs
 
 
 def combined_shape(length, shape=None):
@@ -45,17 +45,15 @@ def _make_divisible(v, divisor, min_value=None):
     if min_value is None:
         min_value = divisor
     new_v = max(min_value, int(v + divisor / 2) // divisor * divisor)
-    # Make sure that round down does not go down by more than 10%.
     if new_v < 0.9 * v:
         new_v += divisor
     return new_v
 
 
-# SiLU (Swish) activation function
 if hasattr(nn, "SiLU"):
     SiLU = nn.SiLU
 else:
-    # For compatibility with old PyTorch versions
+
     class SiLU(nn.Module):  # type: ignore[no-redef]
         @staticmethod
         def forward(x):
@@ -84,6 +82,18 @@ def conv_3x3_bn(inp, oup, stride):
     return nn.Sequential(nn.Conv2d(inp, oup, 3, stride, 1, bias=False), nn.BatchNorm2d(oup), SiLU())
 
 
+def conv_dw_3x3_bn(inp, oup, stride):
+    """Depthwise 3x3 + pointwise 1x1 stem; fewer ops than full conv_3x3_bn."""
+    return nn.Sequential(
+        nn.Conv2d(inp, inp, 3, stride, 1, groups=inp, bias=False),
+        nn.BatchNorm2d(inp),
+        SiLU(),
+        nn.Conv2d(inp, oup, 1, 1, 0, bias=False),
+        nn.BatchNorm2d(oup),
+        SiLU(),
+    )
+
+
 def conv_1x1_bn(inp, oup):
     return nn.Sequential(nn.Conv2d(inp, oup, 1, 1, 0, bias=False), nn.BatchNorm2d(oup), SiLU())
 
@@ -97,26 +107,21 @@ class MBConv(nn.Module):
         self.identity = stride == 1 and inp == oup
         if use_se:
             self.conv = nn.Sequential(
-                # pw
                 nn.Conv2d(inp, hidden_dim, 1, 1, 0, bias=False),
                 nn.BatchNorm2d(hidden_dim),
                 SiLU(),
-                # dw
                 nn.Conv2d(hidden_dim, hidden_dim, 3, stride, 1, groups=hidden_dim, bias=False),
                 nn.BatchNorm2d(hidden_dim),
                 SiLU(),
                 SELayer(inp, hidden_dim),
-                # pw-linear
                 nn.Conv2d(hidden_dim, oup, 1, 1, 0, bias=False),
                 nn.BatchNorm2d(oup),
             )
         else:
             self.conv = nn.Sequential(
-                # fused
                 nn.Conv2d(inp, hidden_dim, 3, stride, 1, bias=False),
                 nn.BatchNorm2d(hidden_dim),
                 SiLU(),
-                # pw-linear
                 nn.Conv2d(hidden_dim, oup, 1, 1, 0, bias=False),
                 nn.BatchNorm2d(oup),
             )
@@ -128,29 +133,30 @@ class MBConv(nn.Module):
             return self.conv(x)
 
 
-# -----------------------------------------------------------------------------
-# Residual MLP block (paper 2503.14858: depth scaling with LayerNorm + Swish)
-# Block = Dense -> LayerNorm -> Swish -> Dense -> LayerNorm -> Swish; then add input (residual).
-# -----------------------------------------------------------------------------
-
-
 class ResidualMLPBlock(nn.Module):
-    """Residual block: Linear->LN->Swish->Linear->LN->Swish; out = x + block(x)."""
+    """Residual block: Linear->LN->Swish->Linear->LN->Swish; out = x + scale * block(x).
 
-    def __init__(self, dim: int):
+    Uses 1/sqrt(num_blocks) scaling to prevent activation accumulation in deep stacks,
+    and zero-initializes the second linear so blocks start as near-identity (ReZero-like).
+    """
+
+    def __init__(self, dim: int, scale: float = 1.0):
         super().__init__()
         self.linear1 = nn.Linear(dim, dim)
         self.ln1 = nn.LayerNorm(dim)
         self.linear2 = nn.Linear(dim, dim)
         self.ln2 = nn.LayerNorm(dim)
         self.act = SiLU()
+        self.scale = scale
         self._init_weights()
 
     def _init_weights(self):
-        for m in (self.linear1, self.linear2):
-            nn.init.orthogonal_(m.weight, gain=1.0)
-            if m.bias is not None:
-                nn.init.zeros_(m.bias)
+        nn.init.orthogonal_(self.linear1.weight, gain=1.0)
+        if self.linear1.bias is not None:
+            nn.init.zeros_(self.linear1.bias)
+        nn.init.zeros_(self.linear2.weight)
+        if self.linear2.bias is not None:
+            nn.init.zeros_(self.linear2.bias)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         out = self.linear1(x)
@@ -158,7 +164,7 @@ class ResidualMLPBlock(nn.Module):
         out = self.act(out)
         out = self.linear2(out)
         out = self.ln2(out)
-        return cast(torch.Tensor, x + self.act(out))
+        return cast(torch.Tensor, x + self.scale * self.act(out))
 
 
 def residual_mlp_backbone(
@@ -166,26 +172,137 @@ def residual_mlp_backbone(
     hidden_dim: int,
     num_blocks: int,
 ) -> nn.Module:
-    """Build residual MLP: input_proj -> num_blocks x ResidualMLPBlock. Output dim = hidden_dim."""
+    """Build residual MLP: input_proj -> num_blocks x ResidualMLPBlock. Output dim = hidden_dim.
+
+    Each block's residual contribution is scaled by 1/sqrt(num_blocks) to prevent
+    activation magnitude growth in deep stacks.
+    """
     layers: list[nn.Module] = []
     layers.append(nn.Linear(input_dim, hidden_dim))
     layers.append(nn.LayerNorm(hidden_dim))
     layers.append(SiLU())
+    scale = 1.0 / max(1, num_blocks) ** 0.5
     for _ in range(num_blocks):
-        layers.append(ResidualMLPBlock(hidden_dim))
+        layers.append(ResidualMLPBlock(hidden_dim, scale=scale))
     return nn.Sequential(*layers)
 
 
-# -----------------------------------------------------------------------------
-# Frozen small EfficientNet encoder: image -> embeddings for further layers
-# -----------------------------------------------------------------------------
+def _l2_normalize(x: torch.Tensor, dim: int = -1, eps: float = 1e-8) -> torch.Tensor:
+    """Project ``x`` onto the unit hypersphere along ``dim``."""
+    result: torch.Tensor = x / (x.norm(dim=dim, keepdim=True) + eps)
+    return result
+
+
+class HypersphericalLinear(nn.Module):
+    """Linear layer with unit-norm weight rows and a learnable scaling vector.
+
+    After each optimizer step, call `project_weights()` to re-normalize rows
+    to the unit hypersphere (or use the SimbaV2Backbone wrapper that does it).
+    """
+
+    def __init__(self, in_features: int, out_features: int):
+        super().__init__()
+        self.weight = nn.Parameter(torch.empty(out_features, in_features))
+        self.scaler = nn.Parameter(torch.ones(out_features))
+        nn.init.orthogonal_(self.weight)
+        self.project_weights()
+
+    @torch.no_grad()
+    def project_weights(self):
+        self.weight.copy_(_l2_normalize(self.weight, dim=1))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return nn.functional.linear(x, self.weight) * self.scaler
+
+
+class SimbaV2Block(nn.Module):
+    """SimbaV2 residual block: inverted-bottleneck MLP + LERP + L2-norm.
+
+    Architecture (per paper Eq.11-12):
+      h_tilde = l2_norm(W2 * relu(W1 * h * s))    -- inverted bottleneck
+      h_out   = l2_norm((1 - alpha) * h + alpha * h_tilde)  -- LERP
+    """
+
+    def __init__(self, dim: int, expand_ratio: int = 4):
+        super().__init__()
+        inner_dim = dim * expand_ratio
+        self.up_proj = HypersphericalLinear(dim, inner_dim)
+        self.down_proj = HypersphericalLinear(inner_dim, dim)
+        self.alpha = nn.Parameter(torch.full((dim,), 0.5))
+
+    def project_weights(self):
+        self.up_proj.project_weights()
+        self.down_proj.project_weights()
+
+    def forward(self, h: torch.Tensor) -> torch.Tensor:
+        h_tilde = self.up_proj(h)
+        h_tilde = torch.relu(h_tilde)
+        h_tilde = self.down_proj(h_tilde)
+        h_tilde = _l2_normalize(h_tilde)
+        alpha = self.alpha.sigmoid()
+        out = (1.0 - alpha) * h + alpha * h_tilde
+        return _l2_normalize(out)
+
+
+class SimbaV2Backbone(nn.Module):
+    """SimbaV2 backbone: shift + L2-norm input, hyperspherical residual blocks.
+
+    Replaces residual_mlp_backbone when USE_SIMBAV2=true in config.
+    Call `project_weights()` after each optimizer step.
+    """
+
+    def __init__(self, input_dim: int, hidden_dim: int, num_blocks: int, c_shift: float = 1.0):
+        super().__init__()
+        self.c_shift = c_shift
+        self.input_proj = HypersphericalLinear(input_dim + 1, hidden_dim)
+        self.blocks = nn.ModuleList([SimbaV2Block(hidden_dim) for _ in range(num_blocks)])
+
+    @torch.no_grad()
+    def project_weights(self):
+        self.input_proj.project_weights()
+        for block in self.blocks:
+            block.project_weights()
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        shift = torch.full((*x.shape[:-1], 1), self.c_shift, device=x.device, dtype=x.dtype)
+        x = torch.cat([x, shift], dim=-1)
+        x = _l2_normalize(x)
+        x = self.input_proj(x)
+        x = _l2_normalize(x)
+        for block in self.blocks:
+            x = block(x)
+        return x
+
+
+def simba_v2_backbone(
+    input_dim: int,
+    hidden_dim: int,
+    num_blocks: int,
+    c_shift: float = 1.0,
+) -> SimbaV2Backbone:
+    """Build SimbaV2 backbone. Output dim = hidden_dim (features on the unit hypersphere)."""
+    return SimbaV2Backbone(input_dim, hidden_dim, num_blocks, c_shift=c_shift)
+
+
+_EFFNET_VARIANTS = {
+    "xs": effnetv2_xs,
+    "s": effnetv2_s,
+}
 
 
 class FrozenEfficientNetEncoder(nn.Module):
     """
-    Small EfficientNetV2-S (width_mult <= 1.0) that outputs a fixed-size embedding.
-    All parameters are frozen (no gradients). Use as a feature extractor whose
-    embeddings are fed to further layers (e.g. residual MLP head).
+    EfficientNetV2 feature extractor. Can be frozen (no gradients) or trainable.
+
+    - frozen=True (default): All parameters have requires_grad=False, forward uses
+      torch.no_grad(). Use for a fixed feature extractor (e.g. USE_FROZEN_EFFNET=true).
+      Encoder kept in train mode so BatchNorm uses batch statistics (running stats
+      not calibrated when frozen from random init).
+    - frozen=False: Encoder is trainable. Use config USE_FROZEN_EFFNET=false to train
+      the image encoder end-to-end with the rest of the model.
+
+    Supported variants: "xs" (8 blocks, fast), "s" (40 blocks, original).
+    use_dw_stem=True: depthwise-separable first conv (faster). FROZEN_EFFNET_USE_DW_STEM.
     """
 
     def __init__(
@@ -193,19 +310,47 @@ class FrozenEfficientNetEncoder(nn.Module):
         nb_channels_in: int = 4,
         embed_dim: int = 256,
         width_mult: float = 0.5,
+        variant: str = "xs",
+        use_dw_stem: bool = False,
+        frozen: bool = True,
     ):
         super().__init__()
         self.embed_dim = embed_dim
-        self._encoder = effnetv2_s(
+        self._frozen = frozen
+        factory = _EFFNET_VARIANTS.get(variant)
+        if factory is None:
+            raise ValueError(
+                f"Unknown EfficientNet variant '{variant}', choose from {list(_EFFNET_VARIANTS)}"
+            )
+        self._encoder = factory(
             nb_channels_in=nb_channels_in,
             dim_output=embed_dim,
             width_mult=width_mult,
+            use_dw_stem=use_dw_stem,
         )
-        for p in self._encoder.parameters():
-            p.requires_grad = False
+        if frozen:
+            for p in self._encoder.parameters():
+                p.requires_grad = False
+            # Keep in train mode: BatchNorm must use batch statistics since running
+            # stats are never calibrated (encoder is frozen from random init).
+            self._encoder.train()
+
+    def train(self, mode: bool = True):
+        """When frozen: always keep encoder in train mode for BatchNorm. When trainable: normal."""
+        super().train(mode)
+        if self._frozen:
+            self._encoder.train()
+        else:
+            self._encoder.train(mode)
+        return self
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Returns (batch, embed_dim) embeddings."""
+        """Returns (batch, embed_dim) embeddings. When frozen, forward is no_grad."""
+        if x.max() > 1.5:
+            x = x / 255.0
+        if self._frozen:
+            with torch.no_grad():
+                return cast(torch.Tensor, self._encoder(x))
         return cast(torch.Tensor, self._encoder(x))
 
 
@@ -319,24 +464,19 @@ class SquashedGaussianEffNetActor(TorchActorModule):
         log_std = torch.clamp(log_std, LOG_STD_MIN, LOG_STD_MAX)
         std = torch.exp(log_std)
 
-        # Pre-squash distribution and sample
         pi_distribution = Normal(mu, std)
         if test:
-            # Only used for evaluating policy at test time.
             pi_action = mu
         else:
             pi_action = pi_distribution.rsample()
 
         if with_logprob:
-            # Compute logprob from Gaussian, and then apply correction for Tanh squashing.
-            # NOTE: The correction formula is a little bit magic. To get an understanding
-            # of where it comes from, check out the original SAC paper (arXiv 1801.01290)
-            # and look in appendix C. This is a more numerically-stable equivalent to Eq 21.
-            # Try deriving it yourself as a (very difficult) exercise. :)
             logp_pi = pi_distribution.log_prob(pi_action).sum(axis=-1)
-            logp_pi -= (2 * (np.log(2) - pi_action - functional.softplus(-2 * pi_action))).sum(
-                axis=1
-            )
+            # Clamp pre-tanh to avoid -inf/NaN in squash log-prob correction
+            pi_action_for_corr = pi_action.clamp(-20.0, 20.0)
+            logp_pi -= (
+                2 * (np.log(2) - pi_action_for_corr - functional.softplus(-2 * pi_action_for_corr))
+            ).sum(axis=1)
         else:
             logp_pi = None
 
@@ -348,8 +488,6 @@ class SquashedGaussianEffNetActor(TorchActorModule):
         return pi_action, logp_pi
 
     def act(self, obs, test=False):
-        # import sys
-        # size = sys.getsizeof(obs)
         with torch.no_grad():
             a, _ = self.forward(obs, test, False)
             return a.cpu().numpy()

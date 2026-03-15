@@ -4,7 +4,7 @@ import cv2
 import numpy as np
 from gymnasium import spaces
 
-import tmrl.config.config_constants as cfg
+import tmrl.config as cfg
 from tmrl.custom.interfaces.TM2020InterfaceLidarProgress import TM2020InterfaceLidarProgress
 
 

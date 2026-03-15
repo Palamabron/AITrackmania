@@ -8,7 +8,7 @@ from pathlib import Path
 import tyro
 from loguru import logger
 
-import tmrl.config.config_constants as cfg
+import tmrl.config as cfg
 import tmrl.config.config_objects as cfg_obj
 from tmrl.tools.player_runs import import_player_runs_to_dataset
 
