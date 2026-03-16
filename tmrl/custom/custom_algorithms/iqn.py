@@ -108,12 +108,18 @@ class IQNAgent(TrainingAgent):
     double_dqn: bool = True
     target_update_freq: int = 1000
 
-    # Epsilon-greedy (cosine annealing with amplitude decay)
+    # Epsilon-greedy (cosine annealing with weight decay, cycles 1.05x longer each time)
     epsilon_start: float = 1.0
-    epsilon_end: float = 0.00005
-    epsilon_decay_steps: int = 500000
-    epsilon_cosine_cycle_runs: float = 200.0
-    epsilon_cosine_decay: float = 0.9
+    epsilon_end: float = 0.005
+    epsilon_decay_steps: int = 500000  # legacy; only used in log message
+    epsilon_cosine_t0: float = 50000.0  # first cycle length (in absolute training steps)
+    epsilon_cosine_tmult: float = 1.5  # each cycle is this much longer than previous
+    epsilon_cosine_decay: float = 0.8  # amplitude (peak) decay per cycle (weight decay)
+    # At end of each cycle, hold epsilon at epsilon_end for extra steps (then next cycle starts).
+    epsilon_cosine_floor_fraction: float = 0.05  # last fraction of cycle at floor (0 = disabled)
+    epsilon_cosine_floor_steps: int = (
+        0  # if > 0, last N steps of cycle at floor (overrides fraction)
+    )
 
     # Misc
     grad_clip: float = 10.0  # legacy; unused after GradientStabilizer integration
@@ -151,45 +157,71 @@ class IQNAgent(TrainingAgent):
         self._grad_stabilizer = GradientStabilizer(ema_decay=0.995)
         logger.info(
             "IQNAgent: n_actions={}, dueling={}, double={}, n_steps={}, "
-            "gamma={:.3f}, eps_start={:.2f}->{:.2f} over {} steps",
+            "gamma={:.3f}, eps cosine t0={}, tmult={}, decay={}, floor_frac={}, floor_steps={}",
             self.n_actions,
             self.dueling,
             self.double_dqn,
             self.n_steps,
             self.gamma,
-            self.epsilon_start,
-            self.epsilon_end,
-            self.epsilon_decay_steps,
+            self.epsilon_cosine_t0,
+            self.epsilon_cosine_tmult,
+            self.epsilon_cosine_decay,
+            self.epsilon_cosine_floor_fraction,
+            self.epsilon_cosine_floor_steps,
         )
 
-    def _update_epsilon(self, epoch_t: float | None = None) -> float:
-        """Cosine annealing epsilon decay with amplitude decay.
+    def _update_epsilon(self) -> float:
+        """Cosine annealing with weight decay based on absolute training steps.
 
-        Lowest point: self.epsilon_end (IQN_EPSILON_END in config).
-        Cycle length and per-cycle decay are set by epsilon_cosine_cycle_runs
-        and epsilon_cosine_decay (IQN_EPSILON_COSINE_* in config).
+        Each cycle descends to epsilon_end, then holds epsilon_end for a floor period.
+        Each cycle is epsilon_cosine_tmult times longer than the previous.
+        Cycle peak amplitude decays by epsilon_cosine_decay per cycle.
+        Floor: last epsilon_cosine_floor_fraction of cycle, or epsilon_cosine_floor_steps if set.
         """
         import math
-        min_eps = self.epsilon_end
-        cycle_length = self.epsilon_cosine_cycle_runs
-        decay = self.epsilon_cosine_decay
-        
-        if epoch_t is not None:
-            t = epoch_t
-        else:
-            # Fallback assuming default 3000 steps per epoch
-            t = self._training_step / 3000.0
 
-        cycle_num = math.floor(t / cycle_length)
-        step_in_cycle = t - (cycle_num * cycle_length)
-        
+        min_eps = self.epsilon_end
+        t0 = self.epsilon_cosine_t0
+        tmult = self.epsilon_cosine_tmult
+        decay = self.epsilon_cosine_decay
+        floor_frac = max(0.0, min(1.0, self.epsilon_cosine_floor_fraction))
+        floor_steps = max(0, self.epsilon_cosine_floor_steps)
+
+        t = float(self._training_step)
+
+        if t <= 0.0:
+            self._epsilon = self.epsilon_start
+            return self._epsilon
+
+        if tmult <= 1.0:
+            cycle_num = int(t // t0)
+            step_in_cycle = t - cycle_num * t0
+            cycle_length = t0
+        else:
+            # Cumulative time at start of cycle n: t0 * (tmult^n - 1) / (tmult - 1)
+            ratio = 1.0 + t * (tmult - 1.0) / t0
+            cycle_num = int(math.log(ratio) / math.log(tmult)) if ratio > 1.0 else 0
+            cum_start = t0 * (tmult**cycle_num - 1.0) / (tmult - 1.0) if cycle_num > 0 else 0.0
+            step_in_cycle = t - cum_start
+            cycle_length = t0 * (tmult**cycle_num)
+
+        # Floor: last part of each cycle at epsilon_end
+        if floor_steps > 0:
+            floor_duration = min(floor_steps, cycle_length)
+        else:
+            floor_duration = floor_frac * cycle_length
+        cosine_length = max(1e-9, cycle_length - floor_duration)
+
+        if step_in_cycle >= cosine_length:
+            self._epsilon = min_eps
+            return self._epsilon
+
         initial_amplitude = max(0.0, self.epsilon_start - min_eps)
-        current_amplitude = initial_amplitude * (decay ** cycle_num)
-        
-        # Cosine annealing from max to min over the cycle
-        angle = math.pi * (step_in_cycle / cycle_length)
+        current_amplitude = initial_amplitude * (decay**cycle_num)
+        # Cosine: 1 at start of cycle (peak), -1 at end of cosine phase (epsilon_end)
+        angle = math.pi * (step_in_cycle / cosine_length)
         self._epsilon = min_eps + 0.5 * current_amplitude * (1.0 + math.cos(angle))
-        
+
         return self._epsilon
 
     def get_actor(self):
@@ -248,14 +280,7 @@ class IQNAgent(TrainingAgent):
         from einops import rearrange, repeat
 
         self._training_step += 1
-        if epoch is not None and batch_index is not None and iters is not None:
-            t = epoch + batch_index / iters
-        elif epoch is not None:
-            t = float(epoch)
-        else:
-            t = None
-            
-        eps = self._update_epsilon(t)
+        eps = self._update_epsilon()
 
         o, a, r, o2, d = batch[0], batch[1], batch[2], batch[3], batch[4]
         o = self._sanitize_obs(o)

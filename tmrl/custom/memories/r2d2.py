@@ -1,8 +1,4 @@
-"""R2D2-based memory implementations for TrackMania.
-
-This module provides memory classes based on R2D2Memory for
-recurrent reinforcement learning algorithms.
-"""
+"""R2D2-based memory implementations for TrackMania."""
 
 from collections.abc import Callable
 from typing import Any
@@ -10,15 +6,19 @@ from typing import Any
 import numpy as np
 
 from tmrl.custom.memories.base import last_true_in_list, replace_hist_before_eoe
+from tmrl.custom.memories.enums import (
+    BufferField,
+    R2D2Field,
+    R2D2ObsField,
+    R2D2SophyField,
+    R2D2SophyObsField,
+    R2D2woImagesTrailingField,
+)
 from tmrl.memory import R2D2Memory
 
 
 class MemoryR2D2(R2D2Memory):
-    """R2D2-style replay memory with full telemetry and images.
-
-    This memory is designed for recurrent off-policy algorithms,
-    storing full episode sequences with all telemetry fields.
-    """
+    """R2D2-style replay memory with full telemetry and images."""
 
     def __init__(
         self,
@@ -32,19 +32,6 @@ class MemoryR2D2(R2D2Memory):
         crc_debug: bool = False,
         device: str = "cpu",
     ):
-        """Initialize MemoryR2D2.
-
-        Args:
-            memory_size: Maximum size of the memory buffer.
-            batch_size: Size of batches used during training.
-            dataset_path: Path to the dataset.
-            imgs_obs: Number of observed images.
-            act_buf_len: Length of the action buffer.
-            nb_steps: Number of steps for multi-step learning.
-            sample_preprocessor: A callable function for sample preprocessing.
-            crc_debug: Flag indicating whether to debug CRC.
-            device: Device where the memory is stored ("cpu" or "cuda").
-        """
         self.imgs_obs = imgs_obs
         self.act_buf_len = act_buf_len
         self.min_samples = max(self.imgs_obs, self.act_buf_len)
@@ -62,25 +49,16 @@ class MemoryR2D2(R2D2Memory):
         )
 
     def __len__(self) -> int:
-        """Return the number of valid transitions in memory.
-
-        Returns:
-            Number of transitions available for sampling.
-        """
+        """Return the number of valid transitions in memory."""
         if len(self.data) == 0:
             return 0
         res = len(self.data[0]) - self.min_samples - 1
         return max(0, res)
 
     def get_transition(self, item: int):
-        """Get a single transition with proper episode boundary handling.
+        """Get a single transition with proper episode boundary handling."""
+        f = R2D2Field
 
-        Args:
-            item: Starting index for the transition.
-
-        Returns:
-            Tuple of (last_obs, new_act, rew, new_obs, terminated, truncated, info).
-        """
         idx_last = item + self.min_samples - 1
         idx_now = item + self.min_samples
 
@@ -92,8 +70,7 @@ class MemoryR2D2(R2D2Memory):
         imgs_last_obs = imgs[:-1]
         imgs_new_obs = imgs[1:]
 
-        # Handle reset transitions
-        last_eoes = self.data[17][idx_now - self.min_samples : idx_now]
+        last_eoes = self.data[f.EOES][idx_now - self.min_samples : idx_now]
         last_eoe_idx = last_true_in_list(last_eoes)
 
         assert last_eoe_idx is None or last_eoes[last_eoe_idx], f"last_eoe_idx:{last_eoe_idx}"
@@ -112,132 +89,92 @@ class MemoryR2D2(R2D2Memory):
                 hist=imgs_last_obs, eoe_idx_in_hist=last_eoe_idx - self.start_imgs_offset
             )
 
-        last_obs = (
-            self.data[2][idx_last],  # checkpoints
-            self.data[3][idx_last],  # speeds
-            self.data[4][idx_last],  # accelerations
-            self.data[5][idx_last],  # jerks
-            self.data[6][idx_last],  # race_progress
-            self.data[7][idx_last],  # input_steer
-            self.data[8][idx_last],  # input_gas_pedal
-            self.data[9][idx_last],  # input_brake
-            self.data[10][idx_last],  # gear
-            self.data[11][idx_last],  # aim_yaw
-            self.data[12][idx_last],  # aim_pitch
-            self.data[13][idx_last],  # steer_angle
-            self.data[14][idx_last],  # slip_coef
-            self.data[15][idx_last],  # failure counter
-            *last_act_buf,
+        return (
+            (
+                self.data[f.CHECKPOINTS][idx_last],
+                self.data[f.SPEEDS][idx_last],
+                self.data[f.ACCELERATIONS][idx_last],
+                self.data[f.JERKS][idx_last],
+                self.data[f.RACE_PROGRESS][idx_last],
+                self.data[f.INPUT_STEER][idx_last],
+                self.data[f.INPUT_GAS_PEDAL][idx_last],
+                self.data[f.INPUT_BRAKE][idx_last],
+                self.data[f.GEAR][idx_last],
+                self.data[f.AIM_YAW][idx_last],
+                self.data[f.AIM_PITCH][idx_last],
+                self.data[f.STEER_ANGLE][idx_last],
+                self.data[f.SLIP_COEF][idx_last],
+                self.data[f.FAILURE_COUNTER][idx_last],
+                *last_act_buf,
+            ),
+            self.data[f.ACTIONS][idx_now],
+            np.float32(self.data[f.REWARDS][idx_now]),
+            (
+                self.data[f.CHECKPOINTS][idx_now],
+                self.data[f.SPEEDS][idx_now],
+                self.data[f.ACCELERATIONS][idx_now],
+                self.data[f.JERKS][idx_now],
+                self.data[f.RACE_PROGRESS][idx_now],
+                self.data[f.INPUT_STEER][idx_now],
+                self.data[f.INPUT_GAS_PEDAL][idx_now],
+                self.data[f.INPUT_BRAKE][idx_now],
+                self.data[f.GEAR][idx_now],
+                self.data[f.AIM_YAW][idx_now],
+                self.data[f.AIM_PITCH][idx_now],
+                self.data[f.STEER_ANGLE][idx_now],
+                self.data[f.SLIP_COEF][idx_now],
+                self.data[f.FAILURE_COUNTER][idx_now],
+                *new_act_buf,
+            ),
+            self.data[f.TERMINATED][idx_now],
+            self.data[f.TRUNCATED][idx_now],
+            self.data[f.INFOS][idx_now],
         )
-        new_act = self.data[1][idx_now]
-        rew = np.float32(self.data[18][idx_now])
-        new_obs = (
-            self.data[2][idx_now],
-            self.data[3][idx_now],
-            self.data[4][idx_now],
-            self.data[5][idx_now],
-            self.data[6][idx_now],
-            self.data[7][idx_now],
-            self.data[8][idx_now],
-            self.data[9][idx_now],
-            self.data[10][idx_now],
-            self.data[11][idx_now],
-            self.data[12][idx_now],
-            self.data[13][idx_now],
-            self.data[14][idx_now],
-            self.data[15][idx_now],
-            *new_act_buf,
-        )
-        terminated = self.data[20][idx_now]
-        truncated = self.data[21][idx_now]
-        info = self.data[19][idx_now]
-        return last_obs, new_act, rew, new_obs, terminated, truncated, info
 
     def load_imgs(self, item: int):
-        """Load image sequence for a transition.
-
-        Args:
-            item: Starting index for loading images.
-
-        Returns:
-            Stacked array of images normalized to [0, 1].
-        """
-        res = self.data[16][
+        """Load image sequence for a transition."""
+        res = self.data[R2D2Field.IMGS][
             (item + self.start_imgs_offset) : (item + self.start_imgs_offset + self.imgs_obs + 1)
         ]
         return np.stack(res).astype(np.float32) / 256.0
 
     def load_acts(self, item: int):
-        """Load action sequence for a transition.
-
-        Args:
-            item: Starting index for loading actions.
-
-        Returns:
-            Array of actions.
-        """
-        res = self.data[1][
+        """Load action sequence for a transition."""
+        res = self.data[R2D2Field.ACTIONS][
             (item + self.start_acts_offset) : (item + self.start_acts_offset + self.act_buf_len + 1)
         ]
         return res
 
     def append_buffer(self, buffer):
-        """Append a buffer of samples to the memory.
-
-        Args:
-            buffer: Buffer containing (act, obs, rew, terminated, truncated, info) samples.
-
-        Returns:
-            Self for method chaining.
-        """
-        first_data_idx = self.data[0][-1] + 1 if self.__len__() > 0 else 0
-
-        d0 = [first_data_idx + i for i, _ in enumerate(buffer.memory)]  # indexes
-        d1 = [b[0] for b in buffer.memory]  # actions
-        d2 = [np.array(b[1][0]) for b in buffer.memory]  # checkpoints
-        d3 = [np.array(b[1][1]) for b in buffer.memory]  # speeds
-        d4 = [np.array(b[1][2]) for b in buffer.memory]  # accelerations
-        d5 = [np.array(b[1][3]) for b in buffer.memory]  # jerks
-        d6 = [np.array(b[1][4]) for b in buffer.memory]  # race_progress
-        d7 = [np.array(b[1][5]) for b in buffer.memory]  # input_steer
-        d8 = [np.array(b[1][6]) for b in buffer.memory]  # input_gas_pedal
-        d9 = [np.array(b[1][7]) for b in buffer.memory]  # input_brake
-        d10 = [np.array(b[1][8]) for b in buffer.memory]  # gear
-        d11 = [np.array(b[1][9]) for b in buffer.memory]  # aim_yaw
-        d12 = [np.array(b[1][10]) for b in buffer.memory]  # aim_pitch
-        d13 = [np.array(b[1][11]) for b in buffer.memory]  # steer_angle
-        d14 = [np.array(b[1][12]) for b in buffer.memory]  # slip_coef
-        d15 = [np.array(b[1][13]) for b in buffer.memory]  # failure counter
-        d16 = [np.array(b[1][14]) for b in buffer.memory]  # imgs
-        d17 = [b[3] or b[4] for b in buffer.memory]  # eoes
-        d18 = [b[2] for b in buffer.memory]  # rewards
-        d19 = [b[5] for b in buffer.memory]  # infos
-        d20 = [b[3] for b in buffer.memory]  # terminated
-        d21 = [b[4] for b in buffer.memory]  # truncated
+        """Append a buffer of samples to the memory."""
+        f = R2D2Field
+        first_data_idx = self.data[f.INDEXES][-1] + 1 if self.__len__() > 0 else 0
+        bf = BufferField
+        o = R2D2ObsField
 
         data_fields = [
-            d0,
-            d1,
-            d2,
-            d3,
-            d4,
-            d5,
-            d6,
-            d7,
-            d8,
-            d9,
-            d10,
-            d11,
-            d12,
-            d13,
-            d14,
-            d15,
-            d16,
-            d17,
-            d18,
-            d19,
-            d20,
-            d21,
+            [first_data_idx + i for i, _ in enumerate(buffer.memory)],
+            [b[bf.ACTION] for b in buffer.memory],
+            [np.array(b[bf.OBSERVATION][o.CHECKPOINTS]) for b in buffer.memory],
+            [np.array(b[bf.OBSERVATION][o.SPEEDS]) for b in buffer.memory],
+            [np.array(b[bf.OBSERVATION][o.ACCELERATIONS]) for b in buffer.memory],
+            [np.array(b[bf.OBSERVATION][o.JERKS]) for b in buffer.memory],
+            [np.array(b[bf.OBSERVATION][o.RACE_PROGRESS]) for b in buffer.memory],
+            [np.array(b[bf.OBSERVATION][o.INPUT_STEER]) for b in buffer.memory],
+            [np.array(b[bf.OBSERVATION][o.INPUT_GAS_PEDAL]) for b in buffer.memory],
+            [np.array(b[bf.OBSERVATION][o.INPUT_BRAKE]) for b in buffer.memory],
+            [np.array(b[bf.OBSERVATION][o.GEAR]) for b in buffer.memory],
+            [np.array(b[bf.OBSERVATION][o.AIM_YAW]) for b in buffer.memory],
+            [np.array(b[bf.OBSERVATION][o.AIM_PITCH]) for b in buffer.memory],
+            [np.array(b[bf.OBSERVATION][o.STEER_ANGLE]) for b in buffer.memory],
+            [np.array(b[bf.OBSERVATION][o.SLIP_COEF]) for b in buffer.memory],
+            [np.array(b[bf.OBSERVATION][o.FAILURE_COUNTER]) for b in buffer.memory],
+            [np.array(b[bf.OBSERVATION][o.IMGS]) for b in buffer.memory],
+            [b[bf.TERMINATED] or b[bf.TRUNCATED] for b in buffer.memory],
+            [b[bf.REWARD] for b in buffer.memory],
+            [b[bf.INFO] for b in buffer.memory],
+            [b[bf.TERMINATED] for b in buffer.memory],
+            [b[bf.TRUNCATED] for b in buffer.memory],
         ]
 
         if self.__len__() > 0:
@@ -248,18 +185,14 @@ class MemoryR2D2(R2D2Memory):
 
         to_trim = self.__len__() - self.memory_size
         if to_trim > 0:
-            for i in range(22):
+            for i in range(len(data_fields)):
                 self.data[i] = self.data[i][to_trim:]
 
         return self
 
 
 class MemoryR2D2woImages(R2D2Memory):
-    """R2D2-style replay memory without images.
-
-    This memory is designed for recurrent off-policy algorithms
-    that use telemetry data only, without camera images.
-    """
+    """R2D2-style replay memory without images."""
 
     def __init__(
         self,
@@ -273,19 +206,6 @@ class MemoryR2D2woImages(R2D2Memory):
         crc_debug: bool = False,
         device: str = "cpu",
     ):
-        """Initialize MemoryR2D2woImages.
-
-        Args:
-            memory_size: Maximum size of the memory buffer.
-            batch_size: Size of batches used during training.
-            dataset_path: Path to the dataset.
-            imgs_obs: Number of observed images (kept for API compatibility).
-            act_buf_len: Length of the action buffer.
-            nb_steps: Number of steps for multi-step learning.
-            sample_preprocessor: A callable function for sample preprocessing.
-            crc_debug: Flag indicating whether to debug CRC.
-            device: Device where the memory is stored ("cpu" or "cuda").
-        """
         self.imgs_obs = imgs_obs
         self.act_buf_len = act_buf_len
         self.min_samples = max(self.imgs_obs, self.act_buf_len)
@@ -303,87 +223,65 @@ class MemoryR2D2woImages(R2D2Memory):
         )
 
     def _obs_end(self) -> int:
-        """Index (exclusive) of the last observation column in self.data.
-
-        Layout: [indexes, actions, obs_0 ... obs_N-1, eoes, rewards, infos,
-        terminated, truncated].  The 5 trailing fields are always present, so
-        obs columns span indices 2 .. len(self.data) - 5.
-        """
+        """Index (exclusive) of the last observation column in self.data."""
         return len(self.data) - 5
 
+    def __len__(self) -> int:
+        """Return the number of valid transitions in memory."""
+        if len(self.data) == 0:
+            return 0
+        res = len(self.data[0]) - self.min_samples - 1
+        return max(0, res)
+
     def get_transition(self, item: int):
-        """Get a single transition.
-
-        Args:
-            item: Starting index for the transition.
-
-        Returns:
-            Tuple of (last_obs, new_act, rew, new_obs, terminated, truncated, info).
-        """
+        """Get a single transition."""
+        t = R2D2woImagesTrailingField
         idx_last = item + self.min_samples - 1
         idx_now = item + self.min_samples
 
         obs_end = self._obs_end()
-        last_obs = tuple(self.data[i][idx_last] for i in range(2, obs_end))
-        new_act = self.data[1][idx_now]
-        rew = np.float32(self.data[obs_end + 1][idx_now])
-        new_obs = tuple(self.data[i][idx_now] for i in range(2, obs_end))
-        terminated = self.data[obs_end + 3][idx_now]
-        truncated = self.data[obs_end + 4][idx_now]
-        info = self.data[obs_end + 2][idx_now]
-        return last_obs, new_act, rew, new_obs, terminated, truncated, info
+
+        return (
+            tuple(self.data[i][idx_last] for i in range(2, obs_end)),
+            self.data[1][idx_now],
+            np.float32(self.data[obs_end + t.REWARDS][idx_now]),
+            tuple(self.data[i][idx_now] for i in range(2, obs_end)),
+            self.data[obs_end + t.TERMINATED][idx_now],
+            self.data[obs_end + t.TRUNCATED][idx_now],
+            self.data[obs_end + t.INFOS][idx_now],
+        )
 
     def load_imgs(self, item: int):
-        """Load image sequence (placeholder for API compatibility).
-
-        Args:
-            item: Starting index for loading.
-
-        Returns:
-            Empty stack (images not used in this memory).
-        """
+        """Placeholder for API compatibility."""
         res = self.data[2][
             (item + self.start_imgs_offset) : (item + self.start_imgs_offset + self.imgs_obs + 1)
         ]
         return np.stack(res)
 
     def load_acts(self, item: int):
-        """Load action sequence for a transition.
-
-        Args:
-            item: Starting index for loading actions.
-
-        Returns:
-            Array of actions.
-        """
+        """Load action sequence for a transition."""
         res = self.data[1][
             (item + self.start_acts_offset) : (item + self.start_acts_offset + self.act_buf_len + 1)
         ]
         return res
 
     def append_buffer(self, buffer):
-        """Append a buffer of samples to the memory.
-
-        Args:
-            buffer: Buffer containing (act, obs, rew, terminated, truncated, info) samples.
-
-        Returns:
-            Self for method chaining.
-        """
+        """Append a buffer of samples to the memory."""
         first_data_idx = self.data[0][-1] + 1 if self.__len__() > 0 else 0
+        bf = BufferField
+        n_obs = len(buffer.memory[0][bf.OBSERVATION])
 
-        n_obs = len(buffer.memory[0][1])
-
-        data_fields = []
-        data_fields.append([first_data_idx + i for i, _ in enumerate(buffer.memory)])  # indexes
-        data_fields.append([b[0] for b in buffer.memory])  # actions
+        data_fields = [
+            [first_data_idx + i for i, _ in enumerate(buffer.memory)],
+            [b[bf.ACTION] for b in buffer.memory],
+        ]
         for j in range(n_obs):
-            data_fields.append([np.array(b[1][j]) for b in buffer.memory])
-        data_fields.append([b[3] or b[4] for b in buffer.memory])  # eoes
-        data_fields.append([b[2] for b in buffer.memory])  # rewards
-        data_fields.append([b[5] for b in buffer.memory])  # infos
-        data_fields.append([b[3] for b in buffer.memory])  # terminated
-        data_fields.append([b[4] for b in buffer.memory])  # truncated
+            data_fields.append([np.array(b[bf.OBSERVATION][j]) for b in buffer.memory])
+        data_fields.append([b[bf.TERMINATED] or b[bf.TRUNCATED] for b in buffer.memory])
+        data_fields.append([b[bf.REWARD] for b in buffer.memory])
+        data_fields.append([b[bf.INFO] for b in buffer.memory])
+        data_fields.append([b[bf.TERMINATED] for b in buffer.memory])
+        data_fields.append([b[bf.TRUNCATED] for b in buffer.memory])
 
         if self.__len__() > 0 and len(self.data) == len(data_fields):
             for i, d in enumerate(data_fields):
@@ -391,6 +289,7 @@ class MemoryR2D2woImages(R2D2Memory):
         else:
             if self.__len__() > 0 and len(self.data) != len(data_fields):
                 from loguru import logger
+
                 logger.warning(
                     "Memory column count changed ({} -> {}); resetting buffer.",
                     len(self.data),
@@ -410,11 +309,7 @@ class MemoryR2D2woImages(R2D2Memory):
 
 
 class MemoryR2D2Sophy(R2D2Memory):
-    """R2D2-style replay memory for Sophy interface.
-
-    Similar to MemoryR2D2woImages but designed specifically for
-    the Sophy driving model telemetry format.
-    """
+    """R2D2-style replay memory for Sophy interface."""
 
     def __init__(
         self,
@@ -428,19 +323,6 @@ class MemoryR2D2Sophy(R2D2Memory):
         crc_debug: bool = False,
         device: str = "cpu",
     ):
-        """Initialize MemoryR2D2Sophy.
-
-        Args:
-            memory_size: Maximum size of the memory buffer.
-            batch_size: Size of batches used during training.
-            dataset_path: Path to the dataset.
-            imgs_obs: Number of observed images (kept for API compatibility).
-            act_buf_len: Length of the action buffer.
-            nb_steps: Number of steps for multi-step learning.
-            sample_preprocessor: A callable function for sample preprocessing.
-            crc_debug: Flag indicating whether to debug CRC.
-            device: Device where the memory is stored ("cpu" or "cuda").
-        """
         self.imgs_obs = imgs_obs
         self.act_buf_len = act_buf_len
         self.min_samples = max(self.imgs_obs, self.act_buf_len)
@@ -457,145 +339,108 @@ class MemoryR2D2Sophy(R2D2Memory):
             device=device,
         )
 
+    def __len__(self) -> int:
+        """Return the number of valid transitions in memory."""
+        if len(self.data) == 0:
+            return 0
+        res = len(self.data[0]) - self.min_samples - 1
+        return max(0, res)
+
     def get_transition(self, item: int):
-        """Get a single transition.
+        """Get a single transition."""
+        f = R2D2SophyField
 
-        Args:
-            item: Starting index for the transition.
-
-        Returns:
-            Tuple of (last_obs, new_act, rew, new_obs, terminated, truncated, info).
-        """
         idx_last = item + self.min_samples - 1
         idx_now = item + self.min_samples
 
         acts = self.load_acts(item)
-        last_act_buf = acts[:-1]
 
-        last_obs = (
-            self.data[2][idx_last],
-            self.data[3][idx_last],
-            self.data[4][idx_last],
-            self.data[5][idx_last],
-            self.data[6][idx_last],
-            self.data[7][idx_last],
-            self.data[8][idx_last],
-            self.data[9][idx_last],
-            self.data[10][idx_last],
-            self.data[11][idx_last],
-            self.data[12][idx_last],
-            self.data[13][idx_last],
-            self.data[14][idx_last],
-            self.data[15][idx_last],
-            *last_act_buf,
+        return (
+            (
+                self.data[f.TRACK_INFO][idx_last],
+                self.data[f.SPEEDS][idx_last],
+                self.data[f.ACCELERATIONS][idx_last],
+                self.data[f.JERKS][idx_last],
+                self.data[f.RACE_PROGRESS][idx_last],
+                self.data[f.INPUT_STEER][idx_last],
+                self.data[f.INPUT_GAS_PEDAL][idx_last],
+                self.data[f.INPUT_BRAKE][idx_last],
+                self.data[f.GEAR][idx_last],
+                self.data[f.AIM_YAW][idx_last],
+                self.data[f.AIM_PITCH][idx_last],
+                self.data[f.STEER_ANGLE][idx_last],
+                self.data[f.SLIP_COEF][idx_last],
+                self.data[f.FAILURE_COUNTER][idx_last],
+                *acts[:-1],
+            ),
+            self.data[f.ACTIONS][idx_now],
+            np.float32(self.data[f.REWARDS][idx_now]),
+            (
+                self.data[f.TRACK_INFO][idx_now],
+                self.data[f.SPEEDS][idx_now],
+                self.data[f.ACCELERATIONS][idx_now],
+                self.data[f.JERKS][idx_now],
+                self.data[f.RACE_PROGRESS][idx_now],
+                self.data[f.INPUT_STEER][idx_now],
+                self.data[f.INPUT_GAS_PEDAL][idx_now],
+                self.data[f.INPUT_BRAKE][idx_now],
+                self.data[f.GEAR][idx_now],
+                self.data[f.AIM_YAW][idx_now],
+                self.data[f.AIM_PITCH][idx_now],
+                self.data[f.STEER_ANGLE][idx_now],
+                self.data[f.SLIP_COEF][idx_now],
+                self.data[f.FAILURE_COUNTER][idx_now],
+                *acts[1:],
+            ),
+            self.data[f.TERMINATED][idx_now],
+            self.data[f.TRUNCATED][idx_now],
+            self.data[f.INFOS][idx_now],
         )
-        new_act = self.data[1][idx_now]
-        rew = np.float32(self.data[17][idx_now])
-        new_obs = (
-            self.data[2][idx_now],
-            self.data[3][idx_now],
-            self.data[4][idx_now],
-            self.data[5][idx_now],
-            self.data[6][idx_now],
-            self.data[7][idx_now],
-            self.data[8][idx_now],
-            self.data[9][idx_now],
-            self.data[10][idx_now],
-            self.data[11][idx_now],
-            self.data[12][idx_now],
-            self.data[13][idx_now],
-            self.data[14][idx_now],
-            self.data[15][idx_now],
-            *acts[1:],
-        )
-        terminated = self.data[19][idx_now]
-        truncated = self.data[20][idx_now]
-        info = self.data[18][idx_now]
-        return last_obs, new_act, rew, new_obs, terminated, truncated, info
 
     def load_imgs(self, item: int):
-        """Load image sequence (placeholder for API compatibility).
-
-        Args:
-            item: Starting index for loading.
-
-        Returns:
-            Empty stack (images not used in this memory).
-        """
+        """Placeholder for API compatibility."""
         res = self.data[2][
             (item + self.start_imgs_offset) : (item + self.start_imgs_offset + self.imgs_obs + 1)
         ]
         return np.stack(res)
 
     def load_acts(self, item: int):
-        """Load action sequence for a transition.
-
-        Args:
-            item: Starting index for loading actions.
-
-        Returns:
-            Array of actions.
-        """
-        res = self.data[1][
+        """Load action sequence for a transition."""
+        res = self.data[R2D2SophyField.ACTIONS][
             (item + self.start_acts_offset) : (item + self.start_acts_offset + self.act_buf_len + 1)
         ]
         return res
 
     def append_buffer(self, buffer):
-        """Append a buffer of samples to the memory.
+        """Append a buffer of samples to the memory."""
+        f = R2D2SophyField
+        first_data_idx = self.data[f.INDEXES][-1] + 1 if self.__len__() > 0 else 0
+        bf = BufferField
 
-        Args:
-            buffer: Buffer containing (act, obs, rew, terminated, truncated, info) samples.
-
-        Returns:
-            Self for method chaining.
-        """
-        first_data_idx = self.data[0][-1] + 1 if self.__len__() > 0 else 0
-
-        d0 = [first_data_idx + i for i, _ in enumerate(buffer.memory)]  # indexes
-        d1 = [b[0] for b in buffer.memory]  # actions
-        d2 = [np.array(b[1][0]) for b in buffer.memory]  # track info
-        d3 = [np.array(b[1][1]) for b in buffer.memory]  # speeds
-        d4 = [np.array(b[1][2]) for b in buffer.memory]  # accelerations
-        d5 = [np.array(b[1][3]) for b in buffer.memory]  # jerks
-        d6 = [np.array(b[1][4]) for b in buffer.memory]  # race_progress
-        d7 = [np.array(b[1][5]) for b in buffer.memory]  # input_steer
-        d8 = [np.array(b[1][6]) for b in buffer.memory]  # input_gas_pedal
-        d9 = [np.array(b[1][7]) for b in buffer.memory]  # input_brake
-        d10 = [np.array(b[1][8]) for b in buffer.memory]  # gear
-        d11 = [np.array(b[1][9]) for b in buffer.memory]  # aim_yaw
-        d12 = [np.array(b[1][10]) for b in buffer.memory]  # aim_pitch
-        d13 = [np.array(b[1][11]) for b in buffer.memory]  # steer_angle
-        d14 = [np.array(b[1][12]) for b in buffer.memory]  # slip_coef
-        d15 = [np.array(b[1][13]) for b in buffer.memory]  # failure counter
-        d16 = [b[3] or b[4] for b in buffer.memory]  # eoes
-        d17 = [b[2] for b in buffer.memory]  # rewards
-        d18 = [b[5] for b in buffer.memory]  # infos
-        d19 = [b[3] for b in buffer.memory]  # terminated
-        d20 = [b[4] for b in buffer.memory]  # truncated
+        o = R2D2SophyObsField
 
         data_fields = [
-            d0,
-            d1,
-            d2,
-            d3,
-            d4,
-            d5,
-            d6,
-            d7,
-            d8,
-            d9,
-            d10,
-            d11,
-            d12,
-            d13,
-            d14,
-            d15,
-            d16,
-            d17,
-            d18,
-            d19,
-            d20,
+            [first_data_idx + i for i, _ in enumerate(buffer.memory)],
+            [b[bf.ACTION] for b in buffer.memory],
+            [np.array(b[bf.OBSERVATION][o.TRACK_INFO]) for b in buffer.memory],
+            [np.array(b[bf.OBSERVATION][o.SPEEDS]) for b in buffer.memory],
+            [np.array(b[bf.OBSERVATION][o.ACCELERATIONS]) for b in buffer.memory],
+            [np.array(b[bf.OBSERVATION][o.JERKS]) for b in buffer.memory],
+            [np.array(b[bf.OBSERVATION][o.RACE_PROGRESS]) for b in buffer.memory],
+            [np.array(b[bf.OBSERVATION][o.INPUT_STEER]) for b in buffer.memory],
+            [np.array(b[bf.OBSERVATION][o.INPUT_GAS_PEDAL]) for b in buffer.memory],
+            [np.array(b[bf.OBSERVATION][o.INPUT_BRAKE]) for b in buffer.memory],
+            [np.array(b[bf.OBSERVATION][o.GEAR]) for b in buffer.memory],
+            [np.array(b[bf.OBSERVATION][o.AIM_YAW]) for b in buffer.memory],
+            [np.array(b[bf.OBSERVATION][o.AIM_PITCH]) for b in buffer.memory],
+            [np.array(b[bf.OBSERVATION][o.STEER_ANGLE]) for b in buffer.memory],
+            [np.array(b[bf.OBSERVATION][o.SLIP_COEF]) for b in buffer.memory],
+            [np.array(b[bf.OBSERVATION][o.FAILURE_COUNTER]) for b in buffer.memory],
+            [b[bf.TERMINATED] or b[bf.TRUNCATED] for b in buffer.memory],
+            [b[bf.REWARD] for b in buffer.memory],
+            [b[bf.INFO] for b in buffer.memory],
+            [b[bf.TERMINATED] for b in buffer.memory],
+            [b[bf.TRUNCATED] for b in buffer.memory],
         ]
 
         if self.__len__() > 0:
@@ -606,7 +451,7 @@ class MemoryR2D2Sophy(R2D2Memory):
 
         to_trim = self.__len__() - self.memory_size
         if to_trim > 0:
-            for i in range(21):
+            for i in range(len(data_fields)):
                 self.data[i] = self.data[i][to_trim:]
 
         return self

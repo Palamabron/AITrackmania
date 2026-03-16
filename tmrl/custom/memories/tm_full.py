@@ -5,25 +5,17 @@ import random
 import numpy as np
 
 from tmrl.custom.memories.base import MemoryTM, last_true_in_list, replace_hist_before_eoe
+from tmrl.custom.memories.enums import BufferField, TMFullField, TMFullObsField
 
 
 class MemoryTMFull(MemoryTM):
-    """Full-featured TrackMania replay memory with images.
-
-    Stores and replays full observations including speed, gear, RPM,
-    camera images, and action histories.
-    """
+    """Full-featured TrackMania replay memory with images."""
 
     def get_transition(self, item: int):
-        """Get a single transition with proper episode boundary handling.
+        """Get a single transition with proper episode boundary handling."""
+        f = TMFullField
 
-        Args:
-            item: Starting index for the transition.
-
-        Returns:
-            Tuple of (last_obs, new_act, rew, new_obs, terminated, truncated, info).
-        """
-        if self.data[4][item + self.min_samples - 1]:
+        if self.data[f.EOES][item + self.min_samples - 1]:
             if item == 0:
                 item += 1
             elif item == self.__len__() - 1:
@@ -44,8 +36,7 @@ class MemoryTMFull(MemoryTM):
         imgs_last_obs = imgs[:-1]
         imgs_new_obs = imgs[1:]
 
-        # Handle reset transitions
-        last_eoes = self.data[4][idx_now - self.min_samples : idx_now]
+        last_eoes = self.data[f.EOES][idx_now - self.min_samples : idx_now]
         last_eoe_idx = last_true_in_list(last_eoes)
 
         assert last_eoe_idx is None or last_eoes[last_eoe_idx], f"last_eoe_idx:{last_eoe_idx}"
@@ -64,87 +55,73 @@ class MemoryTMFull(MemoryTM):
                 hist=imgs_last_obs, eoe_idx_in_hist=last_eoe_idx - self.start_imgs_offset
             )
 
-        last_obs = (
-            self.data[2][idx_last],
-            self.data[7][idx_last],
-            self.data[8][idx_last],
-            imgs_last_obs,
-            *last_act_buf,
+        return (
+            (
+                self.data[f.SPEEDS][idx_last],
+                self.data[f.GEARS][idx_last],
+                self.data[f.RPMS][idx_last],
+                imgs_last_obs,
+                *last_act_buf,
+            ),
+            self.data[f.ACTIONS][idx_now],
+            np.float32(self.data[f.REWARDS][idx_now]),
+            (
+                self.data[f.SPEEDS][idx_now],
+                self.data[f.GEARS][idx_now],
+                self.data[f.RPMS][idx_now],
+                imgs_new_obs,
+                *new_act_buf,
+            ),
+            self.data[f.TERMINATED][idx_now],
+            self.data[f.TRUNCATED][idx_now],
+            self.data[f.INFOS][idx_now],
         )
-        new_act = self.data[1][idx_now]
-        rew = np.float32(self.data[5][idx_now])
-        new_obs = (
-            self.data[2][idx_now],
-            self.data[7][idx_now],
-            self.data[8][idx_now],
-            imgs_new_obs,
-            *new_act_buf,
-        )
-        terminated = self.data[9][idx_now]
-        truncated = self.data[10][idx_now]
-        info = self.data[6][idx_now]
-        return last_obs, new_act, rew, new_obs, terminated, truncated, info
 
     def load_imgs(self, item: int):
-        """Load image sequence for a transition.
-
-        Args:
-            item: Starting index for loading images.
-
-        Returns:
-            Stacked array of images normalized to [0, 1].
-        """
-        res = self.data[3][
+        """Load image sequence for a transition."""
+        res = self.data[TMFullField.IMAGES][
             (item + self.start_imgs_offset) : (item + self.start_imgs_offset + self.imgs_obs + 1)
         ]
         return np.stack(res).astype(np.float32) / 256.0
 
     def load_acts(self, item: int):
-        """Load action sequence for a transition.
-
-        Args:
-            item: Starting index for loading actions.
-
-        Returns:
-            Array of actions.
-        """
-        res = self.data[1][
+        """Load action sequence for a transition."""
+        res = self.data[TMFullField.ACTIONS][
             (item + self.start_acts_offset) : (item + self.start_acts_offset + self.act_buf_len + 1)
         ]
         return res
 
     def append_buffer(self, buffer):
-        """Append a buffer of samples to the memory.
+        """Append a buffer of samples to the memory."""
+        f = TMFullField
+        first_data_idx = self.data[f.INDEXES][-1] + 1 if self.__len__() > 0 else 0
+        bf = BufferField
 
-        Args:
-            buffer: Buffer containing (act, obs, rew, terminated, truncated, info) samples.
+        o = TMFullObsField
 
-        Returns:
-            Self for method chaining.
-        """
-        first_data_idx = self.data[0][-1] + 1 if self.__len__() > 0 else 0
-
-        d0 = [first_data_idx + i for i, _ in enumerate(buffer.memory)]  # indexes
-        d1 = [b[0] for b in buffer.memory]  # actions
-        d2 = [b[1][0] for b in buffer.memory]  # speeds
-        d3 = [b[1][3] for b in buffer.memory]  # images
-        d4 = [b[3] or b[4] for b in buffer.memory]  # eoes
-        d5 = [b[2] for b in buffer.memory]  # rewards
-        d6 = [b[5] for b in buffer.memory]  # infos
-        d7 = [b[1][1] for b in buffer.memory]  # gears
-        d8 = [b[1][2] for b in buffer.memory]  # rpms
-        d9 = [b[3] for b in buffer.memory]  # terminated
-        d10 = [b[4] for b in buffer.memory]  # truncated
+        data_fields = [
+            [first_data_idx + i for i, _ in enumerate(buffer.memory)],
+            [b[bf.ACTION] for b in buffer.memory],
+            [b[bf.OBSERVATION][o.SPEEDS] for b in buffer.memory],
+            [b[bf.OBSERVATION][o.IMAGES] for b in buffer.memory],
+            [b[bf.TERMINATED] or b[bf.TRUNCATED] for b in buffer.memory],
+            [b[bf.REWARD] for b in buffer.memory],
+            [b[bf.INFO] for b in buffer.memory],
+            [b[bf.OBSERVATION][o.GEARS] for b in buffer.memory],
+            [b[bf.OBSERVATION][o.RPMS] for b in buffer.memory],
+            [b[bf.TERMINATED] for b in buffer.memory],
+            [b[bf.TRUNCATED] for b in buffer.memory],
+        ]
 
         if self.__len__() > 0:
-            for i, d in enumerate([d0, d1, d2, d3, d4, d5, d6, d7, d8, d9, d10]):
+            for i, d in enumerate(data_fields):
                 self.data[i] += d
         else:
-            self.data = [d0, d1, d2, d3, d4, d5, d6, d7, d8, d9, d10]
+            self.data = list(data_fields)
 
         to_trim = self.__len__() - self.memory_size
         if to_trim > 0:
-            for i in range(11):
+            for i in range(len(data_fields)):
                 self.data[i] = self.data[i][to_trim:]
 
         return self

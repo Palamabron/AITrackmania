@@ -1,18 +1,11 @@
-"""Memory implementations for TrackMania reinforcement learning.
+"""Memory implementations for TrackMania reinforcement learning."""
 
-This package provides replay memory implementations for various
-TrackMania RL interfaces and algorithms.
-"""
-
-# Base classes and utilities
 from tmrl.custom.memories.base import (
     GenericTorchMemory,
     MemoryTM,
     last_true_in_list,
     replace_hist_before_eoe,
 )
-
-# Sample compressors
 from tmrl.custom.memories.compressors import (
     get_local_buffer_sample_lidar,
     get_local_buffer_sample_lidar_progress,
@@ -20,21 +13,43 @@ from tmrl.custom.memories.compressors import (
     get_local_buffer_sample_mobilenet,
     get_local_buffer_sample_tm20_imgs,
 )
-
-# R2D2-based memories
+from tmrl.custom.memories.enums import (
+    BufferField,
+    GenericField,
+    R2D2Field,
+    R2D2ObsField,
+    R2D2SophyField,
+    R2D2SophyObsField,
+    R2D2woImagesTrailingField,
+    TMBestField,
+    TMBestObsField,
+    TMFullField,
+    TMFullObsField,
+    TMLidarField,
+    TMLidarObsField,
+    TMLidarProgressField,
+    TMLidarProgressImagesField,
+    TMLidarProgressImagesObsField,
+    TMLidarProgressObsField,
+)
 from tmrl.custom.memories.r2d2 import (
     MemoryR2D2,
     MemoryR2D2Sophy,
     MemoryR2D2woImages,
 )
-
-# TrackMania memories
 from tmrl.custom.memories.tm_best import MemoryTMBest
 from tmrl.custom.memories.tm_full import MemoryTMFull
 from tmrl.custom.memories.tm_lidar import (
     MemoryTMLidar,
     MemoryTMLidarProgress,
     MemoryTMLidarProgressImages,
+)
+from tmrl.custom.memories.utils import (
+    ACTION_STEER_INDEX,
+    _hflip_action,
+    _hflip_discrete_action,
+    _is_discrete_action,
+    fog_recency_resample,
 )
 
 __all__ = [
@@ -49,6 +64,25 @@ __all__ = [
     "get_local_buffer_sample_lidar_progress_images",
     "get_local_buffer_sample_mobilenet",
     "get_local_buffer_sample_tm20_imgs",
+    # Enums – data field indices
+    "BufferField",
+    "GenericField",
+    "R2D2Field",
+    "R2D2SophyField",
+    "R2D2woImagesTrailingField",
+    "TMBestField",
+    "TMFullField",
+    "TMLidarField",
+    "TMLidarProgressField",
+    "TMLidarProgressImagesField",
+    # Enums – observation tuple indices
+    "R2D2ObsField",
+    "R2D2SophyObsField",
+    "TMBestObsField",
+    "TMFullObsField",
+    "TMLidarObsField",
+    "TMLidarProgressObsField",
+    "TMLidarProgressImagesObsField",
     # R2D2
     "MemoryR2D2",
     "MemoryR2D2woImages",
@@ -59,4 +93,10 @@ __all__ = [
     "MemoryTMLidar",
     "MemoryTMLidarProgress",
     "MemoryTMLidarProgressImages",
+    # Utils
+    "ACTION_STEER_INDEX",
+    "fog_recency_resample",
+    "_hflip_action",
+    "_hflip_discrete_action",
+    "_is_discrete_action",
 ]

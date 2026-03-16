@@ -25,7 +25,7 @@ from tmrl.custom.custom_algorithms._common import (
     _tensor_to_scalar,
     set_seed,
 )
-from tmrl.custom.models import MLPActorCritic
+from tmrl.custom.models.mlp import MLPActorCritic
 from tmrl.custom.utils.nn import copy_shared, no_grad
 from tmrl.training import TrainingAgent
 from tmrl.util import cached_property

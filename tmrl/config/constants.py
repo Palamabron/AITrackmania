@@ -13,16 +13,13 @@ import pickle
 import numpy as np
 from loguru import logger
 
-from tmrl.config.enums import AlgorithmName
 from tmrl.config.loader import (
-    DEBUGGER,
     DEBUGGER_CONFIG,
     ENV_CONFIG,
     SYSTEM,
     TMRL_CONFIG,
-    TMRL_FOLDER,
 )
-from tmrl.config.paths import MAP_NAME, PLAYER_RUNS_FOLDER, REWARD_PATH, WEIGHTS_FOLDER
+from tmrl.config.paths import PLAYER_RUNS_FOLDER, REWARD_PATH
 
 # =============================================================================
 # Basic Constants
@@ -92,7 +89,6 @@ WANDB_DEBUG_REWARD = TMRL_CONFIG["WANDB_DEBUG_REWARD"]
 WANDB_WORKER = TMRL_CONFIG.get("WANDB_WORKER", True)
 
 # Set environment variable for wandb
-import os
 
 os.environ["WANDB_API_KEY"] = WANDB_KEY
 
@@ -256,7 +252,9 @@ LIDAR_BLACK_THRESHOLD = [55, 55, 55]
 
 # Reward configuration
 REWARD_CONFIG = ENV_CONFIG.get("REWARD_CONFIG", {})
-MAX_SPEED_KMH = float(REWARD_CONFIG.get("MAX_SPEED_KMH", 300.0)) if isinstance(REWARD_CONFIG, dict) else 300.0
+MAX_SPEED_KMH = (
+    float(REWARD_CONFIG.get("MAX_SPEED_KMH", 300.0)) if isinstance(REWARD_CONFIG, dict) else 300.0
+)
 
 # Calculate track points number based on trajectory length
 TRACK_POINTS_NUMBER = None

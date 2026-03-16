@@ -79,7 +79,7 @@ def main() -> int:
 
     if args.left_path is None or args.right_path is None:
         try:
-            import tmrl.config.config_constants as cfg
+            import tmrl.config as cfg
 
             left_path = args.left_path or cfg.TRACK_PATH_LEFT
             right_path = args.right_path or cfg.TRACK_PATH_RIGHT

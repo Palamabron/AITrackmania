@@ -3,7 +3,20 @@
 This module defines all file system paths used by the TMRL framework.
 """
 
+import os
+from pathlib import Path
+
 from tmrl.config.loader import ENV_CONFIG, TMRL_CONFIG, TMRL_FOLDER
+
+# Project root (parent of tmrl package). Override with TMRL_OUTPUT_FILES env for installed packages.
+_SCRIPT_DIR = Path(__file__).resolve().parent
+_TMRL_ROOT = _SCRIPT_DIR.parent
+_PROJECT_ROOT = _TMRL_ROOT.parent
+_output_files_env: str | None = os.environ.get("TMRL_OUTPUT_FILES")
+if _output_files_env:
+    _OUTPUT_FILES_ROOT = Path(_output_files_env)
+else:
+    _OUTPUT_FILES_ROOT = _PROJECT_ROOT / "output_files"
 
 # Main folder paths
 CHECKPOINTS_FOLDER = TMRL_FOLDER / "checkpoints"
@@ -13,6 +26,13 @@ TRACK_FOLDER = TMRL_FOLDER / "track"
 WEIGHTS_FOLDER = TMRL_FOLDER / "weights"
 CONFIG_FOLDER = TMRL_FOLDER / "config"
 PATH_DATA = TMRL_FOLDER
+
+# Output/created files: tracks (e.g. CSV for TrackMap), debug plots (project or TMRL_OUTPUT_FILES)
+OUTPUT_FILES_FOLDER = Path(_OUTPUT_FILES_ROOT)
+TRACKS_FOLDER = OUTPUT_FILES_FOLDER / "tracks"
+DEBUG_FOLDER = OUTPUT_FILES_FOLDER / "debug"
+TRACKMAP_CSV_LEFT = str(TRACKS_FOLDER / "tmrl-test" / "track_left.csv")
+TRACKMAP_CSV_RIGHT = str(TRACKS_FOLDER / "tmrl-test" / "track_right.csv")
 
 # Model paths
 RUN_NAME = TMRL_CONFIG["RUN_NAME"]

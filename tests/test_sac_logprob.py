@@ -64,7 +64,7 @@ class TestSquashLogProbClamp:
 class TestSquashedGaussianMLPActor:
     @torch.no_grad()
     def test_forward_no_nan(self):
-        from tmrl.custom.custom_models import SquashedGaussianMLPActor
+        from tmrl.custom.models.mlp import SquashedGaussianMLPActor
 
         obs_space = gym.spaces.Tuple(
             [
@@ -82,7 +82,7 @@ class TestSquashedGaussianMLPActor:
 
     @torch.no_grad()
     def test_action_bounded(self):
-        from tmrl.custom.custom_models import SquashedGaussianMLPActor
+        from tmrl.custom.models.mlp import SquashedGaussianMLPActor
 
         obs_space = gym.spaces.Tuple(
             [

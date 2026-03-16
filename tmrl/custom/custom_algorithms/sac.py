@@ -11,7 +11,7 @@ from loguru import logger
 from torch.optim import SGD, Adam, AdamW
 
 import tmrl.config as cfg
-from tmrl.custom.models import MLPActorCritic
+from tmrl.custom.models.mlp import MLPActorCritic
 from tmrl.custom.utils.nn import copy_shared, no_grad
 from tmrl.training import TrainingAgent
 from tmrl.util import cached_property

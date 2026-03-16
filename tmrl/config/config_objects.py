@@ -36,23 +36,6 @@ from tmrl.custom.custom_algorithms import REDQSACAgent as REDQ_Agent
 from tmrl.custom.custom_algorithms import SpinupSacAgent as SAC_Agent
 from tmrl.custom.custom_algorithms import TQCAgent as TQC_Agent
 from tmrl.custom.custom_checkpoints import update_run_instance
-from tmrl.custom.models import (
-    FrozenEffNetResidualActorCritic,
-    MLPActorCritic,
-    REDQMLPActorCritic,
-    REDQResidualMLPActorCritic,
-    ResidualMLPActorCritic,
-    RNNActorCritic,
-    SquashedGaussianFrozenEffNetResidualActor,
-    SquashedGaussianMLPActor,
-    SquashedGaussianResidualMLPActor,
-    SquashedGaussianRNNActor,
-    SquashedGaussianVanillaCNNActor,
-    SquashedGaussianVanillaColorCNNActor,
-    VanillaCNNActorCritic,
-    VanillaColorCNNActorCritic,
-)
-from tmrl.custom.models.DQNNet import DQNActor
 from tmrl.custom.interfaces.TM2020Interface import TM2020Interface
 from tmrl.custom.interfaces.TM2020InterfaceIMPALA import TM2020InterfaceIMPALA
 from tmrl.custom.interfaces.TM2020InterfaceLidar import TM2020InterfaceLidar
@@ -76,6 +59,23 @@ from tmrl.custom.memories import (
     get_local_buffer_sample_mobilenet,
     get_local_buffer_sample_tm20_imgs,
 )
+from tmrl.custom.models import (
+    FrozenEffNetResidualActorCritic,
+    MLPActorCritic,
+    REDQMLPActorCritic,
+    REDQResidualMLPActorCritic,
+    ResidualMLPActorCritic,
+    RNNActorCritic,
+    SquashedGaussianFrozenEffNetResidualActor,
+    SquashedGaussianMLPActor,
+    SquashedGaussianResidualMLPActor,
+    SquashedGaussianRNNActor,
+    SquashedGaussianVanillaCNNActor,
+    SquashedGaussianVanillaColorCNNActor,
+    VanillaCNNActorCritic,
+    VanillaColorCNNActorCritic,
+)
+from tmrl.custom.models.DQNNet import DQNActor
 from tmrl.custom.models.Sophy import SophyResidualActorCritic, SquashedActorSophyResidual
 from tmrl.custom.tm.tm_preprocessors import (
     obs_preprocessor_lidar_progress_images_act_in_obs,
@@ -165,8 +165,8 @@ else:
             TRAIN_MODEL = partial(FrozenEffNetResidualActorCritic, **_frozen_effnet_kw)
             POLICY = partial(SquashedGaussianFrozenEffNetResidualActor, **_frozen_effnet_kw)
         elif cfg.USE_IMAGES and not cfg.PRAGMA_TQC_GRAB:
-            TRAIN_MODEL = impala.QRCNNActorCritic
-            POLICY = impala.SquashedActorQRCNN
+            TRAIN_MODEL = impala_module.QRCNNActorCritic
+            POLICY = impala_module.SquashedActorQRCNN
         elif cfg.PRAGMA_TQC_GRAB and not cfg.USE_IMAGES and cfg.USE_RESIDUAL_SOPHY:
             _res_sophy_kw = dict(
                 hidden_dim=cfg.RESIDUAL_MLP_HIDDEN_DIM,
@@ -175,8 +175,8 @@ else:
             TRAIN_MODEL = partial(SophyResidualActorCritic, **_res_sophy_kw)
             POLICY = partial(SquashedActorSophyResidual, **_res_sophy_kw)
         else:
-            TRAIN_MODEL = impalaWoImages.SophyActorCritic
-            POLICY = impalaWoImages.SquashedActorSophy
+            TRAIN_MODEL = Sophy_models.SophyActorCritic
+            POLICY = Sophy_models.SquashedActorSophy
     else:
         assert not cfg.PRAGMA_RNN, "RNNs not supported yet"
         assert ALG_NAME == "SAC", f"{ALG_NAME} is not implemented here."
@@ -449,8 +449,13 @@ elif ALG_NAME == "IQN":
         lr=ALG_CONFIG.get("IQN_LR", 1.0e-4),
         gamma=ALG_CONFIG["GAMMA"],
         epsilon_start=ALG_CONFIG.get("IQN_EPSILON_START", 1.0),
-        epsilon_end=ALG_CONFIG.get("IQN_EPSILON_END", 0.00005),
+        epsilon_end=ALG_CONFIG.get("IQN_EPSILON_END", 0.005),
         epsilon_decay_steps=ALG_CONFIG.get("IQN_EPSILON_DECAY_STEPS", 500000),
+        epsilon_cosine_t0=ALG_CONFIG.get("IQN_EPSILON_COSINE_T0", 50000),
+        epsilon_cosine_tmult=ALG_CONFIG.get("IQN_EPSILON_COSINE_TMULT", 1.5),
+        epsilon_cosine_decay=ALG_CONFIG.get("IQN_EPSILON_COSINE_DECAY", 0.8),
+        epsilon_cosine_floor_fraction=ALG_CONFIG.get("IQN_EPSILON_COSINE_FLOOR_FRACTION", 0.03),
+        epsilon_cosine_floor_steps=ALG_CONFIG.get("IQN_EPSILON_COSINE_FLOOR_STEPS", 0),
         n_steps=ALG_CONFIG.get("N_STEPS", 1),
         target_update_freq=ALG_CONFIG.get("IQN_TARGET_UPDATE_FREQ", 1000),
         double_dqn=ALG_CONFIG.get("IQN_DOUBLE_DQN", True),

@@ -3,7 +3,6 @@
 import atexit
 import datetime
 import itertools
-import json
 import math
 import os
 import pickle
@@ -602,56 +601,9 @@ def run_with_wandb(
         1,
         updater_fn,
     ):
-        for s in stats:
-            log_dict = json.loads(s.to_json())
-            for k, v in list(log_dict.items()):
-                is_invalid = v is None or (
-                    isinstance(v, float) and (v != v or v == float("inf") or v == float("-inf"))
-                )
-                if is_invalid:
-                    # Use NaN for invalid losses so they are visible in wandb (not hidden as 0)
-                    log_dict[k] = (
-                        float("nan")
-                        if k.startswith("losses/")
-                        else (
-                            0.0
-                            if k
-                            in (
-                                "metrics/return_test",
-                                "metrics/return_train",
-                                "metrics/episode_length_test",
-                                "metrics/episode_length_train",
-                                "eval/return_deterministic",
-                                "eval/episode_length_deterministic",
-                                "eval/finish_time_test_s",
-                                "eval/finished_track_count_test",
-                            )
-                            else None
-                        )
-                    )
-            for key in (
-                "losses/actor",
-                "losses/critic",
-                "metrics/return_test",
-                "metrics/return_train",
-                "metrics/episode_length_test",
-                "metrics/episode_length_train",
-                "eval/return_deterministic",
-                "eval/episode_length_deterministic",
-                "eval/finish_time_test_s",
-                "eval/finished_track_count_test",
-            ):
-                if key not in log_dict or log_dict[key] is None:
-                    # NaN for missing/invalid losses so they show in wandb (not hidden as 0)
-                    log_dict[key] = float("nan") if key.startswith("losses/") else 0.0
-            # Use explicit step so round-level logs don't advance wandb's counter past
-            # the agent's _training_step (which would cause "step must be monotonically
-            # increasing" warnings when the agent logs per-batch).
-            step = log_dict.pop("step", None)
-            if step is not None:
-                wandb.log(log_dict, step=int(step))
-            else:
-                wandb.log(log_dict)
+        # Round-level stats are logged to wandb inside TrainingOffline.run_epoch() with
+        # step=total_updates so steps stay monotonically increasing (agent logs per-batch).
+        list(stats)  # consume to drive the epoch
 
 
 def run(
@@ -1120,10 +1072,10 @@ class RolloutWorker:
         self.buffer.stat_test_return = ret
         self.buffer.stat_test_steps = steps
         if not train:
-            dt = float(
-                cfg.ENV_CONFIG.get("RTGYM_CONFIG", {}).get("time_step_duration", 0.05)
+            dt = float(cfg.ENV_CONFIG.get("RTGYM_CONFIG", {}).get("time_step_duration", 0.05))
+            end_of_track = (
+                bool(info.get("end_of_track", False)) if isinstance(info, dict) else False
             )
-            end_of_track = bool(info.get("end_of_track", False)) if isinstance(info, dict) else False
             self.buffer.stat_test_finish_time = (steps * dt) if end_of_track else 0.0
             self.buffer.stat_test_finished_track = end_of_track
 

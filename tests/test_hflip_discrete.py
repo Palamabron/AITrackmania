@@ -1,7 +1,7 @@
 """Tests for horizontal flip augmentation with discrete actions."""
 
 import numpy as np
-from tmrl.custom.custom_memories import (
+from tmrl.custom.memories import (
     _hflip_action,
     _hflip_discrete_action,
     _is_discrete_action,

@@ -8,6 +8,7 @@ import numpy as np
 from gymnasium import spaces
 from scipy import spatial
 
+from tmrl.config.paths import TRACKMAP_CSV_LEFT, TRACKMAP_CSV_RIGHT
 from tmrl.custom.interfaces.TM2020InterfaceLidar import TM2020InterfaceLidar
 from tmrl.custom.utils.control_mouse import mouse_save_replay_tm20
 
@@ -45,8 +46,8 @@ class TM2020InterfaceTrackMap(TM2020InterfaceLidar):
         self.lidar = None
         self.last_pos = [0, 0]
         self.index = 0
-        self.map_left = np.loadtxt("saved_tracks/tmrl-test/track_left.csv", delimiter=",")
-        self.map_right = np.loadtxt("saved_tracks/tmrl-test/track_right.csv", delimiter=",")
+        self.map_left = np.loadtxt(TRACKMAP_CSV_LEFT, delimiter=",")
+        self.map_right = np.loadtxt(TRACKMAP_CSV_RIGHT, delimiter=",")
         self.all_observed_track_parts: list[list[list[float]]] = [[], [], [], [], []]
 
     def get_observation_space(self):

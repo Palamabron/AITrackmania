@@ -1,26 +1,16 @@
-"""Base memory classes for TrackMania reinforcement learning.
-
-This module provides base classes for experience replay memories
-used in TrackMania RL training.
-"""
+"""Base memory classes for TrackMania reinforcement learning."""
 
 from collections.abc import Callable
 from typing import Any
 
 import numpy as np
 
+from tmrl.custom.memories.enums import BufferField, GenericField
 from tmrl.memory import TorchMemory
 
 
 def last_true_in_list(li: list[bool]) -> int | None:
-    """Find the index of the last True value in a list.
-
-    Args:
-        li: List of boolean values.
-
-    Returns:
-        Index of the last True value, or None if no True value exists.
-    """
+    """Find the index of the last True value in a list."""
     for i in reversed(range(len(li))):
         if li[i]:
             return i
@@ -28,18 +18,7 @@ def last_true_in_list(li: list[bool]) -> int | None:
 
 
 def replace_hist_before_eoe(hist: list, eoe_idx_in_hist: int) -> None:
-    """Pad history before the End Of Episode (EOE) index.
-
-    Previous entries in hist are padded with copies of the first element
-    occurring after EOE.
-
-    Args:
-        hist: History list to modify in place.
-        eoe_idx_in_hist: Index of the end of episode in the history.
-
-    Raises:
-        AssertionError: If eoe_idx_in_hist is beyond the last index.
-    """
+    """Pad history before the End Of Episode (EOE) index."""
     last_idx = len(hist) - 1
     assert eoe_idx_in_hist <= last_idx, (
         f"replace_hist_before_eoe: eoe_idx_in_hist:{eoe_idx_in_hist}, last_idx:{last_idx}"
@@ -51,11 +30,7 @@ def replace_hist_before_eoe(hist: list, eoe_idx_in_hist: int) -> None:
 
 
 class GenericTorchMemory(TorchMemory):
-    """Generic torch-based memory for simple replay buffer scenarios.
-
-    This memory implementation stores transitions without complex history
-    management, suitable for simple off-policy algorithms.
-    """
+    """Generic torch-based memory for simple replay buffer scenarios."""
 
     def __init__(
         self,
@@ -67,17 +42,6 @@ class GenericTorchMemory(TorchMemory):
         crc_debug: bool = False,
         device: str = "cpu",
     ):
-        """Initialize GenericTorchMemory.
-
-        Args:
-            memory_size: Maximum number of transitions to store.
-            batch_size: Number of samples per batch.
-            dataset_path: Path to a saved dataset (if loading existing data).
-            nb_steps: Number of steps for multi-step learning.
-            sample_preprocessor: Optional function to preprocess samples.
-            crc_debug: Enable CRC debugging for data integrity checks.
-            device: Device to store tensors on ("cpu" or "cuda").
-        """
         super().__init__(
             memory_size=memory_size,
             batch_size=batch_size,
@@ -89,91 +53,59 @@ class GenericTorchMemory(TorchMemory):
         )
 
     def append_buffer(self, buffer):
-        """Append a buffer of samples to the memory.
-
-        Args:
-            buffer: Buffer containing samples (act, obs, rew, terminated, truncated, info).
-        """
-        d0 = [b[0] for b in buffer.memory]  # actions
-        d1 = [b[1] for b in buffer.memory]  # observations
-        d2 = [b[2] for b in buffer.memory]  # rewards
-        d3 = [b[3] for b in buffer.memory]  # terminated
-        d4 = [b[4] for b in buffer.memory]  # truncated
-        d5 = [b[5] for b in buffer.memory]  # info
-        d6 = [b[3] or b[4] for b in buffer.memory]  # done
+        """Append a buffer of samples to the memory."""
+        bf = BufferField
+        data_fields = [
+            [b[bf.ACTION] for b in buffer.memory],
+            [b[bf.OBSERVATION] for b in buffer.memory],
+            [b[bf.REWARD] for b in buffer.memory],
+            [b[bf.TERMINATED] for b in buffer.memory],
+            [b[bf.TRUNCATED] for b in buffer.memory],
+            [b[bf.INFO] for b in buffer.memory],
+            [b[bf.TERMINATED] or b[bf.TRUNCATED] for b in buffer.memory],
+        ]
 
         if self.__len__() > 0:
-            self.data[0] += d0
-            self.data[1] += d1
-            self.data[2] += d2
-            self.data[3] += d3
-            self.data[4] += d4
-            self.data[5] += d5
-            self.data[6] += d6
+            for i, d in enumerate(data_fields):
+                self.data[i] += d
         else:
-            self.data.append(d0)
-            self.data.append(d1)
-            self.data.append(d2)
-            self.data.append(d3)
-            self.data.append(d4)
-            self.data.append(d5)
-            self.data.append(d6)
+            self.data = list(data_fields)
 
         to_trim = int(self.__len__() - self.memory_size)
         if to_trim > 0:
-            for i in range(7):
+            for i in range(len(data_fields)):
                 self.data[i] = self.data[i][to_trim:]
 
     def __len__(self) -> int:
-        """Return the number of valid transitions in memory.
-
-        Returns:
-            Number of transitions available for sampling.
-        """
+        """Return the number of valid transitions in memory."""
         if len(self.data) == 0:
             return 0
         res = len(self.data[0]) - 1
         return max(0, res)
 
     def get_transition(self, item: int):
-        """Get a single transition from the memory.
+        """Get a single transition from the memory."""
+        f = GenericField
 
-        Args:
-            item: Index of the transition to retrieve.
-
-        Returns:
-            Tuple of (last_obs, new_act, rew, new_obs, terminated, truncated, info).
-        """
-        while self.data[6][item]:
+        while self.data[f.DONE][item]:
             item = np.random.randint(0, self.__len__() - 1)
 
         idx_last = item
         idx_now = item + 1
 
-        last_obs = self.data[1][idx_last]
-        new_act = self.data[0][idx_now]
-        rew = self.data[2][idx_now]
-        new_obs = self.data[1][idx_now]
-        terminated = self.data[3][idx_now]
-        truncated = self.data[4][idx_now]
-        info = self.data[5][idx_now]
-
-        return last_obs, new_act, rew, new_obs, terminated, truncated, info
+        return (
+            self.data[f.OBSERVATIONS][idx_last],
+            self.data[f.ACTIONS][idx_now],
+            self.data[f.REWARDS][idx_now],
+            self.data[f.OBSERVATIONS][idx_now],
+            self.data[f.TERMINATED][idx_now],
+            self.data[f.TRUNCATED][idx_now],
+            self.data[f.INFO][idx_now],
+        )
 
 
 class MemoryTM(TorchMemory):
-    """Base class for TrackMania replay memories with temporal structure.
-
-    This class provides common functionality for memories that need to handle
-    sequences of images and action histories, with proper episode boundary handling.
-
-    Attributes:
-        imgs_obs: Number of consecutive images/observations to stack.
-        act_buf_len: Length of action history buffer.
-        min_samples: Minimum samples needed for a valid transition.
-        start_imgs_offset: Offset for image loading.
-        start_acts_offset: Offset for action loading.
-    """
+    """Base class for TrackMania replay memories with temporal structure."""
 
     def __init__(
         self,
@@ -187,19 +119,6 @@ class MemoryTM(TorchMemory):
         crc_debug: bool = False,
         device: str = "cpu",
     ):
-        """Initialize MemoryTM.
-
-        Args:
-            memory_size: Maximum size of the memory buffer.
-            batch_size: Size of batches used during training.
-            dataset_path: Path to the dataset.
-            imgs_obs: Number of observed images to stack.
-            act_buf_len: Length of the action buffer.
-            nb_steps: Number of steps for multi-step learning.
-            sample_preprocessor: A callable function for sample preprocessing.
-            crc_debug: Flag indicating whether to debug CRC.
-            device: Device where the memory is stored ("cpu" or "cuda").
-        """
         self.imgs_obs = imgs_obs
         self.act_buf_len = act_buf_len
         self.min_samples = max(self.imgs_obs, self.act_buf_len)
@@ -216,34 +135,16 @@ class MemoryTM(TorchMemory):
         )
 
     def append_buffer(self, buffer):
-        """Append a buffer of samples - must be implemented by subclasses.
-
-        Args:
-            buffer: Buffer containing samples to append.
-
-        Raises:
-            NotImplementedError: Always, as subclasses must implement this.
-        """
+        """Append a buffer of samples - must be implemented by subclasses."""
         raise NotImplementedError
 
     def __len__(self) -> int:
-        """Return the number of valid transitions in memory.
-
-        Returns:
-            Number of transitions available for sampling.
-        """
+        """Return the number of valid transitions in memory."""
         if len(self.data) == 0:
             return 0
         res = len(self.data[0]) - self.min_samples - 1
         return max(0, res)
 
     def get_transition(self, item: int):
-        """Get a single transition - must be implemented by subclasses.
-
-        Args:
-            item: Index of the transition to retrieve.
-
-        Raises:
-            NotImplementedError: Always, as subclasses must implement this.
-        """
+        """Get a single transition - must be implemented by subclasses."""
         raise NotImplementedError

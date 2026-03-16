@@ -13,13 +13,65 @@ import numpy as np
 import torch
 from loguru import logger
 
-import tmrl.config.constants as cfg
 import tmrl.config.config_objects as cfg_obj
+import tmrl.config.constants as cfg
 import tmrl.config.paths as cfg_paths
 from tmrl.tools.player_runs import poll_player_runs_for_injection
 from tmrl.util import pandas_dict
 
+try:
+    import wandb
+except ImportError:
+    wandb = None  # type: ignore[assignment]
+
 __docformat__ = "google"
+
+# Keys that must be present for wandb round-level logging (same as networking.run_with_wandb).
+_WANDB_ROUND_KEYS = (
+    "losses/actor",
+    "losses/critic",
+    "metrics/return_test",
+    "metrics/return_train",
+    "metrics/episode_length_test",
+    "metrics/episode_length_train",
+    "eval/return_deterministic",
+    "eval/episode_length_deterministic",
+    "eval/finish_time_test_s",
+    "eval/finished_track_count_test",
+)
+
+
+def _round_stat_to_wandb_log_dict(round_series) -> dict[str, Any]:
+    """Build a sanitized dict from a round stat Series for wandb.log (mirrors networking)."""
+    log_dict = round_series.to_dict() if hasattr(round_series, "to_dict") else dict(round_series)
+    for k, v in list(log_dict.items()):
+        is_invalid = v is None or (
+            isinstance(v, float) and (v != v or v == float("inf") or v == float("-inf"))
+        )
+        if is_invalid:
+            log_dict[k] = (
+                float("nan")
+                if k.startswith("losses/")
+                else (
+                    0.0
+                    if k
+                    in (
+                        "metrics/return_test",
+                        "metrics/return_train",
+                        "metrics/episode_length_test",
+                        "metrics/episode_length_train",
+                        "eval/return_deterministic",
+                        "eval/episode_length_deterministic",
+                        "eval/finish_time_test_s",
+                        "eval/finished_track_count_test",
+                    )
+                    else None
+                )
+            )
+    for key in _WANDB_ROUND_KEYS:
+        if key not in log_dict or log_dict[key] is None:
+            log_dict[key] = float("nan") if key.startswith("losses/") else 0.0
+    return log_dict
 
 
 def _observation_space_from_sample(observation) -> gymnasium.spaces.Space:
@@ -389,9 +441,10 @@ class TrainingOffline:
         # Handle case where checkpoint contains old training_agent_cls with incompatible params
         # (e.g., IQNAgent doesn't accept model_cls/kappa but old checkpoints may have them)
         agent_cls = self.training_agent_cls
-        if hasattr(agent_cls, 'keywords') and hasattr(agent_cls, 'func'):
-            from functools import partial
+        if hasattr(agent_cls, "keywords") and hasattr(agent_cls, "func"):
             import inspect
+            from functools import partial
+
             sig = inspect.signature(agent_cls.func.__init__)
             valid_params = set(sig.parameters.keys())
             # Filter out keywords that the agent class doesn't accept
@@ -718,6 +771,13 @@ class TrainingOffline:
                     **_mean_stats_dicts(stats_training),
                 ),
             )
+
+            # Log round-level stats to wandb here so step is current (avoids "step must be
+            # monotonically increasing" when agent logs per-batch).
+            if wandb is not None and wandb.run is not None:
+                round_log = _round_stat_to_wandb_log_dict(stats[-1])
+                step = int(round_log.pop("step", self.total_updates))
+                wandb.log(round_log, step=step)
 
             logger.info(stats[-1].add_prefix("  ").to_string() + "\n")
             if self._perf_acc["batches"] > 0:

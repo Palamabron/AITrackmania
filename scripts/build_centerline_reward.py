@@ -15,7 +15,7 @@ different lengths (inner vs outer barrier) -- naive left[i]+right[i] produces a 
 
 Usage:
   python scripts/build_centerline_reward.py [--spacing-m 0.2] [--smooth]
-  python scripts/build_centerline_reward.py --debug-plot centerline_debug.png
+  python scripts/build_centerline_reward.py --debug-plot  # saves to output_files/debug/
   python scripts/build_centerline_reward.py --base-reward /path/to/reward_test-3.pkl
 
 Input formats: .pkl (N,3) x,y,z or .csv (N,2) x,z.
@@ -324,7 +324,7 @@ class CenterlineArgs:
     """Apply Gaussian smoothing to the centerline."""
 
     debug_plot: str | None = None
-    """Save 3D + top-down debug plot to this path."""
+    """Save 3D + top-down debug plot. Relative/omitted path → output_files/debug/."""
 
     dry_run: bool = False
     """Only print stats, do not write file."""
@@ -336,7 +336,7 @@ def main() -> int:
 
     if args.left is None or args.right is None:
         try:
-            import tmrl.config.config_constants as cfg
+            import tmrl.config as cfg
 
             args.left = args.left or cfg.TRACK_PATH_LEFT
             args.right = args.right or cfg.TRACK_PATH_RIGHT
@@ -388,6 +388,14 @@ def main() -> int:
     t0 = _timer("Build centerline", t0)
 
     if args.debug_plot:
+        import tmrl.config as cfg
+
+        debug_dir = str(cfg.DEBUG_FOLDER)
+        os.makedirs(debug_dir, exist_ok=True)
+        if os.path.isabs(args.debug_plot):
+            debug_path = args.debug_plot
+        else:
+            debug_path = os.path.join(debug_dir, args.debug_plot or "centerline_debug.png")
         center_raw = build_centerline(
             left,
             right,
@@ -397,7 +405,7 @@ def main() -> int:
             align=args.align,
         )
         _save_debug_plot(
-            left, right, center, os.path.abspath(args.debug_plot), args.align, center_raw=center_raw
+            left, right, center, os.path.abspath(debug_path), args.align, center_raw=center_raw
         )
         t0 = _timer("Debug plot", t0)
 

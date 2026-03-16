@@ -1,7 +1,7 @@
 """Tests for Forget-and-Grow (FoG) replay decay resampling."""
 
 import numpy as np
-from tmrl.custom.custom_memories import fog_recency_resample
+from tmrl.custom.memories import fog_recency_resample
 
 
 class TestFogRecencyResample:
