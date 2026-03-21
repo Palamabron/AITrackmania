@@ -160,7 +160,12 @@ class TorchActorModule(ActorModule, torch.nn.Module, ABC):
         torch.save(self.state_dict(), buffer)
         return buffer.getvalue()
 
-    def load_from_bytes(self, payload: bytes, device):
+    def load_from_bytes(self, payload: bytes, device) -> bool:
+        """Load weights from serialized ``state_dict`` bytes.
+
+        Returns:
+            True if weights were applied, False if skipped (e.g. shape mismatch).
+        """
         self.device = device
         buffer = BytesIO(payload)
         try:
@@ -179,18 +184,30 @@ class TorchActorModule(ActorModule, torch.nn.Module, ABC):
                 else:
                     raise
         except RuntimeError as e:
-            if "size mismatch" in str(e) or "Missing key" in str(e) or "shape" in str(e).lower():
+            err = str(e)
+            if "size mismatch" in err or "Missing key" in err or "shape" in err.lower():
                 from loguru import logger
 
-                logger.warning(
-                    "Ignoring incompatible weights from server (shape mismatch). "
-                    "This is normal after a config change or trainer reset -- the worker "
-                    "will keep its current weights until the trainer broadcasts compatible ones. "
-                    "If this persists, restart server -> trainer -> worker."
+                err_preview = "\n".join(
+                    line.rstrip() for line in err.splitlines()[:12] if line.strip()
                 )
-                return self
+                logger.warning(
+                    "Ignoring incompatible weights from server (shape mismatch). PyTorch:\n{}. "
+                    "Trainer and worker must use the same code and TmrlData config.json. "
+                    "If the error names q_net.backbone.physics_proj: with TRACK_CURVATURE_OBS, "
+                    "a 1-row weight mismatch usually means POINTS_NUMBER differs by 1 (track + "
+                    "curvature tail). Use the same reward_<MAP>.pkl on both hosts; observation "
+                    "space must use the same lookahead count as RewardFunction (spacing mode). "
+                    "Other causes: reward pickle missing on trainer (fallback to "
+                    "ALG.NUMBER_OF_POINTS), or MODEL.USE_RNN / RESIDUAL_MLP_NUM_BLOCKS / IQN_* "
+                    "mismatch. Compare 'IQNAgent model fingerprint' vs 'Worker env' logs. "
+                    "Restart order: server → trainer → worker. Until shapes match, the worker "
+                    "keeps stale weights and learning is wrong.",
+                    err_preview,
+                )
+                return False
             raise
-        return self
+        return True
 
     def act_(self, obs, test=False):
         obs = collate_torch([obs], device=self.device)

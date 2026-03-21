@@ -26,17 +26,17 @@ def benchmark():
     env_config["interface_kwargs"] = {
         "img_hist_len": 1,
         "gamepad": False,
-        "min_nb_steps_before_failure": int(20 * 60),
+        "min_nb_steps_before_failure": (20 * 60),
     }
     env = gymnasium.make("real-time-gym-v1", config=env_config)
 
     t_d = time.time()
-    o, i = env.reset()
-    for idx in range(NB_STEPS - 1):
+    _, _ = env.reset()
+    for _idx in range(NB_STEPS - 1):
         _ = action_space.sample()  # simulate action compute time
         time.sleep(random.uniform(ACT_COMPUTE_MIN, ACT_COMPUTE_MAX))
         # o, r, d, t, i = env.step(act)
-        o, r, d, t, i, s_r = env.step(None)
+        _o, r, d, t, _i, _s_r = env.step(None)
         if d or t:
             env.reset()
         logger.info(f"rew:{r}")

@@ -24,7 +24,7 @@ class TestNStepReturn:
         rewards = torch.tensor([1.0, 1.0, 1.0, 1.0, 1.0])
         dones = torch.tensor([0.0, 0.0, 0.0, 0.0, 0.0])
         gamma = 0.9
-        ret, mask = _compute_n_step_return_and_bootstrap_mask(
+        ret, _mask = _compute_n_step_return_and_bootstrap_mask(
             rewards, dones, gamma=gamma, n_steps=3
         )
         expected_0 = 1.0 + gamma * 1.0 + gamma**2 * 1.0
@@ -34,7 +34,7 @@ class TestNStepReturn:
         rewards = torch.tensor([1.0, 1.0, 1.0])
         dones = torch.tensor([0.0, 1.0, 0.0])
         gamma = 0.99
-        ret, mask = _compute_n_step_return_and_bootstrap_mask(
+        _ret, mask = _compute_n_step_return_and_bootstrap_mask(
             rewards, dones, gamma=gamma, n_steps=3
         )
         assert mask[0].item() == 0.0, (

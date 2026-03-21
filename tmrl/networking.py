@@ -1,6 +1,7 @@
 """Server, buffer, trainer, and rollout worker for distributed TMRL training."""
 
 import atexit
+import contextlib
 import datetime
 import itertools
 import math
@@ -12,7 +13,7 @@ import sys
 import tempfile
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Generator
 from os.path import exists
 from typing import Any
 
@@ -25,6 +26,7 @@ from tlspyo.server import Server as TlspyoServer
 
 import tmrl.config as cfg
 import tmrl.config.config_objects as cfg_obj
+import tmrl.config.constants as cfg_c
 from tmrl.actor import ActorModule
 from tmrl.util import dump, load, partial_to_dict
 
@@ -38,7 +40,10 @@ def print_with_timestamp(message: str) -> None:
 
 
 def print_ip():
-    public_ip = get("http://api.ipify.org").text
+    try:
+        public_ip = get("http://api.ipify.org", timeout=5).text
+    except Exception:
+        public_ip = "unavailable"
     local_ip = socket.gethostbyname(socket.gethostname())
     print_with_timestamp(f"public IP: {public_ip}, local IP: {local_ip}")
 
@@ -132,52 +137,43 @@ class Buffer:
         self.stat_test_finish_time = 0.0
         self.stat_test_finished_track = False
         self.stat_test_finished_count = 0
+        self.stat_test_competition_eliminated = False
+        self.stat_test_competition_crashes = 0
         self.maxlen = maxlen
         self._lock = threading.RLock() if thread_safe else None
 
-    def clip_to_maxlen(self):
+    @contextlib.contextmanager
+    def _guarded(self) -> Generator[None, None, None]:
+        """Acquire the buffer lock if thread_safe, else no-op. Uses RLock so nesting is safe."""
         if self._lock is not None:
             self._lock.acquire()
         try:
+            yield
+        finally:
+            if self._lock is not None:
+                self._lock.release()
+
+    def clip_to_maxlen(self):
+        with self._guarded():
             lenmem = len(self.memory)
             if lenmem > self.maxlen:
                 print_with_timestamp("buffer overflow. Discarding old samples.")
                 self.memory = self.memory[(lenmem - self.maxlen) :]
-        finally:
-            if self._lock is not None:
-                self._lock.release()
 
     def append_sample(self, sample):
-        """
-        Appends `sample` to the buffer.
-
-        Args:
-            sample (Tuple): (act, new_obs, rew, terminated, truncated, info)
-        """
-        if self._lock is not None:
-            self._lock.acquire()
-        try:
+        """Append a sample ``(act, new_obs, rew, terminated, truncated, info)`` to the buffer."""
+        with self._guarded():
             self.memory.append(sample)
             self.clip_to_maxlen()
-        finally:
-            if self._lock is not None:
-                self._lock.release()
 
     def clear(self):
-        """
-        Clears the buffer but keeps train and test returns.
-        """
-        if self._lock is not None:
-            self._lock.acquire()
-        try:
+        """Clear the buffer but keep train and test return stats."""
+        with self._guarded():
             self.memory = []
-        finally:
-            if self._lock is not None:
-                self._lock.release()
 
     def apply_speed_bonus(self, speed_scale: float) -> None:
-        """
-        Spread a time/speed bonus over all rewards in this episode (in-place), K/T² formula.
+        """Spread a time/speed bonus over all rewards in this episode (in-place), K/T² formula.
+
         Each step gets speed_scale / T² so the total bonus is speed_scale / T;
         faster episodes (smaller T) get a higher total and every step carries the signal.
         Avoids a terminal spike that harms TQC convergence and long-horizon credit assignment.
@@ -191,15 +187,13 @@ class Buffer:
         """
         if speed_scale <= 0 or len(self.memory) == 0:
             return
-        if self._lock is not None:
-            self._lock.acquire()
-        try:
+        with self._guarded():
             num_steps = len(self.memory)
             bonus_per_step = speed_scale / (num_steps * num_steps)
             total_bonus = bonus_per_step * num_steps
             new_memory = []
             old_total = 0.0
-            for i, sample in enumerate(self.memory):
+            for _i, sample in enumerate(self.memory):
                 act, obs, rew, term, trunc, info = sample
                 old_total += rew
                 new_rew = rew + bonus_per_step
@@ -210,17 +204,12 @@ class Buffer:
                 new_memory[-1][5]["reward_sum"] = new_total
             self.memory = new_memory
             self.stat_train_return = new_total
-        finally:
-            if self._lock is not None:
-                self._lock.release()
 
     def __len__(self):
         return len(self.memory)
 
     def __iadd__(self, other):
-        if self._lock is not None:
-            self._lock.acquire()
-        try:
+        with self._guarded():
             self.memory += other.memory
             self.clip_to_maxlen()
             self.stat_train_return = other.stat_train_return
@@ -230,10 +219,11 @@ class Buffer:
             self.stat_test_finish_time = getattr(other, "stat_test_finish_time", 0.0)
             self.stat_test_finished_track = getattr(other, "stat_test_finished_track", False)
             self.stat_test_finished_count = getattr(other, "stat_test_finished_count", 0)
+            self.stat_test_competition_eliminated = getattr(
+                other, "stat_test_competition_eliminated", False
+            )
+            self.stat_test_competition_crashes = getattr(other, "stat_test_competition_crashes", 0)
             return self
-        finally:
-            if self._lock is not None:
-                self._lock.release()
 
 
 class Server:
@@ -300,10 +290,12 @@ class Server:
         print_with_timestamp(
             f"Config: {config_path} (ensure server, trainer, worker use this same config)."
         )
-        time.sleep(0.5)
+        server_startup_delay = 0.5
+        port_check_timeout = 2.0
+        time.sleep(server_startup_delay)
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                s.settimeout(2.0)
+                s.settimeout(port_check_timeout)
                 s.connect(("127.0.0.1", port))
             print_with_timestamp(f"Port {port} is open and accepting connections.")
         except OSError as e:
@@ -324,7 +316,8 @@ class Server:
                 reactor.callFromThread(reactor.stop)
             except Exception:
                 pass
-            relay._thread.join(timeout=5.0)
+            relay_thread_join_timeout = 5.0
+            relay._thread.join(timeout=relay_thread_join_timeout)
 
 
 class TrainerInterface:
@@ -437,7 +430,7 @@ def dump_run_instance(run_instance, checkpoint_path):
         active_pids = []
         for pid in _dump_pids:
             try:
-                pid_ret, status = os.waitpid(pid, os.WNOHANG)
+                pid_ret, _ = os.waitpid(pid, os.WNOHANG)
                 if pid_ret == 0:
                     active_pids.append(pid)
             except ChildProcessError:
@@ -459,8 +452,9 @@ def dump_run_instance(run_instance, checkpoint_path):
             return
     else:
         global _dump_thread
+        dump_thread_join_timeout = 300
         if _dump_thread is not None and _dump_thread.is_alive():
-            _dump_thread.join(timeout=300)
+            _dump_thread.join(timeout=dump_thread_join_timeout)
         import collections
         import copy
 
@@ -562,15 +556,18 @@ def run_with_wandb(
     atexit.register(shutil.rmtree, wandb_dir, ignore_errors=True)
     import wandb
 
+    cfg.ensure_wandb_api_key()
     logger.debug(f" run_cls: {run_cls}")
     config = partial_to_dict(run_cls)
     config["environ"] = log_environment_variables()
-    hiperparams_dict = cfg.create_config()
-    for key, value in hiperparams_dict.items():
+    hyperparams_dict = cfg.create_config()
+    for key, value in hyperparams_dict.items():
         config[key] = value
     resume = bool(checkpoint_path and exists(checkpoint_path))
     wandb_initialized = False
-    err_cpt = 0
+    wandb_max_retries = 10
+    wandb_retry_sleep = 10.0
+    error_count = 0
     while not wandb_initialized:
         try:
             wandb.init(
@@ -585,14 +582,16 @@ def run_with_wandb(
             wandb_initialized = True
 
         except Exception as e:
-            err_cpt += 1
-            logger.warning(f"wandb error {err_cpt}: {e}")
-            if err_cpt > 10:
+            error_count += 1
+            logger.warning(f"wandb error {error_count}: {e}")
+            if error_count > wandb_max_retries:
                 logger.warning("Could not connect to wandb, aborting.")
-                exit()
+                import sys
+
+                sys.exit(1)
             else:
-                time.sleep(10.0)
-    for stats in iterate_epochs(
+                time.sleep(wandb_retry_sleep)
+    for _stats in iterate_epochs(
         run_cls,
         interface,
         checkpoint_path,
@@ -603,7 +602,7 @@ def run_with_wandb(
     ):
         # Round-level stats are logged to wandb inside TrainingOffline.run_epoch() with
         # step=total_updates so steps stay monotonically increasing (agent logs per-batch).
-        list(stats)  # consume to drive the epoch
+        list(_stats)  # consume to drive the epoch
 
 
 def run(
@@ -619,7 +618,7 @@ def run(
     """
     dump_run_instance_fn = dump_run_instance_fn or dump_run_instance
     load_run_instance_fn = load_run_instance_fn or load_run_instance
-    for stats in iterate_epochs(
+    for _ in iterate_epochs(
         run_cls,
         interface,
         checkpoint_path,
@@ -802,9 +801,12 @@ class RolloutWorker:
             else math.prod(obs_space.shape or ())
         )
         logger.info(
-            " Worker env: interface={}, observation_space total_dim={}",
+            " Worker env: interface={}, observation_space total_dim={}, "
+            "POINTS_NUMBER={}, USE_RNN_MODEL={}",
             cfg_obj.INTERFACE_DISPLAY_NAME,
             _obs_dim,
+            cfg_c.POINTS_NUMBER,
+            cfg_c.USE_RNN_MODEL,
         )
         act_space = self.env.action_space
         self.model_path = model_path
@@ -978,9 +980,9 @@ class RolloutWorker:
 
         ret = 0.0
         steps = 0
-        obs, info = self.reset(collect_samples=True)
+        obs, _ = self.reset(collect_samples=True)
         for i in iterator:
-            obs, rew, terminated, truncated, info = self.step(
+            obs, rew, terminated, truncated, _ = self.step(
                 obs=obs, test=False, collect_samples=True, last_step=i == max_samples - 1
             )
             ret += rew
@@ -1015,13 +1017,14 @@ class RolloutWorker:
             self.run_episode(max_samples_per_episode, train=train)
 
     def _run_deterministic_test_episodes(self, max_samples, n_episodes):
-        """Run `n_episodes` deterministic test episodes and store mean return/steps in buffer.
+        """Run deterministic eval: competition-style (TMRL test rules) or legacy mean over runs."""
+        if cfg_c.BEST_CHECKPOINT_LAP_TIME:
+            self._run_competition_style_test_episodes(max_samples, n_episodes)
+        else:
+            self._run_legacy_deterministic_test_episodes(max_samples, n_episodes)
 
-        For stochastic evaluation (e.g. from a script with deterministic=False), call
-        model.policy.reset_noise() (or actor.reset_noise(1)) at the start of each
-        evaluation episode so that different runs get different noise realizations.
-        Logs finish times (seconds) for each test run that reached end of track.
-        """
+    def _run_legacy_deterministic_test_episodes(self, max_samples, n_episodes):
+        """Mean return/steps; mean finish time over episodes that reached end of track."""
         returns = []
         steps_list = []
         finish_times = []
@@ -1035,12 +1038,81 @@ class RolloutWorker:
         self.buffer.stat_test_steps = float(np.mean(steps_list))
         self.buffer.stat_test_finish_time = float(np.mean(finish_times)) if finish_times else 0.0
         self.buffer.stat_test_finished_count = len(finish_times)
+        self.buffer.stat_test_competition_eliminated = False
+        self.buffer.stat_test_competition_crashes = n_episodes - len(finish_times)
         if finish_times:
             logger.info(
                 "Test runs (epsilon=0) finish times (s): {}  (finished {}/{} episodes)",
                 [round(t, 2) for t in finish_times],
                 len(finish_times),
                 n_episodes,
+            )
+
+    def _run_competition_style_test_episodes(self, max_samples, n_episodes):
+        """Eval aligned with TMRL competition.
+
+        N attempts, crash discards run, +penalty to next finish.
+
+        After ``COMPETITION_EVAL_MAX_CRASHES`` crashes the eval is eliminated (no valid mean time).
+        Mean time is over successful runs only (crashed attempts are excluded from the mean).
+        """
+        penalty_s = float(cfg_c.COMPETITION_EVAL_CRASH_PENALTY_S)
+        max_crashes = int(cfg_c.COMPETITION_EVAL_MAX_CRASHES)
+        penalty_carry = 0.0
+        crashes = 0
+        eliminated = False
+        returns: list[float] = []
+        steps_list: list[float] = []
+        finish_times_adjusted: list[float] = []
+        raw_finish_times: list[float] = []
+
+        for _attempt in range(n_episodes):
+            if eliminated:
+                break
+            self.run_episode(max_samples, train=False)
+            returns.append(self.buffer.stat_test_return)
+            steps_list.append(self.buffer.stat_test_steps)
+            finished = bool(getattr(self.buffer, "stat_test_finished_track", False))
+            raw_t = float(getattr(self.buffer, "stat_test_finish_time", 0.0))
+            if finished and raw_t > 0.0:
+                adj = raw_t + penalty_carry
+                finish_times_adjusted.append(adj)
+                raw_finish_times.append(raw_t)
+                penalty_carry = 0.0
+            else:
+                crashes += 1
+                penalty_carry += penalty_s
+                if crashes >= max_crashes:
+                    eliminated = True
+                    break
+
+        self.buffer.stat_test_competition_eliminated = eliminated
+        self.buffer.stat_test_competition_crashes = crashes
+        self.buffer.stat_test_return = float(np.mean(returns)) if returns else 0.0
+        self.buffer.stat_test_steps = float(np.mean(steps_list)) if steps_list else 0.0
+        if eliminated or not finish_times_adjusted:
+            self.buffer.stat_test_finish_time = 0.0
+            self.buffer.stat_test_finished_count = 0
+            self.buffer.stat_test_finished_track = False
+            logger.info(
+                "Competition eval: eliminated={} crashes={}/{}  (no mean lap time)",
+                eliminated,
+                crashes,
+                max_crashes,
+            )
+        else:
+            mean_adj = float(np.mean(finish_times_adjusted))
+            self.buffer.stat_test_finish_time = mean_adj
+            self.buffer.stat_test_finished_count = len(finish_times_adjusted)
+            self.buffer.stat_test_finished_track = len(finish_times_adjusted) > 0
+            logger.info(
+                "Competition eval: mean lap (penalty-adjusted)={:.2f}s from {}/{} finishes, "
+                "crashes={}, raw times (s): {}",
+                mean_adj,
+                len(finish_times_adjusted),
+                n_episodes,
+                crashes,
+                [round(t, 2) for t in raw_finish_times],
             )
 
     def run_episode(self, max_samples=None, train=False):
@@ -1060,6 +1132,7 @@ class RolloutWorker:
 
         ret = 0.0
         steps = 0
+        saw_end_of_track = False
         obs, info = self.reset(collect_samples=False)
         for _ in iterator:
             obs, rew, terminated, truncated, info = self.step(
@@ -1067,13 +1140,15 @@ class RolloutWorker:
             )
             ret += rew
             steps += 1
+            if isinstance(info, dict) and info.get("end_of_track"):
+                saw_end_of_track = True
             if terminated or truncated:
                 break
         self.buffer.stat_test_return = ret
         self.buffer.stat_test_steps = steps
         if not train:
             dt = float(cfg.ENV_CONFIG.get("RTGYM_CONFIG", {}).get("time_step_duration", 0.05))
-            end_of_track = (
+            end_of_track = saw_end_of_track or (
                 bool(info.get("end_of_track", False)) if isinstance(info, dict) else False
             )
             self.buffer.stat_test_finish_time = (steps * dt) if end_of_track else 0.0
@@ -1178,11 +1253,11 @@ class RolloutWorker:
         while iteration < initial_steps:
             steps = 0
             ret = 0.0
-            obs, info = self.reset(collect_samples=True)
+            obs, _ = self.reset(collect_samples=True)
             done = False
             iteration += 1
             while not done and (end_episodes or iteration < initial_steps):
-                obs, rew, terminated, truncated, info = self.step(
+                obs, rew, terminated, truncated, _ = self.step(
                     obs=obs,
                     test=False,
                     collect_samples=True,
@@ -1230,7 +1305,7 @@ class RolloutWorker:
                     self._run_deterministic_test_episodes(
                         self.max_samples_per_episode, n_test_per_eval
                     )
-                obs, info = self.reset(collect_samples=True)
+                obs, _ = self.reset(collect_samples=True)
                 done = False
                 iteration += 1
                 steps = 0
@@ -1238,7 +1313,7 @@ class RolloutWorker:
                 episode += 1
 
             while not done and (end_episodes or ratio <= max_steps_per_update):
-                obs, rew, terminated, truncated, info = self.step(
+                obs, rew, terminated, truncated, _ = self.step(
                     obs=obs,
                     test=False,
                     collect_samples=True,
@@ -1301,9 +1376,9 @@ class RolloutWorker:
         if nb_steps == np.inf or nb_steps < 0:
             raise RuntimeError(f"Invalid number of steps: {nb_steps}")
 
-        obs, info = self.reset(collect_samples=False)
+        obs, _ = self.reset(collect_samples=False)
         for _ in range(nb_steps):
-            obs, rew, terminated, truncated, info = self.step(
+            obs, _rew, terminated, truncated, _ = self.step(
                 obs=obs, test=test, collect_samples=False
             )
             if terminated or truncated:
@@ -1348,13 +1423,27 @@ class RolloutWorker:
                     if verbose:
                         print_with_timestamp("model weights saved in history")
             if hasattr(self.actor, "load_from_bytes"):
-                self.actor = self.actor.load_from_bytes(weights, device=self.device)
+                loaded = self.actor.load_from_bytes(weights, device=self.device)
+                if isinstance(loaded, bool):
+                    loaded_ok = loaded
+                elif loaded is None:
+                    loaded_ok = True
+                else:
+                    # Generic ActorModule implementations may return a new actor instance.
+                    self.actor = loaded
+                    loaded_ok = True
             else:
                 with open(self.model_path, "wb") as f:
                     f.write(weights)
                 self.actor = self.actor.load(self.model_path, device=self.device)
+                loaded_ok = True
             if verbose:
-                print_with_timestamp("model weights have been updated")
+                if loaded_ok:
+                    print_with_timestamp("model weights have been updated")
+                else:
+                    print_with_timestamp(
+                        "model weights NOT applied (shape mismatch); keeping previous weights"
+                    )
         return nb_received
 
     def ignore_actor_weights(self):

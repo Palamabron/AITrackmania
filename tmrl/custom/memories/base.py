@@ -20,9 +20,10 @@ def last_true_in_list(li: list[bool]) -> int | None:
 def replace_hist_before_eoe(hist: list, eoe_idx_in_hist: int) -> None:
     """Pad history before the End Of Episode (EOE) index."""
     last_idx = len(hist) - 1
-    assert eoe_idx_in_hist <= last_idx, (
-        f"replace_hist_before_eoe: eoe_idx_in_hist:{eoe_idx_in_hist}, last_idx:{last_idx}"
-    )
+    if eoe_idx_in_hist > last_idx:
+        raise ValueError(
+            f"replace_hist_before_eoe: eoe_idx_in_hist ({eoe_idx_in_hist}) > last_idx ({last_idx})"
+        )
     if 0 <= eoe_idx_in_hist < last_idx:
         for i in reversed(range(len(hist))):
             if i <= eoe_idx_in_hist:
@@ -52,7 +53,7 @@ class GenericTorchMemory(TorchMemory):
             device=device,
         )
 
-    def append_buffer(self, buffer):
+    def append_buffer(self, buffer: Any) -> None:
         """Append a buffer of samples to the memory."""
         bf = BufferField
         data_fields = [
@@ -83,24 +84,33 @@ class GenericTorchMemory(TorchMemory):
         res = len(self.data[0]) - 1
         return max(0, res)
 
-    def get_transition(self, item: int):
-        """Get a single transition from the memory."""
-        f = GenericField
+    def clear(self) -> None:
+        """Remove all transitions from the memory."""
+        self.data = []
 
-        while self.data[f.DONE][item]:
+    def get_transition(self, item: int) -> tuple:
+        """Get a single transition from the memory."""
+        field = GenericField
+
+        max_retries = self.__len__()
+        for _ in range(max_retries):
+            if not self.data[field.DONE][item]:
+                break
             item = np.random.randint(0, self.__len__() - 1)
+        else:
+            raise RuntimeError("All transitions in memory are terminal (done=True).")
 
         idx_last = item
         idx_now = item + 1
 
         return (
-            self.data[f.OBSERVATIONS][idx_last],
-            self.data[f.ACTIONS][idx_now],
-            self.data[f.REWARDS][idx_now],
-            self.data[f.OBSERVATIONS][idx_now],
-            self.data[f.TERMINATED][idx_now],
-            self.data[f.TRUNCATED][idx_now],
-            self.data[f.INFO][idx_now],
+            self.data[field.OBSERVATIONS][idx_last],
+            self.data[field.ACTIONS][idx_now],
+            self.data[field.REWARDS][idx_now],
+            self.data[field.OBSERVATIONS][idx_now],
+            self.data[field.TERMINATED][idx_now],
+            self.data[field.TRUNCATED][idx_now],
+            self.data[field.INFO][idx_now],
         )
 
 

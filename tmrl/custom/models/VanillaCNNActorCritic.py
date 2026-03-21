@@ -27,21 +27,18 @@ class SquashedGaussianVanillaCNNActor(TorchActorModule):
         std = torch.exp(log_std)
 
         pi_distribution = Normal(mu, std)
-        if test:
-            pi_action = mu
-        else:
-            pi_action = pi_distribution.rsample()
+        pi_action = mu if test else pi_distribution.rsample()
 
         if with_logprob:
             logp_pi = pi_distribution.log_prob(pi_action).sum(axis=-1)
-            # NB: this is from Spinup:
-            # FIXME: this formula is mathematically wrong, no idea why it seems to work
+            # NB: this is from Spinning Up (openai/spinningup).
+            # FIXME: this formula is mathematically wrong, no idea why it seems to work.
+            # Compare with SB3 SquashedGaussian:
+            # log_prob -= th.sum(th.log(1 - actions**2 + eps), dim=1)
+            # Ref: https://github.com/DLR-RM/stable-baselines3/blob/master/sb3/common/distributions.py
             logp_pi -= (2 * (np.log(2) - pi_action - functional.softplus(-2 * pi_action))).sum(
                 axis=1
             )
-            # Whereas SB3 does this:
-            # logp_pi -= torch.sum(torch.log(1 - torch.tanh(pi_action)**2 + EPS), dim=1)
-            # TODO: double check; SB3: log_prob -= th.sum(th.log(1 - actions**2 + eps), dim=1)
         else:
             logp_pi = None
 

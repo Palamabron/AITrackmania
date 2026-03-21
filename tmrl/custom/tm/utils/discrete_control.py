@@ -106,3 +106,44 @@ def discrete_indices_to_control_batch(
 ) -> np.ndarray:
     """Map a batch of discrete indices to (batch, 3) continuous controls."""
     return np.array([table[int(i)] for i in action_indices], dtype=np.float32)
+
+
+def continuous_control_to_discrete_index(
+    control: np.ndarray,
+    table: list[np.ndarray],
+) -> int:
+    """
+    Map continuous [gas, brake, steer] to the nearest discrete action index.
+
+    Used when replay contains continuous actions (e.g. player runs) but the
+    agent expects discrete indices (e.g. IQN). Brake tap sentinel is treated
+    as far from any continuous value so we match to off or full brake only.
+    """
+    c = np.asarray(control, dtype=np.float32).flat
+    gas, brake, steer = float(c[0]), float(c[1]), float(c[2])
+    best_i = 0
+    best_d2 = np.inf
+    for i, t in enumerate(table):
+        tg, tb, ts = float(t[0]), float(t[1]), float(t[2])
+        # Brake: continuous [0,1] vs table 0, 1, or BRAKE_TAP_SENTINEL
+        # Tap sentinel: never match from continuous; use large distance
+        b_d2 = 2.0 if tb == BRAKE_TAP_SENTINEL else (brake - tb) ** 2
+        d2 = (gas - tg) ** 2 + b_d2 + (steer - ts) ** 2
+        if d2 < best_d2:
+            best_d2 = d2
+            best_i = i
+    return best_i
+
+
+def continuous_control_to_discrete_indices_batch(
+    controls: np.ndarray,
+    table: list[np.ndarray],
+) -> np.ndarray:
+    """Map (batch, 3) continuous controls to (batch,) discrete indices."""
+    controls = np.asarray(controls, dtype=np.float32)
+    if controls.ndim == 1:
+        return np.array(continuous_control_to_discrete_index(controls, table), dtype=np.int64)
+    idx_list = [
+        continuous_control_to_discrete_index(controls[i], table) for i in range(controls.shape[0])
+    ]
+    return np.array(idx_list, dtype=np.int64)

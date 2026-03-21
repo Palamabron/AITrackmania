@@ -43,6 +43,9 @@ __all__ = [
     "MemoryTMLidar",
     "MemoryTMLidarProgress",
     "MemoryTMLidarProgressImages",
+    "_hflip_action",
+    "_hflip_discrete_action",
+    "_is_discrete_action",
     "fog_recency_resample",
     "get_local_buffer_sample_lidar",
     "get_local_buffer_sample_lidar_progress",
@@ -51,7 +54,4 @@ __all__ = [
     "get_local_buffer_sample_tm20_imgs",
     "last_true_in_list",
     "replace_hist_before_eoe",
-    "_hflip_action",
-    "_hflip_discrete_action",
-    "_is_discrete_action",
 ]

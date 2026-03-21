@@ -19,9 +19,10 @@ except Exception:
     import winreg
 
 # Send output somewhere so it can be found if necessary...
+import contextlib
 import tempfile
 
-tee_f = open(os.path.join(tempfile.gettempdir(), "pywin32_postinstall.log"), "w")
+tee_f = open(os.path.join(tempfile.gettempdir(), "pywin32_postinstall.log"), "w")  # noqa: SIM115
 
 
 class Tee:
@@ -30,18 +31,14 @@ class Tee:
 
     def write(self, what):
         if self.f is not None:
-            try:
+            with contextlib.suppress(OSError):
                 self.f.write(what.replace("\n", "\r\n"))
-            except OSError:
-                pass
         tee_f.write(what)
 
     def flush(self):
         if self.f is not None:
-            try:
+            with contextlib.suppress(OSError):
                 self.f.flush()
-            except OSError:
-                pass
         tee_f.flush()
 
 
@@ -77,7 +74,7 @@ try:
     # functions which write lines to Python23\pywin32-install.log. This is
     # a list of actions for the uninstaller, the format is inspired by what
     # the Wise installer also creates.
-    file_created  # type: ignore[used-before-def]
+    file_created  # type: ignore[used-before-def]  # noqa: B018
     is_bdist_wininst = True
 except NameError:
     is_bdist_wininst = False  # we know what it is not - but not what it is :)
@@ -99,7 +96,7 @@ except NameError:
 
 
 try:
-    create_shortcut  # type: ignore[used-before-def]
+    create_shortcut  # type: ignore[used-before-def]  # noqa: B018
 except NameError:
     # Create a function with the same signature as create_shortcut provided
     # by bdist_wininst
@@ -131,12 +128,22 @@ except NameError:
     def get_special_folder_path(path_name):
         from win32com.shell import shell, shellcon
 
-        for maybe in """
-            CSIDL_COMMON_STARTMENU CSIDL_STARTMENU CSIDL_COMMON_APPDATA
-            CSIDL_LOCAL_APPDATA CSIDL_APPDATA CSIDL_COMMON_DESKTOPDIRECTORY
-            CSIDL_DESKTOPDIRECTORY CSIDL_COMMON_STARTUP CSIDL_STARTUP
-            CSIDL_COMMON_PROGRAMS CSIDL_PROGRAMS CSIDL_PROGRAM_FILES_COMMON
-            CSIDL_PROGRAM_FILES CSIDL_FONTS""".split():
+        for maybe in [
+            "CSIDL_COMMON_STARTMENU",
+            "CSIDL_STARTMENU",
+            "CSIDL_COMMON_APPDATA",
+            "CSIDL_LOCAL_APPDATA",
+            "CSIDL_APPDATA",
+            "CSIDL_COMMON_DESKTOPDIRECTORY",
+            "CSIDL_DESKTOPDIRECTORY",
+            "CSIDL_COMMON_STARTUP",
+            "CSIDL_STARTUP",
+            "CSIDL_COMMON_PROGRAMS",
+            "CSIDL_PROGRAMS",
+            "CSIDL_PROGRAM_FILES_COMMON",
+            "CSIDL_PROGRAM_FILES",
+            "CSIDL_FONTS",
+        ]:
             if maybe == path_name:
                 csidl = getattr(shellcon, maybe)
                 return shell.SHGetSpecialFolderPath(0, csidl, False)
@@ -311,7 +318,7 @@ def register_pythonwin(register=True, lib_dir=None):
                 winreg.SetValueEx(hkey, None, 0, winreg.REG_SZ, val)
                 hkey.Close()
         else:
-            for key, sub_key, val in keys_vals:
+            for key, sub_key, _ in keys_vals:
                 try:
                     if sub_key:
                         hkey = winreg.OpenKey(classes_root, key)
@@ -405,22 +412,18 @@ def install(lib_dir):
         os.unlink(os.path.join(sys.prefix, "pywin32.pth"))
     # The .pth may be new and therefore not loaded in this session.
     # Setup the paths just in case.
-    for name in "win32 win32\\lib Pythonwin".split():
+    for name in ["win32", "win32\\lib", "Pythonwin"]:
         sys.path.append(os.path.join(lib_dir, name))
     # It is possible people with old versions installed with still have
     # pywintypes and pythoncom registered.  We no longer need this, and stale
     # entries hurt us.
-    for name in "pythoncom pywintypes".split():
+    for name in ["pythoncom", "pywintypes"]:
         keyname = "Software\\Python\\PythonCore\\" + sys.winver + "\\Modules\\" + name
         for root in winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER:
-            try:
+            with contextlib.suppress(OSError):
                 winreg.DeleteKey(root, keyname + "\\Debug")
-            except OSError:
-                pass
-            try:
+            with contextlib.suppress(OSError):
                 winreg.DeleteKey(root, keyname)
-            except OSError:
-                pass
     load_system_module(lib_dir, "pywintypes")
     load_system_module(lib_dir, "pythoncom")
     import win32api
@@ -471,7 +474,7 @@ def install(lib_dir):
                         "reinstall this software as an Administrator"
                     )
                     print(msg)
-                    raise RuntimeError(msg)
+                    raise RuntimeError(msg) from details
                 continue
             raise
     else:
@@ -565,11 +568,8 @@ def install(lib_dir):
 
     # importing win32com.client ensures the gen_py dir created - not strictly
     # necessary to do now, but this makes the installation "complete"
-    try:
+    with contextlib.suppress(ImportError):
         import win32com.client  # noqa
-    except ImportError:
-        # Don't let this error sound fatal
-        pass
     print("The pywin32 extensions were successfully installed.")
 
 
@@ -614,14 +614,10 @@ def uninstall(lib_dir):
             os.remove(fname)
 
         # The dbi.pyd.old files we may have created.
-        try:
+        with contextlib.suppress(OSError):
             os.remove(os.path.join(lib_dir, "win32", "dbi.pyd.old"))
-        except OSError:
-            pass
-        try:
+        with contextlib.suppress(OSError):
             os.remove(os.path.join(lib_dir, "win32", "dbi_d.pyd.old"))
-        except OSError:
-            pass
 
     except Exception as why:
         print(f"Failed to remove misc files: {why}")
@@ -746,18 +742,14 @@ def main():
         parser.error("You need to either choose to -install or -remove!")
 
     if args.wait is not None:
-        try:
+        with contextlib.suppress(OSError):
             os.waitpid(args.wait, 0)
-        except OSError:
-            # child already dead
-            pass
 
     if args.install:
         install(args.destination)
 
-    if args.remove:
-        if not is_bdist_wininst:
-            uninstall(args.destination)
+    if args.remove and not is_bdist_wininst:
+        uninstall(args.destination)
 
 
 if __name__ == "__main__":

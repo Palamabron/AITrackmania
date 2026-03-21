@@ -44,7 +44,7 @@ class SquashedGaussianRNNActor(nn.Module):
         dim_act = act_space.shape[0]
         act_limit = act_space.high[0]
         self.rnn = rnn(dim_obs, rnn_size, rnn_len)
-        self.mlp = mlp([rnn_size] + list(mlp_sizes), activation, activation)
+        self.mlp = mlp([rnn_size, *list(mlp_sizes)], activation, activation)
         self.mu_layer = nn.Linear(mlp_sizes[-1], dim_act)
         self.log_std_layer = nn.Linear(mlp_sizes[-1], dim_act)
         self.act_limit = act_limit
@@ -85,11 +85,8 @@ class SquashedGaussianRNNActor(nn.Module):
 
         # Pre-squash distribution and sample
         pi_distribution = Normal(mu, std)
-        if test:
-            # Only used for evaluating policy at test time.
-            pi_action = mu
-        else:
-            pi_action = pi_distribution.rsample()
+        # Only used for evaluating policy at test time.
+        pi_action = mu if test else pi_distribution.rsample()
 
         if with_logprob:
             # Compute logprob from Gaussian, and then apply correction for Tanh squashing.
@@ -139,7 +136,7 @@ class RNNQFunction(nn.Module):
         dim_obs = sum(prod(s for s in space.shape) for space in obs_space)
         dim_act = act_space.shape[0]
         self.rnn = self.rnn(dim_obs, rnn_size, rnn_len)
-        self.mlp = mlp([rnn_size + dim_act] + list(mlp_sizes) + [1], activation)
+        self.mlp = mlp([rnn_size + dim_act, *list(mlp_sizes), 1], activation)
         self.h = None
         self.rnn_size = rnn_size
         self.rnn_len = rnn_len

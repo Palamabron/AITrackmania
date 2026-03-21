@@ -43,7 +43,7 @@ class VanillaCNN(nn.Module):
         self.flat_features = self.out_channels * self.h_out * self.w_out
         self.mlp_input_features = self.flat_features + 12 if self.q_net else self.flat_features + 9
         self.mlp_layers = [256, 256, 1] if self.q_net else [256, 256]
-        self.mlp = mlp([self.mlp_input_features] + self.mlp_layers, nn.ReLU)
+        self.mlp = mlp([self.mlp_input_features, *self.mlp_layers], nn.ReLU)
 
     def forward(self, x):
         if self.q_net:
@@ -89,10 +89,7 @@ class SquashedGaussianVanillaCNNActor(TorchActorModule):
         std = torch.exp(log_std)
 
         pi_distribution = Normal(mu, std)
-        if test:
-            pi_action = mu
-        else:
-            pi_action = pi_distribution.rsample()
+        pi_action = mu if test else pi_distribution.rsample()
 
         if with_logprob:
             logp_pi = pi_distribution.log_prob(pi_action).sum(axis=-1)

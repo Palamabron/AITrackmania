@@ -45,7 +45,7 @@ def dump_run_instance_images_dataset(run_instance, checkpoint_path):
     logger.debug(f" dump: tar_path :{tar_path}")
     logger.debug(f" dump: dataset_path :{dataset_path}")
     with tarfile.open(tar_path, "w") as tar_handle:
-        for root, dirs, files in os.walk(dataset_path):
+        for root, _dirs, files in os.walk(dataset_path):
             for file in files:
                 tar_handle.add(os.path.join(root, file), arcname=file)
     dump(run_instance, checkpoint_path)
@@ -91,7 +91,7 @@ def update_run_instance(run_instance, training_cls):
         run_instance: the updated checkpoint
     """
     # check whether we should start a new experiment entirely and keep only the memory:
-    if "RESET_TRAINING" in cfg.TMRL_CONFIG and cfg.TMRL_CONFIG["RESET_TRAINING"]:
+    if cfg.TMRL_CONFIG.get("RESET_TRAINING"):
         new_run_instance = training_cls()
         new_run_instance.memory = run_instance.memory
         new_run_instance = update_memory(new_run_instance)

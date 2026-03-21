@@ -45,7 +45,7 @@ def _compute_slip_angle_deg(pos: np.ndarray, prev_pos: np.ndarray, aim_yaw: floa
     return abs(math.degrees(math.atan2(cross, dot)))
 
 
-_DW_KW = dict(drift_weight_start=0.3, drift_weight_end=0.0, fallback_weight=0.15)
+_DW_KW = {"drift_weight_start": 0.3, "drift_weight_end": 0.0, "fallback_weight": 0.15}
 
 
 class TestDriftWeightAnnealing:
@@ -125,5 +125,6 @@ class TestComputeSlipAngle:
         cur_left = np.array([-0.2, 0.0, 1.0])
         slip_r = _compute_slip_angle_deg(cur_right, prev, yaw)
         slip_l = _compute_slip_angle_deg(cur_left, prev, yaw)
-        assert slip_r is not None and slip_l is not None
+        assert slip_r is not None
+        assert slip_l is not None
         assert abs(slip_r - slip_l) < 1e-3

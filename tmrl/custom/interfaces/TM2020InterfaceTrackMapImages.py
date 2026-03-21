@@ -122,15 +122,12 @@ class TM2020InterfaceTrackMapImages(TM2020InterfaceLidarProgress):
             img = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
             img = np.expand_dims(img, axis=-1)
         img = img.astype(np.float32) / 255.0
-        if img.ndim == 2:
-            img = np.expand_dims(img, axis=0)
-        else:
-            img = np.transpose(img, (2, 0, 1))
+        img = np.expand_dims(img, axis=0) if img.ndim == 2 else np.transpose(img, (2, 0, 1))
         return speed, data, track_information, img
 
     def reset(self, seed=None, options=None):
         self.reset_common()
-        speed, data, track_information, img = self.grab_speed_data_track_and_image()
+        speed, _data, track_information, img = self.grab_speed_data_track_and_image()
         self.image_hist = [img for _ in range(self.img_hist_len)]
         progress = np.array([0], dtype="float32")
         images = np.array(list(self.image_hist), dtype="float32")
@@ -140,7 +137,7 @@ class TM2020InterfaceTrackMapImages(TM2020InterfaceLidarProgress):
 
     def get_obs_rew_terminated_info(self):
         speed, data, track_information, img = self.grab_speed_data_track_and_image()
-        rew, terminated, failure_counter = self.reward_function.compute_reward(
+        rew, terminated, _failure_counter = self.reward_function.compute_reward(
             pos=np.array([data[2], data[3], data[4]])
         )[:3]
         progress = np.array(
@@ -152,11 +149,10 @@ class TM2020InterfaceTrackMapImages(TM2020InterfaceLidarProgress):
         images = np.array(list(self.image_hist), dtype="float32")
         obs = [speed, progress, track_information, images]
         end_of_track = bool(data[8])
-        info = {}
+        info = {"end_of_track": end_of_track}
         if end_of_track:
             rew += self.finish_reward
             terminated = True
-        rew += self.constant_penalty
         rew = np.float32(rew)
         return obs, rew, terminated, info
 

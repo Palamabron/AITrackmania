@@ -1,9 +1,11 @@
 """Shared helpers and utilities for TMRL training agents."""
 
+from contextlib import nullcontext
+
 import numpy as np
 import torch
 
-import tmrl.config as cfg
+import tmrl.config.constants as cfg
 
 
 def set_seed(seed: int = cfg.SEED) -> None:
@@ -50,6 +52,29 @@ def _amp_dtype() -> torch.dtype:
         torch.bfloat16
         if str(cfg.ALG_CONFIG.get("MIXED_PRECISION_DTYPE", "float16")).lower() == "bfloat16"
         else torch.float16
+    )
+
+
+def sanitize_tensor(t: torch.Tensor) -> torch.Tensor:
+    """Replace NaN/Inf with 0 in a floating-point tensor; pass-through for integer tensors."""
+    if t.is_floating_point():
+        return torch.nan_to_num(t, nan=0.0, posinf=0.0, neginf=0.0)
+    return t
+
+
+def sanitize_obs(obs: torch.Tensor | tuple) -> torch.Tensor | tuple:
+    """Sanitize observation (tuple of tensors or single tensor): NaN/Inf -> 0."""
+    if isinstance(obs, torch.Tensor):
+        return (
+            torch.nan_to_num(obs, nan=0.0, posinf=0.0, neginf=0.0)
+            if obs.is_floating_point()
+            else obs
+        )
+    return tuple(
+        torch.nan_to_num(t, nan=0.0, posinf=0.0, neginf=0.0)
+        if isinstance(t, torch.Tensor) and t.is_floating_point()
+        else t
+        for t in obs
     )
 
 
@@ -100,3 +125,36 @@ def _compute_n_step_return_and_bootstrap_mask(
     bootstrap_not_done = continue_mask[:, n_steps - 1]
     # Enforce (batch, 1) for safe broadcasting with quantile matrices in TQC backup
     return n_step_returns.unsqueeze(-1), bootstrap_not_done.unsqueeze(-1)
+
+
+def clip_model_weights(
+    model: torch.nn.Module, max_value: float = cfg.WEIGHT_CLIPPING_VALUE
+) -> None:
+    """Clip all model parameters to [-max_value, max_value]."""
+    for param in model.parameters():
+        param.data.clamp_(-max_value, max_value)
+
+
+def autocast_context(
+    use_mixed_precision: bool, amp_dtype: torch.dtype
+) -> torch.autocast | nullcontext:
+    """Return an autocast context manager if mixed precision is enabled."""
+    if use_mixed_precision:
+        return torch.autocast(device_type="cuda", dtype=amp_dtype, enabled=True)
+    return nullcontext()
+
+
+def polyak_update(model: torch.nn.Module, model_target: torch.nn.Module, polyak: float) -> None:
+    """Polyak-average (soft-update) target network parameters."""
+    with torch.no_grad():
+        for p, p_targ in zip(model.parameters(), model_target.parameters(), strict=False):
+            p_targ.data.mul_(polyak).add_(p.data, alpha=(1 - polyak))
+
+
+def project_simbav2_weights(model: torch.nn.Module) -> None:
+    """Re-project HypersphericalLinear weights after an optimizer step (SimbaV2)."""
+    from tmrl.custom.models.model_blocks import SimbaV2Backbone
+
+    for m in model.modules():
+        if isinstance(m, SimbaV2Backbone):
+            m.project_weights()

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tmrl"
-version = "0.7.1"
+version = "0.8.0"
 description = "Network-based framework for real-time robot learning"
 readme = "readme/pypi.md"
 license = { text = "MIT" }
@@ -19,7 +19,7 @@ keywords = [
     "roborace",
 ]
 classifiers = [
-    "Development Status :: 4 - Beta",
+    "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Developers",
     "Intended Audience :: Education",
     "Intended Audience :: Information Technology",
@@ -119,7 +119,19 @@ line-length = 100
 src = ["tmrl"]
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "N", "W", "UP"]
+select = [
+    "E",    # pycodestyle errors
+    "F",    # pyflakes
+    "I",    # isort
+    "N",    # pep8-naming
+    "W",    # pycodestyle warnings
+    "UP",   # pyupgrade
+    "B",    # flake8-bugbear (common bug patterns)
+    "SIM",  # flake8-simplify (simplifiable constructs)
+    "RUF",  # ruff-specific rules
+    "C4",   # flake8-comprehensions (unnecessary list/dict/set calls)
+    "PT",   # flake8-pytest-style (test files)
+]
 ignore = [
     "N999",  # allow PascalCase module names (e.g. TM2020Interface.py)
     "N812",  # allow F for torch.nn.functional (PyTorch convention)

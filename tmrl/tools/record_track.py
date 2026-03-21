@@ -103,7 +103,8 @@ def record_track(path_track=cfg.TRACK_PATH_LEFT):
                 if len(smoothed_points) < 2:
                     logger.error("Not enough distinct points. Drive the full track, then press Q.")
                     continue
-                pickle.dump(smoothed_points, open(path, "wb"))
+                with open(path, "wb") as f:
+                    pickle.dump(smoothed_points, f)
                 logger.info("All done")
                 return
             else:
@@ -154,7 +155,7 @@ def space_points(points, spacing_m=TRACK_BOUNDARY_SPACING_M):
     if total_length <= 0:
         return points
     # Dense geometry by spacing_m; cap to avoid huge outputs if path length is wrong
-    desired_num_points = max(2, int(round(total_length / spacing_m)))
+    desired_num_points = max(2, round(total_length / spacing_m))
     desired_num_points = min(desired_num_points, 200_000)
     new_distances = np.linspace(0, total_length, desired_num_points, endpoint=True)
     cs_x = CubicSpline(cumulative_distances, x)

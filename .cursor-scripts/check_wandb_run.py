@@ -28,6 +28,8 @@ api = wandb.Api()
 
 # Paths to try (user path: entity/project/run_id; "runs/" might be wrong)
 paths_to_try = [
+    "tmrl/tmrl/runs/SimbaV2_IQN_SOTA_v1.1.4 TRAINER",
+    "tmrl/tmrl/SimbaV2_IQN_SOTA_v1.1.4 TRAINER",
     "tmrl/tmrl/SophyResidual_runv23_RUN_L TRAINER",
     "tmrl/tmrl/runs/SophyResidual_runv23_RUN_L TRAINER",
 ]
@@ -50,7 +52,7 @@ print(f"Run: {run.path}")
 print(f"State: {state}")
 print(f"Training (run is live): {state == 'running'}")
 
-# Czy model się uczył? (pomijamy błąd na końcu – patrzymy na postęp metryk)
+# Czy model się uczył? (pomijamy błąd na końcu - patrzymy na postęp metryk)
 try:
     h = run.history()
     n = len(h)
@@ -59,11 +61,12 @@ try:
         print("Brak zlogowanych kroków → nie ma danych, by ocenić uczenie.")
     else:
         # Nagroda / return
+        # Note: IQN logs losses/actor=0, losses/critic=<iqn loss>; SAC logs both
         for col in [
-            "return_train",
-            "episode_length_train",
-            "losses/loss_actor",
-            "losses/loss_critic",
+            "metrics/return_train",
+            "metrics/episode_length_train",
+            "losses/actor",
+            "losses/critic",
         ]:
             if col not in h.columns:
                 continue
@@ -75,8 +78,11 @@ try:
             trend = "wzrost" if last_mean > first_mean else "spadek"
             print(f"  {col}: na początku ~{first_mean:.4g}, na końcu ~{last_mean:.4g} ({trend})")
         # Krótkie podsumowanie
-        if "return_train" in h.columns:
-            r = h["return_train"].dropna()
+        return_col = (
+            "metrics/return_train" if "metrics/return_train" in h.columns else "return_train"
+        )
+        if return_col in h.columns:
+            r = h[return_col].dropna()
             if len(r) >= 2:
                 improvement = (
                     r.tail(max(1, len(r) // 10)).mean() - r.head(max(1, len(r) // 10)).mean()

@@ -1,4 +1,5 @@
 # standard library imports
+import contextlib
 import os
 import pickle
 import threading
@@ -39,10 +40,8 @@ def record_reward_dist(path_reward=PATH_REWARD, use_keyboard=False):
     if use_keyboard:
         # Terminal-based start/stop so the game keeps full keyboard (e.g. A/D for steering).
         logger.info("Press Enter in this terminal to start recording.")
-        try:
+        with contextlib.suppress(EOFError):
             input()
-        except EOFError:
-            pass
         logger.info("start recording")
         logger.info(
             "Recording. Drive in the game (steer with A/D or gamepad). "
@@ -126,7 +125,8 @@ def record_reward_dist(path_reward=PATH_REWARD, use_keyboard=False):
                 )
 
                 abs_path = os.path.abspath(path)
-                pickle.dump(spaced_points, open(path, "wb"))
+                with open(path, "wb") as f:
+                    pickle.dump(spaced_points, f)
                 logger.info(f"Saved reward trajectory to: {abs_path}")
                 if use_keyboard:
                     logger.info(

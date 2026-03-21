@@ -20,6 +20,28 @@ from tmrl.custom.models.base import (
 )
 from tmrl.custom.models.model_blocks import residual_mlp_backbone
 
+_LOG2 = float(np.log(2.0))
+_SQUASH_CLAMP = 20.0
+
+
+def _is_tuple_obs(obs_space) -> bool:
+    """Check whether observation_space is a tuple of spaces."""
+    try:
+        sum(s for s in obs_space[0].shape for _ in obs_space)
+        return True
+    except TypeError:
+        return False
+
+
+def _act_from_forward(model: nn.Module, obs, test: bool = False) -> np.ndarray:
+    """Shared deterministic act() for residual actor-critics."""
+    with torch.no_grad():
+        a, _ = model.forward(obs, test, False)
+        res = a.squeeze().cpu().numpy()
+        if not len(res.shape):
+            res = np.expand_dims(res, 0)
+        return np.asarray(res)
+
 
 class SquashedGaussianResidualMLPActor(TorchActorModule):
     """Actor with residual MLP backbone (LayerNorm + Swish, 4-8 blocks)."""
@@ -32,11 +54,7 @@ class SquashedGaussianResidualMLPActor(TorchActorModule):
         num_blocks=6,
     ):
         super().__init__(observation_space, action_space)
-        try:
-            sum(s for s in observation_space[0].shape for space in observation_space)
-            self.tuple_obs = True
-        except TypeError:
-            self.tuple_obs = False
+        self.tuple_obs = _is_tuple_obs(observation_space)
         dim_obs = _obs_dim(observation_space)
         dim_act = action_space.shape[0]
         act_limit = action_space.high[0]
@@ -54,17 +72,14 @@ class SquashedGaussianResidualMLPActor(TorchActorModule):
         std = torch.exp(log_std)
 
         pi_distribution = Normal(mu, std)
-        if test:
-            pi_action = mu
-        else:
-            pi_action = pi_distribution.rsample()
+        pi_action = mu if test else pi_distribution.rsample()
 
         if with_logprob:
             logp_pi = pi_distribution.log_prob(pi_action).sum(axis=-1)
-            pi_action_for_corr = pi_action.clamp(-20.0, 20.0)
-            logp_pi -= (
-                2 * (np.log(2) - pi_action_for_corr - F.softplus(-2 * pi_action_for_corr))
-            ).sum(axis=1)
+            pi_action_for_corr = pi_action.clamp(-_SQUASH_CLAMP, _SQUASH_CLAMP)
+            logp_pi -= (2 * (_LOG2 - pi_action_for_corr - F.softplus(-2 * pi_action_for_corr))).sum(
+                axis=1
+            )
         else:
             logp_pi = None
 
@@ -73,12 +88,7 @@ class SquashedGaussianResidualMLPActor(TorchActorModule):
         return pi_action, logp_pi
 
     def act(self, obs, test=False):
-        with torch.no_grad():
-            a, _ = self.forward(obs, test, False)
-            res = a.squeeze().cpu().numpy()
-            if not len(res.shape):
-                res = np.expand_dims(res, 0)
-            return res
+        return _act_from_forward(self, obs, test)
 
 
 class ResidualMLPQFunction(nn.Module):
@@ -86,11 +96,7 @@ class ResidualMLPQFunction(nn.Module):
 
     def __init__(self, obs_space, act_space, hidden_dim=256, num_blocks=6):
         super().__init__()
-        try:
-            sum(s for s in obs_space[0].shape for space in obs_space)
-            self.tuple_obs = True
-        except TypeError:
-            self.tuple_obs = False
+        self.tuple_obs = _is_tuple_obs(obs_space)
         obs_dim = _obs_dim(obs_space)
         act_dim = act_space.shape[0]
         self.backbone = residual_mlp_backbone(obs_dim + act_dim, hidden_dim, num_blocks)
@@ -129,12 +135,7 @@ class ResidualMLPActorCritic(nn.Module):
         )
 
     def act(self, obs, test=False):
-        with torch.no_grad():
-            a, _ = self.actor(obs, test, False)
-            res = a.squeeze().cpu().numpy()
-            if not len(res.shape):
-                res = np.expand_dims(res, 0)
-            return res
+        return _act_from_forward(self.actor, obs, test)
 
 
 class REDQResidualMLPActorCritic(nn.Module):
@@ -163,9 +164,4 @@ class REDQResidualMLPActorCritic(nn.Module):
         )
 
     def act(self, obs, test=False):
-        with torch.no_grad():
-            a, _ = self.actor(obs, test, False)
-            res = a.squeeze().cpu().numpy()
-            if not len(res.shape):
-                res = np.expand_dims(res, 0)
-            return res
+        return _act_from_forward(self.actor, obs, test)

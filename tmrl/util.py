@@ -27,6 +27,33 @@ def pandas_dict(*args, **kwargs) -> pd.Series:
     return pd.Series(dict(*args, **kwargs), dtype=object)
 
 
+def wandb_monotonic_step(proposed: int, run: Any | None = None) -> int:
+    """Return a step value safe for ``wandb.log(..., step=...)``.
+
+    After resuming a run, ``wandb.run.step`` can be ahead of local batch counters
+    (e.g. ``total_updates`` / ``_training_step`` restored from an older checkpoint).
+    Using ``max(proposed, run.step)`` keeps steps monotonically increasing.
+    """
+    p = int(proposed)
+    if run is None:
+        try:
+            import wandb as _wandb
+
+            run = _wandb.run
+        except ImportError:
+            return p
+    if run is None:
+        return p
+    current = getattr(run, "step", None)
+    if current is None:
+        return p
+    try:
+        c = int(current)
+    except (TypeError, ValueError):
+        return p
+    return max(p, c)
+
+
 def shallow_copy[T](obj: T) -> T:
     x = type(obj).__new__(type(obj))
     vars(x).update(vars(obj))
@@ -51,8 +78,9 @@ def collate_torch(batch: Sequence[Any], device: Any = None) -> Any:
         or (isinstance(device, str) and device.startswith("cuda"))
     )
     elem = batch[0]
+    pin_memory_threshold = 20_000
     if isinstance(elem, torch.Tensor):
-        if elem.numel() < 20000:  # TODO: link to the relevant profiling that lead to this threshold
+        if elem.numel() < pin_memory_threshold:
             stacked = torch.stack(cast(list[torch.Tensor], batch))
             # Use pinned memory for async GPU transfers when non_blocking is enabled
             if non_blocking and device is not None:
@@ -69,7 +97,13 @@ def collate_torch(batch: Sequence[Any], device: Any = None) -> Any:
         try:
             arr = np.stack(batch, axis=0)
         except ValueError:
-            arr = np.array(batch)
+            shapes = [b.shape for b in batch]
+            unique_shapes = set(shapes)
+            raise ValueError(
+                "collate_torch: mismatched ndarray shapes in batch; "
+                f"refusing to auto-pad to avoid silent data corruption. "
+                f"unique_shapes={sorted(unique_shapes)}"
+            ) from None
         tensor = torch.as_tensor(arr)
         # Use pinned memory for async GPU transfers when non_blocking is enabled
         if non_blocking and device is not None:
@@ -81,7 +115,7 @@ def collate_torch(batch: Sequence[Any], device: Any = None) -> Any:
             tensors = [t.pin_memory() for t in tensors]
         return torch.stack([t.to(device, non_blocking=non_blocking) for t in tensors], 0)
     elif isinstance(elem, (list, tuple)):
-        transposed = zip(*batch)
+        transposed = zip(*batch, strict=True)
         return type(elem)(collate_torch(samples, device) for samples in transposed)
     elif isinstance(elem, dict):
         return {key: collate_torch(tuple(d[key] for d in batch), device) for key in elem}
@@ -118,21 +152,22 @@ class cached_property:  # noqa: N801
         )
 
 
-def default():
+def _partial_default():
+    """Sentinel for tmrl.util.partial; not meant to be called directly."""
     raise ValueError("This is a dummy function and not meant to be called.")
 
 
 def partial[T](
-    func: type[T] | Callable[..., Any] = default, *args: Any, **kwargs: Any
+    func: type[T] | Callable[..., Any] = _partial_default, *args: Any, **kwargs: Any
 ) -> functools.partial[Any]:
     """
     Like `functools.partial`, except if used as a keyword argument for another `partial`
     and no function is supplied. Then, the outer `partial` will insert the appropriate
     default value as the function.
     """
-    if func is not default:
+    if func is not _partial_default:
         for k, v in kwargs.items():
-            if isinstance(v, functools.partial) and v.func is default:
+            if isinstance(v, functools.partial) and v.func is _partial_default:
                 kwargs[k] = partial(
                     inspect.signature(func).parameters[k].default, *v.args, **v.keywords
                 )
@@ -182,9 +217,7 @@ def partial_from_args(func: str | Callable[..., Any], kwargs: dict[str, str]):
             }
             keywords[key] = partial_from_args(value, sub_keywords)
         elif param.annotation is bool:
-            keywords[key] = bool(
-                eval(value)
-            )  # because bool('False') will evaluate to True (it's a non-empty string).
+            keywords[key] = value.lower() in ("true", "1", "yes")
         else:
             keywords[key] = param.annotation(value)
     return partial(func, **keywords)
@@ -192,7 +225,7 @@ def partial_from_args(func: str | Callable[..., Any], kwargs: dict[str, str]):
 
 def get_output(*args, default="", **kwargs):
     try:
-        output = subprocess.check_output(*args, universal_newlines=True, **kwargs)
+        output = subprocess.check_output(*args, text=True, **kwargs)
         return output.rstrip("\n")  # skip trailing newlines as done in bash
     except subprocess.CalledProcessError:
         return default
@@ -212,13 +245,19 @@ def git_info(path=None):
     import __main__
 
     path = path or os.path.dirname(__main__.__file__)
-    rev = get_output("git rev-parse HEAD".split(), cwd=path)
-    count = int(get_output("git rev-list HEAD --count".split(), default="-1", cwd=path))
-    status = get_output("git status --short".split(), cwd=path)  # shows un-committed modified files
+    rev = get_output(["git", "rev-parse", "HEAD"], cwd=path)
+    count = int(get_output(["git", "rev-list", "HEAD", "--count"], default="-1", cwd=path))
+    status = get_output(["git", "status", "--short"], cwd=path)  # shows un-committed modified files
     commit_date = get_output(
-        "git show --quiet --date=format-local:%Y-%m-%dT%H:%M:%SZ --format=%cd".split(),
+        [
+            "git",
+            "show",
+            "--quiet",
+            "--date=format-local:%Y-%m-%dT%H:%M:%SZ",
+            "--format=%cd",
+        ],
         cwd=path,
-        env=dict(TZ="UTC"),
+        env={"TZ": "UTC"},
     )
     desc = get_output(
         [
@@ -238,21 +277,28 @@ def git_info(path=None):
         + " "
         + " ".join(
             get_output(
-                ["git", "log", "--oneline", "--format=%B", "-n", "1", "HEAD"], cwd=path
+                ["git", "log", "--oneline", "--format=%B", "-n", "1", "HEAD"],
+                cwd=path,
             ).splitlines()
         )
     )
 
-    url = get_output("git config --get remote.origin.url".split(), cwd=path).strip()
+    url = get_output(["git", "config", "--get", "remote.origin.url"], cwd=path).strip()
     # if on github, change remote to a meaningful https url
     if url.startswith("git@github.com:"):
         url = "https://github.com/" + url[len("git@github.com:") : -len(".git")] + "/commit/" + rev
     elif url.startswith("https://github.com"):
         url = url[: len(".git")] + "/commit/" + rev
 
-    return dict(
-        url=url, rev=rev, count=count, status=status, desc=desc, date=commit_date, message=message
-    )
+    return {
+        "url": url,
+        "rev": rev,
+        "count": count,
+        "status": status,
+        "desc": desc,
+        "date": commit_date,
+        "message": message,
+    }
 
 
 def dump(obj, path):
@@ -303,7 +349,7 @@ class DelayInterrupt:
         self.signal_received = True
 
     def __exit__(self, *args):
-        [signal.signal(s, d) for s, d in zip(self.signals, self.default_handlers)]
+        [signal.signal(s, d) for s, d in zip(self.signals, self.default_handlers, strict=True)]
         if self.signal_received:
             raise KeyboardInterrupt()
 

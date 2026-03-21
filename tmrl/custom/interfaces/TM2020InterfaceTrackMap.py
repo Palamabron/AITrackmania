@@ -136,7 +136,7 @@ class TM2020InterfaceTrackMap(TM2020InterfaceLidar):
         crash = np.array([data[24]], dtype="float32")
 
         end_of_track = bool(data[8])
-        info = {}
+        info = {"end_of_track": end_of_track}
         crash_penalty = -10
         reward = 0
         if crash == 1:
@@ -155,7 +155,6 @@ class TM2020InterfaceTrackMap(TM2020InterfaceLidar):
             reward += rew
 
         failure_counter = float(failure_counter)
-        reward += self.constant_penalty
         reward = np.float32(reward)
         obs = [
             speed,

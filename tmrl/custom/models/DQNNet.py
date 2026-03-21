@@ -100,11 +100,22 @@ class IQNFeatureBackbone(nn.Module):
                 nn.LayerNorm(hidden_dim),
                 nn.SiLU(),
             )
-            backbone_input_dim = 2 * hidden_dim
+            joint_dim = 2 * hidden_dim
+            self._use_rnn = bool(getattr(cfg, "USE_RNN_MODEL", False))
+            rnn_hidden = int(getattr(cfg, "RNN_HIDDEN_SIZE", hidden_dim))
+            self.rnn: nn.GRU | None
+            if self._use_rnn:
+                self.rnn = nn.GRU(joint_dim, rnn_hidden, num_layers=1, batch_first=True)
+                backbone_input_dim = rnn_hidden
+            else:
+                self.rnn = None
+                backbone_input_dim = joint_dim
             self.layernorm_joint = nn.LayerNorm(backbone_input_dim)
             self.layernorm_api = None
         else:
             self._dim_track = 0
+            self.rnn = None
+            self._use_rnn = False
             self.layernorm_api = nn.LayerNorm(dim_obs) if cfg.API_LAYERNORM else None
             backbone_input_dim = dim_obs
 
@@ -124,6 +135,41 @@ class IQNFeatureBackbone(nn.Module):
         physics_embed = self.physics_proj(physics)
         return torch.cat([track_embed, physics_embed], dim=-1)
 
+    def _gru_joint(self, joint: torch.Tensor) -> torch.Tensor:
+        """Single-layer GRU on track+physics joint (matches SophyResidual)."""
+        if self.rnn is None:
+            return joint
+        batch_size = joint.shape[0]
+        seq_len = int(cfg.ALG_CONFIG.get("R2D2_SEQUENCE_LENGTH", 0))
+        burn_in_len = int(cfg.ALG_CONFIG.get("R2D2_BURN_IN", 0))
+
+        if seq_len > 0 and batch_size % seq_len == 0 and burn_in_len > 0 and burn_in_len < seq_len:
+            num_seq = batch_size // seq_len
+            joint_seq = joint.view(num_seq, seq_len, -1)
+            with torch.no_grad():
+                joint_burn = joint_seq[:, :burn_in_len, :]
+                self.rnn.flatten_parameters()
+                _, h_burn = self.rnn(joint_burn)
+            joint_active = joint_seq[:, burn_in_len:, :]
+            self.rnn.flatten_parameters()
+            out_active, _ = self.rnn(joint_active, h_burn)
+            with torch.no_grad():
+                out_burn, _ = self.rnn(joint_burn)
+            joint_out = torch.cat([out_burn, out_active], dim=1).reshape(batch_size, -1)
+            return joint_out
+        if seq_len > 0 and batch_size % seq_len == 0:
+            num_seq = batch_size // seq_len
+            joint_seq = joint.view(num_seq, seq_len, -1)
+            self.rnn.flatten_parameters()
+            joint_out, _ = self.rnn(joint_seq)
+            joint_out_seq: torch.Tensor = joint_out
+            return joint_out_seq.reshape(batch_size, -1)
+        joint_seq = joint.unsqueeze(1)
+        self.rnn.flatten_parameters()
+        joint_out, _ = self.rnn(joint_seq)
+        joint_out_single: torch.Tensor = joint_out
+        return joint_out_single.squeeze(1)
+
     def forward(self, observation, tau: torch.Tensor) -> torch.Tensor:
         """
         Args:
@@ -139,6 +185,7 @@ class IQNFeatureBackbone(nn.Module):
 
         if self._use_track_conv:
             joint = self._joint_features(observation, batch_size)
+            joint = self._gru_joint(joint)
             joint = self.layernorm_joint(joint)
             features = self.backbone(joint)
         else:
@@ -274,6 +321,7 @@ class DQNActor(TorchActorModule):
         n_actions: int = 78,
         epsilon: float = 0.00005,
         n_quantiles_eval: int = 32,
+        explore_repeat_steps: int = 1,
     ):
         super().__init__(observation_space, action_space)
         self.q_net = IQNQNetwork(
@@ -289,6 +337,9 @@ class DQNActor(TorchActorModule):
         self.register_buffer("_epsilon_buf", torch.tensor(epsilon, dtype=torch.float32))
         self.n_actions = n_actions
         self.n_quantiles_eval = n_quantiles_eval
+        self.explore_repeat_steps = max(1, int(explore_repeat_steps))
+        self._current_explore_count = 0
+        self._last_explore_action: np.ndarray | None = None
 
     @property
     def epsilon(self):
@@ -320,8 +371,23 @@ class DQNActor(TorchActorModule):
         Returns:
             np.ndarray: scalar action index.
         """
+        if test:
+            self._current_explore_count = 0
+            self._last_explore_action = None
+
+        if not test and self._current_explore_count > 0 and self._last_explore_action is not None:
+            self._current_explore_count -= 1
+            return self._last_explore_action
+
         with torch.no_grad():
             q_vals = self.forward(obs)  # (1, n_actions)
+
         if not test and np.random.random() < self.epsilon:
-            return np.array(np.random.randint(self.n_actions), dtype=np.int64)
+            action = np.array(np.random.randint(self.n_actions), dtype=np.int64)
+            self._last_explore_action = action
+            self._current_explore_count = self.explore_repeat_steps - 1
+            return action
+
+        self._current_explore_count = 0
+        self._last_explore_action = None
         return q_vals.argmax(dim=-1).squeeze().cpu().numpy().astype(np.int64)

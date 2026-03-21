@@ -23,24 +23,24 @@ def check_env_tm20_trackmap():
     env_config["interface_kwargs"] = {
         "img_hist_len": 1,
         "gamepad": False,
-        "min_nb_steps_before_failure": int(20 * 60),
+        "min_nb_steps_before_failure": (20 * 60),
         "record": False,
     }
     # env_config["time_step_duration"] = 0.5  # nominal duration of your time-step
     # env_config["start_obs_capture"] = 0.4
     env = gymnasium.make("real-time-gym-v1", config=env_config)
-    o, i = env.reset()
+    _, _ = env.reset()
     rounds = 1200
     current = 0
     while current < rounds:
         current += 1
-        o, r, d, t, i = env.step(None)
+        _o, r, d, t, _ = env.step(None)
         logger.info(f"r:{r}, d:{d}")
 
         if d or t:
             print("d: ", d)
             print("t: ", t)
-            o, i = env.reset()
+            _o, _ = env.reset()
         img = window_interface.screenshot()[:, :, :3]
         lidar.lidar_20(img, True)
 
@@ -56,15 +56,15 @@ def check_env_tm20lidar():
     env_config["interface_kwargs"] = {
         "img_hist_len": 1,
         "gamepad": False,
-        "min_nb_steps_before_failure": int(20 * 60),
+        "min_nb_steps_before_failure": (20 * 60),
     }
     env = gymnasium.make(cfg.RTGYM_VERSION, config=env_config)
-    o, i = env.reset()
+    _, _ = env.reset()
     while True:
-        o, r, d, t, i = env.step(None)
+        _o, r, d, t, _ = env.step(None)
         logger.info(f"r:{r}, d:{d}, t:{t}")
         if d or t:
-            o, i = env.reset()
+            _, _ = env.reset()
         img = window_interface.screenshot()[:, :, :3]
         lidar.lidar_20(img, True)
 
@@ -97,25 +97,25 @@ def check_env_tm20full():
     env_config["wait_on_done"] = True
     env_config["interface_kwargs"] = {
         "gamepad": False,
-        "min_nb_steps_before_failure": int(20 * 60),
+        "min_nb_steps_before_failure": (20 * 60),
         "grayscale": cfg.GRAYSCALE,
         "resize_to": (cfg.IMG_WIDTH, cfg.IMG_HEIGHT),
     }
     env = gymnasium.make(cfg.RTGYM_VERSION, config=env_config)
-    o, i = env.reset()
+    o, _ = env.reset()
     show_imgs(o[3])
     logger.info(
         f"o:[{o[0].item():05.01f}, {o[1].item():03.01f}, {o[2].item():07.01f}, imgs({len(o[3])})]"
     )
     while True:
-        o, r, d, t, i = env.step(None)
+        o, r, d, t, _ = env.step(None)
         show_imgs(o[3])
         logger.info(
             f"r:{r:.2f}, d:{d}, t:{t}, o:[{o[0].item():05.01f}, {o[1].item():03.01f}, "
             f"{o[2].item():07.01f}, imgs({len(o[3])})]"
         )
         if d or t:
-            o, i = env.reset()
+            o, _ = env.reset()
             show_imgs(o[3])
             logger.info(
                 f"o:[{o[0].item():05.01f}, {o[1].item():03.01f}, {o[2].item():07.01f}, "

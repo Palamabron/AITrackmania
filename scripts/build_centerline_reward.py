@@ -24,6 +24,7 @@ Output: reward_<MAP>.pkl (N,3), ready for RewardFunction.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import pickle
 import sys
@@ -95,7 +96,7 @@ def resample_by_spacing_m(points: np.ndarray, spacing_m: float) -> np.ndarray:
     total = float(cum[-1])
     if total <= 0:
         return points.copy()
-    num_points = max(2, int(round(total / spacing_m)))
+    num_points = max(2, round(total / spacing_m))
     return resample_by_arc_length(points, num_points)
 
 
@@ -259,10 +260,8 @@ def _save_debug_plot(
     ax.set_ylabel("Y (up)")
     ax.set_zlabel("Z")
     ax.set_title(f"Centerline debug (align={align})")
-    try:
+    with contextlib.suppress(Exception):
         ax.set_box_aspect([1, 0.01, 1])
-    except Exception:
-        pass
     ax.legend(loc="best", fontsize=8)
     fig.savefig(path, dpi=120, bbox_inches="tight")
     plt.close(fig)

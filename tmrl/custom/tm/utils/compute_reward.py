@@ -17,10 +17,10 @@ from loguru import logger
 
 import tmrl.config as cfg
 import wandb
+from tmrl.config.spacing_lookahead import points_number_from_spacing_config
 
 OFF_TRACK_PROGRESS_ZERO_MULTIPLIER = 2.0
 SPEED_REWARD_MIN_KMH = 5.0
-LOOK_AHEAD_POINTS_FOR_SPEED = 5
 TIME_STEP_SECONDS = 0.05
 _BARRIER_SEARCH_WINDOW = 15
 
@@ -128,8 +128,6 @@ class RewardFunction:
         max_dist_from_traj: float = 23.5,
         crash_penalty: float = 10.0,
         constant_penalty: float = 0.0,
-        low_threshold: int = 10,
-        high_threshold: int = 250,
     ) -> None:
         """Initialize reward function with trajectory and config.
 
@@ -141,8 +139,6 @@ class RewardFunction:
             max_dist_from_traj: Max distance from trajectory before off-track failure.
             crash_penalty: Penalty applied on crash event.
             constant_penalty: Per-step penalty.
-            low_threshold: Low speed/reward threshold (legacy).
-            high_threshold: High speed/reward threshold (legacy).
         """
         self.reward_data_path = reward_data_path
         if not os.path.exists(reward_data_path):
@@ -209,19 +205,18 @@ class RewardFunction:
         if max_time_no_progress > 0:
             rtgym = getattr(cfg, "ENV_CONFIG", {}).get("RTGYM_CONFIG", {})
             raw_dt = float(rtgym.get("time_step_duration", 0.05))
-            # time_step_duration is in seconds; if >= 1 assume it was given in milliseconds
             if raw_dt >= 1.0:
                 self._time_step_duration = raw_dt / 1000.0
             else:
                 self._time_step_duration = raw_dt
             self._max_no_progress_steps = max(
-                1, int(round(max_time_no_progress / self._time_step_duration))
+                1,
+                int(round(max_time_no_progress / self._time_step_duration)),  # noqa: RUF046
             )
-            # Sanity: if computed steps is too low (e.g. dt was in ms), use 0.05s per step
-            steps_if_005 = max(1, int(round(max_time_no_progress / 0.05)))
+            steps_if_005 = max(1, int(round(max_time_no_progress / 0.05)))  # noqa: RUF046
             if max_time_no_progress >= 1.0 and self._max_no_progress_steps < steps_if_005 // 2:
                 logger.warning(
-                    "No-progress steps %s low for %.1fs (dt=%.3fs); dt=0.05s -> %s steps.",
+                    "No-progress steps {} low for {:.1f}s (dt={:.3f}s); dt=0.05s -> {} steps.",
                     self._max_no_progress_steps,
                     max_time_no_progress,
                     self._time_step_duration,
@@ -245,7 +240,7 @@ class RewardFunction:
             self._last_progress_step = 0
             config_path = getattr(cfg, "CONFIG_FILE_PATH", "config.json")
             logger.info(
-                "Reward: no-progress only via MAX_TIME_NO_PROGRESS_SECONDS. Set in %s to enable.",
+                "Reward: no-progress only via MAX_TIME_NO_PROGRESS_SECONDS. Set in {} to enable.",
                 config_path,
             )
 
@@ -283,8 +278,6 @@ class RewardFunction:
         self._reward_scale = float(cfg.REWARD_CONFIG.get("REWARD_SCALE", 1.0))
         self._end_of_track_reward = float(cfg.REWARD_CONFIG.get("END_OF_TRACK_REWARD", 10.0))
         self._track_curvature_obs = bool(cfg.REWARD_CONFIG.get("TRACK_CURVATURE_OBS", False))
-        self._cte_penalty_weight = float(cfg.REWARD_CONFIG.get("CTE_PENALTY_WEIGHT", 0.0))
-        self._cte_penalty_exponent = float(cfg.REWARD_CONFIG.get("CTE_PENALTY_EXPONENT", 2.0))
         self._progress_min_alignment = float(cfg.REWARD_CONFIG.get("PROGRESS_MIN_ALIGNMENT", 0.0))
         self._velocity_alignment_reward_weight = float(
             cfg.REWARD_CONFIG.get("VELOCITY_ALIGNMENT_REWARD_WEIGHT", 0.0)
@@ -317,8 +310,9 @@ class RewardFunction:
         _track_spacing = float(cfg.REWARD_CONFIG.get("TRACK_POINT_SPACING_M", 0.0))
         self._points_number: int | None
         if _track_pct > 0 and _track_spacing > 0 and self.datalen > 1:
-            look_ahead_dist = self._total_traj_length * (_track_pct / 100.0)
-            self._points_number = min(200, max(1, math.ceil(look_ahead_dist / _track_spacing)))
+            self._points_number = points_number_from_spacing_config(
+                self._total_traj_length, _track_pct, _track_spacing
+            )
             self._point_spacing_m = _track_spacing
         else:
             self._point_spacing_m = 0.0
@@ -332,6 +326,7 @@ class RewardFunction:
         if self._use_wandb:
             wandb_dir = tempfile.mkdtemp()
             atexit.register(shutil.rmtree, wandb_dir, ignore_errors=True)
+            cfg.ensure_wandb_api_key()
             try:
                 wandb.init(
                     project=cfg.WANDB_PROJECT,
@@ -356,18 +351,31 @@ class RewardFunction:
         Returns:
             Flattened list of (delta_x, delta_z) per point, each scaled by 10.
         """
+        max_idx = len(self.data) - 1
         next_indices = [
-            self.cur_idx + step * self._checkpoint_stride
+            min(self.cur_idx + step * self._checkpoint_stride, max_idx)
             for step in range(1, number_of_next_points + 1)
         ]
-        for idx in range(len(next_indices)):
-            if next_indices[idx] >= len(self.data):
-                next_indices[idx] = len(self.data) - 1
         route_to_next_poses = []
         for pos_index in next_indices:
             for axis in (0, -1):
                 route_to_next_poses.append((self.data[pos_index][axis] - position[axis]) * 10.0)
         return route_to_next_poses
+
+    def _nearest_index_in_window(
+        self, pos: np.ndarray, start_idx: int, end_idx: int
+    ) -> tuple[int, float]:
+        """Find nearest trajectory index to `pos` in the half-open window [start_idx, end_idx)."""
+        if end_idx <= start_idx:
+            idx = min(max(start_idx, 0), self.datalen - 1)
+            return idx, float(np.linalg.norm(pos - self.data[idx]))
+
+        segment = self.data[start_idx:end_idx]
+        dists = np.linalg.norm(segment - pos, axis=1)
+        best_local = int(np.argmin(dists))
+        best_index = start_idx + best_local
+        min_dist = float(dists[best_local])
+        return best_index, min_dist
 
     def get_track_info(
         self, position: list[float], points_number: int
@@ -424,7 +432,7 @@ class RewardFunction:
 
         if getattr(self, "_track_curvature_obs", False) and len(next_indices) > 0:
             curvatures = []
-            for k, pos_index in enumerate(next_indices):
+            for _k, pos_index in enumerate(next_indices):
                 i0 = max(0, pos_index - 1)
                 i1 = pos_index
                 i2 = min(self.datalen - 1, pos_index + 1)
@@ -462,8 +470,6 @@ class RewardFunction:
         self._dbg_speeds_kmh = []
         self._dbg_speed_rewards = []
         self._dbg_progress_rewards = []
-        self._dbg_alignment_rewards = []
-        self._dbg_cte_penalties = []
         self._dbg_barrier_penalties = []
         self._dbg_crash_steps = 0
         self._dbg_barrier_touch_steps = 0
@@ -484,10 +490,6 @@ class RewardFunction:
             float(np.sum(self._dbg_progress_rewards)) if self._dbg_progress_rewards else 0.0
         )
         speed_sum = float(np.sum(self._dbg_speed_rewards)) if self._dbg_speed_rewards else 0.0
-        align_sum = (
-            float(np.sum(self._dbg_alignment_rewards)) if self._dbg_alignment_rewards else 0.0
-        )
-        cte_sum = float(np.sum(self._dbg_cte_penalties)) if self._dbg_cte_penalties else 0.0
         barrier_sum = (
             float(np.sum(self._dbg_barrier_penalties)) if self._dbg_barrier_penalties else 0.0
         )
@@ -500,10 +502,9 @@ class RewardFunction:
 
         logger.info(
             f"  progress: {progress_sum:+.1f}  |  speed: {speed_sum:+.1f}  |"
-            f"  alignment: {align_sum:+.1f}  |  cte: {cte_sum:+.1f}  |"
             f"  constant: {const_sum:+.1f}"
         )
-        approx = progress_sum + speed_sum + align_sum + cte_sum + barrier_sum + const_sum + eot
+        approx = progress_sum + speed_sum + barrier_sum + const_sum + eot
         logger.info(
             f"  barrier: {barrier_sum:+.1f}"
             f" ({bt}/{steps} steps, {100 * bt / max(1, steps):.1f}%)"
@@ -524,7 +525,7 @@ class RewardFunction:
         input_steer: float | None = None,
         gear: float | None = None,
         slip_angle_deg: float | None = None,
-    ):
+    ) -> tuple[float, bool, int, float]:
         """
         Computes the reward and termination status for the current step.
 
@@ -552,15 +553,7 @@ class RewardFunction:
         pos = np.asarray(pos, dtype=np.float64).reshape(3)
         start_fwd = self.cur_idx
         end_fwd = min(self.cur_idx + self.nb_obs_forward, self.datalen)
-        if end_fwd > start_fwd:
-            segment = self.data[start_fwd:end_fwd]
-            dists = np.linalg.norm(segment - pos, axis=1)
-            best_local = int(np.argmin(dists))
-            best_index = start_fwd + best_local
-            min_dist = float(dists[best_local])
-        else:
-            best_index = self.cur_idx
-            min_dist = float(np.linalg.norm(pos - self.data[self.cur_idx]))
+        best_index, min_dist = self._nearest_index_in_window(pos, start_fwd, end_fwd)
         reward_progress = 0.0
         if self.datalen > 1 and self._total_traj_length > 0:
             idx_furthest = min(self.furthest_reached_idx, self.datalen - 1)
@@ -580,14 +573,10 @@ class RewardFunction:
         if best_index == self.cur_idx:
             start_bwd = max(0, self.cur_idx - self.nb_obs_backward + 1)
             end_bwd = self.cur_idx + 1
-            if end_bwd > start_bwd:
-                segment = self.data[start_bwd:end_bwd]
-                dists = np.linalg.norm(segment - pos, axis=1)
-                best_local = int(np.argmin(dists))
-                best_index = start_bwd + best_local
-                min_dist = float(dists[best_local])
+            best_index, min_dist = self._nearest_index_in_window(pos, start_bwd, end_bwd)
         self.cur_idx = best_index
         self._global_env_steps += 1
+
         _speed_reward_added = 0.0
         if self.prev_pos is None:
             self.prev_pos = pos.copy()
@@ -654,18 +643,20 @@ class RewardFunction:
                 )
                 reward += drift_bonus
 
-        if getattr(self, "_use_time_no_progress", False):
-            if (
-                self.step_counter > self.min_nb_steps_before_failure
-                and (self.step_counter - self._last_progress_step) >= self._max_no_progress_steps
-            ):
-                terminated = True
-                self._term_reason = "no_progress_timeout"
+        if (
+            getattr(self, "_use_time_no_progress", False)
+            and self.step_counter > self.min_nb_steps_before_failure
+            and (self.step_counter - self._last_progress_step) >= self._max_no_progress_steps
+        ):
+            terminated = True
+            self._term_reason = "no_progress_timeout"
 
-        if min_dist > self._max_track_width:
-            if self.step_counter > self.min_nb_steps_before_failure:
-                terminated = True
-                self._term_reason = "off_track"
+        if (
+            min_dist > self._max_track_width
+            and self.step_counter > self.min_nb_steps_before_failure
+        ):
+            terminated = True
+            self._term_reason = "off_track"
 
         if crashed:
             reward -= abs(self.crash_penalty)
@@ -687,8 +678,6 @@ class RewardFunction:
             self._dbg_speeds_kmh.append(_speed_kmh)
             self._dbg_progress_rewards.append(reward_progress)
             self._dbg_speed_rewards.append(_speed_reward_added)
-            self._dbg_alignment_rewards.append(0.0)
-            self._dbg_cte_penalties.append(0.0)
             self._dbg_barrier_penalties.append(0.0)
 
         reward = max(-self._reward_clip_floor, reward)

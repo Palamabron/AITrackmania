@@ -26,7 +26,7 @@ def url_retrieve(url: str, outfile: Path, overwrite: bool = False):
         try:
             urllib.request.urlretrieve(url, str(outfile))
         except (socket.gaierror, urllib.error.URLError) as err:
-            raise ConnectionError(f"could not download {url} due to {err}")
+            raise ConnectionError(f"could not download {url} due to {err}") from err
 
 
 # destination folder:
@@ -131,19 +131,19 @@ with open(os.path.join(HERE, "README.md")) as fid:
 
 setup(
     name="tmrl",
-    version="0.5.2",
+    version="0.8.0",
     description="Network-based framework for real-time robot learning",
     long_description=README,
     long_description_content_type="text/markdown",
     keywords="reinforcement learning, robot learning, trackmania, self driving, roborace",
     url="https://github.com/trackmania-rl/tmrl",
-    download_url="https://github.com/trackmania-rl/tmrl/archive/refs/tags/v0.5.2.tar.gz",
+    download_url="https://github.com/trackmania-rl/tmrl/archive/refs/tags/v0.8.0.tar.gz",
     author="Yann Bouteiller, Edouard Geze",
     author_email="yann.bouteiller@polymtl.ca, edouard.geze@hotmail.fr",
     license="MIT",
     install_requires=install_req,
     classifiers=[
-        "Development Status :: 4 - Beta",
+        "Development Status :: 5 - Production/Stable",
         "Intended Audience :: Developers",
         "Intended Audience :: Education",
         "Intended Audience :: Information Technology",

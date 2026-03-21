@@ -4,6 +4,7 @@ from collections.abc import Callable
 from typing import Any
 
 import numpy as np
+from loguru import logger
 
 from tmrl.custom.memories.base import last_true_in_list, replace_hist_before_eoe
 from tmrl.custom.memories.enums import (
@@ -233,19 +234,44 @@ class MemoryR2D2woImages(R2D2Memory):
         res = len(self.data[0]) - self.min_samples - 1
         return max(0, res)
 
+    def set_observation_space(self, space) -> None:
+        """Set the authoritative observation space (from the env/interface).
+
+        When set, alignment in ``get_transition`` and ``append_buffer`` uses this
+        space instead of rebuilding one from ``cfg.POINTS_NUMBER``, which avoids
+        a 1-dim mismatch when ``RewardFunction._points_number`` overrides the
+        config-level constant.
+        """
+        self._cached_tqc_obs_space = space
+
+    def _trainer_tqc_obs_space(self):
+        if not hasattr(self, "_cached_tqc_obs_space"):
+            from tmrl.custom.tm.tqc_observation_space import build_tqc_sophy_tuple_observation_space
+
+            self._cached_tqc_obs_space = build_tqc_sophy_tuple_observation_space()
+        return self._cached_tqc_obs_space
+
     def get_transition(self, item: int):
         """Get a single transition."""
+        from tmrl.tools.player_runs import align_observation_to_space
+
         t = R2D2woImagesTrailingField
         idx_last = item + self.min_samples - 1
         idx_now = item + self.min_samples
 
         obs_end = self._obs_end()
 
+        space = self._trainer_tqc_obs_space()
+        prev_obs = tuple(self.data[i][idx_last] for i in range(2, obs_end))
+        next_obs = tuple(self.data[i][idx_now] for i in range(2, obs_end))
+        prev_obs = align_observation_to_space(prev_obs, space)
+        next_obs = align_observation_to_space(next_obs, space)
+
         return (
-            tuple(self.data[i][idx_last] for i in range(2, obs_end)),
+            prev_obs,
             self.data[1][idx_now],
             np.float32(self.data[obs_end + t.REWARDS][idx_now]),
-            tuple(self.data[i][idx_now] for i in range(2, obs_end)),
+            next_obs,
             self.data[obs_end + t.TERMINATED][idx_now],
             self.data[obs_end + t.TRUNCATED][idx_now],
             self.data[obs_end + t.INFOS][idx_now],
@@ -267,8 +293,34 @@ class MemoryR2D2woImages(R2D2Memory):
 
     def append_buffer(self, buffer):
         """Append a buffer of samples to the memory."""
-        first_data_idx = self.data[0][-1] + 1 if self.__len__() > 0 else 0
+        from tmrl.tools.player_runs import (
+            align_observation_to_space,
+            observation_matches_space,
+        )
+
         bf = BufferField
+        space = self._trainer_tqc_obs_space()
+        kept: list[Any] = []
+        n_drop = 0
+        for b in buffer.memory:
+            obs = align_observation_to_space(b[bf.OBSERVATION], space)
+            if not observation_matches_space(obs, space):
+                n_drop += 1
+                continue
+            kept.append(
+                (b[bf.ACTION], obs, b[bf.REWARD], b[bf.TERMINATED], b[bf.TRUNCATED], b[bf.INFO])
+            )
+        if n_drop:
+            logger.warning(
+                "MemoryR2D2woImages: dropped {} sample(s) with observations incompatible "
+                "with trainer TQC observation_space (after alignment).",
+                n_drop,
+            )
+        if not kept:
+            return self
+        buffer.memory = kept
+
+        first_data_idx = self.data[0][-1] + 1 if self.__len__() > 0 else 0
         n_obs = len(buffer.memory[0][bf.OBSERVATION])
 
         data_fields = [
@@ -288,8 +340,6 @@ class MemoryR2D2woImages(R2D2Memory):
                 self.data[i] += d
         else:
             if self.__len__() > 0 and len(self.data) != len(data_fields):
-                from loguru import logger
-
                 logger.warning(
                     "Memory column count changed ({} -> {}); resetting buffer.",
                     len(self.data),

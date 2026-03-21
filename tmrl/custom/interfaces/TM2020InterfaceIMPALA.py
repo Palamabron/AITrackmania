@@ -79,7 +79,7 @@ class TM2020InterfaceIMPALA(TM2020Interface):
         if self.resize_to is not None:
             w, h = self.resize_to
         else:
-            w, h = cfg.WINDOW_HEIGHT, cfg.WINDOW_WIDTH
+            w, h = cfg.WINDOW_WIDTH, cfg.WINDOW_HEIGHT
         if self.grayscale:
             img = spaces.Box(
                 low=0.0, high=255.0, shape=(self.img_hist_len, h, w)
@@ -117,10 +117,9 @@ class TM2020InterfaceIMPALA(TM2020Interface):
         img = img[cut_height:, :]
         if self.resize_to is not None:  # cv2.resize takes dim as (width, height)
             img = cv2.resize(img, self.resize_to)
-        if self.grayscale:
-            img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        else:
-            img = img[:, :, ::-1]  # reversed view for numpy RGB convention
+        img = (
+            cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if self.grayscale else img[:, :, ::-1]
+        )  # reversed view for numpy RGB convention
         data = self.grab_data()
         # print(f"data: {data}")
         self.img = img  # for render()
@@ -191,7 +190,7 @@ class TM2020InterfaceIMPALA(TM2020Interface):
         race_progress = np.array([race_progress], dtype="float32")
 
         failure_counter = np.array([float(failure_counter)])
-        info = {"reward_sum": reward_sum}
+        info = {"reward_sum": reward_sum, "end_of_track": bool(end_of_track)}
         if getattr(self.client, "_last_retrieve_invalid", False):
             terminated = True
             info["telemetry_invalid"] = True
@@ -215,7 +214,7 @@ class TM2020InterfaceIMPALA(TM2020Interface):
             imgs,
         ]
 
-        total_obs = [next_checkpoints] + observation
+        total_obs = [next_checkpoints, *observation]
 
         total_obs[0] = np.array(total_obs[0])
 
@@ -262,7 +261,7 @@ class TM2020InterfaceIMPALA(TM2020Interface):
         gear = np.array([data[18]], dtype="float32")
 
         failure_counter = np.array([0.0])
-        race_progress = 0.0
+        race_progress = np.array([0.0], dtype="float32")
 
         next_checkpoints = self.reward_function.get_n_next_checkpoints_xy(pos, self.points_number)
 
@@ -287,7 +286,7 @@ class TM2020InterfaceIMPALA(TM2020Interface):
             imgs,
         ]
 
-        total_obs = [next_checkpoints] + observation
+        total_obs = [next_checkpoints, *observation]
 
         total_obs[0] = np.array(total_obs[0])
 

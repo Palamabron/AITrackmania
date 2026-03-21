@@ -299,10 +299,9 @@ class TM2020Interface(RealTimeGymInterface):
         img = self.window_interface.screenshot()[:, :, :3]  # BGR ordering
         if self.resize_to is not None:
             img = cv2.resize(img, self.resize_to)
-        if self.grayscale:
-            img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        else:
-            img = img[:, :, ::-1]  # RGB convention
+        img = (
+            cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if self.grayscale else img[:, :, ::-1]
+        )  # RGB convention
         data = self.client.retrieve_data()
         self.img = img
         return data, img
@@ -379,20 +378,19 @@ class TM2020Interface(RealTimeGymInterface):
         self._gear_arr[0] = data[9]
         self._rpm_arr[0] = data[10]
         self._last_speed_kmh = float(data[0])
-        reward, terminated, failure_counter, _ = self.reward_function.compute_reward(
+        reward, terminated, _failure_counter, _ = self.reward_function.compute_reward(
             pos=np.array([data[2], data[3], data[4]])
         )
         self._push_img(img)
         imgs = self._get_img_hist_array()
         observation = [self._speed_arr.copy(), self._gear_arr.copy(), self._rpm_arr.copy(), imgs]
         end_of_track = bool(data[8])
-        info = {}
+        info = {"end_of_track": end_of_track}
         if end_of_track:
             terminated = True
             reward += self.finish_reward
             if self.save_replays:
                 mouse_save_replay_tm20(True)
-        reward += self.constant_penalty
         reward = np.float32(reward)
         return observation, reward, terminated, info
 
@@ -404,7 +402,7 @@ class TM2020Interface(RealTimeGymInterface):
         if self.resize_to is not None:
             w, h = self.resize_to
         else:
-            w, h = cfg.WINDOW_HEIGHT, cfg.WINDOW_WIDTH
+            w, h = cfg.WINDOW_WIDTH, cfg.WINDOW_HEIGHT
         if self.grayscale:
             img = spaces.Box(low=0.0, high=255.0, shape=(self.img_hist_len, h, w))
         else:
@@ -450,7 +448,7 @@ class TM2020InterfaceLidar(TM2020Interface):
 
     def reset(self, seed=None, options=None):
         self.reset_common()
-        img, speed, data = self.grab_lidar_speed_and_data()
+        img, speed, _data = self.grab_lidar_speed_and_data()
         for _ in range(self.img_hist_len):
             self.img_hist.append(img)
         imgs = np.array(list(self.img_hist), dtype="float32")
@@ -467,11 +465,10 @@ class TM2020InterfaceLidar(TM2020Interface):
         imgs = np.array(list(self.img_hist), dtype="float32")
         obs = [speed, imgs]
         end_of_track = bool(data[8])
-        info = {}
+        info = {"end_of_track": end_of_track}
         if end_of_track:
             rew += self.finish_reward
             terminated = True
-        rew += self.constant_penalty
         rew = np.float32(rew)
         return obs, rew, terminated, info
 
@@ -488,7 +485,7 @@ class TM2020InterfaceLidarProgress(TM2020InterfaceLidar):
 
     def reset(self, seed=None, options=None):
         self.reset_common()
-        img, speed, data = self.grab_lidar_speed_and_data()
+        img, speed, _data = self.grab_lidar_speed_and_data()
         for _ in range(self.img_hist_len):
             self.img_hist.append(img)
         imgs = np.array(list(self.img_hist), dtype="float32")
@@ -509,11 +506,10 @@ class TM2020InterfaceLidarProgress(TM2020InterfaceLidar):
         imgs = np.array(list(self.img_hist), dtype="float32")
         obs = [speed, progress, imgs]
         end_of_track = bool(data[8])
-        info = {}
+        info = {"end_of_track": end_of_track}
         if end_of_track:
             rew += self.finish_reward
             terminated = True
-        rew += self.constant_penalty
         rew = np.float32(rew)
         return obs, rew, terminated, info
 

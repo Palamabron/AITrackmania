@@ -65,7 +65,7 @@ import tmrl.config as cfg
 import tmrl.config.config_objects as cfg_obj
 import torch
 import torch.nn as nn
-import torch.nn.functional as F  # noqa: N812
+import torch.nn.functional as F
 from tmrl.actor import TorchActorModule
 from tmrl.custom.utils.nn import copy_shared, no_grad
 
@@ -361,7 +361,7 @@ class VanillaCNN(nn.Module):
 
         # MLP layers: policy samples from a gaussian defined later; critic output dim 1.
         self.mlp_layers = [256, 256, 1] if self.q_net else [256, 256]
-        self.mlp = mlp([self.mlp_input_features] + self.mlp_layers, nn.ReLU)
+        self.mlp = mlp([self.mlp_input_features, *self.mlp_layers], nn.ReLU)
 
     def forward(self, x):
         """
@@ -438,10 +438,10 @@ class TorchJSONDecoder(json.JSONDecoder):
     """
 
     def __init__(self, *args, **kwargs):
-        super().__init__(object_hook=self.object_hook, *args, **kwargs)
+        super().__init__(object_hook=self.object_hook, *args, **kwargs)  # noqa: B026
 
     def object_hook(self, dct):
-        for key in dct.keys():
+        for key in dct:
             if isinstance(dct[key], list):
                 dct[key] = torch.Tensor(dct[key])
         return dct
@@ -548,12 +548,8 @@ class MyActorModule(TorchActorModule):
         std = torch.exp(log_std)
         # We can now sample our action in the resulting multivariate gaussian (Normal) distribution:
         pi_distribution = Normal(mu, std)
-        if test:
-            pi_action = mu  # at test time, our action is deterministic (it is just the means)
-        else:
-            pi_action = (
-                pi_distribution.rsample()
-            )  # during training, sampled from the multivariate gaussian
+        # at test time, our action is deterministic (it is just the means)
+        pi_action = mu if test else pi_distribution.rsample()
         # Log probs of the gaussian, for SAC:
         if compute_logprob:
             logp_pi = pi_distribution.log_prob(pi_action).sum(axis=-1)
@@ -794,15 +790,17 @@ class SACTrainingAgent(TrainingAgent):
 
         # Finally, we update our target model with a slowly moving exponential average:
         with torch.no_grad():
-            for p, p_targ in zip(self.model.parameters(), self.model_target.parameters()):
+            for p, p_targ in zip(
+                self.model.parameters(), self.model_target.parameters(), strict=True
+            ):
                 p_targ.data.mul_(self.polyak)
                 p_targ.data.add_((1 - self.polyak) * p.data)
 
         # TMRL enables us to log training metrics to wandb:
-        ret_dict = dict(
-            loss_actor=loss_pi.detach().item(),
-            loss_critic=loss_q.detach().item(),
-        )
+        ret_dict = {
+            "loss_actor": loss_pi.detach().item(),
+            "loss_critic": loss_q.detach().item(),
+        }
         return ret_dict
 
 

@@ -282,10 +282,7 @@ class TM2020InterfaceTQCWithImages(TM2020InterfaceTQC):
     def _capture_and_process_image(self):
         img = self.window_interface.screenshot()[:, :, :3]
         img = cv2.resize(img, (cfg.IMG_WIDTH, cfg.IMG_HEIGHT))
-        if cfg.GRAYSCALE:
-            img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        else:
-            img = img[:, :, ::-1]
+        img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if cfg.GRAYSCALE else img[:, :, ::-1]
         return img.astype(np.float32)
 
     def get_obs_rew_terminated_info(self):

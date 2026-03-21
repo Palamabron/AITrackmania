@@ -271,10 +271,7 @@ class SquashedActorSophy(TorchActorModule):
 
         pi_distribution = Normal(mu, std)
 
-        if test:
-            pi_action = mu
-        else:
-            pi_action = pi_distribution.rsample()
+        pi_action = mu if test else pi_distribution.rsample()
 
         if with_logprob:
             logp_pi = pi_distribution.log_prob(pi_action).sum(axis=-1)
@@ -377,7 +374,8 @@ def _build_track_conv1d_branch(dim_track: int, hidden_dim: int) -> nn.Module:
     Returns:
         torch.nn.Module: The constructed Conv1d branch.
     """
-    assert dim_track >= 3 and dim_track % 3 == 0, "track dim must be 6*N (3 channels of 2*N)"
+    assert dim_track >= 3, "track dim must be at least 3"
+    assert dim_track % 3 == 0, "track dim must be 6*N (3 channels of 2*N)"
     return nn.Sequential(
         nn.Conv1d(3, 32, kernel_size=5, padding=2),
         nn.BatchNorm1d(32),
@@ -397,7 +395,8 @@ def _build_track_spline_mlp_branch(dim_track: int, hidden_dim: int) -> nn.Module
     representation via pooling + MLP (B-spline / Frenet-Serret style compact encoding).
     Input (B, 3, N) -> pool to fixed size -> MLP -> (B, hidden_dim).
     """
-    assert dim_track >= 3 and dim_track % 3 == 0, "track dim must be 3*N (3 channels)"
+    assert dim_track >= 3, "track dim must be at least 3"
+    assert dim_track % 3 == 0, "track dim must be 3*N (3 channels)"
     n_pts = dim_track // 3
     pool_size = min(16, max(4, n_pts // 4))
     return nn.Sequential(
@@ -436,7 +435,7 @@ class _TrackGNN(nn.Module):
         h = self.node_in(x)
         edge_src = cast(torch.Tensor, self.edge_src)
         edge_dst = cast(torch.Tensor, self.edge_dst)
-        for lin, norm in zip(self.layers, self.norms):
+        for lin, norm in zip(self.layers, self.norms, strict=False):
             msg = h[:, edge_src]
             agg = torch.zeros(b, n, self.hidden_dim, device=h.device, dtype=h.dtype)
             agg.index_add_(1, edge_dst, msg)
@@ -450,7 +449,8 @@ class _TrackGNN(nn.Module):
 
 
 def _build_track_gnn_branch(dim_track: int, hidden_dim: int) -> nn.Module:
-    assert dim_track >= 3 and dim_track % 3 == 0, "track dim must be 6*N (3 channels)"
+    assert dim_track >= 3, "track dim must be at least 3"
+    assert dim_track % 3 == 0, "track dim must be 6*N (3 channels)"
     num_nodes = dim_track // 3
     gnn_hidden = getattr(cfg, "GNN_HIDDEN", 64)
     gnn_layers = getattr(cfg, "GNN_LAYERS", 3)
@@ -598,10 +598,11 @@ class SquashedActorSophyResidual(TorchActorModule):
         if self.sde is not None:
             self.sde.reset_noise(batch_size)
 
-    def load_from_bytes(self, payload: bytes, device):
-        result = super().load_from_bytes(payload, device)
-        self.reset_noise()
-        return result
+    def load_from_bytes(self, payload: bytes, device) -> bool:
+        ok = super().load_from_bytes(payload, device)
+        if ok:
+            self.reset_noise()
+        return ok
 
     def _joint_features(self, observation, batch_size: int) -> torch.Tensor:
         """
@@ -762,9 +763,9 @@ class SquashedActorSophyResidual(TorchActorModule):
         if self._binary_brake:
             brake_logits = self.brake_logits_layer(out).float()
             if self.use_sde and self.sde is not None:
-                pi_cont, logp_cont, pre_tanh = self._policy_head_sde(out, mu, test, with_logprob)
+                pi_cont, logp_cont, _ = self._policy_head_sde(out, mu, test, with_logprob)
             else:
-                pi_cont, logp_cont, pre_tanh = self._policy_head_standard(
+                pi_cont, logp_cont, _pre_tanh = self._policy_head_standard(
                     out, mu, test, with_logprob
                 )
             if test:
@@ -1125,14 +1126,26 @@ class _AsymmetricActorAdapter(TorchActorModule):
         torch.save(self.actor.state_dict(), buffer)
         return buffer.getvalue()
 
-    def load_from_bytes(self, payload: bytes, device):
+    def load_from_bytes(self, payload: bytes, device) -> bool:
         self.device = device
         buffer = BytesIO(payload)
-        state = torch.load(buffer, map_location=self.device, weights_only=True)
-        self.actor.load_state_dict(state)
+        try:
+            state = torch.load(buffer, map_location=self.device, weights_only=True)
+            self.actor.load_state_dict(state)
+        except RuntimeError as e:
+            err = str(e)
+            if "size mismatch" in err or "Missing key" in err or "shape" in err.lower():
+                from loguru import logger
+
+                logger.warning(
+                    "Ignoring incompatible asymmetric actor weights (shape mismatch): {}",
+                    err.split("\n", 1)[0].strip(),
+                )
+                return False
+            raise
         if hasattr(self.actor, "reset_noise"):
             self.actor.reset_noise()
-        return self
+        return True
 
     def reset_noise(self, batch_size: int = 1) -> None:
         if hasattr(self.actor, "reset_noise"):
@@ -1199,9 +1212,7 @@ class AsymmetricSophyResidualActorCritic(nn.Module):
 
     def act(self, obs, test=False):
         # Slice privileged data off for the actor (indices 1:15 to be safe with tuple spaces)
-        if isinstance(obs, tuple) and len(obs) > 1:
-            ego_obs = obs[1:]
-        elif isinstance(obs, list) and len(obs) > 1:
+        if (isinstance(obs, tuple) and len(obs) > 1) or (isinstance(obs, list) and len(obs) > 1):
             ego_obs = obs[1:]
         else:
             ego_obs = obs

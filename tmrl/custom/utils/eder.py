@@ -59,10 +59,7 @@ def greedy_kdpp_filter(
 
     for i in range(k):
         # Marginal gain ≈ diag[j] (after deflation)
-        if i == 0:
-            best = int(diag.argmax().item())
-        else:
-            best = int(diag.argmax().item())
+        best = int(diag.argmax().item())
 
         selected.append(best)
 

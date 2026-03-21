@@ -8,7 +8,7 @@ from typing import Any
 import numpy as np
 import tmrl.config as cfg
 import torch
-import torch.nn.functional as F  # noqa: N812
+import torch.nn.functional as F
 from tmrl.actor import TorchActorModule
 from tmrl.custom.utils.nn import copy_shared, no_grad
 from tmrl.networking import RolloutWorker, Server, Trainer
@@ -87,7 +87,7 @@ class MyActorModule(TorchActorModule):
         dim_obs = sum(prod(s for s in space.shape) for space in observation_space)
         dim_act = action_space.shape[0]
         act_limit = action_space.high[0]
-        self.net = mlp([dim_obs] + list(hidden_sizes), activation, activation)
+        self.net = mlp([dim_obs, *list(hidden_sizes)], activation, activation)
         self.mu_layer = torch.nn.Linear(hidden_sizes[-1], dim_act)
         self.log_std_layer = torch.nn.Linear(hidden_sizes[-1], dim_act)
         self.act_limit = act_limit
@@ -99,10 +99,7 @@ class MyActorModule(TorchActorModule):
         log_std = torch.clamp(log_std, LOG_STD_MIN, LOG_STD_MAX)
         std = torch.exp(log_std)
         pi_distribution = torch.distributions.normal.Normal(mu, std)
-        if test:
-            pi_action = mu
-        else:
-            pi_action = pi_distribution.rsample()
+        pi_action = mu if test else pi_distribution.rsample()
         if with_logprob:
             logp_pi = pi_distribution.log_prob(pi_action).sum(axis=-1)
             logp_pi -= (2 * (np.log(2) - pi_action - F.softplus(-2 * pi_action))).sum(axis=1)
@@ -428,7 +425,7 @@ class MyCriticModule(torch.nn.Module):
         super().__init__()
         obs_dim = sum(prod(s for s in space.shape) for space in observation_space)
         act_dim = action_space.shape[0]
-        self.q = mlp([obs_dim + act_dim] + list(hidden_sizes) + [1], activation)
+        self.q = mlp([obs_dim + act_dim, *list(hidden_sizes), 1], activation)
 
     def forward(self, obs, act):
         x = torch.cat((*obs, act), -1)
@@ -541,13 +538,15 @@ class MyTrainingAgent(TrainingAgent):
         for p in self.q_params:
             p.requires_grad = True
         with torch.no_grad():
-            for p, p_targ in zip(self.model.parameters(), self.model_target.parameters()):
+            for p, p_targ in zip(
+                self.model.parameters(), self.model_target.parameters(), strict=True
+            ):
                 p_targ.data.mul_(self.polyak)
                 p_targ.data.add_((1 - self.polyak) * p.data)
-        ret_dict = dict(
-            loss_actor=loss_pi.detach().item(),
-            loss_critic=loss_q.detach().item(),
-        )
+        ret_dict = {
+            "loss_actor": loss_pi.detach().item(),
+            "loss_critic": loss_q.detach().item(),
+        }
         if self.learn_entropy_coef:
             ret_dict["loss_entropy_coef"] = loss_alpha.detach().item()
             ret_dict["entropy_coef"] = alpha_t.item()

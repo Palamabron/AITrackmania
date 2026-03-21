@@ -6,26 +6,21 @@ TMRL configuration, organized by category.
 
 from __future__ import annotations
 
-import math
 import os
 import pickle
 
-import numpy as np
 from loguru import logger
 
 from tmrl.config.loader import (
     DEBUGGER_CONFIG,
     ENV_CONFIG,
-    SYSTEM,
     TMRL_CONFIG,
 )
 from tmrl.config.paths import PLAYER_RUNS_FOLDER, REWARD_PATH
-
-# =============================================================================
-# Basic Constants
-# =============================================================================
-
-RTGYM_VERSION = "real-time-gym-v1" if SYSTEM == "Windows" else "real-time-gym-ts-v1"
+from tmrl.config.spacing_lookahead import (
+    points_number_from_spacing_config,
+    polyline_arc_length_m,
+)
 
 # =============================================================================
 # Run Configuration
@@ -88,9 +83,15 @@ WANDB_GRADIENTS = TMRL_CONFIG["WANDB_GRADIENTS"]
 WANDB_DEBUG_REWARD = TMRL_CONFIG["WANDB_DEBUG_REWARD"]
 WANDB_WORKER = TMRL_CONFIG.get("WANDB_WORKER", True)
 
-# Set environment variable for wandb
 
-os.environ["WANDB_API_KEY"] = WANDB_KEY
+def ensure_wandb_api_key() -> None:
+    """Set WANDB_API_KEY in os.environ if not already present.
+
+    Call this before wandb.init() instead of mutating os.environ at import time.
+    """
+    if "WANDB_API_KEY" not in os.environ and WANDB_KEY:
+        os.environ["WANDB_API_KEY"] = WANDB_KEY
+
 
 # =============================================================================
 # Model Architecture Configuration
@@ -98,11 +99,15 @@ os.environ["WANDB_API_KEY"] = WANDB_KEY
 
 MODEL_CONFIG = TMRL_CONFIG["MODEL"]
 MODEL_HISTORY = MODEL_CONFIG["SAVE_MODEL_EVERY"]
+BEST_CHECKPOINT_CRITERION = MODEL_CONFIG.get("BEST_CHECKPOINT_CRITERION", "eval")
+BEST_CHECKPOINT_LAP_TIME = MODEL_CONFIG.get("BEST_CHECKPOINT_LAP_TIME", True)
+BEST_CHECKPOINT_MIN_FINISHES = MODEL_CONFIG.get("BEST_CHECKPOINT_MIN_FINISHES")
+COMPETITION_EVAL_CRASH_PENALTY_S = float(MODEL_CONFIG.get("COMPETITION_EVAL_CRASH_PENALTY_S", 10.0))
+COMPETITION_EVAL_MAX_CRASHES = int(MODEL_CONFIG.get("COMPETITION_EVAL_MAX_CRASHES", 3))
 
 # Training loop
 MAX_EPOCHS = MODEL_CONFIG["MAX_EPOCHS"]
 ROUNDS_PER_EPOCH = MODEL_CONFIG["ROUNDS_PER_EPOCH"]
-ROUDS_PER_EPOCH = ROUNDS_PER_EPOCH  # Typo alias for backward compatibility
 TRAINING_STEPS_PER_ROUND = MODEL_CONFIG["TRAINING_STEPS_PER_ROUND"]
 MAX_TRAINING_STEPS_PER_ENVIRONMENT_STEP = MODEL_CONFIG["MAX_TRAINING_STEPS_PER_ENVIRONMENT_STEP"]
 ENVIRONMENT_STEPS_BEFORE_TRAINING = MODEL_CONFIG["ENVIRONMENT_STEPS_BEFORE_TRAINING"]
@@ -165,7 +170,6 @@ GNN_HIDDEN = MODEL_CONFIG.get("GNN_HIDDEN", 64)
 USE_RNN_MODEL = MODEL_CONFIG.get("USE_RNN", False)
 _RNN_HIDDEN_SIZE = MODEL_CONFIG.get("RNN_HIDDEN_SIZE", 0)
 RNN_HIDDEN_SIZE = _RNN_HIDDEN_SIZE if _RNN_HIDDEN_SIZE > 0 else RESIDUAL_MLP_HIDDEN_DIM
-LRN_HIDDEN_SIZE = RNN_HIDDEN_SIZE  # For backward compatibility with typo
 
 # Architecture - EfficientNet
 USE_EFFICIENTNET = MODEL_CONFIG.get("USE_EFFICIENTNET", True)
@@ -265,15 +269,10 @@ if _track_pct > 0 and _track_spacing > 0 and os.path.exists(REWARD_PATH):
     try:
         with open(REWARD_PATH, "rb") as _f:
             _traj = pickle.load(_f)
-        if hasattr(_traj, "__len__") and len(_traj) > 1:
-            _traj = np.asarray(_traj)
-            _diffs = np.linalg.norm(np.diff(_traj, axis=0), axis=1)
-            _cum = np.zeros(len(_traj))
-            np.cumsum(_diffs, out=_cum[1:])
-            _L = float(_cum[-1])
-            if _L >= _track_spacing:
-                _nb = int(math.ceil(_L * (_track_pct / 100.0) / _track_spacing))
-                TRACK_POINTS_NUMBER = min(200, max(1, _nb))
+        _L = polyline_arc_length_m(_traj)
+        if _L is not None:
+            TRACK_POINTS_NUMBER = points_number_from_spacing_config(_L, _track_pct, _track_spacing)
+            if TRACK_POINTS_NUMBER is not None:
                 logger.info(
                     "Track look-ahead: TRACK_LOOK_AHEAD_PCT={:.2f}%, "
                     "TRACK_POINT_SPACING_M={:.2f} m, "
@@ -283,7 +282,7 @@ if _track_pct > 0 and _track_spacing > 0 and os.path.exists(REWARD_PATH):
                     _L,
                     TRACK_POINTS_NUMBER,
                 )
-    except Exception as e:
+    except (FileNotFoundError, pickle.UnpicklingError, ValueError, OSError) as e:
         logger.warning(f"Failed to load reward trajectory for POINTS_NUMBER calculation: {e}")
 elif _track_pct > 0 and _track_spacing > 0:
     logger.warning(

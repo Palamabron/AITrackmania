@@ -31,18 +31,20 @@ try:
 except ImportError:
     wandb = None  # type: ignore[assignment]
 
-import tmrl.config as cfg
+import tmrl.config.constants as cfg
 from tmrl.custom.custom_algorithms._common import (
     _compute_n_step_return_and_bootstrap_mask,
     _tensor_to_scalar,
+    polyak_update,
+    project_simbav2_weights,
+    sanitize_obs,
     set_seed,
 )
 from tmrl.custom.models.DQNNet import DQNActor
-from tmrl.custom.models.model_blocks import SimbaV2Backbone
 from tmrl.custom.utils.nn import copy_shared, no_grad
 from tmrl.custom.utils.optim import GradientStabilizer
 from tmrl.training import TrainingAgent
-from tmrl.util import cached_property
+from tmrl.util import cached_property, wandb_monotonic_step
 
 
 class DiscreteQHead(nn.Module):
@@ -259,14 +261,14 @@ class SDSACAgent(TrainingAgent):
         self._grad_stabilizer_actor = GradientStabilizer(ema_decay=0.995)
         self._training_step = 0
         logger.info(
-            "SDSACAgent: n_actions=%d, avg_q=%s, clip_q=%s, entropy_penalty=%s",
+            "SDSACAgent: n_actions={}, avg_q={}, clip_q={}, entropy_penalty={}",
             self.n_actions,
             self.use_avg_q,
             self.use_clip_q,
             self.use_entropy_penalty,
         )
 
-    def get_actor(self):
+    def get_actor(self) -> DiscreteSACActor:
         actor = DiscreteSACActor(
             self.observation_space,
             self.action_space,
@@ -280,27 +282,15 @@ class SDSACAgent(TrainingAgent):
         actor.actor_head.load_state_dict(self.model.actor_head.state_dict())
         return actor
 
-    @staticmethod
-    def _sanitize_obs(obs):
-        if isinstance(obs, torch.Tensor):
-            return (
-                torch.nan_to_num(obs, nan=0.0, posinf=0.0, neginf=0.0)
-                if obs.is_floating_point()
-                else obs
-            )
-        return tuple(
-            torch.nan_to_num(t, nan=0.0, posinf=0.0, neginf=0.0)
-            if isinstance(t, torch.Tensor) and t.is_floating_point()
-            else t
-            for t in obs
-        )
+    _sanitize_obs = staticmethod(sanitize_obs)
 
-    def _project_simbav2(self) -> None:
-        for m in self.model.modules():
-            if isinstance(m, SimbaV2Backbone):
-                m.project_weights()
-
-    def train(self, batch, epoch=None, batch_index=None, iters=None):
+    def train(
+        self,
+        batch: tuple,
+        epoch: int | None = None,
+        batch_index: int | None = None,
+        iters: int | None = None,
+    ) -> dict[str, float]:
         self._training_step += 1
 
         o, a, r, o2, d = batch[0], batch[1], batch[2], batch[3], batch[4]
@@ -308,6 +298,11 @@ class SDSACAgent(TrainingAgent):
         o2 = self._sanitize_obs(o2)
 
         batch_size = r.shape[0]
+        if self.n_steps > 1 and self.n_steps >= batch_size:
+            raise ValueError(
+                f"Invalid n-step config: n_steps ({self.n_steps}) must be smaller than "
+                f"batch_size ({batch_size})."
+            )
         actions = a.long().squeeze(-1)
 
         reward_scale = float(cfg.ALG_CONFIG.get("REWARD_NORMALIZE_SCALE", 1.0))
@@ -472,6 +467,7 @@ class SDSACAgent(TrainingAgent):
         if self.auto_alpha and self.log_alpha is not None:
             log_prob = -entropy.detach() + self.target_entropy
             alpha_loss = -(self.log_alpha * log_prob).mean()
+            assert self.alpha_optimizer is not None
             self.alpha_optimizer.zero_grad()
             alpha_loss.backward()
             self.alpha_optimizer.step()
@@ -479,10 +475,8 @@ class SDSACAgent(TrainingAgent):
             alpha_loss_val = float(alpha_loss.item())
 
         # -- Target network Polyak update --
-        self._project_simbav2()
-        with torch.no_grad():
-            for p, pt in zip(self.model.parameters(), self.model_target.parameters()):
-                pt.data.mul_(1.0 - self.tau_polyak).add_(p.data, alpha=self.tau_polyak)
+        project_simbav2_weights(self.model)
+        polyak_update(self.model, self.model_target, 1.0 - self.tau_polyak)
 
         # -- Logging --
         ret: dict[str, float] = {
@@ -507,6 +501,6 @@ class SDSACAgent(TrainingAgent):
             ret["loss/alpha"] = alpha_loss_val
 
         if wandb is not None and wandb.run is not None:
-            wandb.log(ret, step=self._training_step)
+            wandb.log(ret, step=wandb_monotonic_step(self._training_step, wandb.run))
 
         return ret

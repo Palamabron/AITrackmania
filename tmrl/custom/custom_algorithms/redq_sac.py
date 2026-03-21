@@ -1,6 +1,5 @@
 """REDQ-SAC (Randomized Ensemble Double Q-learning SAC) agent."""
 
-from contextlib import nullcontext
 from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any
@@ -10,7 +9,13 @@ import torch
 from loguru import logger
 from torch.optim import Adam
 
-from tmrl.custom.custom_algorithms._common import _amp_dtype, _amp_enabled, set_seed
+from tmrl.custom.custom_algorithms._common import (
+    _amp_dtype,
+    _amp_enabled,
+    autocast_context,
+    polyak_update,
+    set_seed,
+)
 from tmrl.custom.models.mlp import REDQMLPActorCritic
 from tmrl.custom.utils.nn import copy_shared, no_grad
 from tmrl.training import TrainingAgent
@@ -60,7 +65,6 @@ class REDQSACAgent(TrainingAgent):
             Adam(q.parameters(), lr=self.lr_critic, weight_decay=0.001) for q in self.model.qs
         ]
         self.criterion = torch.nn.MSELoss()
-        self.loss_pi = torch.zeros((1,), device=device)
         self.use_mixed_precision = _amp_enabled(device)
         self.amp_dtype = _amp_dtype()
         use_scaler = self.use_mixed_precision and (self.amp_dtype != torch.bfloat16)
@@ -79,10 +83,12 @@ class REDQSACAgent(TrainingAgent):
         else:
             self.alpha_t = torch.tensor(float(self.alpha)).to(self.device)
 
-    def get_actor(self):
+    def get_actor(self) -> Any:
         return self.model_nograd.actor
 
-    def train(self, batch, epoch, batch_number, iteration):
+    def train(  # type: ignore[override]
+        self, batch: tuple, epoch: int, batch_index: int, iters: int
+    ) -> dict[str, float]:
         self.i_update += 1
         update_policy = self.i_update % self.q_updates_per_policy_update == 0
 
@@ -90,17 +96,13 @@ class REDQSACAgent(TrainingAgent):
         pi, logp_pi = None, None
 
         def autocast_ctx():
-            return (
-                torch.autocast(device_type="cuda", dtype=self.amp_dtype, enabled=True)
-                if self.use_mixed_precision
-                else nullcontext()
-            )
+            return autocast_context(self.use_mixed_precision, self.amp_dtype)
 
         if update_policy:
             with autocast_ctx():
                 pi, logp_pi = self.model.actor(o)
         loss_alpha = None
-        if self.learn_entropy_coef and update_policy:
+        if self.learn_entropy_coef and update_policy and logp_pi is not None:
             alpha_t = torch.exp(self.log_alpha.detach())
             loss_alpha = -(self.log_alpha * (logp_pi + self.target_entropy).detach()).mean()
         else:
@@ -111,18 +113,17 @@ class REDQSACAgent(TrainingAgent):
             loss_alpha.backward()
             self.alpha_optimizer.step()
 
-        with torch.no_grad():
-            with autocast_ctx():
-                a2, logp_a2 = self.model.actor(o2)
+        with torch.no_grad(), autocast_ctx():
+            a2, logp_a2 = self.model.actor(o2)
 
-                sample_idxs = np.random.choice(self.n, self.m, replace=False)
+            sample_idxs = np.random.choice(self.n, self.m, replace=False)
 
-                q_prediction_next_list = [self.model_target.qs[i](o2, a2) for i in sample_idxs]
-                q_prediction_next_cat = torch.stack(q_prediction_next_list, -1)
-                min_q, _ = torch.min(q_prediction_next_cat, dim=1, keepdim=True)
-                backup = r.unsqueeze(dim=-1) + self.gamma * (1 - d.unsqueeze(dim=-1)) * (
-                    min_q - alpha_t * logp_a2.unsqueeze(dim=-1)
-                )
+            q_prediction_next_list = [self.model_target.qs[i](o2, a2) for i in sample_idxs]
+            q_prediction_next_cat = torch.stack(q_prediction_next_list, -1)
+            min_q, _ = torch.min(q_prediction_next_cat, dim=1, keepdim=True)
+            backup = r.unsqueeze(dim=-1) + self.gamma * (1 - d.unsqueeze(dim=-1)) * (
+                min_q - alpha_t * logp_a2.unsqueeze(dim=-1)
+            )
 
         with autocast_ctx():
             q_prediction_list = [q(o, a) for q in self.model.qs]
@@ -146,6 +147,7 @@ class REDQSACAgent(TrainingAgent):
                 qs_pi = [q(o, pi) for q in self.model.qs]
                 qs_pi_cat = torch.stack(qs_pi, -1)
                 ave_q = torch.mean(qs_pi_cat, dim=1, keepdim=True)
+                assert logp_pi is not None
                 loss_pi = (alpha_t * logp_pi.unsqueeze(dim=-1) - ave_q).mean()
             self.pi_optimizer.zero_grad()
             if self.use_mixed_precision:
@@ -170,20 +172,14 @@ class REDQSACAgent(TrainingAgent):
         if self.use_mixed_precision:
             self.grad_scaler.update()
 
-        with torch.no_grad():
-            for p, p_targ in zip(self.model.parameters(), self.model_target.parameters()):
-                p_targ.data.mul_(self.polyak)
-                p_targ.data.add_((1 - self.polyak) * p.data)
+        polyak_update(self.model, self.model_target, self.polyak)
 
-        ret_dict = None
+        ret_dict: dict[str, float] = {"losses/critic": loss_q.detach().item()}
         if update_policy:
-            ret_dict = dict(
-                loss_actor=self.loss_pi.detach(),
-                loss_critic=loss_q.detach(),
-            )
+            ret_dict["losses/actor"] = loss_pi.detach().item()
 
-        if self.learn_entropy_coef and ret_dict is not None:
-            ret_dict["loss_entropy_coef"] = loss_alpha.detach()
+        if self.learn_entropy_coef and update_policy and loss_alpha is not None:
+            ret_dict["loss_entropy_coef"] = loss_alpha.detach().item()
             ret_dict["entropy_coef"] = alpha_t.item()
 
         return ret_dict

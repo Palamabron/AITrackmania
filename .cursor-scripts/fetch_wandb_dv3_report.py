@@ -57,7 +57,7 @@ def running_avg_downsample(
         if c in out.columns:
             out[f"{c}_smoothed"] = out[c].rolling(window=window, min_periods=1).mean()
     smoothed_cols = [c for c in out.columns if c.endswith("_smoothed")]
-    keep = [step_col] + smoothed_cols
+    keep = [step_col, *smoothed_cols]
     keep = [c for c in keep if c in out.columns]
     out = out[keep].rename(columns={c: c.replace("_smoothed", "") for c in smoothed_cols})
     out = out.iloc[::step_every].reset_index(drop=True)

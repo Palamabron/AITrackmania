@@ -2,7 +2,6 @@
 
 import itertools
 import math
-from contextlib import nullcontext
 from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any
@@ -18,26 +17,26 @@ try:
 except ImportError:
     wandb = None  # type: ignore[assignment]
 
+import contextlib
+
 import tmrl.config.constants as cfg
 from tmrl.custom.custom_algorithms._common import (
     _amp_dtype,
     _amp_enabled,
     _compute_n_step_return_and_bootstrap_mask,
     _tensor_to_scalar,
+    autocast_context,
+    clip_model_weights,
+    polyak_update,
+    project_simbav2_weights,
+    sanitize_obs,
+    sanitize_tensor,
     set_seed,
 )
-from tmrl.custom.models.model_blocks import SimbaV2Backbone
 from tmrl.custom.models.Sophy import SophyActorCritic
 from tmrl.custom.utils.nn import copy_shared, no_grad
 from tmrl.training import TrainingAgent
 from tmrl.util import cached_property
-
-
-def _project_simbav2_weights(model: torch.nn.Module) -> None:
-    """Re-project HypersphericalLinear weights after an optimizer step (SimbaV2)."""
-    for m in model.modules():
-        if isinstance(m, SimbaV2Backbone):
-            m.project_weights()
 
 
 @dataclass(eq=False)
@@ -81,19 +80,19 @@ class TQCAgent(TrainingAgent):
         logger.debug(" device TQC: {}", device)
         self.model = model.to(device)
         self.model_target = no_grad(deepcopy(self.model))
-        pi_kwargs = dict(
-            lr=self.lr_actor,
-            weight_decay=cfg.ACTOR_WEIGHT_DECAY,
-            eps=cfg.ADAM_EPS,
-        )
+        pi_kwargs = {
+            "lr": self.lr_actor,
+            "weight_decay": cfg.ACTOR_WEIGHT_DECAY,
+            "eps": cfg.ADAM_EPS,
+        }
         if self.betas_actor is not None:
             pi_kwargs["betas"] = tuple(self.betas_actor)
         self.actor_optimizer = Adam(self.model.actor.parameters(), **pi_kwargs)
-        q_kwargs = dict(
-            lr=self.lr_critic,
-            weight_decay=cfg.CRITIC_WEIGHT_DECAY,
-            eps=cfg.ADAM_EPS,
-        )
+        q_kwargs = {
+            "lr": self.lr_critic,
+            "weight_decay": cfg.CRITIC_WEIGHT_DECAY,
+            "eps": cfg.ADAM_EPS,
+        }
         if self.betas_critic is not None:
             q_kwargs["betas"] = tuple(self.betas_critic)
         self.critic_optimizer = Adam(
@@ -142,7 +141,7 @@ class TQCAgent(TrainingAgent):
             self.learn_entropy_coef = False
             self.alpha_t = torch.tensor(float(self.alpha)).to(device)
             logger.info(
-                " Entropy schedule: cosine (T0=%d, Tmult=%.1f, decay=%.2f, floor=%.4f)",
+                " Entropy schedule: cosine (T0={}, Tmult={:.1f}, decay={:.2f}, floor={:.4f})",
                 self._entropy_cosine_t0,
                 self._entropy_cosine_tmult,
                 self._entropy_cosine_decay,
@@ -153,7 +152,7 @@ class TQCAgent(TrainingAgent):
                 True
             )
             self.alpha_optimizer = Adam([self.log_alpha], lr=self.lr_entropy)
-            logger.info(" Entropy schedule: learnable (floor=%.4f)", self._entropy_floor)
+            logger.info(" Entropy schedule: learnable (floor={:.4f})", self._entropy_floor)
         else:
             self.alpha_t = torch.tensor(float(self.alpha)).to(device)
 
@@ -189,10 +188,7 @@ class TQCAgent(TrainingAgent):
 
     def _model_has_nan_weights(self) -> bool:
         """Check if any trainable parameter contains NaN."""
-        for p in self.model.parameters():
-            if p.is_floating_point() and torch.isnan(p).any():
-                return True
-        return False
+        return any(p.is_floating_point() and torch.isnan(p).any() for p in self.model.parameters())
 
     def _reinitialize_model(self) -> None:
         """Rebuild model, target, and optimizers from scratch when weights are corrupted."""
@@ -202,19 +198,19 @@ class TQCAgent(TrainingAgent):
         model = self.model_cls(observation_space, action_space)
         self.model = model.to(device)
         self.model_target = no_grad(deepcopy(self.model))
-        pi_kwargs = dict(
-            lr=self.lr_actor,
-            weight_decay=cfg.ACTOR_WEIGHT_DECAY,
-            eps=cfg.ADAM_EPS,
-        )
+        pi_kwargs = {
+            "lr": self.lr_actor,
+            "weight_decay": cfg.ACTOR_WEIGHT_DECAY,
+            "eps": cfg.ADAM_EPS,
+        }
         if self.betas_actor is not None:
             pi_kwargs["betas"] = tuple(self.betas_actor)
         self.actor_optimizer = Adam(self.model.actor.parameters(), **pi_kwargs)
-        q_kwargs = dict(
-            lr=self.lr_critic,
-            weight_decay=cfg.CRITIC_WEIGHT_DECAY,
-            eps=cfg.ADAM_EPS,
-        )
+        q_kwargs = {
+            "lr": self.lr_critic,
+            "weight_decay": cfg.CRITIC_WEIGHT_DECAY,
+            "eps": cfg.ADAM_EPS,
+        }
         if self.betas_critic is not None:
             q_kwargs["betas"] = tuple(self.betas_critic)
         self.critic_optimizer = Adam(
@@ -232,15 +228,13 @@ class TQCAgent(TrainingAgent):
             )
             self.alpha_optimizer = Adam([self.log_alpha], lr=self.lr_entropy)
         if hasattr(self, "model_nograd"):
-            try:
+            with contextlib.suppress(KeyError):
                 del self.__dict__["model_nograd"]
-            except KeyError:
-                pass
         self._consecutive_bad_steps = 0
         self._consecutive_low_grad_steps = 0
         logger.info(" Model reinitialized successfully.")
 
-    def get_actor(self):
+    def get_actor(self) -> Any:
         """Return the current actor (policy) module for rollout workers."""
         return self.model_nograd.actor
 
@@ -269,12 +263,6 @@ class TQCAgent(TrainingAgent):
         )
         return loss
 
-    @staticmethod
-    def clip_weights(model: torch.nn.Module, max_value: float = 0.98) -> None:
-        """Clip model parameters to [-max_value, max_value] (e.g. for TQC)."""
-        for param in model.parameters():
-            param.data.clamp_(-max_value, max_value)
-
     def quantile_huber_loss_f(self, quantiles: torch.Tensor, samples: torch.Tensor) -> torch.Tensor:
         """Quantile Huber loss for TQC critic training. Uses FP32 for precision."""
         per_sample = self._quantile_huber_per_sample(quantiles, samples)
@@ -295,33 +283,8 @@ class TQCAgent(TrainingAgent):
         loss = torch.abs(tau[None, None, :, None] - (pairwise_delta < 0).float()) * huber_loss
         return loss.mean(dim=3).sum(dim=2).mean(dim=1)
 
-    @staticmethod
-    def clip_model_weights(model, max_value=cfg.WEIGHT_CLIPPING_VALUE):
-        for param in model.parameters():
-            param.data.clamp_(-max_value, max_value)
-
-    @staticmethod
-    def _sanitize_tensor(t: torch.Tensor) -> torch.Tensor:
-        """Replace NaN/Inf with 0 in a floating-point tensor."""
-        if t.is_floating_point():
-            return torch.nan_to_num(t, nan=0.0, posinf=0.0, neginf=0.0)
-        return t
-
-    @staticmethod
-    def _sanitize_obs(obs):
-        """Sanitize observation (tuple of tensors or single tensor): NaN/Inf -> 0."""
-        if isinstance(obs, torch.Tensor):
-            return (
-                torch.nan_to_num(obs, nan=0.0, posinf=0.0, neginf=0.0)
-                if obs.is_floating_point()
-                else obs
-            )
-        return tuple(
-            torch.nan_to_num(t, nan=0.0, posinf=0.0, neginf=0.0)
-            if isinstance(t, torch.Tensor) and t.is_floating_point()
-            else t
-            for t in obs
-        )
+    _sanitize_tensor = staticmethod(sanitize_tensor)
+    _sanitize_obs = staticmethod(sanitize_obs)
 
     @staticmethod
     def _has_nan(t: torch.Tensor) -> bool:
@@ -333,15 +296,16 @@ class TQCAgent(TrainingAgent):
         """Make log-prob safe: nan_to_num first (clamp alone passes NaN through), then clamp."""
         return torch.nan_to_num(logp.float(), nan=-5.0, posinf=0.0, neginf=-50.0).clamp(-50.0, 0.0)
 
-    def train(self, batch, epoch, batch_index, iters):
+    def train(  # type: ignore[override]
+        self, batch: tuple, epoch: int, batch_index: int, iters: int
+    ) -> dict:
         self._training_step += 1
 
         if (
             self._training_step % self._nan_weight_check_interval == 0
             or self._consecutive_bad_steps >= 3
-        ):
-            if self._model_has_nan_weights():
-                self._reinitialize_model()
+        ) and self._model_has_nan_weights():
+            self._reinitialize_model()
 
         o = batch[0]
         batch_size = o[0].shape[0] if isinstance(o, (tuple, list)) else o.shape[0]
@@ -386,11 +350,14 @@ class TQCAgent(TrainingAgent):
             r = r / reward_normalize_scale
 
         def autocast_ctx():
-            if self.use_mixed_precision:
-                return torch.autocast(device_type="cuda", dtype=self.amp_dtype, enabled=True)
-            return nullcontext()
+            return autocast_context(self.use_mixed_precision, self.amp_dtype)
 
         batch_size = r.shape[0]
+        if self.n_steps > 1 and self.n_steps >= batch_size:
+            raise ValueError(
+                f"Invalid n-step config: n_steps ({self.n_steps}) must be smaller than "
+                f"batch_size ({batch_size})."
+            )
         burn_in_len = int(cfg.ALG_CONFIG.get("R2D2_BURN_IN", 0))
         _seq_len_cfg = int(cfg.ALG_CONFIG.get("R2D2_SEQUENCE_LENGTH", 0))
         if burn_in_len > 0 and _seq_len_cfg > 0 and burn_in_len >= _seq_len_cfg:
@@ -434,9 +401,11 @@ class TQCAgent(TrainingAgent):
             alpha_t = torch.tensor(max(raw_alpha, self._entropy_floor), device=pi.device)
         elif self.learn_entropy_coef:
             alpha_t = torch.exp(self.log_alpha.detach())
-            alpha_loss = -(self.log_alpha * (logp_pi_safe + self.target_entropy).detach()).mean()
+            target = self.target_entropy
+            assert target is not None
+            alpha_loss = -(self.log_alpha * (logp_pi_safe + target).detach()).mean()
         else:
-            alpha_t = self.alpha_t
+            alpha_t = self.alpha_t  # type: ignore[assignment]
 
         if alpha_loss is not None:
             self.alpha_optimizer.zero_grad()
@@ -495,9 +464,11 @@ class TQCAgent(TrainingAgent):
                                 effective_drop + 2,
                             )
             sorted_z_part = sorted_z[:, : self.quantiles_total - effective_drop]
-            q_pi_targ_full = sorted_z_part - alpha_t * logp_a2.reshape(-1, 1)
+            at = alpha_t if alpha_t is not None else self.alpha_t
+            q_pi_targ_full = sorted_z_part - at * logp_a2.reshape(-1, 1)
 
             if self.n_steps > 1:
+                assert n_step_not_done is not None
                 # FIX: Shift index by n_steps - 1 because o2 is already at t+1.
                 # This correctly targets S_{t+N}
                 target_indices = (
@@ -511,6 +482,7 @@ class TQCAgent(TrainingAgent):
 
             tmp = q_pi_targ * not_done
             if self.n_steps > 1:
+                assert n_step_return is not None
                 k = q_pi_targ.shape[1]
                 backup = n_step_return.expand(-1, k) + (self.gamma**self.n_steps) * tmp
                 if seq_len > 0 and valid_n_step is not None:
@@ -554,7 +526,7 @@ class TQCAgent(TrainingAgent):
             q_cur = cur_z.float().mean(dim=(1, 2))
             q_targ = backup.float().mean(dim=1)
             td_errors_batch = (q_cur - q_targ).abs()
-            if self.n_steps > 1 and seq_len > 0:
+            if self.n_steps > 1 and seq_len > 0 and valid_n_step is not None:
                 td_errors_batch = td_errors_batch * valid_n_step.float()
 
         def _is_bad_loss(loss_tensor):
@@ -684,16 +656,16 @@ class TQCAgent(TrainingAgent):
         else:
             actor_grad_norm = None
 
-        _project_simbav2_weights(self.model)
+        project_simbav2_weights(self.model)
 
         # ── 10. Post-update: scheduler, clipping, target update ──
         if len(cfg.SCHEDULER_CONFIG["NAME"]) > 0:
             self.actor_scheduler.step(epoch + batch_index / iters)
             self.critic_scheduler.step(epoch + batch_index / iters)
         if cfg.WEIGHT_CLIPPING_ENABLED:
-            self.clip_model_weights(self.model.actor)
-            self.clip_model_weights(self.model.q1)
-            self.clip_model_weights(self.model.q2)
+            clip_model_weights(self.model.actor)
+            clip_model_weights(self.model.q1)
+            clip_model_weights(self.model.q2)
 
         self.model.q1.requires_grad_(True)
         self.model.q2.requires_grad_(True)
@@ -704,19 +676,13 @@ class TQCAgent(TrainingAgent):
             self._consecutive_bad_steps = 0
 
         if not critic_loss_bad and not actor_loss_bad:
-            with torch.no_grad():
-                for p, p_targ in zip(self.model.q1.parameters(), self.model_target.q1.parameters()):
-                    p_targ.data.mul_(self.polyak).add_(p.data, alpha=(1 - self.polyak))
-                for p, p_targ in zip(self.model.q2.parameters(), self.model_target.q2.parameters()):
-                    p_targ.data.mul_(self.polyak).add_(p.data, alpha=(1 - self.polyak))
+            polyak_update(self.model.q1, self.model_target.q1, self.polyak)
+            polyak_update(self.model.q2, self.model_target.q2, self.polyak)
 
         # ── PER: return TD errors and batch indices for priority update ──
         if per_td and isinstance(info, dict) and "batch_indices" in info:
             bi = info["batch_indices"]
-            if isinstance(bi, torch.Tensor):
-                bi = bi.cpu().numpy()
-            else:
-                bi = np.asarray(bi)
+            bi = bi.cpu().numpy() if isinstance(bi, torch.Tensor) else np.asarray(bi)
             td_np = td_errors_batch.cpu().numpy()
             if self.n_steps > 1 and len(bi) > truncated_batch_size:
                 mean_td = float(np.mean(td_np))
@@ -782,12 +748,12 @@ class TQCAgent(TrainingAgent):
 
         if self._entropy_schedule == "cosine":
             ret_dict["entropy_coef"] = float(alpha_t)
-        elif self.learn_entropy_coef:
+        elif self.learn_entropy_coef and alpha_loss is not None:
             ret_dict["loss_entropy_coef"] = alpha_loss.detach().item()
             ret_dict["entropy_coef"] = torch.exp(self.log_alpha.detach()).item()
             ret_dict["lrs/entropy_lr"] = self.alpha_optimizer.param_groups[0]["lr"]
             if cfg.WANDB_DEBUG:
                 ret_dict["debug/log_alpha"] = self.log_alpha.detach().item()
 
-        ret_dict.update(ret_dict_per)
+        ret_dict.update(ret_dict_per)  # type: ignore[arg-type]
         return ret_dict

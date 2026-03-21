@@ -158,7 +158,7 @@ class TM2020InterfaceIMPALAwoImages(TM2020Interface):
         race_progress = np.array([race_progress], dtype="float32")
 
         failure_counter = np.array([float(failure_counter)])
-        info = {"reward_sum": reward_sum}
+        info = {"reward_sum": reward_sum, "end_of_track": bool(end_of_track)}
         if getattr(self.client, "_last_retrieve_invalid", False):
             terminated = True
             info["telemetry_invalid"] = True
@@ -181,7 +181,7 @@ class TM2020InterfaceIMPALAwoImages(TM2020Interface):
             failure_counter,
         ]
 
-        total_obs = [next_checkpoints] + observation
+        total_obs = [next_checkpoints, *observation]
 
         total_obs[0] = np.array(total_obs[0])
 
@@ -220,7 +220,7 @@ class TM2020InterfaceIMPALAwoImages(TM2020Interface):
         gear = np.array([data[18]], dtype="float32")
 
         failure_counter = np.array([0.0])
-        race_progress = 0.0
+        race_progress = np.array([0.0], dtype="float32")
 
         next_checkpoints = self.reward_function.get_n_next_checkpoints_xy(pos, self.points_number)
 
@@ -240,7 +240,7 @@ class TM2020InterfaceIMPALAwoImages(TM2020Interface):
             failure_counter,
         ]
 
-        total_obs = [next_checkpoints] + observation
+        total_obs = [next_checkpoints, *observation]
 
         total_obs[0] = np.array(total_obs[0])
 

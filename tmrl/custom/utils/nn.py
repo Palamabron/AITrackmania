@@ -41,7 +41,7 @@ def exponential_moving_average(averages, values, factor):
     Updates the averages using exponential moving average for values and factor.
     """
     with torch.no_grad():
-        for a, v in zip(averages, values):
+        for a, v in zip(averages, values, strict=True):
             a += factor * (v - a)  # equivalent to a = (1-factor) * a + factor * v
 
 
@@ -163,19 +163,24 @@ class TanhNormal(Distribution):
             pre_tanh_value = x.pre_tanh_value
         else:
             pre_tanh_value = (torch.log(1 + x + self.epsilon) - torch.log(1 - x + self.epsilon)) / 2
-        assert x.dim() == 2 and pre_tanh_value.dim() == 2
+        assert x.dim() == 2, "x must be 2D"
+        assert pre_tanh_value.dim() == 2, "pre_tanh_value must be 2D"
         return self.normal.log_prob(pre_tanh_value) - torch.log(1 - x * x + self.epsilon)
 
-    def sample(self, sample_shape=torch.Size()):
+    def sample(self, sample_shape=None):
         """
         Samples from the distribution.
         """
+        if sample_shape is None:
+            sample_shape = torch.Size()
         z = self.normal.sample(sample_shape)
         out = torch.tanh(z)
         out.pre_tanh_value = z
         return out
 
-    def rsample(self, sample_shape=torch.Size()):
+    def rsample(self, sample_shape=None):
+        if sample_shape is None:
+            sample_shape = torch.Size()
         z = self.normal.rsample(sample_shape)
         out = torch.tanh(z)
         out.pre_tanh_value = z
@@ -213,10 +218,10 @@ class TanhNormalLayer(torch.nn.Module):
 class RlkitLinear(torch.nn.Linear):
     def __init__(self, *args):
         super().__init__(*args)
-        # TODO: investigate the following
-        # this mistake seems to be in rlkit too
-        # https://github.com/vitchyr/rlkit/blob/master/rlkit/torch/pytorch_util.py
-        fan_in = self.weight.shape[0]  # this is actually fanout!!!
+        # TODO: investigate fan_in vs fan_out. Rlkit uses weight.shape[0] (fan_out) here;
+        # PyTorch Linear has (out_features, in_features), so shape[0] is out_features (fan_out).
+        # Ref: https://github.com/vitchyr/rlkit/blob/master/rlkit/torch/pytorch_util.py
+        fan_in = self.weight.shape[0]  # this is actually fan_out!!!
         bound = 1.0 / np.sqrt(fan_in)
         self.weight.data.uniform_(-bound, bound)
         self.bias.data.fill_(0.1)

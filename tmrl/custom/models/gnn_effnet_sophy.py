@@ -27,6 +27,8 @@ from tmrl.custom.models.model_blocks import FrozenEfficientNetEncoder, residual_
 from tmrl.custom.utils.nn import GSDEModule
 from tmrl.util import prod
 
+_LOG2 = float(np.log(2.0))
+
 
 class _TrackGNN(nn.Module):
     """Graph Neural Network for processing track point sequences."""
@@ -56,7 +58,7 @@ class _TrackGNN(nn.Module):
         h = self.node_in(x)
         edge_src = cast(torch.Tensor, self.edge_src)
         edge_dst = cast(torch.Tensor, self.edge_dst)
-        for lin, norm in zip(self.layers, self.norms):
+        for lin, norm in zip(self.layers, self.norms, strict=True):
             msg = h[:, edge_src]
             agg = torch.zeros(b, n, self.hidden_dim, device=h.device, dtype=h.dtype)
             agg.index_add_(1, edge_dst, msg)
@@ -71,7 +73,8 @@ class _TrackGNN(nn.Module):
 
 def _build_track_gnn_branch(dim_track: int, hidden_dim: int) -> nn.Module:
     """Build a GNN-based track encoding branch."""
-    assert dim_track >= 3 and dim_track % 3 == 0, "track dim must be 6*N (3 channels)"
+    assert dim_track >= 3, "track dim must be at least 3"
+    assert dim_track % 3 == 0, "track dim must be 6*N (3 channels)"
     num_nodes = dim_track // 3
     gnn_hidden = getattr(cfg, "GNN_HIDDEN", 64)
     gnn_layers = getattr(cfg, "GNN_LAYERS", 3)
@@ -122,7 +125,48 @@ def _ensure_image_4d(imgs: torch.Tensor, image_index: int) -> None:
         )
 
 
-class SquashedActorGnnEffNetSophyResidual(TorchActorModule):
+class _GnnEffNetJointFeaturesMixin:
+    """Shared feature extraction for GNN + EfficientNet + Sophy models."""
+
+    _image_index: int
+    _dim_track: int
+    _use_rnn: bool
+    track_gnn: nn.Module
+    image_encoder: nn.Module
+    img_proj: nn.Module
+    physics_proj: nn.Module
+    rnn: nn.GRU | None
+    layernorm_joint: nn.Module
+
+    def _joint_features(self, obs, batch_size: int) -> torch.Tensor:
+        track = _ensure_float(obs[0].view(batch_size, -1)).view(batch_size, 3, self._dim_track // 3)
+        physics = _obs_to_flat_tensor(obs[1 : self._image_index], batch_size)
+        track_embed = self.track_gnn(track)
+        imgs = _ensure_float(obs[self._image_index])
+        _ensure_image_4d(imgs, self._image_index)
+        img_embed = self.img_proj(self.image_encoder(imgs))
+        physics_embed = self.physics_proj(physics)
+        return torch.cat([track_embed, img_embed, physics_embed], dim=-1)
+
+    def _apply_rnn(self, joint: torch.Tensor, batch_size: int) -> torch.Tensor:
+        if not self._use_rnn or self.rnn is None:
+            return joint
+        seq_len = int(cfg.ALG_CONFIG.get("R2D2_SEQUENCE_LENGTH", 0))
+        if seq_len > 0 and batch_size % seq_len == 0:
+            num_seq = batch_size // seq_len
+            joint = joint.view(num_seq, seq_len, -1)
+            self.rnn.flatten_parameters()
+            joint, _ = self.rnn(joint)
+            joint = joint.reshape(batch_size, -1)
+        else:
+            joint = joint.unsqueeze(1)
+            self.rnn.flatten_parameters()
+            joint, _ = self.rnn(joint)
+            joint = joint.squeeze(1)
+        return joint
+
+
+class SquashedActorGnnEffNetSophyResidual(_GnnEffNetJointFeaturesMixin, TorchActorModule):
     """Sophy-style actor with GNN track encoder, EfficientNet image encoder, and residual MLP."""
 
     def __init__(
@@ -222,24 +266,15 @@ class SquashedActorGnnEffNetSophyResidual(TorchActorModule):
         if self.sde is not None:
             self.sde.reset_noise(batch_size)
 
-    def load_from_bytes(self, payload: bytes, device):
-        result = super().load_from_bytes(payload, device)
-        self.reset_noise()
-        return result
-
-    def _joint_features(self, obs, batch_size: int) -> torch.Tensor:
-        track = _ensure_float(obs[0].view(batch_size, -1)).view(batch_size, 3, self._dim_track // 3)
-        physics = _obs_to_flat_tensor(obs[1 : self._image_index], batch_size)
-        track_embed = self.track_gnn(track)
-        imgs = _ensure_float(obs[self._image_index])
-        _ensure_image_4d(imgs, self._image_index)
-        img_embed = self.img_proj(self.image_encoder(imgs))
-        physics_embed = self.physics_proj(physics)
-        return torch.cat([track_embed, img_embed, physics_embed], dim=-1)
+    def load_from_bytes(self, payload: bytes, device) -> bool:
+        ok = super().load_from_bytes(payload, device)
+        if ok:
+            self.reset_noise()
+        return ok
 
     @staticmethod
     def _squash_log_prob(logp: torch.Tensor, pre_tanh_action: torch.Tensor) -> torch.Tensor:
-        corr = 2 * (np.log(2) - pre_tanh_action - F.softplus(-2 * pre_tanh_action))
+        corr = 2 * (_LOG2 - pre_tanh_action - F.softplus(-2 * pre_tanh_action))
         logp -= corr.sum(axis=1)
         return logp
 
@@ -288,19 +323,7 @@ class SquashedActorGnnEffNetSophyResidual(TorchActorModule):
             obs = list(obs)
         batch_size = obs[0].shape[0]
         joint = self._joint_features(obs, batch_size)
-        if self._use_rnn and self.rnn is not None:
-            seq_len = int(cfg.ALG_CONFIG.get("R2D2_SEQUENCE_LENGTH", 0))
-            if seq_len > 0 and batch_size % seq_len == 0:
-                num_seq = batch_size // seq_len
-                joint = joint.view(num_seq, seq_len, -1)
-                self.rnn.flatten_parameters()
-                joint, _ = self.rnn(joint)
-                joint = joint.reshape(batch_size, -1)
-            else:
-                joint = joint.unsqueeze(1)
-                self.rnn.flatten_parameters()
-                joint, _ = self.rnn(joint)
-                joint = joint.squeeze(1)
+        joint = self._apply_rnn(joint, batch_size)
         joint = self.layernorm_joint(joint)
         out = self.backbone(joint)
         out = self.head_proj(out)
@@ -349,7 +372,7 @@ class SquashedActorGnnEffNetSophyResidual(TorchActorModule):
             return res
 
 
-class QRCNNGnnEffNetSophyResidual(nn.Module):
+class QRCNNGnnEffNetSophyResidual(_GnnEffNetJointFeaturesMixin, nn.Module):
     """Sophy-style quantile regression critic with GNN, EfficientNet, and residual MLP."""
 
     def __init__(
@@ -427,34 +450,12 @@ class QRCNNGnnEffNetSophyResidual(nn.Module):
             else None
         )
 
-    def _joint_features(self, obs, batch_size: int) -> torch.Tensor:
-        track = _ensure_float(obs[0].view(batch_size, -1)).view(batch_size, 3, self._dim_track // 3)
-        physics = _obs_to_flat_tensor(obs[1 : self._image_index], batch_size)
-        track_embed = self.track_gnn(track)
-        imgs = _ensure_float(obs[self._image_index])
-        _ensure_image_4d(imgs, self._image_index)
-        img_embed = self.img_proj(self.image_encoder(imgs))
-        physics_embed = self.physics_proj(physics)
-        return torch.cat([track_embed, img_embed, physics_embed], dim=-1)
-
     def forward(self, observation, act):
         if isinstance(observation, (tuple, list)):
             observation = list(observation)
         batch_size = observation[0].shape[0]
         joint = self._joint_features(observation, batch_size)
-        if self._use_rnn and self.rnn is not None:
-            seq_len = int(cfg.ALG_CONFIG.get("R2D2_SEQUENCE_LENGTH", 0))
-            if seq_len > 0 and batch_size % seq_len == 0:
-                num_seq = batch_size // seq_len
-                joint = joint.view(num_seq, seq_len, -1)
-                self.rnn.flatten_parameters()
-                joint, _ = self.rnn(joint)
-                joint = joint.reshape(batch_size, -1)
-            else:
-                joint = joint.unsqueeze(1)
-                self.rnn.flatten_parameters()
-                joint, _ = self.rnn(joint)
-                joint = joint.squeeze(1)
+        joint = self._apply_rnn(joint, batch_size)
         joint = self.layernorm_joint(joint)
         backbone_out = self.backbone(joint)
         cat_act = torch.cat([backbone_out, act], dim=-1)

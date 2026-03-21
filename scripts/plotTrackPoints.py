@@ -112,7 +112,7 @@ def main() -> int:
             y=left_track[:, 1],
             z=left_track[:, 2],
             mode="markers",
-            marker=dict(size=5, color="blue", opacity=0.8),
+            marker={"size": 5, "color": "blue", "opacity": 0.8},
             name="Left track",
         )
     )
@@ -122,18 +122,18 @@ def main() -> int:
             y=right_track[:, 1],
             z=right_track[:, 2],
             mode="markers",
-            marker=dict(size=5, color="red", opacity=0.8),
+            marker={"size": 5, "color": "red", "opacity": 0.8},
             name="Right track",
         )
     )
     plotly_fig.update_layout(
         title="Left and right track boundaries (interactive 3D)",
-        scene=dict(
-            xaxis_title="X",
-            yaxis_title="Y",
-            zaxis_title="Z",
-            aspectratio=dict(x=1, y=0.01, z=1),
-        ),
+        scene={
+            "xaxis_title": "X",
+            "yaxis_title": "Y",
+            "zaxis_title": "Z",
+            "aspectratio": {"x": 1, "y": 0.01, "z": 1},
+        },
     )
     plotly_fig.show(renderer=args.renderer)
     return 0

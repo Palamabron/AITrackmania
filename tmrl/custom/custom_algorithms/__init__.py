@@ -23,15 +23,15 @@ from tmrl.custom.custom_algorithms.sdsac import SDSACAgent
 from tmrl.custom.custom_algorithms.tqc import TQCAgent
 
 __all__ = [
-    "set_seed",
-    "_amp_enabled",
-    "_amp_dtype",
-    "_tensor_to_scalar",
-    "_compute_n_step_return_and_bootstrap_mask",
-    "SpinupSacAgent",
+    "IQNAgent",
     "REDQSACAgent",
+    "SDSACAgent",
+    "SpinupSacAgent",
     "SpinupSacAgentConfig",
     "TQCAgent",
-    "IQNAgent",
-    "SDSACAgent",
+    "_amp_dtype",
+    "_amp_enabled",
+    "_compute_n_step_return_and_bootstrap_mask",
+    "_tensor_to_scalar",
+    "set_seed",
 ]

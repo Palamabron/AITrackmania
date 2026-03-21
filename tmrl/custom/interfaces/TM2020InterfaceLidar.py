@@ -44,7 +44,7 @@ class TM2020InterfaceLidar(TM2020Interface):
         obs must be a list of numpy arrays
         """
         self.reset_common()
-        img, speed, data = self.grab_lidar_speed_and_data()
+        img, speed, _data = self.grab_lidar_speed_and_data()
         for _ in range(self.img_hist_len):
             self.img_hist.append(img)
         imgs = np.array(list(self.img_hist), dtype="float32")
@@ -58,18 +58,17 @@ class TM2020InterfaceLidar(TM2020Interface):
         obs must be a list of numpy arrays
         """
         img, speed, data = self.grab_lidar_speed_and_data()
-        rew, terminated, failure_counter = self.reward_function.compute_reward(
+        rew, terminated, _failure_counter = self.reward_function.compute_reward(
             pos=np.array([data[2], data[3], data[4]])
         )[:3]
         self.img_hist.append(img)
         imgs = np.array(list(self.img_hist), dtype="float32")
         obs = [speed, imgs]
         end_of_track = bool(data[8])
-        info = {}
+        info = {"end_of_track": end_of_track}
         if end_of_track:
             rew += self.finish_reward
             terminated = True
-        rew += self.constant_penalty
         rew = np.float32(rew)
         return obs, rew, terminated, info
 

@@ -98,7 +98,7 @@ class EffNetQFunction(nn.Module):
         super().__init__()
         obs_dim = sum(prod(s for s in space.shape) for space in obs_space)
         act_dim = act_space.shape[0]
-        self.q = mlp([obs_dim + act_dim] + list(hidden_sizes) + [1], activation)
+        self.q = mlp([obs_dim + act_dim, *list(hidden_sizes), 1], activation)
 
     def forward(self, obs, act):
         """

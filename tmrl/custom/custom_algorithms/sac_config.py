@@ -1,7 +1,6 @@
 """SAC agent with hyperparameters from config (ALG_CONFIG)."""
 
 import itertools
-from contextlib import nullcontext
 from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any
@@ -17,12 +16,15 @@ try:
 except ImportError:
     wandb = None  # type: ignore[assignment]
 
-import tmrl.config as cfg
+import tmrl.config.constants as cfg
 from tmrl.custom.custom_algorithms._common import (
     _amp_dtype,
     _amp_enabled,
     _compute_n_step_return_and_bootstrap_mask,
     _tensor_to_scalar,
+    autocast_context,
+    clip_model_weights,
+    polyak_update,
     set_seed,
 )
 from tmrl.custom.models.mlp import MLPActorCritic
@@ -114,31 +116,26 @@ class SpinupSacAgentConfig(TrainingAgent):
         if cfg.WANDB_GRADIENTS and wandb is not None:
             wandb.watch(self.model, log_freq=10)
 
-    def get_actor(self):
+    def get_actor(self) -> Any:
         return self.model_nograd.actor
 
-    @staticmethod
-    def clip_weights(model, max_value=0.98):
-        for param in model.parameters():
-            param.data.clamp_(-max_value, max_value)
-
-    def train(self, batch, epoch, batch_index, iters):
+    def train(  # type: ignore[override]
+        self, batch: tuple, epoch: int, batch_index: int, iters: int
+    ) -> dict:
         if cfg.DEBUG_MODE:
             torch.autograd.set_detect_anomaly(True)
         o, a, r, o2, d = batch[0], batch[1], batch[2], batch[3], batch[4]
 
         def autocast_ctx():
-            return (
-                torch.autocast(device_type="cuda", dtype=self.amp_dtype, enabled=True)
-                if self.use_mixed_precision
-                else nullcontext()
-            )
+            return autocast_context(self.use_mixed_precision, self.amp_dtype)
 
         batch_size = r.shape[0]
-        if self.n_steps <= 1:
-            truncated_batch_size = batch_size
-        else:
-            truncated_batch_size = batch_size - self.n_steps
+        if self.n_steps > 1 and self.n_steps >= batch_size:
+            raise ValueError(
+                f"Invalid n-step config: n_steps ({self.n_steps}) must be smaller than "
+                f"batch_size ({batch_size})."
+            )
+        truncated_batch_size = batch_size if self.n_steps <= 1 else batch_size - self.n_steps
 
         with autocast_ctx():
             pi, logp_pi = self.model.actor(o)
@@ -177,16 +174,19 @@ class SpinupSacAgentConfig(TrainingAgent):
                     q1_pi_targ = self.model_target.q1(o2, a2)
                     q2_pi_targ = self.model_target.q2(o2, a2)
             q_pi_targ = torch.min(q1_pi_targ, q2_pi_targ)
+            alpha = alpha_t if alpha_t is not None else self.alpha_t
+            assert alpha is not None
             if self.n_steps > 1:
+                assert n_step_not_done is not None
                 backup = r + (self.gamma**self.n_steps) * n_step_not_done * (
-                    q_pi_targ.sub_(alpha_t * logp_a2)
+                    q_pi_targ.sub_(alpha * logp_a2)
                 )
             else:
-                backup = r + self.gamma * (1 - d) * (q_pi_targ - alpha_t * logp_a2)
+                backup = r + self.gamma * (1 - d) * (q_pi_targ - alpha * logp_a2)
         with autocast_ctx():
-            loss_q1 = q1.sub_(backup).pow_(2).mean()
-            loss_q2 = q2.sub_(backup).pow_(2).mean()
-            loss_critic = loss_q1.add_(loss_q2).div_(2)
+            loss_q1 = (q1 - backup).pow(2).mean()
+            loss_q2 = (q2 - backup).pow(2).mean()
+            loss_critic = (loss_q1 + loss_q2) / 2
 
         self.critic_optimizer.zero_grad()
         if self.use_mixed_precision:
@@ -198,8 +198,8 @@ class SpinupSacAgentConfig(TrainingAgent):
         self.model.q1.requires_grad_(False)
         self.model.q2.requires_grad_(False)
         if cfg.WEIGHT_CLIPPING_ENABLED:
-            self.clip_weights(self.model.q1)
-            self.clip_weights(self.model.q2)
+            clip_model_weights(self.model.q1)
+            clip_model_weights(self.model.q2)
         with autocast_ctx():
             q1_pi = self.model.q1(o, pi)[:truncated_batch_size]
             q2_pi = self.model.q2(o, pi)[:truncated_batch_size]
@@ -219,98 +219,123 @@ class SpinupSacAgentConfig(TrainingAgent):
             self.actor_scheduler.step(epoch + batch_index / iters)
             self.critic_scheduler.step(epoch + batch_index / iters)
         if cfg.WEIGHT_CLIPPING_ENABLED:
-            self.clip_weights(self.model.actor)
+            clip_model_weights(self.model.actor)
         self.model.q1.requires_grad_(True)
         self.model.q2.requires_grad_(True)
-        with torch.no_grad():
-            for p, p_targ in zip(self.model.parameters(), self.model_target.parameters()):
-                p_targ.data.mul_(self.polyak).add_(p.data, alpha=(1 - self.polyak))
-        with torch.no_grad():
-            ret_dict = dict()
-            ret_dict["losses/actor"] = _tensor_to_scalar(loss_actor.detach())
-            ret_dict["losses/critic"] = _tensor_to_scalar(loss_critic.detach())
-            ret_dict["lrs/actor_lr"] = self.actor_optimizer.param_groups[0]["lr"]
-            ret_dict["lrs/critic_lr"] = self.critic_optimizer.param_groups[0]["lr"]
-            if cfg.WANDB_DEBUG:
-                q1_o2_a2 = self.model.q1(o2, a2)[:truncated_batch_size]
-                q2_o2_a2 = self.model.q2(o2, a2)[:truncated_batch_size]
-                q1_targ_pi = self.model_target.q1(o, pi)[:truncated_batch_size]
-                q2_targ_pi = self.model_target.q2(o, pi)[:truncated_batch_size]
-                q1_targ_a = self.model_target.q1(o, a)[:truncated_batch_size]
-                q2_targ_a = self.model_target.q2(o, a)[:truncated_batch_size]
+        polyak_update(self.model, self.model_target, self.polyak)
+        ret_dict = self._build_return_dict(
+            loss_actor,
+            loss_critic,
+            loss_alpha,
+            alpha_t,
+            logp_pi,
+            logp_a2,
+            q1,
+            q2,
+            q_pi,
+            q_pi_targ,
+            q1_pi_targ,
+            q2_pi_targ,
+            q1_pi,
+            q2_pi,
+            backup,
+            r,
+            d,
+            a,
+            pi,
+            a2,
+            o,
+            o2,
+            truncated_batch_size,
+        )
+        return ret_dict
 
-                diff_q1pt_qpt = (q1_pi_targ - q_pi_targ).detach()
-                diff_q2pt_qpt = (q2_pi_targ - q_pi_targ).detach()
-                diff_q1_q1t_a2 = (q1_o2_a2 - q1_pi_targ).detach()
-                diff_q2_q2t_a2 = (q2_o2_a2 - q2_pi_targ).detach()
-                diff_q1_q1t_pi = (q1_pi - q1_targ_pi).detach()
-                diff_q2_q2t_pi = (q2_pi - q2_targ_pi).detach()
-                diff_q1_q1t_a = (q1 - q1_targ_a).detach()
-                diff_q2_q2t_a = (q2 - q2_targ_a).detach()
-                diff_q1_backup = (q1 - backup).detach()
-                diff_q2_backup = (q2 - backup).detach()
-                diff_q1_backup_r = (q1 - backup + r).detach()
-                diff_q2_backup_r = (q2 - backup + r).detach()
-                ret_dict["debug/log_pi"] = _tensor_to_scalar(logp_pi.detach().mean())
-                ret_dict["debug/log_pi_std"] = _tensor_to_scalar(logp_pi.detach().std())
-                ret_dict["debug/logp_a2"] = _tensor_to_scalar(logp_a2.detach().mean())
-                ret_dict["debug/logp_a2_std"] = _tensor_to_scalar(logp_a2.detach().std())
-                ret_dict["debug/q_a1"] = _tensor_to_scalar(q_pi.detach().mean())
-                ret_dict["debug/q_a1_std"] = _tensor_to_scalar(q_pi.detach().std())
-                ret_dict["debug/q_a1_targ"] = _tensor_to_scalar(q_pi_targ.detach().mean())
-                ret_dict["debug/q_a1_targ_std"] = _tensor_to_scalar(q_pi_targ.detach().std())
-                ret_dict["debug/backup"] = _tensor_to_scalar(backup.detach().mean())
-                ret_dict["debug/backup_std"] = _tensor_to_scalar(backup.detach().std())
-                ret_dict["debug/q1"] = _tensor_to_scalar(q1.detach().mean())
-                ret_dict["debug/q1_std"] = _tensor_to_scalar(q1.detach().std())
-                ret_dict["debug/q2"] = _tensor_to_scalar(q2.detach().mean())
-                ret_dict["debug/q2_std"] = _tensor_to_scalar(q2.detach().std())
-                ret_dict["debug/diff_q1"] = _tensor_to_scalar(diff_q1_backup.mean())
-                ret_dict["debug/diff_q1_std"] = _tensor_to_scalar(diff_q1_backup.std())
-                ret_dict["debug/diff_q2"] = _tensor_to_scalar(diff_q2_backup.mean())
-                ret_dict["debug/diff_q2_std"] = _tensor_to_scalar(diff_q2_backup.std())
-                ret_dict["debug/diff_r_q1"] = _tensor_to_scalar(diff_q1_backup_r.mean())
-                ret_dict["debug/diff_r_q1_std"] = _tensor_to_scalar(diff_q1_backup_r.std())
-                ret_dict["debug/diff_r_q2"] = _tensor_to_scalar(diff_q2_backup_r.mean())
-                ret_dict["debug/diff_r_q2_std"] = _tensor_to_scalar(diff_q2_backup_r.std())
-                ret_dict["debug/diff_q1pt_qpt"] = _tensor_to_scalar(diff_q1pt_qpt.mean())
-                ret_dict["debug/diff_q2pt_qpt"] = _tensor_to_scalar(diff_q2pt_qpt.mean())
-                ret_dict["debug/diff_q1_q1t_a2"] = _tensor_to_scalar(diff_q1_q1t_a2.mean())
-                ret_dict["debug/diff_q2_q2t_a2"] = _tensor_to_scalar(diff_q2_q2t_a2.mean())
-                ret_dict["debug/diff_q1_q1t_pi"] = _tensor_to_scalar(diff_q1_q1t_pi.mean())
-                ret_dict["debug/diff_q2_q2t_pi"] = _tensor_to_scalar(diff_q2_q2t_pi.mean())
-                ret_dict["debug/diff_q1_q1t_a"] = _tensor_to_scalar(diff_q1_q1t_a.mean())
-                ret_dict["debug/diff_q2_q2t_a"] = _tensor_to_scalar(diff_q2_q2t_a.mean())
-                ret_dict["debug/diff_q1pt_qpt_std"] = _tensor_to_scalar(diff_q1pt_qpt.std())
-                ret_dict["debug/diff_q2pt_qpt_std"] = _tensor_to_scalar(diff_q2pt_qpt.std())
-                ret_dict["debug/diff_q1_q1t_a2_std"] = _tensor_to_scalar(diff_q1_q1t_a2.std())
-                ret_dict["debug/diff_q2_q2t_a2_std"] = _tensor_to_scalar(diff_q2_q2t_a2.std())
-                ret_dict["debug/diff_q1_q1t_pi_std"] = _tensor_to_scalar(diff_q1_q1t_pi.std())
-                ret_dict["debug/diff_q2_q2t_pi_std"] = _tensor_to_scalar(diff_q2_q2t_pi.std())
-                ret_dict["debug/diff_q1_q1t_a_std"] = _tensor_to_scalar(diff_q1_q1t_a.std())
-                ret_dict["debug/diff_q2_q2t_a_std"] = _tensor_to_scalar(diff_q2_q2t_a.std())
-                ret_dict["debug/r"] = _tensor_to_scalar(r.detach().mean())
-                ret_dict["debug/r_std"] = _tensor_to_scalar(r.detach().std())
-                ret_dict["debug/d"] = _tensor_to_scalar(d.detach().mean())
-                ret_dict["debug/d_std"] = _tensor_to_scalar(d.detach().std())
-                ret_dict["debug/a_0"] = _tensor_to_scalar(a[:, 0].detach().mean())
-                ret_dict["debug/a_0_std"] = _tensor_to_scalar(a[:, 0].detach().std())
-                ret_dict["debug/a_1"] = _tensor_to_scalar(a[:, 1].detach().mean())
-                ret_dict["debug/a_1_std"] = _tensor_to_scalar(a[:, 1].detach().std())
-                ret_dict["debug/a_2"] = _tensor_to_scalar(a[:, 2].detach().mean())
-                ret_dict["debug/a_2_std"] = _tensor_to_scalar(a[:, 2].detach().std())
-                ret_dict["debug/a1_0"] = _tensor_to_scalar(pi[:, 0].detach().mean())
-                ret_dict["debug/a1_0_std"] = _tensor_to_scalar(pi[:, 0].detach().std())
-                ret_dict["debug/a1_1"] = _tensor_to_scalar(pi[:, 1].detach().mean())
-                ret_dict["debug/a1_1_std"] = _tensor_to_scalar(pi[:, 1].detach().std())
-                ret_dict["debug/a1_2"] = _tensor_to_scalar(pi[:, 2].detach().mean())
-                ret_dict["debug/a1_2_std"] = _tensor_to_scalar(pi[:, 2].detach().std())
-                ret_dict["debug/a2_0"] = _tensor_to_scalar(a2[:, 0].detach().mean())
-                ret_dict["debug/a2_0_std"] = _tensor_to_scalar(a2[:, 0].detach().std())
-                ret_dict["debug/a2_1"] = _tensor_to_scalar(a2[:, 1].detach().mean())
-                ret_dict["debug/a2_1_std"] = _tensor_to_scalar(a2[:, 1].detach().std())
-                ret_dict["debug/a2_2"] = _tensor_to_scalar(a2[:, 2].detach().mean())
-                ret_dict["debug/a2_2_std"] = _tensor_to_scalar(a2[:, 2].detach().std())
+    def _build_return_dict(
+        self,
+        loss_actor,
+        loss_critic,
+        loss_alpha,
+        alpha_t,
+        logp_pi,
+        logp_a2,
+        q1,
+        q2,
+        q_pi,
+        q_pi_targ,
+        q1_pi_targ,
+        q2_pi_targ,
+        q1_pi,
+        q2_pi,
+        backup,
+        r,
+        d,
+        a,
+        pi,
+        a2,
+        o,
+        o2,
+        truncated_batch_size,
+    ) -> dict:
+        """Build the dict of scalars to log (and optionally debug metrics)."""
+        with torch.no_grad():
+            ret_dict = {
+                "losses/actor": _tensor_to_scalar(loss_actor.detach()),
+                "losses/critic": _tensor_to_scalar(loss_critic.detach()),
+                "lrs/actor_lr": self.actor_optimizer.param_groups[0]["lr"],
+                "lrs/critic_lr": self.critic_optimizer.param_groups[0]["lr"],
+            }
+            if cfg.WANDB_DEBUG:
+                ts = truncated_batch_size
+                q1_o2_a2 = self.model.q1(o2, a2)[:ts]
+                q2_o2_a2 = self.model.q2(o2, a2)[:ts]
+                q1_targ_pi = self.model_target.q1(o, pi)[:ts]
+                q2_targ_pi = self.model_target.q2(o, pi)[:ts]
+                q1_targ_a = self.model_target.q1(o, a)[:ts]
+                q2_targ_a = self.model_target.q2(o, a)[:ts]
+
+                pairs = {
+                    "debug/diff_q1pt_qpt": q1_pi_targ - q_pi_targ,
+                    "debug/diff_q2pt_qpt": q2_pi_targ - q_pi_targ,
+                    "debug/diff_q1_q1t_a2": q1_o2_a2 - q1_pi_targ,
+                    "debug/diff_q2_q2t_a2": q2_o2_a2 - q2_pi_targ,
+                    "debug/diff_q1_q1t_pi": q1_pi - q1_targ_pi,
+                    "debug/diff_q2_q2t_pi": q2_pi - q2_targ_pi,
+                    "debug/diff_q1_q1t_a": q1 - q1_targ_a,
+                    "debug/diff_q2_q2t_a": q2 - q2_targ_a,
+                    "debug/diff_q1": q1 - backup,
+                    "debug/diff_q2": q2 - backup,
+                    "debug/diff_r_q1": q1 - backup + r,
+                    "debug/diff_r_q2": q2 - backup + r,
+                }
+                for key, val in pairs.items():
+                    val = val.detach()
+                    ret_dict[key] = _tensor_to_scalar(val.mean())
+                    ret_dict[key + "_std"] = _tensor_to_scalar(val.std())
+
+                scalars = {
+                    "debug/log_pi": logp_pi,
+                    "debug/logp_a2": logp_a2,
+                    "debug/q_a1": q_pi,
+                    "debug/q_a1_targ": q_pi_targ,
+                    "debug/backup": backup,
+                    "debug/q1": q1,
+                    "debug/q2": q2,
+                    "debug/r": r,
+                    "debug/d": d,
+                }
+                for key, val in scalars.items():
+                    val = val.detach()
+                    ret_dict[key] = _tensor_to_scalar(val.mean())
+                    ret_dict[key + "_std"] = _tensor_to_scalar(val.std())
+
+                for label, tensor in [("a", a), ("a1", pi), ("a2", a2)]:
+                    for dim in range(min(3, tensor.shape[-1])):
+                        ret_dict[f"debug/{label}_{dim}"] = _tensor_to_scalar(
+                            tensor[:, dim].detach().mean()
+                        )
+                        ret_dict[f"debug/{label}_{dim}_std"] = _tensor_to_scalar(
+                            tensor[:, dim].detach().std()
+                        )
 
         if self.learn_entropy_coef:
             ret_dict["loss_entropy_coef"] = loss_alpha.detach().item()

@@ -266,7 +266,7 @@ class Lidar:
             color = (255, 0, 0)
             thickness = 4
             img = cv2.cvtColor(img, cv2.COLOR_RGBA2RGB)
-        for axis_x, axis_y in zip(self.list_axis_x, self.list_axis_y):
+        for axis_x, axis_y in zip(self.list_axis_x, self.list_axis_y, strict=False):
             index = armin(np.all(img[axis_x, axis_y] < self.black_threshold, axis=1))
             if show:
                 img = cv2.line(

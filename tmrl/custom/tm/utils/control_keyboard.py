@@ -57,7 +57,7 @@ if platform.system() == "Windows":
         ]
 
     class InputI(ctypes.Union):
-        _fields_ = [("ki", KeyBdInput), ("mi", MouseInput), ("hi", HardwareInput)]
+        _fields_ = [("ki", KeyBdInput), ("mi", MouseInput), ("hi", HardwareInput)]  # noqa: RUF012
 
     class Input(ctypes.Structure):
         _fields_ = [("type", ctypes.c_ulong), ("ii", InputI)]
@@ -127,7 +127,7 @@ if platform.system() == "Windows":
         """Non-blocking check: True if Del key is currently pressed."""
         return bool(ctypes.windll.user32.GetAsyncKeyState(0xD3) & 0x8000)  # type: ignore[attr-defined]
 
-    def keysavereplay():  # TODO: debug
+    def keysavereplay():  # TODO: debug - verify replay save flow works across TM2020 versions
         """Saves a replay with key sequences and mouse actions."""
         import keyboard
 
@@ -166,16 +166,16 @@ elif platform.system() == "Linux":
         process.stdin.flush()
 
     def press_key(key):
-        c = f"xdotool keydown {str(key)}\n"
+        c = f"xdotool keydown {key!s}\n"
         execute_command(c)
 
     def release_key(key):
-        c = f"xdotool keyup {str(key)}\n"
+        c = f"xdotool keyup {key!s}\n"
         execute_command(c)
 
     def apply_control(action, window_id=None):  # move_fast
         if window_id is not None:
-            c_focus = f"xdotool windowfocus {str(window_id)}"
+            c_focus = f"xdotool windowfocus {window_id!s}"
             execute_command(c_focus)
 
         if "f" in action:

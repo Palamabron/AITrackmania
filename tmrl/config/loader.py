@@ -62,14 +62,14 @@ if env_password:
 deep_merge_defaults(TMRL_CONFIG, _DEFAULT_TMRL_CONFIG)
 
 # Validate version
-assert "__VERSION__" in TMRL_CONFIG, (
-    "config.json is outdated. " + CONFIG_COMPATIBILITY_ERROR_MESSAGE
-)
+if "__VERSION__" not in TMRL_CONFIG:
+    raise ValueError("config.json is outdated. " + CONFIG_COMPATIBILITY_ERROR_MESSAGE)
 CONFIG_VERSION = TMRL_CONFIG["__VERSION__"]
-assert version.parse(CONFIG_VERSION) >= version.parse(MINIMUM_CONFIG_VERSION), (
-    f"config.json version ({CONFIG_VERSION}) must be >= {MINIMUM_CONFIG_VERSION}. "
-    + CONFIG_COMPATIBILITY_ERROR_MESSAGE
-)
+if version.parse(CONFIG_VERSION) < version.parse(MINIMUM_CONFIG_VERSION):
+    raise ValueError(
+        f"config.json version ({CONFIG_VERSION}) must be >= {MINIMUM_CONFIG_VERSION}. "
+        + CONFIG_COMPATIBILITY_ERROR_MESSAGE
+    )
 
 # Setup environment config with defaults and legacy handling
 _raw_env = dict(TMRL_CONFIG["ENV"])

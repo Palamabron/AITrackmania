@@ -38,7 +38,7 @@ def init_tmrl_data():
             try:
                 urllib.request.urlretrieve(url, str(outfile))
             except (socket.gaierror, urllib.error.URLError) as err:
-                raise ConnectionError(f"could not download {url} due to {err}")
+                raise ConnectionError(f"could not download {url} due to {err}") from err
 
     # destination folder:
     home_folder = Path.home()

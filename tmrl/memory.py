@@ -110,9 +110,10 @@ def check_samples_crc(
         f"!= rebuilt:\n{(rebuilt_action, rebuilt_obs, rebuilt_reward, rebuilt_done)}\n"
         f"{ts_msg}"
     )
-    print(
-        f"DEBUG: CRC check passed. Time step: {debug_timestep}, "
-        f"since reset: {debug_timestep_since_reset}"
+    logger.debug(
+        "CRC check passed. Time step: {}, since reset: {}",
+        debug_timestep,
+        debug_timestep_since_reset,
     )
 
 
@@ -158,6 +159,8 @@ class Memory(ABC):
         self.stat_train_steps = 0
         self.stat_test_finish_time = 0.0
         self.stat_test_finished_count = 0
+        self.stat_test_competition_eliminated = False
+        self.stat_test_competition_crashes = 0
         self.average_reward = 0
         self.debug = False
 
@@ -252,6 +255,10 @@ class Memory(ABC):
             self.stat_test_steps = buffer.stat_test_steps
             self.stat_test_finish_time = getattr(buffer, "stat_test_finish_time", 0.0)
             self.stat_test_finished_count = getattr(buffer, "stat_test_finished_count", 0)
+            self.stat_test_competition_eliminated = getattr(
+                buffer, "stat_test_competition_eliminated", False
+            )
+            self.stat_test_competition_crashes = getattr(buffer, "stat_test_competition_crashes", 0)
             self.append_buffer(buffer)
 
     def __getitem__(self, item):
@@ -335,6 +342,10 @@ class TorchMemory(Memory, ABC):
     def collate(self, batch, device):
         return collate_torch(batch, device)
 
+    def clear(self) -> None:
+        """Remove all transitions from the memory."""
+        self.data = []
+
 
 class R2D2Memory(Memory, ABC):
     """
@@ -409,6 +420,17 @@ class R2D2Memory(Memory, ABC):
         """Trim the first to_trim entries from priorities (after buffer trim)."""
         if getattr(cfg, "PER_TD_ENABLED", False) and self.priorities and to_trim > 0:
             self.priorities = self.priorities[to_trim:]
+
+    def clear(self) -> None:
+        """Remove all transitions and reset R2D2 episode/priority state."""
+        self.data = []
+        self.end_episodes_indices = []
+        self.reward_sums = []
+        self.episode_demo_flags = []
+        self.priorities = []
+        self._last_per_is_weights = []
+        self._episode_metadata_dirty = True
+        self.last_sample_demo_fraction = 0.0
 
     def update_priorities(self, indices: tuple[int, ...], td_errors: np.ndarray) -> None:
         """Update priorities for the given transition indices (item space) using TD errors."""

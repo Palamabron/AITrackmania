@@ -106,10 +106,7 @@ class CNNModule(nn.Module):
             return h, w
 
         for i in range(len(filters)):
-            if i + 1 >= len(filters):
-                last_index = -1
-            else:
-                last_index = i + 1
+            last_index = -1 if i + 1 >= len(filters) else i + 1
 
             residual_block = nn.Sequential(
                 nn.Conv2d(
@@ -224,15 +221,13 @@ class CNNModule(nn.Module):
 
     def forward(self, x):
         x /= 255.0
-        i = 0
         residual = None
-        for layer in self.conv_blocks:
+        for i, layer in enumerate(self.conv_blocks):
             if i % 2 == 0:
                 residual = x
             if (residual.size(2) == x.size(2) or residual.size(3) == x.size(3)) and i > 0:
                 x = x + residual
             x = layer(x)
-            i += 1
 
         x = self.flatten(x)
         x = self.fc1(x)
@@ -363,7 +358,7 @@ class QRCNNQFunction(nn.Module):
 
         img_api_out = torch.cat([rnn_block_api_out, conv_branch_out, act], dim=-1)
 
-        rnn_block_cat_out, (h1, c1) = self.rnn_block_cat(img_api_out, (h1, c1))
+        _rnn_block_cat_out, (h1, c1) = self.rnn_block_cat(img_api_out, (h1, c1))
 
         model_out = self.model_out(rnn_block_api_out)
 
@@ -510,7 +505,7 @@ class SquashedActorQRCNN(TorchActorModule):
 
         img_api_out = torch.cat([rnn_block_api_out, conv_branch_out], dim=-1)
 
-        rnn_block_cat_out, (h1, c1) = self.rnn_block_cat(img_api_out, (h1, c1))
+        _rnn_block_cat_out, (h1, c1) = self.rnn_block_cat(img_api_out, (h1, c1))
 
         model_out = self.model_out(rnn_block_api_out)
 
@@ -524,10 +519,7 @@ class SquashedActorQRCNN(TorchActorModule):
 
         pi_distribution = Normal(mu, std)
 
-        if test:
-            pi_action = mu
-        else:
-            pi_action = pi_distribution.rsample()
+        pi_action = mu if test else pi_distribution.rsample()
 
         if with_logprob:
             logp_pi = pi_distribution.log_prob(pi_action).sum(axis=-1)

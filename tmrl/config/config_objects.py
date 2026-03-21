@@ -2,7 +2,7 @@
 
 This module reads config (which loads config.json) and selects:
   - TRAIN_MODEL / POLICY   : neural net classes (MLP, CNN, RNN, IMPALA, etc.)
-  - INT                    : rtgym interface class (TM2020Interface*, partial with kwargs)
+  - RTGYM_INTERFACE_CLASS  : rtgym interface class (TM2020Interface*, partial with kwargs)
   - CONFIG_DICT            : rtgym config dict (interface + RTGYM_CONFIG overrides)
   - SAMPLE_COMPRESSOR      : how to compress samples for network transfer
   - OBS_PREPROCESSOR       : observation preprocessing for the env
@@ -26,11 +26,11 @@ from typing import Any
 
 import rtgym
 
-import tmrl.config as config  # noqa: F401
 import tmrl.config.constants as cfg
+import tmrl.config.loader as loader
 import tmrl.config.paths as cfg_paths
 import tmrl.custom.models.IMPALA as impala_module  # noqa: N811
-import tmrl.custom.models.Sophy as Sophy_models  # noqa: N813
+import tmrl.custom.models.Sophy as Sophy_models
 from tmrl.custom.custom_algorithms import IQNAgent
 from tmrl.custom.custom_algorithms import REDQSACAgent as REDQ_Agent
 from tmrl.custom.custom_algorithms import SpinupSacAgent as SAC_Agent
@@ -97,9 +97,16 @@ ALG_CONFIG = cfg.TMRL_CONFIG["ALG"]
 ALG_NAME = ALG_CONFIG["ALGORITHM"]
 MODEL_CONFIG = cfg.TMRL_CONFIG["MODEL"]
 
-assert ALG_NAME in ["SAC", "REDQSAC", "TQC", "IQN"], (
-    f"If you wish to implement {ALG_NAME}, do not use 'ALG' in config.json for that."
+if ALG_NAME not in ("SAC", "REDQSAC", "TQC", "IQN"):
+    raise ValueError(
+        f"Unknown algorithm '{ALG_NAME}'. Must be one of: SAC, REDQSAC, TQC, IQN. "
+        f"If you wish to implement {ALG_NAME}, do not use 'ALG' in config.json for that."
+    )
+
+_USE_CUSTOM_OR_BEST = (
+    cfg.PRAGMA_CUSTOM or cfg.PRAGMA_BEST or cfg.PRAGMA_BEST_TQC or cfg.PRAGMA_MBEST_TQC
 )
+_USE_ADVANCED_RTGYM_INTERFACE = _USE_CUSTOM_OR_BEST or cfg.PRAGMA_TQC_GRAB
 
 # -----------------------------------------------------------------------------
 # 1. Model and policy classes (which neural net: MLP, CNN, RNN, IMPALA, Sophy)
@@ -107,13 +114,13 @@ assert ALG_NAME in ["SAC", "REDQSAC", "TQC", "IQN"], (
 
 if cfg.PRAGMA_LIDAR:
     if (cfg.PRAGMA_LIDAR_PROGRESS_IMAGES or cfg.PRAGMA_TRACKMAP_IMAGES) and ALG_NAME == "SAC":
-        _lidar_images_kw = dict(
-            image_index=3,
-            embed_dim=cfg.FROZEN_EFFNET_EMBED_DIM,
-            hidden_dim=cfg.RESIDUAL_MLP_HIDDEN_DIM,
-            num_blocks=cfg.RESIDUAL_MLP_NUM_BLOCKS,
-            width_mult=cfg.FROZEN_EFFNET_WIDTH_MULT,
-        )
+        _lidar_images_kw = {
+            "image_index": 3,
+            "embed_dim": cfg.FROZEN_EFFNET_EMBED_DIM,
+            "hidden_dim": cfg.RESIDUAL_MLP_HIDDEN_DIM,
+            "num_blocks": cfg.RESIDUAL_MLP_NUM_BLOCKS,
+            "width_mult": cfg.FROZEN_EFFNET_WIDTH_MULT,
+        }
         TRAIN_MODEL: Any = partial(FrozenEffNetResidualActorCritic, **_lidar_images_kw)
         POLICY: Any = partial(SquashedGaussianFrozenEffNetResidualActor, **_lidar_images_kw)
     elif cfg.PRAGMA_RNN:
@@ -121,10 +128,10 @@ if cfg.PRAGMA_LIDAR:
         TRAIN_MODEL = RNNActorCritic
         POLICY = SquashedGaussianRNNActor
     elif cfg.USE_RESIDUAL_MLP:
-        _residual_kw = dict(
-            hidden_dim=cfg.RESIDUAL_MLP_HIDDEN_DIM,
-            num_blocks=cfg.RESIDUAL_MLP_NUM_BLOCKS,
-        )
+        _residual_kw = {
+            "hidden_dim": cfg.RESIDUAL_MLP_HIDDEN_DIM,
+            "num_blocks": cfg.RESIDUAL_MLP_NUM_BLOCKS,
+        }
         TRAIN_MODEL = (
             partial(ResidualMLPActorCritic, **_residual_kw)
             if ALG_NAME == "SAC"
@@ -139,15 +146,16 @@ else:
         assert ALG_NAME in ("TQC", "SAC", "IQN"), f"{ALG_NAME} is not implemented here."
         if ALG_NAME == "IQN":
             # IQN is a discrete action algorithm - use DQNActor
-            _iqn_kw = dict(
-                hidden_dim=cfg.RESIDUAL_MLP_HIDDEN_DIM,
-                num_blocks=cfg.RESIDUAL_MLP_NUM_BLOCKS,
-                n_cos=ALG_CONFIG.get("IQN_N_COS", 64),
-                dueling=ALG_CONFIG.get("IQN_DUELING", True),
-                n_actions=ALG_CONFIG.get("IQN_N_ACTIONS", 78),
-                n_quantiles_eval=ALG_CONFIG.get("IQN_NUM_QUANTILES_EVAL", 32),
-                epsilon=ALG_CONFIG.get("IQN_EPSILON_START", 1.0),
-            )
+            _iqn_kw = {
+                "hidden_dim": cfg.RESIDUAL_MLP_HIDDEN_DIM,
+                "num_blocks": cfg.RESIDUAL_MLP_NUM_BLOCKS,
+                "n_cos": ALG_CONFIG.get("IQN_N_COS", 64),
+                "dueling": ALG_CONFIG.get("IQN_DUELING", True),
+                "n_actions": ALG_CONFIG.get("IQN_N_ACTIONS", 78),
+                "n_quantiles_eval": ALG_CONFIG.get("IQN_NUM_QUANTILES_EVAL", 32),
+                "epsilon": ALG_CONFIG.get("IQN_EPSILON_START", 1.0),
+                "explore_repeat_steps": ALG_CONFIG.get("IQN_EXPLORE_REPEAT_STEPS", 4),
+            }
             TRAIN_MODEL = None  # IQN creates its own network internally
             POLICY = partial(DQNActor, **_iqn_kw)
         elif (
@@ -156,22 +164,22 @@ else:
             and cfg.USE_FROZEN_EFFNET
             and ALG_NAME == "SAC"
         ):
-            _frozen_effnet_kw = dict(
-                embed_dim=cfg.FROZEN_EFFNET_EMBED_DIM,
-                hidden_dim=cfg.RESIDUAL_MLP_HIDDEN_DIM,
-                num_blocks=cfg.RESIDUAL_MLP_NUM_BLOCKS,
-                width_mult=cfg.FROZEN_EFFNET_WIDTH_MULT,
-            )
+            _frozen_effnet_kw = {
+                "embed_dim": cfg.FROZEN_EFFNET_EMBED_DIM,
+                "hidden_dim": cfg.RESIDUAL_MLP_HIDDEN_DIM,
+                "num_blocks": cfg.RESIDUAL_MLP_NUM_BLOCKS,
+                "width_mult": cfg.FROZEN_EFFNET_WIDTH_MULT,
+            }
             TRAIN_MODEL = partial(FrozenEffNetResidualActorCritic, **_frozen_effnet_kw)
             POLICY = partial(SquashedGaussianFrozenEffNetResidualActor, **_frozen_effnet_kw)
         elif cfg.USE_IMAGES and not cfg.PRAGMA_TQC_GRAB:
             TRAIN_MODEL = impala_module.QRCNNActorCritic
             POLICY = impala_module.SquashedActorQRCNN
         elif cfg.PRAGMA_TQC_GRAB and not cfg.USE_IMAGES and cfg.USE_RESIDUAL_SOPHY:
-            _res_sophy_kw = dict(
-                hidden_dim=cfg.RESIDUAL_MLP_HIDDEN_DIM,
-                num_blocks=cfg.RESIDUAL_MLP_NUM_BLOCKS,
-            )
+            _res_sophy_kw = {
+                "hidden_dim": cfg.RESIDUAL_MLP_HIDDEN_DIM,
+                "num_blocks": cfg.RESIDUAL_MLP_NUM_BLOCKS,
+            }
             TRAIN_MODEL = partial(SophyResidualActorCritic, **_res_sophy_kw)
             POLICY = partial(SquashedActorSophyResidual, **_res_sophy_kw)
         else:
@@ -193,7 +201,7 @@ else:
 
 if cfg.PRAGMA_LIDAR:
     if cfg.PRAGMA_TRACKMAP_IMAGES:
-        INT = partial(
+        RTGYM_INTERFACE_CLASS = partial(
             TM2020InterfaceTrackMapImages,
             img_hist_len=cfg.IMG_HIST_LEN,
             gamepad=cfg.PRAGMA_GAMEPAD,
@@ -201,7 +209,7 @@ if cfg.PRAGMA_LIDAR:
             resize_to=(cfg.IMG_WIDTH, cfg.IMG_HEIGHT),
         )
     elif cfg.PRAGMA_LIDAR_PROGRESS_IMAGES:
-        INT = partial(
+        RTGYM_INTERFACE_CLASS = partial(
             TM2020InterfaceLidarProgressImages,
             img_hist_len=cfg.IMG_HIST_LEN,
             gamepad=cfg.PRAGMA_GAMEPAD,
@@ -209,96 +217,78 @@ if cfg.PRAGMA_LIDAR:
             resize_to=(cfg.IMG_WIDTH, cfg.IMG_HEIGHT),
         )
     elif cfg.PRAGMA_PROGRESS:
-        INT = partial(
+        RTGYM_INTERFACE_CLASS = partial(
             TM2020InterfaceLidarProgress,
             img_hist_len=cfg.IMG_HIST_LEN,
             gamepad=cfg.PRAGMA_GAMEPAD,
         )
     elif cfg.PRAGMA_TRACKMAP:
-        INT = partial(
+        RTGYM_INTERFACE_CLASS = partial(
             TM2020InterfaceTrackMap,
             img_hist_len=cfg.IMG_HIST_LEN,
             gamepad=cfg.PRAGMA_GAMEPAD,
         )
     else:
-        INT = partial(
+        RTGYM_INTERFACE_CLASS = partial(
             TM2020InterfaceLidar,
             img_hist_len=cfg.IMG_HIST_LEN,
             gamepad=cfg.PRAGMA_GAMEPAD,
         )
 else:
+    _common_image_interface_kwargs = {
+        "img_hist_len": cfg.IMG_HIST_LEN,
+        "gamepad": cfg.PRAGMA_GAMEPAD,
+        "grayscale": cfg.GRAYSCALE,
+        "resize_to": (cfg.IMG_WIDTH, cfg.IMG_HEIGHT),
+    }
+    _common_reward_kwargs = {
+        "crash_penalty": cfg.CRASH_PENALTY,
+        "constant_penalty": cfg.CONSTANT_PENALTY,
+        "checkpoint_reward": cfg.CHECKPOINT_REWARD,
+        "lap_reward": cfg.LAP_REWARD,
+        "min_nb_steps_before_failure": cfg.MIN_NB_STEPS_BEFORE_FAILURE,
+    }
     if cfg.PRAGMA_TQC_GRAB:
-        INT = partial(
-            TM2020InterfaceTQC,
-            img_hist_len=cfg.IMG_HIST_LEN,
-            gamepad=cfg.PRAGMA_GAMEPAD,
-            grayscale=cfg.GRAYSCALE,
-            resize_to=(cfg.IMG_WIDTH, cfg.IMG_HEIGHT),
-            crash_penalty=cfg.CRASH_PENALTY,
-            constant_penalty=cfg.CONSTANT_PENALTY,
-            checkpoint_reward=cfg.CHECKPOINT_REWARD,
-            lap_reward=cfg.LAP_REWARD,
-            min_nb_steps_before_failure=cfg.MIN_NB_STEPS_BEFORE_FAILURE,
+        RTGYM_INTERFACE_CLASS = partial(
+            TM2020InterfaceTQC, **_common_image_interface_kwargs, **_common_reward_kwargs
         )
-    elif cfg.PRAGMA_CUSTOM or cfg.PRAGMA_BEST or cfg.PRAGMA_BEST_TQC or cfg.PRAGMA_MBEST_TQC:
+    elif _USE_CUSTOM_OR_BEST:
         if cfg.USE_IMAGES:
-            INT = partial(
-                TM2020InterfaceIMPALA,
-                img_hist_len=cfg.IMG_HIST_LEN,
-                gamepad=cfg.PRAGMA_GAMEPAD,
-                grayscale=cfg.GRAYSCALE,
-                resize_to=(cfg.IMG_WIDTH, cfg.IMG_HEIGHT),
-                crash_penalty=cfg.CRASH_PENALTY,
-                constant_penalty=cfg.CONSTANT_PENALTY,
-                checkpoint_reward=cfg.CHECKPOINT_REWARD,
-                lap_reward=cfg.LAP_REWARD,
-                min_nb_steps_before_failure=cfg.MIN_NB_STEPS_BEFORE_FAILURE,
+            RTGYM_INTERFACE_CLASS = partial(
+                TM2020InterfaceIMPALA, **_common_image_interface_kwargs, **_common_reward_kwargs
             )
         else:
-            INT = partial(
+            RTGYM_INTERFACE_CLASS = partial(
                 TM2020InterfaceIMPALASophy,
-                img_hist_len=cfg.IMG_HIST_LEN,
-                gamepad=cfg.PRAGMA_GAMEPAD,
-                grayscale=cfg.GRAYSCALE,
-                resize_to=(cfg.IMG_WIDTH, cfg.IMG_HEIGHT),
-                crash_penalty=cfg.CRASH_PENALTY,
-                constant_penalty=cfg.CONSTANT_PENALTY,
-                checkpoint_reward=cfg.CHECKPOINT_REWARD,
-                lap_reward=cfg.LAP_REWARD,
-                min_nb_steps_before_failure=cfg.MIN_NB_STEPS_BEFORE_FAILURE,
+                **_common_image_interface_kwargs,
+                **_common_reward_kwargs,
             )
     else:
-        INT = partial(
-            TM2020Interface,
-            img_hist_len=cfg.IMG_HIST_LEN,
-            gamepad=cfg.PRAGMA_GAMEPAD,
-            grayscale=cfg.GRAYSCALE,
-            resize_to=(cfg.IMG_WIDTH, cfg.IMG_HEIGHT),
-        )
+        RTGYM_INTERFACE_CLASS = partial(TM2020Interface, **_common_image_interface_kwargs)
 
 # Interface display name for logging
-if cfg.PRAGMA_LIDAR:  # noqa: F821
-    if cfg.PRAGMA_TRACKMAP_IMAGES:  # noqa: F821
+if cfg.PRAGMA_LIDAR:
+    if cfg.PRAGMA_TRACKMAP_IMAGES:
         INTERFACE_DISPLAY_NAME = "TrackMapImages"
-    elif cfg.PRAGMA_LIDAR_PROGRESS_IMAGES:  # noqa: F821
+    elif cfg.PRAGMA_LIDAR_PROGRESS_IMAGES:
         INTERFACE_DISPLAY_NAME = "LidarProgressImages"
-    elif cfg.PRAGMA_PROGRESS:  # noqa: F821
+    elif cfg.PRAGMA_PROGRESS:
         INTERFACE_DISPLAY_NAME = "LidarProgress"
-    elif cfg.PRAGMA_TRACKMAP:  # noqa: F821
+    elif cfg.PRAGMA_TRACKMAP:
         INTERFACE_DISPLAY_NAME = "TrackMap"
     else:
         INTERFACE_DISPLAY_NAME = "Lidar"
 else:
-    if cfg.PRAGMA_TQC_GRAB:  # noqa: F821
+    if cfg.PRAGMA_TQC_GRAB:
         INTERFACE_DISPLAY_NAME = "TQCGrab"
-    elif cfg.PRAGMA_CUSTOM or cfg.PRAGMA_BEST or cfg.PRAGMA_BEST_TQC or cfg.PRAGMA_MBEST_TQC:  # noqa: F821
-        INTERFACE_DISPLAY_NAME = "IMPALA" if cfg.USE_IMAGES else "IMPALASophy"  # noqa: F821
+    elif _USE_CUSTOM_OR_BEST:
+        INTERFACE_DISPLAY_NAME = "IMPALA" if cfg.USE_IMAGES else "IMPALASophy"
     else:
         INTERFACE_DISPLAY_NAME = "Full"
 
 # RtGym config dict: default config + our interface + ENV RTGYM_CONFIG overrides
 CONFIG_DICT = rtgym.DEFAULT_CONFIG_DICT.copy()
-CONFIG_DICT["interface"] = INT
+CONFIG_DICT["interface"] = RTGYM_INTERFACE_CLASS
 CONFIG_DICT_MODIFIERS = cfg.ENV_CONFIG["RTGYM_CONFIG"]
 for k, v in CONFIG_DICT_MODIFIERS.items():
     CONFIG_DICT[k] = v
@@ -315,13 +305,7 @@ if cfg.PRAGMA_LIDAR:
     else:
         SAMPLE_COMPRESSOR = get_local_buffer_sample_lidar
 else:
-    if (
-        cfg.PRAGMA_CUSTOM
-        or cfg.PRAGMA_BEST
-        or cfg.PRAGMA_BEST_TQC
-        or cfg.PRAGMA_MBEST_TQC
-        or cfg.PRAGMA_TQC_GRAB
-    ):
+    if _USE_ADVANCED_RTGYM_INTERFACE:
         SAMPLE_COMPRESSOR = get_local_buffer_sample_mobilenet
     else:
         SAMPLE_COMPRESSOR = get_local_buffer_sample_tm20_imgs
@@ -338,13 +322,7 @@ if cfg.PRAGMA_LIDAR:
     else:
         OBS_PREPROCESSOR = obs_preprocessor_tm_lidar_act_in_obs
 else:
-    if (
-        cfg.PRAGMA_CUSTOM
-        or cfg.PRAGMA_BEST
-        or cfg.PRAGMA_BEST_TQC
-        or cfg.PRAGMA_MBEST_TQC
-        or cfg.PRAGMA_TQC_GRAB
-    ):
+    if _USE_ADVANCED_RTGYM_INTERFACE:
         OBS_PREPROCESSOR = (
             obs_preprocessor_tqcgrab_act_in_obs
             if cfg.PRAGMA_TQC_GRAB
@@ -373,7 +351,7 @@ if cfg.PRAGMA_LIDAR:
 else:
     if cfg.PRAGMA_CUSTOM or cfg.PRAGMA_BEST or cfg.PRAGMA_BEST_TQC:
         MEM = MemoryTMBest
-    elif cfg.PRAGMA_MBEST_TQC or cfg.PRAGMA_TQC_GRAB:
+    elif cfg.PRAGMA_MBEST_TQC or cfg.PRAGMA_TQC_GRAB:  # subset of _USE_ADVANCED_RTGYM_INTERFACE
         MEM = MemoryR2D2 if (cfg.USE_IMAGES and not cfg.PRAGMA_TQC_GRAB) else MemoryR2D2woImages
     else:
         MEM = MemoryTMFull
@@ -394,18 +372,18 @@ MEMORY = partial(
 # -----------------------------------------------------------------------------
 
 _device = "cuda" if cfg.CUDA_TRAINING else "cpu"
-_common_agent_kw = dict(
-    device=_device,
-    model_cls=TRAIN_MODEL,
-    lr_actor=ALG_CONFIG["LR_ACTOR"],
-    lr_critic=ALG_CONFIG["LR_CRITIC"],
-    lr_entropy=ALG_CONFIG["LR_ENTROPY"],
-    gamma=ALG_CONFIG["GAMMA"],
-    polyak=ALG_CONFIG["POLYAK"],
-    learn_entropy_coef=ALG_CONFIG["LEARN_ENTROPY_COEF"],
-    target_entropy=ALG_CONFIG["TARGET_ENTROPY"],
-    alpha=ALG_CONFIG["ALPHA"],
-)
+_common_agent_kw = {
+    "device": _device,
+    "model_cls": TRAIN_MODEL,
+    "lr_actor": ALG_CONFIG["LR_ACTOR"],
+    "lr_critic": ALG_CONFIG["LR_CRITIC"],
+    "lr_entropy": ALG_CONFIG["LR_ENTROPY"],
+    "gamma": ALG_CONFIG["GAMMA"],
+    "polyak": ALG_CONFIG["POLYAK"],
+    "learn_entropy_coef": ALG_CONFIG["LEARN_ENTROPY_COEF"],
+    "target_entropy": ALG_CONFIG["TARGET_ENTROPY"],
+    "alpha": ALG_CONFIG["ALPHA"],
+}
 
 if ALG_NAME == "SAC":
     AGENT: Any = partial(
@@ -451,11 +429,16 @@ elif ALG_NAME == "IQN":
         epsilon_start=ALG_CONFIG.get("IQN_EPSILON_START", 1.0),
         epsilon_end=ALG_CONFIG.get("IQN_EPSILON_END", 0.005),
         epsilon_decay_steps=ALG_CONFIG.get("IQN_EPSILON_DECAY_STEPS", 500000),
+        epsilon_schedule_mode=ALG_CONFIG.get("IQN_EPSILON_SCHEDULE_MODE", "cosine"),
         epsilon_cosine_t0=ALG_CONFIG.get("IQN_EPSILON_COSINE_T0", 50000),
         epsilon_cosine_tmult=ALG_CONFIG.get("IQN_EPSILON_COSINE_TMULT", 1.5),
         epsilon_cosine_decay=ALG_CONFIG.get("IQN_EPSILON_COSINE_DECAY", 0.8),
+        epsilon_cosine_initial_amplitude=ALG_CONFIG.get(
+            "IQN_EPSILON_COSINE_INITIAL_AMPLITUDE", 0.1
+        ),
         epsilon_cosine_floor_fraction=ALG_CONFIG.get("IQN_EPSILON_COSINE_FLOOR_FRACTION", 0.03),
         epsilon_cosine_floor_steps=ALG_CONFIG.get("IQN_EPSILON_COSINE_FLOOR_STEPS", 0),
+        explore_repeat_steps=int(ALG_CONFIG.get("IQN_EXPLORE_REPEAT_STEPS", 4)),
         n_steps=ALG_CONFIG.get("N_STEPS", 1),
         target_update_freq=ALG_CONFIG.get("IQN_TARGET_UPDATE_FREQ", 1000),
         double_dqn=ALG_CONFIG.get("IQN_DOUBLE_DQN", True),
@@ -470,25 +453,25 @@ else:
 
 ENV_CLS = partial(
     GenericGymEnv,
-    id=cfg.RTGYM_VERSION,
+    id=loader.RTGYM_VERSION,
     gym_kwargs={"config": CONFIG_DICT},
 )
 
-_trainer_kw = dict(
-    env_cls=ENV_CLS,
-    memory_cls=MEMORY,
-    epochs=MODEL_CONFIG["MAX_EPOCHS"],
-    rounds=MODEL_CONFIG["ROUNDS_PER_EPOCH"],
-    steps=MODEL_CONFIG["TRAINING_STEPS_PER_ROUND"],
-    update_model_interval=MODEL_CONFIG["UPDATE_MODEL_INTERVAL"],
-    update_buffer_interval=MODEL_CONFIG["UPDATE_BUFFER_INTERVAL"],
-    max_training_steps_per_env_step=MODEL_CONFIG["MAX_TRAINING_STEPS_PER_ENVIRONMENT_STEP"],
-    python_profiling=cfg.PROFILE_TRAINER,
-    pytorch_profiling=cfg.PYTORCH_PROFILER,
-    training_agent_cls=AGENT,
-    agent_scheduler=None,
-    start_training=MODEL_CONFIG["ENVIRONMENT_STEPS_BEFORE_TRAINING"],
-)
+_trainer_kw = {
+    "env_cls": ENV_CLS,
+    "memory_cls": MEMORY,
+    "epochs": MODEL_CONFIG["MAX_EPOCHS"],
+    "rounds": MODEL_CONFIG["ROUNDS_PER_EPOCH"],
+    "steps": MODEL_CONFIG["TRAINING_STEPS_PER_ROUND"],
+    "update_model_interval": MODEL_CONFIG["UPDATE_MODEL_INTERVAL"],
+    "update_buffer_interval": MODEL_CONFIG["UPDATE_BUFFER_INTERVAL"],
+    "max_training_steps_per_env_step": MODEL_CONFIG["MAX_TRAINING_STEPS_PER_ENVIRONMENT_STEP"],
+    "python_profiling": cfg.PROFILE_TRAINER,
+    "pytorch_profiling": cfg.PYTORCH_PROFILER,
+    "training_agent_cls": AGENT,
+    "agent_scheduler": None,
+    "start_training": MODEL_CONFIG["ENVIRONMENT_STEPS_BEFORE_TRAINING"],
+}
 
 TRAINER = partial(TorchTrainingOffline, **_trainer_kw)
 

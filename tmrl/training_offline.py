@@ -16,8 +16,13 @@ from loguru import logger
 import tmrl.config.config_objects as cfg_obj
 import tmrl.config.constants as cfg
 import tmrl.config.paths as cfg_paths
-from tmrl.tools.player_runs import poll_player_runs_for_injection
-from tmrl.util import pandas_dict
+from tmrl.tools.player_runs import (
+    align_buffer_observations_to_space,
+    filter_buffer_samples_failing_obs_space,
+    observation_matches_space,
+    poll_player_runs_for_injection,
+)
+from tmrl.util import pandas_dict, wandb_monotonic_step
 
 try:
     import wandb
@@ -38,6 +43,8 @@ _WANDB_ROUND_KEYS = (
     "eval/episode_length_deterministic",
     "eval/finish_time_test_s",
     "eval/finished_track_count_test",
+    "eval/competition_eliminated",
+    "eval/competition_crashes",
 )
 
 
@@ -64,6 +71,8 @@ def _round_stat_to_wandb_log_dict(round_series) -> dict[str, Any]:
                         "eval/episode_length_deterministic",
                         "eval/finish_time_test_s",
                         "eval/finished_track_count_test",
+                        "eval/competition_eliminated",
+                        "eval/competition_crashes",
                     )
                     else None
                 )
@@ -135,14 +144,20 @@ def _check_observation_integrity(batch) -> None:
     for name, obs in (("prev_obs", batch[0]), ("next_obs", batch[3])):
         if isinstance(obs, (tuple, list)):
             for i, t in enumerate(obs):
-                if isinstance(t, torch.Tensor) and t.is_floating_point():
-                    if torch.isnan(t).any() or torch.isinf(t).any():
-                        raise ValueError(
-                            f"Observation integrity check failed: {name}[{i}] contains NaN or Inf"
-                        )
-        elif isinstance(obs, torch.Tensor) and obs.is_floating_point():
-            if torch.isnan(obs).any() or torch.isinf(obs).any():
-                raise ValueError(f"Observation integrity check failed: {name} contains NaN or Inf")
+                if (
+                    isinstance(t, torch.Tensor)
+                    and t.is_floating_point()
+                    and (torch.isnan(t).any() or torch.isinf(t).any())
+                ):
+                    raise ValueError(
+                        f"Observation integrity check failed: {name}[{i}] contains NaN or Inf"
+                    )
+        elif (
+            isinstance(obs, torch.Tensor)
+            and obs.is_floating_point()
+            and (torch.isnan(obs).any() or torch.isinf(obs).any())
+        ):
+            raise ValueError(f"Observation integrity check failed: {name} contains NaN or Inf")
 
 
 def _stats_dict_to_numeric(d: dict) -> dict:
@@ -273,11 +288,9 @@ class TrainingOffline:
         """
         device = self.device or "cpu"
         self.epoch = 0
-        assert (
-            self.memory_cls is not None
-            and self.training_agent_cls is not None
-            and self.env_cls is not None
-        )
+        assert self.memory_cls is not None, "memory_cls must be set"
+        assert self.training_agent_cls is not None, "training_agent_cls must be set"
+        assert self.env_cls is not None, "env_cls must be set"
         self.memory = self.memory_cls(nb_steps=self.steps, device=device)
         if isinstance(self.env_cls, tuple):
             _, action_space = self.env_cls
@@ -293,6 +306,10 @@ class TrainingOffline:
                     _dim,
                 )
         self._action_space = action_space
+        if self._observation_space_from_env is not None and hasattr(
+            self.memory, "set_observation_space"
+        ):
+            self.memory.set_observation_space(self._observation_space_from_env)
         if len(self.memory) > 0:
             if self._observation_space_from_env is not None:
                 observation_space = self._observation_space_from_env
@@ -301,15 +318,15 @@ class TrainingOffline:
                 buffer_dim = _observation_dim(_observation_space_from_sample(prev_obs))
                 if buffer_dim != env_dim:
                     logger.warning(
-                        " Buffer observation dim (%s) != env dim (%s); clearing buffer so trainer "
+                        " Buffer observation dim ({}) != env dim ({}); clearing buffer so trainer "
                         "matches worker (e.g. TRACK_CURVATURE_OBS changed).",
                         buffer_dim,
                         env_dim,
                     )
-                    self.memory.data = []
+                    self.memory.clear()
                 dim = _observation_dim(observation_space)
                 logger.info(
-                    " Building agent from env observation_space (dim=%s), trainer matches worker.",
+                    " Building agent from env observation_space (dim={}), trainer matches worker.",
                     dim,
                 )
             else:
@@ -317,7 +334,7 @@ class TrainingOffline:
                 observation_space = _observation_space_from_sample(prev_obs)
                 dim = _observation_dim(observation_space)
                 logger.info(
-                    " Inferred observation_space from replay at init (dim=%s), building agent.",
+                    " Inferred observation_space from replay at init (dim={}), building agent.",
                     dim,
                 )
             # Enable TF32 for faster matmul on Ampere+ GPUs
@@ -350,15 +367,17 @@ class TrainingOffline:
         self.total_samples = len(self.memory)
         self._injected_player_run_ids: set[str] = set()
         self._best_return_train: float = float("-inf")
+        self._best_return_eval: float = float("-inf")
+        self._best_mean_lap_time: float = float("inf")
         self._best_epoch: int = -1
-        self._perf_acc = dict(
-            sample_s=0.0,
-            update_buffer_s=0.0,
-            train_s=0.0,
-            wait_ratio_s=0.0,
-            broadcast_s=0.0,
-            batches=0,
-        )
+        self._perf_acc = {
+            "sample_s": 0.0,
+            "update_buffer_s": 0.0,
+            "train_s": 0.0,
+            "wait_ratio_s": 0.0,
+            "broadcast_s": 0.0,
+            "batches": 0,
+        }
         logger.info(f" Initial total_samples:{self.total_samples}")
         if cfg.PLAYER_RUNS_ONLINE_INJECTION:
             from pathlib import Path
@@ -370,35 +389,84 @@ class TrainingOffline:
                 _pr_path.exists(),
             )
 
-    def _ensure_agent_from_data(self, batch=None):
+    def _broadcast_actor_after_rebuild(self, interface) -> None:
+        """Push current policy to workers so they match a newly rebuilt agent."""
+        if self.agent is None or not hasattr(interface, "broadcast_model"):
+            return
+        try:
+            interface.broadcast_model(self.agent.get_actor())
+            logger.info(
+                " Broadcast policy after agent rebuild so workers use matching observation shape."
+            )
+        except Exception as e:
+            logger.warning(" Broadcast after agent rebuild failed: {}", e)
+
+    def _ensure_agent_from_data(self, batch=None) -> bool:
         """
         Build or rebuild the agent so observation_space matches the worker (from env_cls)
         or, when env_cls is a tuple, from replay data.
         Using env_cls.observation_space when available ensures trainer and worker
         always use the same model shape (e.g. when TRACK_CURVATURE_OBS or config changes).
+        When the current batch has a different obs dim than env (e.g. player runs
+        recorded with different config), we rebuild from the batch so training can proceed.
+
+        Returns:
+            True if a new agent instance was created, False otherwise.
         """
         observation_space = None
         if self._observation_space_from_env is not None:
-            observation_space = self._observation_space_from_env
-            dim = _observation_dim(observation_space)
-            if self.agent is not None and _observation_dim(self.agent.observation_space) == dim:
-                return
-            if len(self.memory) > 0:
-                prev_obs, *_ = self.memory.get_transition(0)
-                buffer_dim = _observation_dim(_observation_space_from_sample(prev_obs))
-                if buffer_dim != dim:
-                    logger.warning(
-                        " Buffer observation dim ({}) != env dim ({}); clearing buffer so trainer "
-                        "matches worker (e.g. TRACK_CURVATURE_OBS changed).",
-                        buffer_dim,
-                        dim,
+            env_dim = _observation_dim(self._observation_space_from_env)
+            # If we have a batch and its obs dim differs from env, use batch so we can train
+            # on the data we have (e.g. injected player runs with TRACK_CURVATURE_OBS mismatch).
+            if batch is not None:
+                batch_obs_space = _observation_space_from_sample(_one_obs_from_batch(batch[0]))
+                batch_dim = _observation_dim(batch_obs_space)
+                if batch_dim != env_dim:
+                    # Buffer dim already matches batch (e.g. player runs); skip rebuild each step.
+                    if (
+                        self.agent is not None
+                        and _observation_dim(self.agent.observation_space) == batch_dim
+                    ):
+                        return False
+                    logger.info(
+                        " Buffer obs dim ({}) != env ({}); building agent from buffer so "
+                        "training can proceed (e.g. player runs from different config).",
+                        batch_dim,
+                        env_dim,
                     )
-                    self.memory.data = []
-                    self.total_samples = 0
-            logger.info(
-                " Building agent from env observation_space (dim={}) so trainer matches worker.",
-                dim,
-            )
+                    observation_space = batch_obs_space
+                elif (
+                    self.agent is not None
+                    and _observation_dim(self.agent.observation_space) == env_dim
+                ):
+                    return False
+                else:
+                    observation_space = self._observation_space_from_env
+            else:
+                if (
+                    self.agent is not None
+                    and _observation_dim(self.agent.observation_space) == env_dim
+                ):
+                    return False
+                if len(self.memory) > 0:
+                    prev_obs, *_ = self.memory.get_transition(0)
+                    buffer_dim = _observation_dim(_observation_space_from_sample(prev_obs))
+                    if buffer_dim != env_dim:
+                        logger.warning(
+                            " Buffer observation dim ({}) != env dim ({}); "
+                            "clearing buffer so trainer matches worker "
+                            "(e.g. TRACK_CURVATURE_OBS changed).",
+                            buffer_dim,
+                            env_dim,
+                        )
+                        self.memory.clear()
+                        self.total_samples = 0
+                logger.info(
+                    " Building agent from env observation_space (dim={}) "
+                    "so trainer matches worker.",
+                    env_dim,
+                )
+                observation_space = self._observation_space_from_env
         elif batch is not None:
             one_obs = _one_obs_from_batch(batch[0])
             batch_obs_space = _observation_space_from_sample(one_obs)
@@ -406,7 +474,7 @@ class TrainingOffline:
             if self.agent is not None:
                 current_dim = _observation_dim(self.agent.observation_space)
                 if batch_dim == current_dim:
-                    return
+                    return False
                 logger.warning(
                     " Observation dim from batch ({}) != agent ({}); rebuilding agent from batch.",
                     batch_dim,
@@ -418,7 +486,7 @@ class TrainingOffline:
                 batch_dim,
             )
         elif self.agent is not None:
-            return
+            return False
         elif len(self.memory) > 0:
             prev_obs, *_ = self.memory.get_transition(0)
             if isinstance(prev_obs, (list, tuple)):
@@ -436,14 +504,14 @@ class TrainingOffline:
                 dim,
             )
         if observation_space is None:
-            return
+            return False
         device = self.device or "cpu"
         # Handle case where checkpoint contains old training_agent_cls with incompatible params
         # (e.g., IQNAgent doesn't accept model_cls/kappa but old checkpoints may have them)
-        agent_cls = self.training_agent_cls
-        if hasattr(agent_cls, "keywords") and hasattr(agent_cls, "func"):
+        agent_cls: Any = self.training_agent_cls
+        if agent_cls is not None and hasattr(agent_cls, "keywords") and hasattr(agent_cls, "func"):
             import inspect
-            from functools import partial
+            from functools import partial as functools_partial
 
             sig = inspect.signature(agent_cls.func.__init__)
             valid_params = set(sig.parameters.keys())
@@ -452,12 +520,14 @@ class TrainingOffline:
             invalid_keys = [k for k in agent_cls.keywords if k not in valid_params]
             if invalid_keys:
                 new_keywords = {k: v for k, v in agent_cls.keywords.items() if k in valid_params}
-                agent_cls = partial(agent_cls.func, *agent_cls.args, **new_keywords)
+                agent_cls = functools_partial(agent_cls.func, *agent_cls.args, **new_keywords)
+        assert agent_cls is not None
         self.agent = agent_cls(
             observation_space=observation_space,
             action_space=self._action_space,
             device=device,
         )
+        return True
 
     def update_buffer(self, interface):
         """
@@ -471,22 +541,28 @@ class TrainingOffline:
         """
         buffer = interface.retrieve_buffer()
         if len(buffer) > 0 and self._observation_space_from_env is not None:
-            first_obs = buffer.memory[0][1]
-            buffer_dim = _observation_dim(_observation_space_from_sample(first_obs))
-            env_dim = _observation_dim(self._observation_space_from_env)
-            if buffer_dim != env_dim:
+            align_buffer_observations_to_space(buffer, self._observation_space_from_env)
+            n_bad = filter_buffer_samples_failing_obs_space(
+                buffer, self._observation_space_from_env
+            )
+            if n_bad:
                 logger.warning(
-                    " Discarding received buffer: observation dim ({}) != env dim ({}). "
-                    "Server may still have old-format samples; only buffers matching current "
-                    "interface will be accepted.",
-                    buffer_dim,
-                    env_dim,
+                    " Dropped {} rollout sample(s) that still do not match env observation_space "
+                    "(e.g. structurally invalid obs).",
+                    n_bad,
+                )
+            if len(buffer) == 0:
+                return
+            if not observation_matches_space(buffer.memory[0][1], self._observation_space_from_env):
+                logger.warning(
+                    " Discarding rollout buffer: first sample still invalid after alignment."
                 )
                 return
         self.memory.append(buffer)
         self.total_samples += len(buffer)
 
-        self._ensure_agent_from_data()
+        if self._ensure_agent_from_data():
+            self._broadcast_actor_after_rebuild(interface)
 
         if not cfg.PLAYER_RUNS_ONLINE_INJECTION:
             return
@@ -498,19 +574,38 @@ class TrainingOffline:
             consume_on_read=cfg.PLAYER_RUNS_CONSUME_ON_READ,
         )
         if len(demo_buffer) > 0:
-            repeat = cfg.PLAYER_RUNS_DEMO_INJECTION_REPEAT
-            for _ in range(repeat):
-                self.memory.append(demo_buffer)
-                self.total_samples += len(demo_buffer)
-            logger.info(
-                " Injected {} player-run sample(s) from {} file(s), repeat x{} "
-                "(effective: {}). run_ids={}",
-                len(demo_buffer),
-                len(imported_files),
-                repeat,
-                len(demo_buffer) * repeat,
-                sorted(imported_ids),
+            n_aligned = align_buffer_observations_to_space(
+                demo_buffer, self._observation_space_from_env
             )
+            n_demo_bad = filter_buffer_samples_failing_obs_space(
+                demo_buffer, self._observation_space_from_env
+            )
+            if n_demo_bad:
+                logger.warning(
+                    " Dropped {} player-run sample(s) incompatible with "
+                    "observation_space after alignment.",
+                    n_demo_bad,
+                )
+            if n_aligned:
+                logger.info(
+                    " Normalized {} player-run observation(s) to trainer observation_space "
+                    "(dim match worker/replay).",
+                    n_aligned,
+                )
+            if len(demo_buffer) > 0:
+                repeat = cfg.PLAYER_RUNS_DEMO_INJECTION_REPEAT
+                for _ in range(repeat):
+                    self.memory.append(demo_buffer)
+                    self.total_samples += len(demo_buffer)
+                logger.info(
+                    " Injected {} player-run sample(s) from {} file(s), repeat x{} "
+                    "(effective: {}). run_ids={}",
+                    len(demo_buffer),
+                    len(imported_files),
+                    repeat,
+                    len(demo_buffer) * repeat,
+                    sorted(imported_ids),
+                )
 
     def check_ratio(self, interface) -> float:
         """
@@ -617,26 +712,36 @@ class TrainingOffline:
                     f"batch {batch_index}/{self.steps} finished at: {datetime.datetime.now()}"
                 )
 
-            self._ensure_agent_from_data(batch=batch)
+            if self._ensure_agent_from_data(batch=batch):
+                self._broadcast_actor_after_rebuild(interface)
 
-            if self.agent is not None and self._observation_space_from_env is not None:
+            # After _ensure_agent_from_data, agent may have been rebuilt from batch when
+            # buffer obs dim differed from env (e.g. player runs). Verify batch matches agent.
+            if self.agent is not None:
                 batch_dim = _batch_observation_dim(batch)
                 agent_dim = _observation_dim(self.agent.observation_space)
                 if batch_dim != agent_dim:
                     logger.warning(
-                        " Batch observation dim ({}) != agent dim ({}) from env. "
-                        "Memory contains stale data from a previous config; "
-                        "clearing replay buffer and waiting for fresh worker data.",
+                        " Batch observation dim ({}) != agent dim ({}). "
+                        "Clearing replay buffer and waiting for fresh data.",
                         batch_dim,
                         agent_dim,
                     )
-                    self.memory.data = []
+                    self.memory.clear()
                     self.total_samples = 0
                     break
 
             _check_observation_integrity(batch)
             t_train_start = time.perf_counter()
             stats_training_dict = self.agent.train(batch, self.epoch, batch_index, len(self.memory))
+            if not isinstance(stats_training_dict, dict):
+                logger.warning(
+                    " Agent returned non-dict stats at batch {} (type={}); "
+                    "continuing with empty stats.",
+                    batch_index,
+                    type(stats_training_dict).__name__,
+                )
+                stats_training_dict = {}
             self._perf_acc["train_s"] += time.perf_counter() - t_train_start
 
             if "td_errors" in stats_training_dict and "batch_indices" in stats_training_dict:
@@ -682,6 +787,12 @@ class TrainingOffline:
             stats_training_dict["eval/finished_track_count_test"] = getattr(
                 self.memory, "stat_test_finished_count", 0
             )
+            stats_training_dict["eval/competition_eliminated"] = float(
+                bool(getattr(self.memory, "stat_test_competition_eliminated", False))
+            )
+            stats_training_dict["eval/competition_crashes"] = float(
+                getattr(self.memory, "stat_test_competition_crashes", 0)
+            )
             stats_training_dict["timing/sampling_duration"] = t_sample - t_sample_prev
             stats_training_dict["timing/training_step_duration"] = t_train - t_update_buffer
             if hasattr(self.memory, "last_sample_demo_fraction"):
@@ -716,7 +827,8 @@ class TrainingOffline:
             List of per-round stat dicts (e.g. round_time, memory_len, return_test).
         """
         stats = []
-        self._ensure_agent_from_data()
+        if self._ensure_agent_from_data():
+            self._broadcast_actor_after_rebuild(interface)
 
         if (
             self.agent_scheduler is not None
@@ -776,7 +888,13 @@ class TrainingOffline:
             # monotonically increasing" when agent logs per-batch).
             if wandb is not None and wandb.run is not None:
                 round_log = _round_stat_to_wandb_log_dict(stats[-1])
-                step = int(round_log.pop("step", self.total_updates))
+                step_from_log = round_log.pop("step", None)
+                step = int(
+                    self.total_updates
+                    if step_from_log is None
+                    else max(self.total_updates, int(step_from_log))
+                )
+                step = wandb_monotonic_step(step, wandb.run)
                 wandb.log(round_log, step=step)
 
             logger.info(stats[-1].add_prefix("  ").to_string() + "\n")
@@ -806,28 +924,126 @@ class TrainingOffline:
         return stats
 
     def _maybe_save_best_checkpoint(self, stats):
-        """Save actor weights when epoch-average return_train improves."""
-        try:
-            returns = [
-                s.get("metrics/return_train", float("nan")) for s in stats if hasattr(s, "get")
-            ]
-            valid = [r for r in returns if r == r]
-            if not valid:
-                return
-            mean_ret = sum(valid) / len(valid)
-            if mean_ret > self._best_return_train and mean_ret > 0:
-                self._best_return_train = mean_ret
-                self._best_epoch = self.epoch
-                best_path = cfg_paths.WEIGHTS_FOLDER / "best_actor.pth"
-                import torch
+        """Save actor weights when the chosen criterion improves.
 
+        - "eval" + BEST_CHECKPOINT_LAP_TIME: mean lap time (seconds) over rounds that pass
+          competition eval (not eliminated, enough finishes); lower is better. If no round
+          qualifies, fall back to median metrics/return_test (higher is better).
+        - "eval" without lap mode: median metrics/return_test over the epoch.
+        - "train": mean metrics/return_train over the epoch (legacy).
+        """
+        try:
+            if self.agent is None:
+                return
+            if not hasattr(self, "_best_return_eval"):
+                self._best_return_eval = float("-inf")
+            if not hasattr(self, "_best_mean_lap_time"):
+                self._best_mean_lap_time = float("inf")
+
+            def _truthy_eliminated(v) -> bool:
+                if v is None or v is False:
+                    return False
+                if v is True:
+                    return True
+                try:
+                    return float(v) != 0.0
+                except (TypeError, ValueError):
+                    return bool(v)
+
+            criterion = cfg.BEST_CHECKPOINT_CRITERION
+            best_path = cfg_paths.WEIGHTS_FOLDER / "best_actor.pth"
+
+            if criterion == "eval" and cfg.BEST_CHECKPOINT_LAP_TIME:
+                min_fin = cfg.BEST_CHECKPOINT_MIN_FINISHES
+                if min_fin is None:
+                    min_fin = cfg.RW_TEST_EPISODES_PER_EVAL
+                min_fin = int(min_fin)
+
+                time_vals: list[float] = []
+                returns_all: list[float] = []
+                for s in stats:
+                    if not hasattr(s, "get"):
+                        continue
+                    rt = s.get("metrics/return_test", float("nan"))
+                    if rt == rt:
+                        returns_all.append(float(rt))
+                    if _truthy_eliminated(s.get("eval/competition_eliminated", 0.0)):
+                        continue
+                    ft = float(s.get("eval/finish_time_test_s", 0.0) or 0.0)
+                    fc = float(s.get("eval/finished_track_count_test", 0.0) or 0.0)
+                    if ft > 0.0 and round(fc) >= min_fin:
+                        time_vals.append(ft)
+
+                if time_vals:
+                    epoch_mean_time = float(np.mean(time_vals))
+                    if epoch_mean_time < self._best_mean_lap_time:
+                        self._best_mean_lap_time = epoch_mean_time
+                        self._best_epoch = self.epoch
+                        torch.save(self.agent.get_actor().state_dict(), str(best_path))
+                        logger.info(
+                            " New best mean lap (eval)={:.2f}s over {} rounds at "
+                            "epoch {} -> saved {}",
+                            epoch_mean_time,
+                            len(time_vals),
+                            self.epoch,
+                            best_path,
+                        )
+                    return
+
+                if not returns_all:
+                    return
+                agg_ret = float(np.median(returns_all))
+                if agg_ret <= self._best_return_eval:
+                    return
+                self._best_return_eval = agg_ret
+                self._best_epoch = self.epoch
                 torch.save(self.agent.get_actor().state_dict(), str(best_path))
                 logger.info(
-                    " New best return_train={:.2f} at epoch {} -> saved {}",
-                    mean_ret,
+                    " New best eval return_test (median fallback)={:.2f} at epoch {} -> saved {}",
+                    agg_ret,
                     self.epoch,
                     best_path,
                 )
+                return
+
+            if criterion == "eval":
+                returns = [
+                    s.get("metrics/return_test", float("nan")) for s in stats if hasattr(s, "get")
+                ]
+                valid = [r for r in returns if r == r]
+                if not valid:
+                    return
+                agg_ret = float(np.median(valid))
+                if agg_ret <= self._best_return_eval:
+                    return
+                self._best_return_eval = agg_ret
+                self._best_epoch = self.epoch
+                torch.save(self.agent.get_actor().state_dict(), str(best_path))
+                logger.info(
+                    " New best eval return_test (median)={:.2f} at epoch {} -> saved {}",
+                    agg_ret,
+                    self.epoch,
+                    best_path,
+                )
+            else:
+                returns = [
+                    s.get("metrics/return_train", float("nan")) for s in stats if hasattr(s, "get")
+                ]
+                valid = [r for r in returns if r == r]
+                if not valid:
+                    return
+                mean_ret = sum(valid) / len(valid)
+                if mean_ret > self._best_return_train and mean_ret > 0:
+                    self._best_return_train = mean_ret
+                    self._best_epoch = self.epoch
+                    best_path = cfg_paths.WEIGHTS_FOLDER / "best_actor.pth"
+                    torch.save(self.agent.get_actor().state_dict(), str(best_path))
+                    logger.info(
+                        " New best return_train={:.2f} at epoch {} -> saved {}",
+                        mean_ret,
+                        self.epoch,
+                        best_path,
+                    )
         except Exception as e:
             logger.warning(" Failed to save best checkpoint: {}", e)
 

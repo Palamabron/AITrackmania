@@ -10,7 +10,7 @@ import torch
 from loguru import logger
 from torch.optim import SGD, Adam, AdamW
 
-import tmrl.config as cfg
+import tmrl.config.constants as cfg
 from tmrl.custom.models.mlp import MLPActorCritic
 from tmrl.custom.utils.nn import copy_shared, no_grad
 from tmrl.training import TrainingAgent
@@ -113,14 +113,17 @@ class SpinupSacAgent(TrainingAgent):
         """Return the current actor (policy) module for rollout workers."""
         return self.model_nograd.actor
 
-    def train(self, batch):
+    def train(self, batch, epoch=None, batch_index=None, iters=None):
         """Perform one SAC training step on the given batch.
 
         Args:
             batch: Tuple (obs, actions, rewards, next_obs, dones, info).
+            epoch: Current epoch (unused, for API compat with training loop).
+            batch_index: Current batch index (unused).
+            iters: Total iterations (unused).
 
         Returns:
-            Dict with loss_actor, loss_critic, and optionally loss_entropy_coef,
+            Dict with losses/actor, losses/critic, and optionally loss_entropy_coef,
             entropy_coef and debug metrics when DEBUG_MODE is True.
         """
         obs, actions, rewards, next_obs, dones, _ = batch
@@ -206,7 +209,9 @@ class SpinupSacAgent(TrainingAgent):
     def _sac_update_target_network(self) -> None:
         """Polyak-update target network parameters."""
         with torch.no_grad():
-            for param, param_targ in zip(self.model.parameters(), self.model_target.parameters()):
+            for param, param_targ in zip(
+                self.model.parameters(), self.model_target.parameters(), strict=True
+            ):
                 param_targ.data.mul_(self.polyak)
                 param_targ.data.add_((1 - self.polyak) * param.data)
 
@@ -234,8 +239,8 @@ class SpinupSacAgent(TrainingAgent):
         with torch.no_grad():
             if not cfg.DEBUG_MODE:
                 ret_dict = {
-                    "loss_actor": loss_pi.detach().item(),
-                    "loss_critic": loss_q.detach().item(),
+                    "losses/actor": loss_pi.detach().item(),
+                    "losses/critic": loss_q.detach().item(),
                 }
             else:
                 next_actions, log_prob_next = self.model.actor(next_obs)
@@ -250,8 +255,8 @@ class SpinupSacAgent(TrainingAgent):
                 q_pi_targ = torch.min(q1_pi_targ, q2_pi_targ)
 
                 ret_dict = {
-                    "loss_actor": loss_pi.detach().item(),
-                    "loss_critic": loss_q.detach().item(),
+                    "losses/actor": loss_pi.detach().item(),
+                    "losses/critic": loss_q.detach().item(),
                     "debug_log_pi": log_prob_pi.detach().mean().item(),
                     "debug_log_pi_std": log_prob_pi.detach().std().item(),
                     "debug_logp_a2": log_prob_next.detach().mean().item(),

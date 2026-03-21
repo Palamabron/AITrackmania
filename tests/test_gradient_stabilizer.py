@@ -91,7 +91,7 @@ class TestGradientStabilizerClipping:
         gs.step(model.parameters())
         grad_after = [p.grad.clone() for p in model.parameters() if p.grad is not None]
 
-        for gb, ga in zip(grad_before, grad_after):
+        for gb, ga in zip(grad_before, grad_after, strict=False):
             assert torch.allclose(gb, ga, atol=1e-6)
 
 
@@ -106,5 +106,5 @@ class TestGradientStabilizerWarmup:
             grad_before = [p.grad.clone() for p in model.parameters() if p.grad is not None]
             gs.step(model.parameters())
             grad_after = [p.grad.clone() for p in model.parameters() if p.grad is not None]
-            for gb, ga in zip(grad_before, grad_after):
+            for gb, ga in zip(grad_before, grad_after, strict=False):
                 assert torch.allclose(gb, ga, atol=1e-6)

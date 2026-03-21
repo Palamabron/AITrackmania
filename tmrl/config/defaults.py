@@ -9,7 +9,8 @@ _DEFAULT_TMRL_CONFIG = {
     "BUFFERS_MAXLEN": 500000,
     "RW_MAX_SAMPLES_PER_EPISODE": 1000,
     "RW_TEST_EPISODE_INTERVAL": 5,
-    "RW_TEST_EPISODES_PER_EVAL": 5,
+    # Match TMRL competition: 10 deterministic eval runs per checkpoint signal.
+    "RW_TEST_EPISODES_PER_EVAL": 10,
     "CUDA_TRAINING": True,
     "CUDA_INFERENCE": False,
     "VIRTUAL_GAMEPAD": True,
@@ -56,6 +57,18 @@ _DEFAULT_TMRL_CONFIG = {
         "UPDATE_MODEL_INTERVAL": 200,
         "UPDATE_BUFFER_INTERVAL": 200,
         "SAVE_MODEL_EVERY": 0,
+        "BEST_CHECKPOINT_CRITERION": "eval",
+        # Hybrid best checkpoint: competition-style mean lap (worker) when enough
+        # clean finishes, else median return_test.
+        # Set false for legacy eval (mean finish time only, no crash rules).
+        "BEST_CHECKPOINT_LAP_TIME": True,
+        # Require this many successful finishes in an eval window for lap-based saving;
+        # null defaults to RW_TEST_EPISODES_PER_EVAL (all runs must finish, no crashes).
+        "BEST_CHECKPOINT_MIN_FINISHES": None,
+        # TMRL test competition: seconds added to next finished lap after a crash;
+        # 3 crashes = out.
+        "COMPETITION_EVAL_CRASH_PENALTY_S": 10.0,
+        "COMPETITION_EVAL_MAX_CRASHES": 3,
         "MEMORY_SIZE": 1000000,
         "BATCH_SIZE": 256,
         "BATCHES_PER_STEP": 1,
@@ -167,6 +180,7 @@ _DEFAULT_TMRL_CONFIG = {
         "IQN_DOUBLE_DQN": True,
         "IQN_GRAD_CLIP": 10.0,
         "IQN_LR": 1.0e-4,
+        "IQN_EXPLORE_REPEAT_STEPS": 4,
     },
 }
 

@@ -21,6 +21,19 @@ class RewardConfig(BaseModel):
         default=0.0,
         description="If >0: episode ends after this many seconds with no forward progress.",
     )
+    MIN_PROGRESS_RATE: float = Field(
+        default=0.0,
+        description=(
+            "If >0: episode ends when progress rate (fraction of track per second) over the last "
+            "window is below this."
+        ),
+    )
+    SLOW_PROGRESS_WINDOW_SECONDS: float = Field(
+        default=5.0,
+        description=(
+            "Time window in seconds over which progress rate is measured for slow-progress reset."
+        ),
+    )
     MIN_STEPS: int = Field(
         default=70,
         description="Minimum steps before failure conditions can trigger (grace period).",

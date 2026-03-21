@@ -18,7 +18,7 @@ class SquashedGaussianMLPActor(TorchActorModule):
         dim_obs = sum(prod(s for s in space.shape) for space in observation_space)
         dim_act = action_space.shape[0]
         act_limit = action_space.high[0]
-        self.net = mlp([dim_obs] + list(hidden_sizes), activation, activation)
+        self.net = mlp([dim_obs, *list(hidden_sizes)], activation, activation)
         self.mu_layer = nn.Linear(hidden_sizes[-1], dim_act)
         self.log_std_layer = nn.Linear(hidden_sizes[-1], dim_act)
         self.act_limit = act_limit
@@ -32,11 +32,8 @@ class SquashedGaussianMLPActor(TorchActorModule):
 
         # Pre-squash distribution and sample
         pi_distribution = Normal(mu, std)
-        if test:
-            # Only used for evaluating policy at test time.
-            pi_action = mu
-        else:
-            pi_action = pi_distribution.rsample()
+        # Only used for evaluating policy at test time.
+        pi_action = mu if test else pi_distribution.rsample()
 
         if with_logprob:
             # Compute logprob from Gaussian, and then apply correction for Tanh squashing.
@@ -69,7 +66,7 @@ class MLPQFunction(nn.Module):
         super().__init__()
         obs_dim = sum(prod(s for s in space.shape) for space in obs_space)
         act_dim = act_space.shape[0]
-        self.q = mlp([obs_dim + act_dim] + list(hidden_sizes) + [1], activation)
+        self.q = mlp([obs_dim + act_dim, *list(hidden_sizes), 1], activation)
 
     def forward(self, obs, act):
         x = torch.cat((*obs, act), -1)

@@ -66,7 +66,7 @@ def test_asymmetric_actor_critic():
     for i in range(len(dummy_obs)):
         dummy_obs[i].requires_grad_(True)
 
-    act_tensor, logp = model.actor(dummy_obs[1:15])
+    act_tensor, _logp = model.actor(dummy_obs[1:15])
     loss = act_tensor.sum()
     loss.backward()
 

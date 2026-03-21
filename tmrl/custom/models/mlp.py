@@ -35,7 +35,7 @@ class SquashedGaussianMLPActor(TorchActorModule):
             self.tuple_obs = False
         dim_act = action_space.shape[0]
         act_limit = action_space.high[0]
-        self.net = mlp([dim_obs] + list(hidden_sizes), activation, activation)
+        self.net = mlp([dim_obs, *list(hidden_sizes)], activation, activation)
         self.mu_layer = nn.Linear(hidden_sizes[-1], dim_act)
         self.log_std_layer = nn.Linear(hidden_sizes[-1], dim_act)
         self.act_limit = act_limit
@@ -49,10 +49,7 @@ class SquashedGaussianMLPActor(TorchActorModule):
         std = torch.exp(log_std)
 
         pi_distribution = Normal(mu, std)
-        if test:
-            pi_action = mu
-        else:
-            pi_action = pi_distribution.rsample()
+        pi_action = mu if test else pi_distribution.rsample()
 
         if with_logprob:
             logp_pi = pi_distribution.log_prob(pi_action).sum(axis=-1)
@@ -89,7 +86,7 @@ class MLPQFunction(nn.Module):
             obs_dim = prod(obs_space.shape)
             self.tuple_obs = False
         act_dim = act_space.shape[0]
-        self.q = mlp([obs_dim + act_dim] + list(hidden_sizes) + [1], activation)
+        self.q = mlp([obs_dim + act_dim, *list(hidden_sizes), 1], activation)
 
     def forward(self, obs, act):
         x = (

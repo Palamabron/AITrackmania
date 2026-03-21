@@ -96,9 +96,9 @@ elif platform.system() == "Linux":
             logger.error(f"failed to find window '{name}'")
             raise NoSuchWindowError(name)
 
-        except subprocess.CalledProcessError:
+        except subprocess.CalledProcessError as err:
             logger.error(f"process error searching for window '{name}")
-            raise NoSuchWindowError(name)
+            raise NoSuchWindowError(name) from err
 
     def get_window_geometry(name):
         """
@@ -158,7 +158,7 @@ elif platform.system() == "Linux":
             try:
                 self.window_id = get_window_id(window_name)
             except NoSuchWindowError as e:
-                logger.error(f"get_window_id failed, is xdotool correctly installed? {str(e)}")
+                logger.error(f"get_window_id failed, is xdotool correctly installed? {e!s}")
                 self.window_id = None
 
             self.w = None
@@ -209,13 +209,13 @@ elif platform.system() == "Linux":
                 self.execute_command(c_focus)
 
                 # move
-                logger.debug(f"move window {str(self.window_name)}")
-                c_move = f"xdotool windowmove {str(self.window_id)} {str(x)} {str(y)}\n"
+                logger.debug(f"move window {self.window_name!s}")
+                c_move = f"xdotool windowmove {self.window_id!s} {x!s} {y!s}\n"
                 self.execute_command(c_move)
 
                 # resize
-                logger.debug(f"resize window {str(self.window_name)}")
-                c_resize = f"xdotool windowsize {str(self.window_id)} {str(w)} {str(h)}\n"
+                logger.debug(f"resize window {self.window_name!s}")
+                c_resize = f"xdotool windowsize {self.window_id!s} {w!s} {h!s}\n"
                 self.execute_command(c_resize)
 
                 self.w = w
@@ -244,7 +244,7 @@ elif platform.system() == "Linux":
                 logger.error(f"failed to resize window_id '{self.window_id}'")
 
             except NoSuchWindowError as e:
-                logger.error(f"failed to find window: {str(e)}")
+                logger.error(f"failed to find window: {e!s}")
 
             # except GeometrySearchException as e:
             #     logger.error(f"failed to retrieve window geometry: {str(e)}")

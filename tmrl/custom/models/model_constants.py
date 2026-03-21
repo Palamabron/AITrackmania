@@ -1,4 +1,4 @@
-# TODO: Obczaić te wartości
+# TODO: Verify these values against literature
 # Aligning with scientific literature standard for SAC (high-fidelity physics / exploration)
 LOG_STD_MAX = 2
 LOG_STD_MIN = -20  # Expanded support for high-variance exploration

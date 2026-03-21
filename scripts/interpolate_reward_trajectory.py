@@ -62,10 +62,7 @@ def interpolate_trajectory(points: np.ndarray, factor: int) -> np.ndarray:
             continue
         seg_start = cum[j]
         seg_end = cum[j + 1]
-        if seg_end <= seg_start:
-            t = 0.0
-        else:
-            t = (s - seg_start) / (seg_end - seg_start)
+        t = 0.0 if seg_end <= seg_start else (s - seg_start) / (seg_end - seg_start)
         t = np.clip(t, 0.0, 1.0)
         pt = (1.0 - t) * points[j] + t * points[j + 1]
         new_pts.append(pt)

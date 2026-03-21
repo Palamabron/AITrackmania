@@ -38,10 +38,7 @@ def record_reward_dist(path_reward=PATH_REWARD, use_keyboard=False):
             )  # we need many points to build a smooth curve
             terminated = bool(data[8])
 
-            if not use_keyboard:
-                early_stop = False
-            else:
-                early_stop = keyboard.is_pressed("q")
+            early_stop = False if not use_keyboard else keyboard.is_pressed("q")
 
             if early_stop or terminated:
                 logger.info("Computing reward function checkpoints from captured positions...")
@@ -70,7 +67,8 @@ def record_reward_dist(path_reward=PATH_REWARD, use_keyboard=False):
                     f"Final number of checkpoints in the reward function: {len(final_positions)}"
                 )
 
-                pickle.dump(final_positions, open(path, "wb"))
+                with open(path, "wb") as f:
+                    pickle.dump(final_positions, f)
                 logger.info("All done")
                 return
             else:

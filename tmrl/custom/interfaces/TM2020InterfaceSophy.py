@@ -7,7 +7,7 @@ Sophy-like model architecture.
 """
 
 import numpy as np
-from gymnasium import spaces
+from loguru import logger
 
 import tmrl.config as cfg
 from tmrl.custom.interfaces.TM2020Interface import TM2020Interface
@@ -107,6 +107,26 @@ class TM2020InterfaceIMPALASophy(TM2020Interface):
         self.lap_reward = lap_reward
         self.checkpoint_reward = checkpoint_reward
         self.points_number = cfg.POINTS_NUMBER
+        # Spacing-based lookahead uses RewardFunction._points_number (trajectory length at load).
+        # cfg.POINTS_NUMBER comes from the same file at import time but can theoretically differ
+        # (e.g. reload / edge cases); mismatch breaks Tuple Box shapes vs get_track_info output and
+        # shows up as physics_proj Linear in/out dim off by 1 when TRACK_CURVATURE_OBS is on.
+        _rf = self.reward_function
+        if (
+            _rf is not None
+            and float(getattr(_rf, "_point_spacing_m", 0) or 0) > 0
+            and getattr(_rf, "_points_number", None) is not None
+        ):
+            n_rf_any = getattr(_rf, "_points_number", None)
+            n_rf = self.points_number if n_rf_any is None else int(n_rf_any)
+            if n_rf != self.points_number:
+                logger.warning(
+                    "POINTS_NUMBER from constants ({}) != reward spacing lookahead ({}); "
+                    "using reward value for observation space.",
+                    self.points_number,
+                    n_rf,
+                )
+            self.points_number = n_rf
 
     def get_observation_space(self):
         """
@@ -119,42 +139,9 @@ class TM2020InterfaceIMPALASophy(TM2020Interface):
         Returns:
             gymnasium.spaces.Tuple: The observation space.
         """
-        track = spaces.Box(low=-100.0, high=100.0, shape=(6 * self.points_number,))
-        speed = spaces.Box(low=0.0, high=1000.0, shape=(1,))
-        acceleration = spaces.Box(low=-100.0, high=100.0, shape=(1,))
-        jerk = spaces.Box(low=-10.0, high=10.0, shape=(1,))
-        race_progress = spaces.Box(low=0.0, high=1.0, shape=(1,))
-        input_steer = spaces.Box(low=-1.0, high=1.0, shape=(1,))
-        input_gas_pedal = spaces.Box(low=0.0, high=1.0, shape=(1,))
-        input_brake = spaces.Box(low=0.0, high=1.0, shape=(1,))
-        gear = spaces.Box(low=0.0, high=6.0, shape=(1,))
-        aim_yaw = spaces.Box(low=-4.0, high=4.0, shape=(1,))
-        aim_pitch = spaces.Box(low=-1.0, high=1.0, shape=(1,))
-        steer_angle = spaces.Box(low=-30.0, high=30.0, shape=(2,))
-        slip_coef = spaces.Box(low=0.0, high=1.0, shape=(2,))
-        failure_counter = spaces.Box(low=0.0, high=15, shape=(1,))
-        spaces_list = [
-            track,
-            speed,
-            acceleration,
-            jerk,
-            race_progress,
-            input_steer,
-            input_gas_pedal,
-            input_brake,
-            gear,
-            aim_yaw,
-            aim_pitch,
-            steer_angle,
-            slip_coef,
-            failure_counter,
-        ]
-        if bool(cfg.REWARD_CONFIG.get("TRACK_CURVATURE_OBS", False)):
-            curvature = spaces.Box(
-                low=-1.0, high=1.0, shape=(self.points_number,), dtype=np.float32
-            )
-            spaces_list.append(curvature)
-        return spaces.Tuple(tuple(spaces_list))
+        from tmrl.custom.tm.tqc_observation_space import build_tqc_sophy_tuple_observation_space
+
+        return build_tqc_sophy_tuple_observation_space(self.points_number)
 
     def _parse_data(self, data):
         """
@@ -168,22 +155,24 @@ class TM2020InterfaceIMPALASophy(TM2020Interface):
         """
         speed = np.array([data[_IDX_SPEED] * 3.6], dtype="float32")
         pos = np.array([data[_IDX_POS_X], data[_IDX_POS_Y], data[_IDX_POS_Z]], dtype="float32")
-        return dict(
-            speed=speed,
-            pos=pos,
-            input_steer=np.array([data[_IDX_INPUT_STEER]], dtype="float32"),
-            input_gas_pedal=np.array([data[_IDX_INPUT_GAS]], dtype="float32"),
-            input_brake=np.array([data[_IDX_INPUT_BRAKE]], dtype="float32"),
-            acceleration=np.array([data[_IDX_ACCELERATION]], dtype="float32"),
-            jerk=np.array([data[_IDX_JERK]], dtype="float32"),
-            aim_yaw=np.array([data[_IDX_AIM_YAW]], dtype="float32"),
-            aim_pitch=np.array([data[_IDX_AIM_PITCH]], dtype="float32"),
-            steer_angle=np.array(
+        return {
+            "speed": speed,
+            "pos": pos,
+            "input_steer": np.array([data[_IDX_INPUT_STEER]], dtype="float32"),
+            "input_gas_pedal": np.array([data[_IDX_INPUT_GAS]], dtype="float32"),
+            "input_brake": np.array([data[_IDX_INPUT_BRAKE]], dtype="float32"),
+            "acceleration": np.array([data[_IDX_ACCELERATION]], dtype="float32"),
+            "jerk": np.array([data[_IDX_JERK]], dtype="float32"),
+            "aim_yaw": np.array([data[_IDX_AIM_YAW]], dtype="float32"),
+            "aim_pitch": np.array([data[_IDX_AIM_PITCH]], dtype="float32"),
+            "steer_angle": np.array(
                 [data[_IDX_STEER_ANGLE_FL], data[_IDX_STEER_ANGLE_FR]], dtype="float32"
             ),
-            slip_coef=np.array([data[_IDX_SLIP_COEF_FL], data[_IDX_SLIP_COEF_FR]], dtype="float32"),
-            gear=np.array([data[_IDX_GEAR]], dtype="float32"),
-        )
+            "slip_coef": np.array(
+                [data[_IDX_SLIP_COEF_FL], data[_IDX_SLIP_COEF_FR]], dtype="float32"
+            ),
+            "gear": np.array([data[_IDX_GEAR]], dtype="float32"),
+        }
 
     def _build_observation(self, d, race_progress, failure_counter, pos):
         """
