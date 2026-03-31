@@ -6,14 +6,14 @@ environment variable overrides, and merging with defaults.
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import platform
-import sys
-from pathlib import Path
-import requests
 import zipfile
-import io
+from pathlib import Path
+
+import requests  # type: ignore
 from dotenv import load_dotenv
 from loguru import logger
 from packaging import version
@@ -42,8 +42,8 @@ RTGYM_VERSION = "real-time-gym-v1" if SYSTEM == "Windows" else "real-time-gym-ts
 TMRL_FOLDER = Path.home() / "TmrlData"
 if not TMRL_FOLDER.exists():
     urls = [
-        'https://github.com/piotrowski-j46/AITrackmania/releases/download/release%2F0.8.0/TmrlData.zip',
-        'https://huggingface.co/datasets/piotrowski-j46/TmrlData/resolve/main/TmrlData.zip?download=true'
+        "https://github.com/piotrowski-j46/AITrackmania/releases/download/release%2F0.8.0/TmrlData.zip",
+        "https://huggingface.co/datasets/piotrowski-j46/TmrlData/resolve/main/TmrlData.zip?download=true",
     ]
 
     download_successful = False
@@ -65,7 +65,7 @@ if not TMRL_FOLDER.exists():
             logger.error(f"Connection error while trying {url}")
 
         if not download_successful:
-            logger.error(f"Please try again later.")
+            logger.error("Please try again later.")
             raise RuntimeError(f"Missing folder: {TMRL_FOLDER}")
 
 # Load environment variables
