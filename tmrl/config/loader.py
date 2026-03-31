@@ -54,9 +54,13 @@ if not TMRL_FOLDER.exists():
             response = requests.get(url, timeout=15)
 
             if response.status_code == 200:
-                z = zipfile.ZipFile(io.BytesIO(response.content))
-                z.extractall(Path.home())
-                download_successful = True
+                try:
+                    with zipfile.ZipFile(io.BytesIO(response.content)) as z:
+                        z.extractall(Path.home())
+                        download_successful = True
+                except (zipfile.BadZipfile, OSError) as e:
+                    logger.error(f"Failed to extract ZIP from {url}: {e}")
+                    continue
                 break
             else:
                 logger.warning(f"No response from: {url} (HTTP {response.status_code})")
@@ -64,9 +68,15 @@ if not TMRL_FOLDER.exists():
         except requests.exceptions.RequestException:
             logger.error(f"Connection error while trying {url}")
 
-        if not download_successful:
-            logger.error("Please try again later.")
-            raise RuntimeError(f"Missing folder: {TMRL_FOLDER}")
+    if not download_successful:
+        attempted_urls = "\n - " + "\n - ".join(urls)
+        logger.error(
+            "Unable to download the required TmrlData folder. \n"
+            f"Attempted URLs: {attempted_urls}\n"
+            "You can try again later or manually install the data by downloading "
+            f"TmrlData.zip from one of the URLs above and extracting it into: {TMRL_FOLDER}"
+        )
+        raise RuntimeError(f"Missing folder: {TMRL_FOLDER}")
 
 # Load environment variables
 load_dotenv()
