@@ -49,7 +49,7 @@ if not TMRL_FOLDER.exists():
     download_successful = False
 
     for url in urls:
-        print(f"Trying to download necessary files from: {url}...")
+        logger.info(f"Trying to download necessary files from: {url}...")
         try:
             response = requests.get(url, timeout=15)
 
@@ -59,13 +59,13 @@ if not TMRL_FOLDER.exists():
                 download_successful = True
                 break
             else:
-                print(f"No response from: {url} (HTTP {response.status_code})", file=sys.stderr)
+                logger.warning(f"No response from: {url} (HTTP {response.status_code})")
 
         except requests.exceptions.RequestException:
-            print(f"Connection error while trying {url}", file = sys.stderr)
+            logger.error(f"Connection error while trying {url}")
 
         if not download_successful:
-            print(f"Please try again later.", file = sys.stderr)
+            logger.error(f"Please try again later.")
             raise RuntimeError(f"Missing folder: {TMRL_FOLDER}")
 
 # Load environment variables
