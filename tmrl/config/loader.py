@@ -9,8 +9,11 @@ from __future__ import annotations
 import json
 import os
 import platform
+import sys
 from pathlib import Path
-
+import requests
+import zipfile
+import io
 from dotenv import load_dotenv
 from loguru import logger
 from packaging import version
@@ -38,7 +41,32 @@ RTGYM_VERSION = "real-time-gym-v1" if SYSTEM == "Windows" else "real-time-gym-ts
 
 TMRL_FOLDER = Path.home() / "TmrlData"
 if not TMRL_FOLDER.exists():
-    raise RuntimeError(f"Missing folder: {TMRL_FOLDER}")
+    urls = [
+        'https://github.com/piotrowski-j46/AITrackmania/releases/download/release%2F0.8.0/TmrlData.zip',
+        'https://huggingface.co/datasets/piotrowski-j46/TmrlData/resolve/main/TmrlData.zip?download=true'
+    ]
+
+    download_successful = False
+
+    for url in urls:
+        print(f"Trying to download necessary files from: {url}...")
+        try:
+            response = requests.get(url, timeout=15)
+
+            if response.status_code == 200:
+                z = zipfile.ZipFile(io.BytesIO(response.content))
+                z.extractall(Path.home())
+                download_successful = True
+                break
+            else:
+                print(f"No response from: {url} (HTTP {response.status_code})", file=sys.stderr)
+
+        except requests.exceptions.RequestException:
+            print(f"Connection error while trying {url}", file = sys.stderr)
+
+        if not download_successful:
+            print(f"Please try again later.", file = sys.stderr)
+            raise RuntimeError(f"Missing folder: {TMRL_FOLDER}")
 
 # Load environment variables
 load_dotenv()
