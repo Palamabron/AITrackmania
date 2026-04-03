@@ -6,11 +6,14 @@ environment variable overrides, and merging with defaults.
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import platform
+import zipfile
 from pathlib import Path
 
+import requests  # type: ignore
 from dotenv import load_dotenv
 from loguru import logger
 from packaging import version
@@ -38,7 +41,42 @@ RTGYM_VERSION = "real-time-gym-v1" if SYSTEM == "Windows" else "real-time-gym-ts
 
 TMRL_FOLDER = Path.home() / "TmrlData"
 if not TMRL_FOLDER.exists():
-    raise RuntimeError(f"Missing folder: {TMRL_FOLDER}")
+    urls = [
+        "https://github.com/piotrowski-j46/AITrackmania/releases/download/release%2F0.8.0/TmrlData.zip",
+        "https://huggingface.co/datasets/piotrowski-j46/TmrlData/resolve/main/TmrlData.zip?download=true",
+    ]
+
+    download_successful = False
+
+    for url in urls:
+        logger.info(f"Trying to download necessary files from: {url}...")
+        try:
+            response = requests.get(url, timeout=15)
+
+            if response.status_code == 200:
+                try:
+                    with zipfile.ZipFile(io.BytesIO(response.content)) as z:
+                        z.extractall(Path.home())
+                        download_successful = True
+                except (zipfile.BadZipfile, OSError) as e:
+                    logger.error(f"Failed to extract ZIP from {url}: {e}")
+                    continue
+                break
+            else:
+                logger.warning(f"No response from: {url} (HTTP {response.status_code})")
+
+        except requests.exceptions.RequestException:
+            logger.error(f"Connection error while trying {url}")
+
+    if not download_successful:
+        attempted_urls = "\n - " + "\n - ".join(urls)
+        logger.error(
+            "Unable to download the required TmrlData folder. \n"
+            f"Attempted URLs: {attempted_urls}\n"
+            "You can try again later or manually install the data by downloading "
+            f"TmrlData.zip from one of the URLs above and extracting it into: {TMRL_FOLDER}"
+        )
+        raise RuntimeError(f"Missing folder: {TMRL_FOLDER}")
 
 # Load environment variables
 load_dotenv()

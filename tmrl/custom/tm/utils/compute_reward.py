@@ -13,10 +13,10 @@ import shutil
 import tempfile
 
 import numpy as np
+import wandb
 from loguru import logger
 
 import tmrl.config as cfg
-import wandb
 from tmrl.config.spacing_lookahead import points_number_from_spacing_config
 
 OFF_TRACK_PROGRESS_ZERO_MULTIPLIER = 2.0
