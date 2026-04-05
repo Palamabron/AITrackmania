@@ -1,21 +1,17 @@
-"""Configuration loading and parsing logic.
-
-This module handles loading the TMRL configuration from the config.json file,
-environment variable overrides, and merging with defaults.
-"""
+"""Load Hydra-composed defaults, merge optional config.json, validate with Pydantic."""
 
 from __future__ import annotations
 
-import io
 import json
 import os
 import platform
-import zipfile
 from pathlib import Path
+from typing import Any, cast
 
-import requests  # type: ignore
 from dotenv import load_dotenv
+from hydra import compose, initialize_config_dir
 from loguru import logger
+from omegaconf import OmegaConf
 from packaging import version
 
 from tmrl.config.defaults import (
@@ -26,149 +22,140 @@ from tmrl.config.defaults import (
     deep_merge_defaults,
 )
 from tmrl.config.enums import AlgorithmName
-from tmrl.config.models import DebuggerConfig
+from tmrl.config.models import MainConfig
 
-# Constants for config loading
 MINIMUM_CONFIG_VERSION = "0.6.0"
 CONFIG_COMPATIBILITY_ERROR_MESSAGE = (
     "Perform a clean installation:\n(1) Uninstall TMRL,\n(2) Delete the TmrlData folder,\n"
     "(3) Reinstall TMRL."
 )
 
-# System detection and paths
 SYSTEM = platform.system()
 RTGYM_VERSION = "real-time-gym-v1" if SYSTEM == "Windows" else "real-time-gym-ts-v1"
 
 TMRL_FOLDER = Path.home() / "TmrlData"
 if not TMRL_FOLDER.exists():
-    urls = [
-        "https://github.com/piotrowski-j46/AITrackmania/releases/download/release%2F0.8.0/TmrlData.zip",
-        "https://huggingface.co/datasets/piotrowski-j46/TmrlData/resolve/main/TmrlData.zip?download=true",
-    ]
+    raise RuntimeError(f"Missing folder: {TMRL_FOLDER}")
 
-    download_successful = False
-
-    for url in urls:
-        logger.info(f"Trying to download necessary files from: {url}...")
-        try:
-            response = requests.get(url, timeout=15)
-
-            if response.status_code == 200:
-                try:
-                    with zipfile.ZipFile(io.BytesIO(response.content)) as z:
-                        z.extractall(Path.home())
-                        download_successful = True
-                except (zipfile.BadZipfile, OSError) as e:
-                    logger.error(f"Failed to extract ZIP from {url}: {e}")
-                    continue
-                break
-            else:
-                logger.warning(f"No response from: {url} (HTTP {response.status_code})")
-
-        except requests.exceptions.RequestException:
-            logger.error(f"Connection error while trying {url}")
-
-    if not download_successful:
-        attempted_urls = "\n - " + "\n - ".join(urls)
-        logger.error(
-            "Unable to download the required TmrlData folder. \n"
-            f"Attempted URLs: {attempted_urls}\n"
-            "You can try again later or manually install the data by downloading "
-            f"TmrlData.zip from one of the URLs above and extracting it into: {TMRL_FOLDER}"
-        )
-        raise RuntimeError(f"Missing folder: {TMRL_FOLDER}")
-
-# Load environment variables
 load_dotenv()
 load_dotenv(TMRL_FOLDER / ".env")
 load_dotenv(TMRL_FOLDER / "config" / ".env")
 
-# Load the main config file
 CONFIG_FILE_PATH = TMRL_FOLDER / "config" / "config.json"
-with open(CONFIG_FILE_PATH) as f:
-    TMRL_CONFIG: dict = json.load(f)
 
-# Override with environment variables
-env_wandb_key = os.getenv("WANDB_API_KEY") or os.getenv("WANDB_KEY")
-if env_wandb_key:
-    TMRL_CONFIG["WANDB_KEY"] = env_wandb_key
-env_password = os.getenv("TMRL_PASSWORD")
-if env_password:
-    TMRL_CONFIG["PASSWORD"] = env_password
+_HYDRA_CONF_DIR = Path(__file__).resolve().parent.parent / "conf"
 
-# Merge with defaults
-deep_merge_defaults(TMRL_CONFIG, _DEFAULT_TMRL_CONFIG)
 
-# Validate version
-if "__VERSION__" not in TMRL_CONFIG:
-    raise ValueError("config.json is outdated. " + CONFIG_COMPATIBILITY_ERROR_MESSAGE)
-CONFIG_VERSION = TMRL_CONFIG["__VERSION__"]
-if version.parse(CONFIG_VERSION) < version.parse(MINIMUM_CONFIG_VERSION):
-    raise ValueError(
-        f"config.json version ({CONFIG_VERSION}) must be >= {MINIMUM_CONFIG_VERSION}. "
-        + CONFIG_COMPATIBILITY_ERROR_MESSAGE
-    )
+def _compose_hydra_dict() -> dict[str, Any]:
+    if not _HYDRA_CONF_DIR.is_dir():
+        raise RuntimeError(f"Missing Hydra config directory: {_HYDRA_CONF_DIR}")
+    with initialize_config_dir(version_base=None, config_dir=str(_HYDRA_CONF_DIR)):
+        hydra_cfg = compose(config_name="config")
+    out = OmegaConf.to_container(hydra_cfg, resolve=True)
+    if not isinstance(out, dict):
+        raise TypeError("Hydra compose must produce a dict root")
+    return cast(dict[str, Any], out)
 
-# Setup environment config with defaults and legacy handling
-_raw_env = dict(TMRL_CONFIG["ENV"])
 
-# Handle legacy END_OF_TRACK from REWARD_CONFIG
-_legacy_finish_reward = None
-if isinstance(_raw_env.get("REWARD_CONFIG"), dict):
-    _legacy_finish_reward = _raw_env["REWARD_CONFIG"].get("END_OF_TRACK")
-if "END_OF_TRACK_REWARD" not in _raw_env and _legacy_finish_reward is not None:
-    _raw_env["END_OF_TRACK_REWARD"] = _legacy_finish_reward
-if _legacy_finish_reward is not None and "END_OF_TRACK_REWARD" in _raw_env:
-    try:
-        if float(_legacy_finish_reward) != float(_raw_env["END_OF_TRACK_REWARD"]):
+def _deep_merge_user_over(base: dict[str, Any], user: dict[str, Any]) -> None:
+    """Recursively overwrite base with user (user wins on leaves)."""
+    for key, val in user.items():
+        if key in base and isinstance(base[key], dict) and isinstance(val, dict):
+            _deep_merge_user_over(base[key], val)
+        else:
+            base[key] = val
+
+
+def _apply_legacy_env_and_reward(tm: dict[str, Any]) -> None:
+    """Mutate tm like the historical loader: ENV defaults, END_OF_TRACK, REWARD_CONFIG merge."""
+    _raw_env = dict(tm["ENV"])
+
+    _legacy_finish_reward = None
+    if isinstance(_raw_env.get("REWARD_CONFIG"), dict):
+        _legacy_finish_reward = _raw_env["REWARD_CONFIG"].get("END_OF_TRACK")
+    if "END_OF_TRACK_REWARD" not in _raw_env and _legacy_finish_reward is not None:
+        _raw_env["END_OF_TRACK_REWARD"] = _legacy_finish_reward
+    if _legacy_finish_reward is not None and "END_OF_TRACK_REWARD" in _raw_env:
+        try:
+            if float(_legacy_finish_reward) != float(_raw_env["END_OF_TRACK_REWARD"]):
+                logger.warning(
+                    "Config contains both ENV.END_OF_TRACK_REWARD={} and legacy "
+                    "ENV.REWARD_CONFIG.END_OF_TRACK={}. Using END_OF_TRACK_REWARD.",
+                    _raw_env["END_OF_TRACK_REWARD"],
+                    _legacy_finish_reward,
+                )
+        except Exception:
             logger.warning(
-                "Config contains both ENV.END_OF_TRACK_REWARD={} and legacy "
-                "ENV.REWARD_CONFIG.END_OF_TRACK={}. Using END_OF_TRACK_REWARD.",
-                _raw_env["END_OF_TRACK_REWARD"],
-                _legacy_finish_reward,
+                "Could not compare END_OF_TRACK_REWARD and legacy REWARD_CONFIG.END_OF_TRACK. "
+                "Using END_OF_TRACK_REWARD."
             )
-    except Exception:
-        logger.warning(
-            "Could not compare END_OF_TRACK_REWARD and legacy REWARD_CONFIG.END_OF_TRACK. "
-            "Using END_OF_TRACK_REWARD."
+    if isinstance(_raw_env.get("REWARD_CONFIG"), dict):
+        _raw_env["REWARD_CONFIG"].pop("END_OF_TRACK", None)
+
+    default_env = dict(_DEFAULT_ENV_CONFIG)
+    if "RTGYM_CONFIG" not in _raw_env:
+        default_env["RTGYM_CONFIG"] = dict(_DEFAULT_RTXGYM_CONFIG)
+
+    for k, v in default_env.items():
+        if k not in _raw_env:
+            _raw_env[k] = v
+
+    if isinstance(_raw_env.get("RTGYM_CONFIG"), dict):
+        _raw_env["RTGYM_CONFIG"].setdefault("reset_act_buf", True)
+
+    if isinstance(tm.get("REWARD_CONFIG"), dict):
+        _merge = _raw_env.get("REWARD_CONFIG") or {}
+        if isinstance(_merge, dict):
+            for _rk, _rv in tm["REWARD_CONFIG"].items():
+                _merge[_rk] = _rv
+            _raw_env["REWARD_CONFIG"] = _merge
+        else:
+            _raw_env["REWARD_CONFIG"] = dict(tm["REWARD_CONFIG"])
+
+    tm["ENV"] = _raw_env
+    tm.pop("REWARD_CONFIG", None)
+
+
+def _build_raw_tmrl_config() -> dict[str, Any]:
+    merged: dict[str, Any] = _compose_hydra_dict()
+    if CONFIG_FILE_PATH.is_file():
+        with open(CONFIG_FILE_PATH) as f:
+            user_cfg = json.load(f)
+        if isinstance(user_cfg, dict):
+            _deep_merge_user_over(merged, user_cfg)
+
+    deep_merge_defaults(merged, _DEFAULT_TMRL_CONFIG)
+
+    env_wandb_key = os.getenv("WANDB_API_KEY") or os.getenv("WANDB_KEY")
+    if env_wandb_key:
+        merged["WANDB_KEY"] = env_wandb_key
+    env_password = os.getenv("TMRL_PASSWORD")
+    if env_password:
+        merged["PASSWORD"] = env_password
+
+    if "__VERSION__" not in merged:
+        raise ValueError("config is outdated. " + CONFIG_COMPATIBILITY_ERROR_MESSAGE)
+    if version.parse(merged["__VERSION__"]) < version.parse(MINIMUM_CONFIG_VERSION):
+        raise ValueError(
+            f"config version ({merged['__VERSION__']}) must be >= {MINIMUM_CONFIG_VERSION}. "
+            + CONFIG_COMPATIBILITY_ERROR_MESSAGE
         )
-if isinstance(_raw_env.get("REWARD_CONFIG"), dict):
-    _raw_env["REWARD_CONFIG"].pop("END_OF_TRACK", None)
 
-# Apply default values
-default_env = dict(_DEFAULT_ENV_CONFIG)
-if "RTGYM_CONFIG" not in _raw_env:
-    default_env["RTGYM_CONFIG"] = dict(_DEFAULT_RTXGYM_CONFIG)
+    _apply_legacy_env_and_reward(merged)
+    return merged
 
-for k, v in default_env.items():
-    if k not in _raw_env:
-        _raw_env[k] = v
 
-# Ensure RT-MDP action buffer is cleared on reset
-if isinstance(_raw_env.get("RTGYM_CONFIG"), dict):
-    _raw_env["RTGYM_CONFIG"].setdefault("reset_act_buf", True)
-
-# Support root-level REWARD_CONFIG
-if isinstance(TMRL_CONFIG.get("REWARD_CONFIG"), dict):
-    _merge = _raw_env.get("REWARD_CONFIG") or {}
-    if isinstance(_merge, dict):
-        for _rk, _rv in TMRL_CONFIG["REWARD_CONFIG"].items():
-            _merge[_rk] = _rv
-        _raw_env["REWARD_CONFIG"] = _merge
-    else:
-        _raw_env["REWARD_CONFIG"] = dict(TMRL_CONFIG["REWARD_CONFIG"])
-
-TMRL_CONFIG["ENV"] = _raw_env
-ENV_CONFIG = _raw_env
-
-# Setup debugger config with defaults
-_debugger_raw = TMRL_CONFIG.get("DEBUGGER", dict(_DEFAULT_DEBUGGER_CONFIG))
-DEBUGGER_CONFIG = DebuggerConfig(**_debugger_raw)
-DEBUGGER = _debugger_raw
+_RAW_TMRL_CONFIG = _build_raw_tmrl_config()
+MAIN_CONFIG = MainConfig.model_validate(_RAW_TMRL_CONFIG)
+TMRL_CONFIG: dict[str, Any] = MAIN_CONFIG.model_dump(mode="json", by_alias=True)
+ENV_CONFIG: dict[str, Any] = cast(dict[str, Any], TMRL_CONFIG["ENV"])
+DEBUGGER_CONFIG = MAIN_CONFIG.DEBUGGER
+DEBUGGER: dict[str, Any] = TMRL_CONFIG.get("DEBUGGER", dict(_DEFAULT_DEBUGGER_CONFIG))
+CONFIG_VERSION = str(TMRL_CONFIG["__VERSION__"])
 
 
 def _validate_alg_config() -> None:
-    """Validate algorithm configuration for consistency."""
+    """Backward-compatible name; validation runs in AlgConfig model_validator."""
     alg_config = TMRL_CONFIG["ALG"]
     if (
         AlgorithmName(alg_config["ALGORITHM"])
@@ -181,22 +168,11 @@ def _validate_alg_config() -> None:
 _validate_alg_config()
 
 
-def create_config() -> dict:
-    """Build a flat training config dict from TMRL_CONFIG for the training agent.
+def create_config() -> dict[str, Any]:
+    """Flat training dict for custom algorithms (checkpoint / agent hyperparameter bundle)."""
+    from tmrl.config import POINTS_NUMBER
 
-    Merges model, environment, algorithm and scheduler entries into a single
-    dict expected by the custom algorithms (e.g. SAC/TQC). Used when loading
-    checkpoints or initializing agents that need all hyperparameters in one place.
-
-    Returns:
-        A single-level dict with keys like TRAINING_STEPS_PER_ROUND, LR_ACTOR,
-        CNN_FILTERS, RNN_SIZES, CRASH_PENALTY, GAMMA, etc.
-    """
-    from tmrl.config import (  # Import here to avoid circular imports
-        POINTS_NUMBER,
-    )
-
-    training_config: dict = {}
+    training_config: dict[str, Any] = {}
     alg_config = TMRL_CONFIG["ALG"]
     model_config = TMRL_CONFIG["MODEL"]
     scheduler_config = model_config["SCHEDULER"]

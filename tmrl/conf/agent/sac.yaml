@@ -1,0 +1,6 @@
+# @package _global_
+# Soft Actor-Critic (continuous actions) — baseline uses config.yaml ALG; this pins algorithm id
+ALG:
+  ALGORITHM: SAC
+  QUANTILES_NUMBER: 1
+  TOP_QUANTILES_TO_DROP: 2

@@ -1,0 +1,12 @@
+# @package _global_
+# Vanilla CNN actor-critic stack (IMPALA-style when images; no Simba trunk)
+MODEL:
+  USE_RESIDUAL_SOPHY: false
+  USE_SIMBAV2: false
+  USE_RNN: false
+  RNN_HIDDEN_SIZE: 0
+  USE_TRACK_CONV1D: true
+  TRACK_ENCODER: conv1d
+  GNN_LAYERS: 3
+  GNN_HIDDEN: 64
+  BINARY_BRAKE: false

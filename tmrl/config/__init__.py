@@ -227,6 +227,7 @@ from tmrl.config.loader import (
     DEBUGGER,
     DEBUGGER_CONFIG,
     ENV_CONFIG,
+    MAIN_CONFIG,
     MINIMUM_CONFIG_VERSION,
     RTGYM_VERSION,
     SYSTEM,
@@ -234,7 +235,7 @@ from tmrl.config.loader import (
     TMRL_FOLDER,
     create_config,
 )
-from tmrl.config.models import AlgConfig, DebuggerConfig, EnvConfig, RewardConfig
+from tmrl.config.models import AlgConfig, DebuggerConfig, EnvConfig, MainConfig, RewardConfig
 from tmrl.config.paths import (
     CHECKPOINT_PATH,
     CHECKPOINTS_FOLDER,
@@ -358,6 +359,8 @@ __all__ = [
     "MAX_NB_ZERO_REW_BEFORE_FAILURE",
     "MAX_SPEED_KMH",
     "MAX_TRAINING_STEPS_PER_ENVIRONMENT_STEP",
+    "MAIN_CONFIG",
+    "MainConfig",
     "MEMORY_SIZE",
     "MINIMUM_CONFIG_VERSION",
     "MIN_NB_STEPS_BEFORE_FAILURE",

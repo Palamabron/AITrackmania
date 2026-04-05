@@ -1,0 +1,9 @@
+# @package _global_
+DEBUGGER:
+  DEBUG_MODE: false
+  PROFILE_TRAINER: false
+  PYTORCH_PROFILER: false
+  CRC_DEBUG: false
+  CRC_DEBUG_SAMPLES: 0
+  WANDB_DEBUG: true
+  OBSERVATION_BOUNDS_CHECK: false
