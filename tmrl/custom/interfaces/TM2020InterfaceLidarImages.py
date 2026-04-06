@@ -6,6 +6,7 @@ from gymnasium import spaces
 
 import tmrl.config as cfg
 from tmrl.custom.interfaces.TM2020InterfaceLidarProgress import TM2020InterfaceLidarProgress
+from tmrl.custom.tm.utils.tools import openplanet_grab_indices
 
 
 class TM2020InterfaceLidarProgressImages(TM2020InterfaceLidarProgress):
@@ -21,14 +22,12 @@ class TM2020InterfaceLidarProgressImages(TM2020InterfaceLidarProgress):
         gamepad=False,
         grayscale=True,
         resize_to=None,
-        min_nb_steps_before_failure=int(20 * 3.5),
         save_replays=False,
         **kwargs,
     ):
         super().__init__(
             img_hist_len=img_hist_len,
             gamepad=gamepad,
-            min_nb_steps_before_failure=min_nb_steps_before_failure,
             save_replays=save_replays,
             **kwargs,
         )
@@ -40,7 +39,8 @@ class TM2020InterfaceLidarProgressImages(TM2020InterfaceLidarProgress):
         """Screenshot once; compute LIDAR and return resized image for the model."""
         raw_img = self.window_interface.screenshot()[:, :, :3]
         data = self.client.retrieve_data()
-        speed = np.array([data[0]], dtype="float32")
+        _si, _, _ = openplanet_grab_indices(self.client.nb_floats)
+        speed = np.array([data[_si]], dtype="float32")
         lidar = self.lidar.lidar_20(img=raw_img, show=False)
 
         # Resize and optionally grayscale for the image branch
@@ -69,8 +69,9 @@ class TM2020InterfaceLidarProgressImages(TM2020InterfaceLidarProgress):
 
     def get_obs_rew_terminated_info(self):
         lidar, speed, data, img = self.grab_lidar_speed_data_and_image()
+        _, (_xi, _yi, _zi), _eoti = openplanet_grab_indices(self.client.nb_floats)
         rew, terminated, _failure_counter = self.reward_function.compute_reward(
-            pos=np.array([data[2], data[3], data[4]])
+            pos=np.array([data[_xi], data[_yi], data[_zi]])
         )[:3]
         progress = np.array(
             [self.reward_function.cur_idx / max(1, self.reward_function.datalen)],
@@ -85,7 +86,7 @@ class TM2020InterfaceLidarProgressImages(TM2020InterfaceLidarProgress):
         lidars = np.array(list(self.img_hist), dtype="float32")
         images = np.array(list(self.image_hist), dtype="float32")
         obs = [speed, progress, lidars, images]
-        end_of_track = bool(data[8])
+        end_of_track = bool(data[_eoti])
         info = {"end_of_track": end_of_track}
         if end_of_track:
             rew += self.finish_reward

@@ -11,6 +11,7 @@ import time
 from dataclasses import dataclass
 
 import tyro
+import yaml
 from loguru import logger
 
 import tmrl.config as cfg
@@ -101,6 +102,12 @@ class TmrlCli:
 
     wsl_ip: bool = False
     """Print this machine's IP (for PUBLIC_IP_SERVER when worker runs on Windows)."""
+
+    print_config: bool = False
+    """Print fully merged redacted config and exit."""
+
+    explain_active_config: bool = False
+    """Print which model.* fields affect this algorithm+interface and which are ignored; exit."""
 
 
 def main(cli: TmrlCli) -> None:
@@ -224,7 +231,16 @@ def main(cli: TmrlCli) -> None:
             s.connect(("8.8.8.8", 80))
             ip = s.getsockname()[0]
         print(ip)
-        logger.info(f"Set PUBLIC_IP_SERVER to this in Windows TmrlData\\config\\config.json: {ip}")
+        logger.info(
+            f"Set distributed.public_ip_server in Windows TmrlData\\config\\local.yaml: {ip}"
+        )
+    elif cli.print_config:
+        print(yaml.safe_dump(cfg.merged_config_snapshot_redacted(), sort_keys=False))
+    elif cli.explain_active_config:
+        import tmrl.config.loader as _loader
+        from tmrl.config.effective_config import explain_active_config_text
+
+        print(explain_active_config_text(_loader.MAIN_CONFIG), end="")
     else:
         raise ValueError(
             "No mode selected."
@@ -240,7 +256,9 @@ def main(cli: TmrlCli) -> None:
             " --record-episode, "
             " --import-player-runs, "
             " --check-environment, "
-            " --wsl-ip."
+            " --wsl-ip, "
+            " --print-config, "
+            " --explain-active-config."
         )
 
 

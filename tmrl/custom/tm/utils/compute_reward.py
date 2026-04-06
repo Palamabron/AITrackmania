@@ -13,10 +13,11 @@ import shutil
 import tempfile
 
 import numpy as np
-import wandb
 from loguru import logger
 
 import tmrl.config as cfg
+import wandb
+from tmrl.config.loader import MAIN_CONFIG
 from tmrl.config.spacing_lookahead import points_number_from_spacing_config
 
 OFF_TRACK_PROGRESS_ZERO_MULTIPLIER = 2.0
@@ -124,7 +125,6 @@ class RewardFunction:
         reward_data_path: str,
         nb_obs_forward: int = 8,
         nb_obs_backward: int = 8,
-        min_nb_steps_before_failure: int = int(2.5 * 20),
         max_dist_from_traj: float = 23.5,
         crash_penalty: float = 10.0,
         constant_penalty: float = 0.0,
@@ -135,34 +135,47 @@ class RewardFunction:
             reward_data_path: Path to the reference trajectory pickle file.
             nb_obs_forward: Number of trajectory points to look forward for progress.
             nb_obs_backward: Number of trajectory points to look backward (rewind check).
-            min_nb_steps_before_failure: Minimum steps before failure can trigger.
             max_dist_from_traj: Max distance from trajectory before off-track failure.
             crash_penalty: Penalty applied on crash event.
             constant_penalty: Per-step penalty.
         """
         self.reward_data_path = reward_data_path
-        if not os.path.exists(reward_data_path):
-            logger.warning(f"Reward trajectory not found at {reward_data_path}. Using dummy.")
-            self.data = np.array([[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]])
-            self._dummy_trajectory = True
-        else:
-            with open(reward_data_path, "rb") as f:
-                self.data = pickle.load(f)
-            self._dummy_trajectory = len(self.data) <= 2
+        if not os.path.isfile(reward_data_path):
+            raise FileNotFoundError(
+                f"Reward trajectory missing: {reward_data_path}. "
+                "Set environment.map_name and record reward_<map>.pkl under TmrlData/reward/."
+            )
+        with open(reward_data_path, "rb") as f:
+            self.data = pickle.load(f)
+        self._dummy_trajectory = len(self.data) <= 2
 
         self.datalen = len(self.data)
 
-        if not os.path.exists(cfg.TRACK_PATH_LEFT):
-            self.left_track = np.array([[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]])
-        else:
+        if cfg.PRAGMA_LIDAR:
+            if not os.path.isfile(cfg.TRACK_PATH_LEFT):
+                raise FileNotFoundError(
+                    f"LIDAR requires left track boundary: missing {cfg.TRACK_PATH_LEFT}"
+                )
+            if not os.path.isfile(cfg.TRACK_PATH_RIGHT):
+                raise FileNotFoundError(
+                    f"LIDAR requires right track boundary: missing {cfg.TRACK_PATH_RIGHT}"
+                )
             with open(cfg.TRACK_PATH_LEFT, "rb") as f:
                 self.left_track = np.asarray(pickle.load(f), dtype=np.float64)
-
-        if not os.path.exists(cfg.TRACK_PATH_RIGHT):
-            self.right_track = np.array([[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]])
-        else:
             with open(cfg.TRACK_PATH_RIGHT, "rb") as f:
                 self.right_track = np.asarray(pickle.load(f), dtype=np.float64)
+        else:
+            if not os.path.isfile(cfg.TRACK_PATH_LEFT):
+                self.left_track = np.array([[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]])
+            else:
+                with open(cfg.TRACK_PATH_LEFT, "rb") as f:
+                    self.left_track = np.asarray(pickle.load(f), dtype=np.float64)
+
+            if not os.path.isfile(cfg.TRACK_PATH_RIGHT):
+                self.right_track = np.array([[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]])
+            else:
+                with open(cfg.TRACK_PATH_RIGHT, "rb") as f:
+                    self.right_track = np.asarray(pickle.load(f), dtype=np.float64)
 
         self._has_boundaries = (
             len(self.left_track) >= 2 and len(self.right_track) >= 2 and self.datalen >= 2
@@ -197,28 +210,29 @@ class RewardFunction:
         self.nb_obs_forward = nb_obs_forward
         self.nb_obs_backward = nb_obs_backward
 
-        cfg_min_steps = int(cfg.REWARD_CONFIG.get("MIN_STEPS", min_nb_steps_before_failure))
-        self.min_nb_steps_before_failure = max(1, int(cfg_min_steps))
-        self.max_dist_from_traj = float(cfg.REWARD_CONFIG.get("MAX_STRAY", max_dist_from_traj))
+        self.max_dist_from_traj = float(cfg.REWARD_CONFIG.get("max_stray", max_dist_from_traj))
 
-        max_time_no_progress = float(cfg.REWARD_CONFIG.get("MAX_TIME_NO_PROGRESS_SECONDS", 0.0))
-        if max_time_no_progress > 0:
-            rtgym = getattr(cfg, "ENV_CONFIG", {}).get("RTGYM_CONFIG", {})
-            raw_dt = float(rtgym.get("time_step_duration", 0.05))
-            if raw_dt >= 1.0:
-                self._time_step_duration = raw_dt / 1000.0
-            else:
-                self._time_step_duration = raw_dt
+        # Single sim tick (seconds) from rtgym for grace + no-progress timeouts
+        rtgym = MAIN_CONFIG.environment.rtgym_config_dict()
+        raw_dt = float(rtgym.get("time_step_duration", 0.05))
+        if raw_dt >= 1.0:
+            self._time_step_duration = raw_dt / 1000.0
+        else:
+            self._time_step_duration = raw_dt
+
+        config_path = str(cfg.CONFIG_FILE_PATH)
+        no_prog_sec = float(cfg.REWARD_CONFIG.get("min_seconds_before_failure", 0.0))
+        if no_prog_sec > 0.0:
             self._max_no_progress_steps = max(
                 1,
-                int(round(max_time_no_progress / self._time_step_duration)),  # noqa: RUF046
+                int(round(no_prog_sec / self._time_step_duration)),  # noqa: RUF046
             )
-            steps_if_005 = max(1, int(round(max_time_no_progress / 0.05)))  # noqa: RUF046
-            if max_time_no_progress >= 1.0 and self._max_no_progress_steps < steps_if_005 // 2:
+            steps_if_005 = max(1, int(round(no_prog_sec / 0.05)))  # noqa: RUF046
+            if no_prog_sec >= 1.0 and self._max_no_progress_steps < steps_if_005 // 2:
                 logger.warning(
                     "No-progress steps {} low for {:.1f}s (dt={:.3f}s); dt=0.05s -> {} steps.",
                     self._max_no_progress_steps,
-                    max_time_no_progress,
+                    no_prog_sec,
                     self._time_step_duration,
                     steps_if_005,
                 )
@@ -226,23 +240,35 @@ class RewardFunction:
                 self._max_no_progress_steps = steps_if_005
             self._use_time_no_progress = True
             self._last_progress_step = 0
-            config_path = getattr(cfg, "CONFIG_FILE_PATH", "config.json")
             logger.info(
-                "Reward: time-based no-progress timeout {:.1f}s ({} steps). Config: {}",
-                max_time_no_progress,
+                "Reward: no-progress episode cutoff after {:.3f}s sim time "
+                "(~{} env steps at dt={:.4f}s). {}",
+                no_prog_sec,
                 self._max_no_progress_steps,
+                self._time_step_duration,
                 config_path,
             )
         else:
-            self._time_step_duration = TIME_STEP_SECONDS
             self._max_no_progress_steps = 0
             self._use_time_no_progress = False
             self._last_progress_step = 0
-            config_path = getattr(cfg, "CONFIG_FILE_PATH", "config.json")
             logger.info(
-                "Reward: no-progress only via MAX_TIME_NO_PROGRESS_SECONDS. Set in {} to enable.",
+                "Reward: min_seconds_before_failure=0 → no stagnant-progress timeout. {}",
                 config_path,
             )
+
+        _ot_grace_sec = float(cfg.REWARD_CONFIG.get("off_track_seconds_before_failure", 0.5))
+        if _ot_grace_sec <= 0.0:
+            self._off_track_grace_steps = 0
+        else:
+            self._off_track_grace_steps = max(1, round(_ot_grace_sec / self._time_step_duration))
+        logger.info(
+            "Reward: off-track grace {:.3f}s sim time (~{} env steps at dt={:.4f}s). {}",
+            _ot_grace_sec,
+            self._off_track_grace_steps,
+            self._time_step_duration,
+            config_path,
+        )
 
         self.step_counter = 0
         self.failure_counter = 0
@@ -257,42 +283,42 @@ class RewardFunction:
         )
 
         self._progress_reward_full_lap = float(
-            cfg.REWARD_CONFIG.get("PROGRESS_REWARD_FULL_LAP", 200.0)
+            cfg.REWARD_CONFIG.get("progress_reward_full_lap", 200.0)
         )
-        self._speed_reward_weight = float(cfg.REWARD_CONFIG.get("SPEED_REWARD_WEIGHT", 0.25))
-        self._speed_reward_exponent = float(cfg.REWARD_CONFIG.get("SPEED_REWARD_EXPONENT", 1.0))
+        self._speed_reward_weight = float(cfg.REWARD_CONFIG.get("speed_reward_weight", 0.25))
+        self._speed_reward_exponent = float(cfg.REWARD_CONFIG.get("speed_reward_exponent", 1.0))
         self._speed_reward_alignment_floor = float(
-            cfg.REWARD_CONFIG.get("SPEED_REWARD_ALIGNMENT_FLOOR", 0.0)
+            cfg.REWARD_CONFIG.get("speed_reward_alignment_floor", 0.0)
         )
-        self._max_speed_kmh = float(cfg.REWARD_CONFIG.get("MAX_SPEED_KMH", 100.0))
-        self._constant_penalty = float(cfg.REWARD_CONFIG.get("CONSTANT_PENALTY", constant_penalty))
-        self._drift_reward_weight = float(cfg.REWARD_CONFIG.get("DRIFT_REWARD_WEIGHT", 0.0))
+        self._max_speed_kmh = float(cfg.REWARD_CONFIG.get("max_speed_kmh", 100.0))
+        self._constant_penalty = float(cfg.REWARD_CONFIG.get("constant_penalty", constant_penalty))
+        self._drift_reward_weight = float(cfg.REWARD_CONFIG.get("drift_reward_weight", 0.0))
         self._drift_optimal_angle_deg = float(
-            cfg.REWARD_CONFIG.get("DRIFT_OPTIMAL_ANGLE_DEG", 12.0)
+            cfg.REWARD_CONFIG.get("drift_optimal_angle_deg", 12.0)
         )
-        self._drift_sigma_deg = float(cfg.REWARD_CONFIG.get("DRIFT_SIGMA_DEG", 8.0))
-        self._drift_threshold_kmh = float(cfg.REWARD_CONFIG.get("DRIFT_THRESHOLD_KMH", 80.0))
-        self._max_track_width = float(cfg.REWARD_CONFIG.get("MAX_TRACK_WIDTH", 35.0))
-        self.crash_penalty = float(cfg.REWARD_CONFIG.get("CRASH_PENALTY", 2.0))
-        self._reward_clip_floor = float(cfg.REWARD_CONFIG.get("REWARD_CLIP_FLOOR", 5.0))
-        self._reward_scale = float(cfg.REWARD_CONFIG.get("REWARD_SCALE", 1.0))
-        self._end_of_track_reward = float(cfg.REWARD_CONFIG.get("END_OF_TRACK_REWARD", 10.0))
-        self._track_curvature_obs = bool(cfg.REWARD_CONFIG.get("TRACK_CURVATURE_OBS", False))
-        self._progress_min_alignment = float(cfg.REWARD_CONFIG.get("PROGRESS_MIN_ALIGNMENT", 0.0))
+        self._drift_sigma_deg = float(cfg.REWARD_CONFIG.get("drift_sigma_deg", 8.0))
+        self._drift_threshold_kmh = float(cfg.REWARD_CONFIG.get("drift_threshold_kmh", 80.0))
+        self._max_track_width = float(cfg.REWARD_CONFIG.get("max_track_width", 35.0))
+        self.crash_penalty = float(cfg.REWARD_CONFIG.get("crash_penalty", 2.0))
+        self._reward_clip_floor = float(cfg.REWARD_CONFIG.get("reward_clip_floor", 5.0))
+        self._reward_scale = float(cfg.REWARD_CONFIG.get("reward_scale", 1.0))
+        self._end_of_track_reward = float(cfg.REWARD_CONFIG.get("end_of_track_reward", 10.0))
+        self._track_curvature_obs = bool(cfg.REWARD_CONFIG.get("track_curvature_obs", False))
+        self._progress_min_alignment = float(cfg.REWARD_CONFIG.get("progress_min_alignment", 0.0))
         self._velocity_alignment_reward_weight = float(
-            cfg.REWARD_CONFIG.get("VELOCITY_ALIGNMENT_REWARD_WEIGHT", 0.0)
+            cfg.REWARD_CONFIG.get("velocity_alignment_reward_weight", 0.0)
         )
-        self._barrier_touch_penalty = float(cfg.REWARD_CONFIG.get("BARRIER_TOUCH_PENALTY", 0.0))
-        self._barrier_touch_radius = float(cfg.REWARD_CONFIG.get("BARRIER_TOUCH_RADIUS", 0.25))
+        self._barrier_touch_penalty = float(cfg.REWARD_CONFIG.get("barrier_touch_penalty", 0.0))
+        self._barrier_touch_radius = float(cfg.REWARD_CONFIG.get("barrier_touch_radius", 0.25))
         self._barrier_touch_min_speed_kmh = float(
-            cfg.REWARD_CONFIG.get("BARRIER_TOUCH_MIN_SPEED_KMH", 5.0)
+            cfg.REWARD_CONFIG.get("barrier_touch_min_speed_kmh", 5.0)
         )
 
         self._drift_weight_start = float(
-            cfg.REWARD_CONFIG.get("DRIFT_REWARD_WEIGHT_START", self._drift_reward_weight)
+            cfg.REWARD_CONFIG.get("drift_reward_weight_start", self._drift_reward_weight)
         )
-        self._drift_weight_end = float(cfg.REWARD_CONFIG.get("DRIFT_REWARD_WEIGHT_END", 0.0))
-        self._drift_anneal_steps = int(cfg.REWARD_CONFIG.get("DRIFT_ANNEAL_STEPS", 0))
+        self._drift_weight_end = float(cfg.REWARD_CONFIG.get("drift_reward_weight_end", 0.0))
+        self._drift_anneal_steps = int(cfg.REWARD_CONFIG.get("drift_anneal_steps", 0))
         self._global_env_steps: int = 0
 
         self._term_reason: str | None = None
@@ -306,8 +332,8 @@ class RewardFunction:
         self._checkpoint_stride = max(
             1, min(len(self.data), int(cfg.POINTS_DISTANCE / max(self.average_distance, 0.01)))
         )
-        _track_pct = float(cfg.REWARD_CONFIG.get("TRACK_LOOK_AHEAD_PCT", 0.0))
-        _track_spacing = float(cfg.REWARD_CONFIG.get("TRACK_POINT_SPACING_M", 0.0))
+        _track_pct = float(cfg.REWARD_CONFIG.get("track_look_ahead_pct", 0.0))
+        _track_spacing = float(cfg.REWARD_CONFIG.get("track_point_spacing_m", 0.0))
         self._points_number: int | None
         if _track_pct > 0 and _track_spacing > 0 and self.datalen > 1:
             self._points_number = points_number_from_spacing_config(
@@ -318,8 +344,8 @@ class RewardFunction:
             self._point_spacing_m = 0.0
             self._points_number = None
 
-        self._debug_reward = bool(cfg.REWARD_CONFIG.get("DEBUG_REWARD_COMPONENTS", False))
-        self._debug_log_interval = int(cfg.REWARD_CONFIG.get("DEBUG_LOG_INTERVAL", 100))
+        self._debug_reward = bool(cfg.REWARD_CONFIG.get("debug_reward_components", False))
+        self._debug_log_interval = int(cfg.REWARD_CONFIG.get("debug_log_interval", 100))
         self.prev_pos: np.ndarray | None = None
         self._reset_debug_accumulators()
 
@@ -645,16 +671,12 @@ class RewardFunction:
 
         if (
             getattr(self, "_use_time_no_progress", False)
-            and self.step_counter > self.min_nb_steps_before_failure
             and (self.step_counter - self._last_progress_step) >= self._max_no_progress_steps
         ):
             terminated = True
             self._term_reason = "no_progress_timeout"
 
-        if (
-            min_dist > self._max_track_width
-            and self.step_counter > self.min_nb_steps_before_failure
-        ):
+        if min_dist > self._max_track_width and self.step_counter > self._off_track_grace_steps:
             terminated = True
             self._term_reason = "off_track"
 

@@ -15,6 +15,7 @@ from loguru import logger
 from rtgym import RealTimeGymInterface
 
 import tmrl.config as cfg
+from tmrl.config.loader import MAIN_CONFIG
 from tmrl.custom.tm.utils.auto_drift import compute_drift_steer, is_auto_drift_action
 from tmrl.custom.tm.utils.compute_reward import RewardFunction
 from tmrl.custom.tm.utils.control_gamepad import (
@@ -33,7 +34,11 @@ from tmrl.custom.tm.utils.discrete_control import (
     discrete_index_to_control,
     is_brake_tap,
 )
-from tmrl.custom.tm.utils.tools import Lidar, TM2020OpenPlanetClient, save_ghost
+from tmrl.custom.tm.utils.tools import (
+    TM2020OpenPlanetClient,
+    openplanet_grab_indices,
+    save_ghost,
+)
 from tmrl.custom.tm.utils.window import WindowInterface
 
 # Globals
@@ -58,7 +63,6 @@ class TM2020Interface(RealTimeGymInterface):
         finish_reward=None,
         constant_penalty=None,
         crash_penalty=None,
-        min_nb_steps_before_failure=None,
         record_human: bool = False,
         **kwargs,
     ):
@@ -76,8 +80,6 @@ class TM2020Interface(RealTimeGymInterface):
                 Defaults to cfg.END_OF_TRACK_REWARD.
             constant_penalty (float, optional): Penalty per step. Defaults to 0.0.
             crash_penalty (float, optional): Penalty for crashing. Defaults to 10.0.
-            min_nb_steps_before_failure (int, optional): Minimum steps before failure conditions
-                apply. Defaults to 70.
             record_human (bool): Whether to allow human control for recording. Defaults to False.
             **kwargs: Additional keyword arguments.
         """
@@ -100,25 +102,20 @@ class TM2020Interface(RealTimeGymInterface):
         self.constant_penalty = (
             constant_penalty
             if constant_penalty is not None
-            else cfg.REWARD_CONFIG.get("CONSTANT_PENALTY", 0.0)
+            else cfg.REWARD_CONFIG.get("constant_penalty", 0.0)
         )
         self.initialized = False
         self.crash_penalty = (
             crash_penalty
             if crash_penalty is not None
-            else cfg.REWARD_CONFIG.get("CRASH_PENALTY", 10.0)
+            else cfg.REWARD_CONFIG.get("crash_penalty", 10.0)
         )
-        # Config overrides
-        _default_min_steps = (
-            min_nb_steps_before_failure if min_nb_steps_before_failure is not None else 70
-        )
-        self.min_nb_steps_before_failure = cfg.REWARD_CONFIG.get("MIN_STEPS", _default_min_steps)
         self.crash_cooldown = 0
         self.crash_curr = 0
-        _alg_cfg = cfg.TMRL_CONFIG.get("ALG", {})
+        _alg = MAIN_CONFIG.algorithm
         self.discrete_action_table: list[np.ndarray] | None = None
-        if _alg_cfg.get("ALGORITHM") in ("IQN", "SDSAC"):
-            _n_steer = int(_alg_cfg.get("IQN_N_STEER_BINS", 13))
+        if _alg.name in ("IQN", "SDSAC"):
+            _n_steer = int(_alg.iqn_n_steer_bins)
             _, self.discrete_action_table = build_yosh_action_table(n_steer=_n_steer)
         self._send_control_logged = False
         self._img_buf: np.ndarray | None = None
@@ -204,10 +201,9 @@ class TM2020Interface(RealTimeGymInterface):
         self._img_hist_cursor = 0
         self.reward_function = RewardFunction(
             reward_data_path=cfg.REWARD_PATH,
-            nb_obs_forward=cfg.REWARD_CONFIG.get("CHECK_FORWARD", 500),
-            nb_obs_backward=cfg.REWARD_CONFIG.get("CHECK_BACKWARD", 10),
-            min_nb_steps_before_failure=self.min_nb_steps_before_failure,
-            max_dist_from_traj=cfg.REWARD_CONFIG.get("MAX_STRAY", 50.0),
+            nb_obs_forward=cfg.REWARD_CONFIG.get("check_forward", 500),
+            nb_obs_backward=cfg.REWARD_CONFIG.get("check_backward", 10),
+            max_dist_from_traj=cfg.REWARD_CONFIG.get("max_stray", 50.0),
             crash_penalty=self.crash_penalty,
             constant_penalty=self.constant_penalty,
         )
@@ -374,17 +370,22 @@ class TM2020Interface(RealTimeGymInterface):
             tuple: (observation, reward, terminated, info)
         """
         data, img = self.grab_data_and_img()
-        self._speed_arr[0] = data[0]
-        self._gear_arr[0] = data[9]
-        self._rpm_arr[0] = data[10]
-        self._last_speed_kmh = float(data[0])
+        _si, (_xi, _yi, _zi), _eoti = openplanet_grab_indices(self.client.nb_floats)
+        self._speed_arr[0] = data[_si]
+        self._last_speed_kmh = float(data[_si])
+        if self.client.nb_floats >= 20:
+            self._gear_arr[0] = data[18]
+            self._rpm_arr[0] = data[10]
+        else:
+            self._gear_arr[0] = data[9]
+            self._rpm_arr[0] = data[10]
         reward, terminated, _failure_counter, _ = self.reward_function.compute_reward(
-            pos=np.array([data[2], data[3], data[4]])
+            pos=np.array([data[_xi], data[_yi], data[_zi]])
         )
         self._push_img(img)
         imgs = self._get_img_hist_array()
         observation = [self._speed_arr.copy(), self._gear_arr.copy(), self._rpm_arr.copy(), imgs]
-        end_of_track = bool(data[8])
+        end_of_track = bool(data[_eoti])
         info = {"end_of_track": end_of_track}
         if end_of_track:
             terminated = True
@@ -420,101 +421,3 @@ class TM2020Interface(RealTimeGymInterface):
         if self.discrete_action_table is not None:
             return np.array(0, dtype=np.int64)
         return np.array([0.0, 0.0, 0.0], dtype="float32")
-
-
-class TM2020InterfaceLidar(TM2020Interface):
-    """
-    Interface for TrackMania 2020 using LIDAR-like observations.
-    """
-
-    def __init__(self, img_hist_len=1, gamepad=False, save_replays: bool = False):
-        super().__init__(img_hist_len, gamepad, save_replays)
-        self.window_interface = None
-        self.lidar = None
-
-    def grab_lidar_speed_and_data(self):
-        """Retrieves LIDAR, speed, and raw data."""
-        img = self.window_interface.screenshot()[:, :, :3]
-        data = self.client.retrieve_data()
-        speed = np.array([data[0]], dtype="float32")
-        lidar = self.lidar.lidar_20(img=img, show=False)
-        return lidar, speed, data
-
-    def initialize(self):
-        super().initialize_common()
-        self.small_window = False
-        self.lidar = Lidar(self.window_interface.screenshot())
-        self.initialized = True
-
-    def reset(self, seed=None, options=None):
-        self.reset_common()
-        img, speed, _data = self.grab_lidar_speed_and_data()
-        for _ in range(self.img_hist_len):
-            self.img_hist.append(img)
-        imgs = np.array(list(self.img_hist), dtype="float32")
-        obs = [speed, imgs]
-        self.reward_function.reset()
-        return obs, {}
-
-    def get_obs_rew_terminated_info(self):
-        img, speed, data = self.grab_lidar_speed_and_data()
-        rew, terminated = self.reward_function.compute_reward(
-            pos=np.array([data[2], data[3], data[4]])
-        )[:2]
-        self.img_hist.append(img)
-        imgs = np.array(list(self.img_hist), dtype="float32")
-        obs = [speed, imgs]
-        end_of_track = bool(data[8])
-        info = {"end_of_track": end_of_track}
-        if end_of_track:
-            rew += self.finish_reward
-            terminated = True
-        rew = np.float32(rew)
-        return obs, rew, terminated, info
-
-    def get_observation_space(self):
-        speed = spaces.Box(low=0.0, high=1000.0, shape=(1,))
-        imgs = spaces.Box(low=0.0, high=np.inf, shape=(self.img_hist_len, 19))
-        return spaces.Tuple((speed, imgs))
-
-
-class TM2020InterfaceLidarProgress(TM2020InterfaceLidar):
-    """
-    Interface for TrackMania 2020 using LIDAR and race progress observations.
-    """
-
-    def reset(self, seed=None, options=None):
-        self.reset_common()
-        img, speed, _data = self.grab_lidar_speed_and_data()
-        for _ in range(self.img_hist_len):
-            self.img_hist.append(img)
-        imgs = np.array(list(self.img_hist), dtype="float32")
-        progress = np.array([0], dtype="float32")
-        obs = [speed, progress, imgs]
-        self.reward_function.reset()
-        return obs, {}
-
-    def get_obs_rew_terminated_info(self):
-        img, speed, data = self.grab_lidar_speed_and_data()
-        rew, terminated = self.reward_function.compute_reward(
-            pos=np.array([data[2], data[3], data[4]])
-        )[:2]
-        progress = np.array(
-            [self.reward_function.cur_idx / self.reward_function.datalen], dtype="float32"
-        )
-        self.img_hist.append(img)
-        imgs = np.array(list(self.img_hist), dtype="float32")
-        obs = [speed, progress, imgs]
-        end_of_track = bool(data[8])
-        info = {"end_of_track": end_of_track}
-        if end_of_track:
-            rew += self.finish_reward
-            terminated = True
-        rew = np.float32(rew)
-        return obs, rew, terminated, info
-
-    def get_observation_space(self):
-        speed = spaces.Box(low=0.0, high=1000.0, shape=(1,))
-        progress = spaces.Box(low=0.0, high=1.0, shape=(1,))
-        imgs = spaces.Box(low=0.0, high=np.inf, shape=(self.img_hist_len, 19))
-        return spaces.Tuple((speed, progress, imgs))

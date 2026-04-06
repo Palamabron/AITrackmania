@@ -25,7 +25,7 @@ def set_seed(seed: int = cfg.SEED) -> None:
 
 def _amp_enabled(device: str | None) -> bool:
     """Return True if mixed-precision (AMP) is enabled and device supports it."""
-    use_mp = bool(cfg.ALG_CONFIG.get("MIXED_PRECISION", False))
+    use_mp = cfg.MIXED_PRECISION
     return use_mp and torch.cuda.is_available() and str(device).startswith("cuda")
 
 
@@ -48,11 +48,7 @@ def _tensor_to_scalar(value: torch.Tensor | float) -> float:
 
 def _amp_dtype() -> torch.dtype:
     """Return torch dtype for mixed precision (bfloat16 or float16)."""
-    return (
-        torch.bfloat16
-        if str(cfg.ALG_CONFIG.get("MIXED_PRECISION_DTYPE", "float16")).lower() == "bfloat16"
-        else torch.float16
-    )
+    return torch.bfloat16 if str(cfg.MIXED_PRECISION_DTYPE).lower() == "bfloat16" else torch.float16
 
 
 def sanitize_tensor(t: torch.Tensor) -> torch.Tensor:
@@ -153,7 +149,7 @@ def polyak_update(model: torch.nn.Module, model_target: torch.nn.Module, polyak:
 
 def project_simbav2_weights(model: torch.nn.Module) -> None:
     """Re-project HypersphericalLinear weights after an optimizer step (SimbaV2)."""
-    from tmrl.custom.models.model_blocks import SimbaV2Backbone
+    from tmrl.custom.models.shared.neural_network_blocks import SimbaV2Backbone
 
     for m in model.modules():
         if isinstance(m, SimbaV2Backbone):

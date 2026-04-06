@@ -78,7 +78,7 @@ class TM2020InterfaceTQC(TM2020InterfaceIMPALASophy):
         self._steps_since_reset = getattr(self, "_steps_since_reset", 0) + 1
         min_steps_before_finish = max(
             _DEFAULT_MIN_STEPS_END_OF_TRACK,
-            cfg.REWARD_CONFIG.get("MIN_STEPS", _DEFAULT_MIN_STEPS_END_OF_TRACK),
+            cfg.REWARD_CONFIG.get("min_steps", _DEFAULT_MIN_STEPS_END_OF_TRACK),
         )
         if end_of_track and self._steps_since_reset >= min_steps_before_finish:
             terminated = True
@@ -96,7 +96,7 @@ class TM2020InterfaceTQC(TM2020InterfaceIMPALASophy):
         right_track = track_result[2]
         curvature_list = track_result[3] if len(track_result) == 4 else None
 
-        if bool(cfg.REWARD_CONFIG.get("TRACK_LOCAL_FRAME", False)):
+        if bool(cfg.REWARD_CONFIG.get("track_local_frame", False)):
             yaw = float(data[12])
             cos_y, sin_y = np.cos(yaw), np.sin(yaw)
 
@@ -159,10 +159,10 @@ class TM2020InterfaceTQC(TM2020InterfaceIMPALASophy):
         self.cur_checkpoint = cur_cp
         self.cur_lap = cur_lap
 
-        min_guaranteed = int(cfg.REWARD_CONFIG.get("MIN_EPISODE_LENGTH_GUARANTEED", 100))
+        min_guaranteed = int(cfg.REWARD_CONFIG.get("min_episode_length_guaranteed", 100))
         min_length = max(
             min_guaranteed,
-            2 * cfg.REWARD_CONFIG.get("MIN_STEPS", _DEFAULT_MIN_STEPS_END_OF_TRACK),
+            2 * cfg.REWARD_CONFIG.get("min_steps", _DEFAULT_MIN_STEPS_END_OF_TRACK),
         )
         if self._steps_since_reset < min_length:
             terminated = False
@@ -217,7 +217,7 @@ class TM2020InterfaceTQC(TM2020InterfaceIMPALASophy):
         right_track = track_result[2]
         curvature_list = track_result[3] if len(track_result) == 4 else None
 
-        if bool(cfg.REWARD_CONFIG.get("TRACK_LOCAL_FRAME", False)):
+        if bool(cfg.REWARD_CONFIG.get("track_local_frame", False)):
             yaw = float(data[12])
             cos_y, sin_y = np.cos(yaw), np.sin(yaw)
 

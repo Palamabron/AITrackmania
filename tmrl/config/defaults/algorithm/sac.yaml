@@ -1,0 +1,9 @@
+# @package _global_
+defaults:
+  - default
+  - _self_
+
+algorithm:
+  name: SAC
+  quantiles_number: 1
+  top_quantiles_to_drop: 2

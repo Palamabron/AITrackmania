@@ -26,7 +26,6 @@ def benchmark():
     env_config["interface_kwargs"] = {
         "img_hist_len": 1,
         "gamepad": False,
-        "min_nb_steps_before_failure": (20 * 60),
     }
     env = gymnasium.make("real-time-gym-v1", config=env_config)
 

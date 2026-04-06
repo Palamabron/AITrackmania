@@ -508,6 +508,9 @@ def iterate_epochs(
             logger.info("=== specification ".ljust(70, "="))
             run_instance = run_cls()
             dump_run_instance_fn(run_instance, checkpoint_path)
+            from tmrl.config.run_artifacts import write_run_repro_bundle
+
+            write_run_repro_bundle(checkpoint_path)
             logger.info("")
         else:
             logger.info("Loading checkpoint...")
@@ -560,6 +563,7 @@ def run_with_wandb(
     logger.debug(f" run_cls: {run_cls}")
     config = partial_to_dict(run_cls)
     config["environ"] = log_environment_variables()
+    config["merged_config"] = cfg.merged_config_snapshot_redacted()
     hyperparams_dict = cfg.create_config()
     for key, value in hyperparams_dict.items():
         config[key] = value
@@ -578,6 +582,10 @@ def run_with_wandb(
                 resume=resume,
                 config=config,
                 job_type="trainer",
+            )
+            wandb.config.update(
+                {"tmrl_validated_main_config": cfg.main_config_snapshot_redacted()},
+                allow_val_change=True,
             )
             wandb_initialized = True
 
@@ -831,7 +839,7 @@ class RolloutWorker:
         self.debug_ts_cpt = 0
         self.debug_ts_res_cpt = 0
 
-        self.sde_sample_freq = int(cfg.ALG_CONFIG.get("SDE_SAMPLE_FREQ", 100))
+        self.sde_sample_freq = int(cfg.SDE_SAMPLE_FREQ)
         self.sde_step_counter = 0
 
         self.start_time = time.time()
@@ -994,8 +1002,8 @@ class RolloutWorker:
         if self.buffer.memory and self.buffer.stat_train_steps > 0:
             last_info = self.buffer.memory[-1][5]
             if isinstance(last_info, dict) and last_info.get("end_of_track", False):
-                time_bonus_scale = float(cfg.REWARD_CONFIG.get("TIME_BONUS_SCALE", 0.0))
-                reward_scale = float(cfg.REWARD_CONFIG.get("REWARD_SCALE", 1.0))
+                time_bonus_scale = float(cfg.REWARD_CONFIG.get("time_bonus_scale", 0.0))
+                reward_scale = float(cfg.REWARD_CONFIG.get("reward_scale", 1.0))
                 if time_bonus_scale > 0 and reward_scale > 0:
                     self.buffer.apply_speed_bonus(time_bonus_scale * reward_scale)
 
@@ -1147,7 +1155,7 @@ class RolloutWorker:
         self.buffer.stat_test_return = ret
         self.buffer.stat_test_steps = steps
         if not train:
-            dt = float(cfg.ENV_CONFIG.get("RTGYM_CONFIG", {}).get("time_step_duration", 0.05))
+            dt = float(cfg.RTGYM_TIME_STEP_DURATION)
             end_of_track = saw_end_of_track or (
                 bool(info.get("end_of_track", False)) if isinstance(info, dict) else False
             )

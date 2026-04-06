@@ -10,6 +10,7 @@ from scipy import spatial
 
 import tmrl.config as cfg
 from tmrl.custom.interfaces.TM2020InterfaceLidarProgress import TM2020InterfaceLidarProgress
+from tmrl.custom.tm.utils.tools import openplanet_grab_indices
 
 
 def _load_track_from_config():
@@ -44,14 +45,12 @@ class TM2020InterfaceTrackMapImages(TM2020InterfaceLidarProgress):
         gamepad=False,
         grayscale=True,
         resize_to=None,
-        min_nb_steps_before_failure=int(20 * 3.5),
         save_replays=False,
         **kwargs,
     ):
         super().__init__(
             img_hist_len=img_hist_len,
             gamepad=gamepad,
-            min_nb_steps_before_failure=min_nb_steps_before_failure,
             save_replays=save_replays,
             **kwargs,
         )
@@ -106,9 +105,14 @@ class TM2020InterfaceTrackMapImages(TM2020InterfaceLidarProgress):
     def grab_speed_data_track_and_image(self):
         raw_img = self.window_interface.screenshot()[:, :, :3]
         data = self.client.retrieve_data()
-        speed = np.array([data[0]], dtype="float32")
-        car_position = [data[2], data[4]]
-        yaw = data[11]
+        _si, (_xi, _yi, _zi), _ = openplanet_grab_indices(self.client.nb_floats)
+        speed = np.array([data[_si]], dtype="float32")
+        if self.client.nb_floats >= 20:
+            car_position = [data[3], data[5]]
+            yaw = data[12]
+        else:
+            car_position = [data[2], data[4]]
+            yaw = data[11]
         l_x, l_z, r_x, r_z = self.get_track_in_front(
             car_position, self.look_ahead_distance, self.nearby_correction
         )
@@ -137,8 +141,9 @@ class TM2020InterfaceTrackMapImages(TM2020InterfaceLidarProgress):
 
     def get_obs_rew_terminated_info(self):
         speed, data, track_information, img = self.grab_speed_data_track_and_image()
+        _, (_xi, _yi, _zi), _eoti = openplanet_grab_indices(self.client.nb_floats)
         rew, terminated, _failure_counter = self.reward_function.compute_reward(
-            pos=np.array([data[2], data[3], data[4]])
+            pos=np.array([data[_xi], data[_yi], data[_zi]])
         )[:3]
         progress = np.array(
             [self.reward_function.cur_idx / max(1, self.reward_function.datalen)],
@@ -148,7 +153,7 @@ class TM2020InterfaceTrackMapImages(TM2020InterfaceLidarProgress):
         self.image_hist = self.image_hist[-self.img_hist_len :]
         images = np.array(list(self.image_hist), dtype="float32")
         obs = [speed, progress, track_information, images]
-        end_of_track = bool(data[8])
+        end_of_track = bool(data[_eoti])
         info = {"end_of_track": end_of_track}
         if end_of_track:
             rew += self.finish_reward

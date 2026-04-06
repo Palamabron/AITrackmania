@@ -1,26 +1,16 @@
-"""TMRL configuration: load and expose settings from TmrlData/config/config.json.
+"""TMRL configuration: Hydra YAML under ``tmrl/config/defaults`` plus optional user overrides.
 
-Config file layout (config.json):
-  __VERSION__     - Minimum compatible config version
-  RUN_NAME        - Experiment name (used in paths and wandb)
-  BUFFERS_MAXLEN  - Max samples per rollout worker buffer
-  RW_MAX_SAMPLES_PER_EPISODE - Cap on steps per episode for workers
-  CUDA_TRAINING   - Use GPU for trainer
-  CUDA_INFERENCE - Use GPU for rollout workers
-  VIRTUAL_GAMEPAD - Use gamepad (True) or keyboard (False)
-  LOCALHOST_WORKER / LOCALHOST_TRAINER - Use 127.0.0.1 when same machine as server
-  PUBLIC_IP_SERVER - Server IP for remote workers/trainers
-  ENV             - Environment: RTGYM_INTERFACE, SEED, MAP_NAME, rewards,
-                  failure params, image/window
-  MODEL           - Training loop, memory size, CNN/RNN/MLP sizes, scheduler
-  ALG             - Algorithm (SAC/TQC/REDQSAC), learning rates, gamma, etc.
-  DEBUGGER        - Profiling, CRC debug, wandb debug
-  WANDB_*         - Weights & Biases project, entity, API key
-  PORT, LOCAL_PORT_*, PASSWORD, TLS_*, NB_WORKERS, BUFFER_SIZE, HEADER_SIZE - Networking
+Overrides are merged from ``~/TmrlData/config/local.yaml`` on top of package defaults.
+``schema_version`` must satisfy ``tmrl.config.loader.MINIMUM_CONFIG_VERSION``.
+Environment variables ``WANDB_API_KEY`` / ``WANDB_KEY`` and ``TMRL_PASSWORD`` override
+W&B API key and distributed password when set. ``TMRL_HYDRA_OVERRIDES`` is applied at
+Hydra compose-time, then ``TMRL_CONFIG_OVERRIDES`` (JSON object) is deep-merged after
+``local.yaml`` for quick experiment ablations. On the first trainer checkpoint save,
+reproducibility files ``repro_*.yaml`` / ``repro_provenance.json`` are written beside
+the checkpoint (disable with ``TMRL_SKIP_REPRO_ARTIFACTS=1``).
 
-Secrets are loaded from .env in current working dir and TmrlData; environment variables
-WANDB_API_KEY/WANDB_KEY and TMRL_PASSWORD override config for WANDB_KEY and PASSWORD.
-Missing sections are filled from _DEFAULT_TMRL_CONFIG (backward compatibility).
+Use ``MAIN_CONFIG`` for the validated Pydantic tree, ``tmrl.config.constants`` for flat
+derived scalars, and ``create_config()`` for a flat snake_case dict (e.g. W&B logging).
 """
 
 from __future__ import annotations
@@ -29,8 +19,7 @@ from tmrl.config.constants import (  # noqa: F401
     ACT_BUF_LEN,
     ACTOR_WEIGHT_DECAY,
     ADAM_EPS,
-    ALG_CONFIG,
-    # Symbols previously re-derived in this file; now imported from their canonical source.
+    ALPHA,
     API_LAYERNORM,
     API_MLP_SIZES,
     BACKUP_CLIP_RANGE,
@@ -64,6 +53,7 @@ from tmrl.config.constants import (  # noqa: F401
     ENTROPY_FLOOR,
     ENTROPY_SCHEDULE,
     ENVIRONMENT_STEPS_BEFORE_TRAINING,
+    FOG_DECAY_TEMPERATURE,
     FROZEN_EFFNET_EMBED_DIM,
     FROZEN_EFFNET_USE_DW_STEM,
     FROZEN_EFFNET_VARIANT,
@@ -81,8 +71,10 @@ from tmrl.config.constants import (  # noqa: F401
     IMG_SCALE_CHECK_ENV,
     IMG_WIDTH,
     INIT_GAS_BIAS,
+    IQN_N_STEER_BINS,
     LAP_COOLDOWN,
     LAP_REWARD,
+    LEARN_ENTROPY_COEF,
     LIDAR_BLACK_THRESHOLD,
     LINUX_X_OFFSET,
     LINUX_Y_OFFSET,
@@ -92,16 +84,18 @@ from tmrl.config.constants import (  # noqa: F401
     LOCALHOST_TRAINER,
     LOCALHOST_WORKER,
     LOG_STD_INIT,
+    LR_ACTOR,
+    LR_CRITIC,
+    LR_ENTROPY,
     MAX_EPOCHS,
-    MAX_NB_STEPS_BEFORE_FAILURE,
     MAX_NB_ZERO_REW_BEFORE_FAILURE,
     MAX_SPEED_KMH,
     MAX_TRAINING_STEPS_PER_ENVIRONMENT_STEP,
     MEMORY_SIZE,
-    MIN_NB_STEPS_BEFORE_FAILURE,
     MIN_NB_ZERO_REW_BEFORE_FAILURE,
+    MIXED_PRECISION,
+    MIXED_PRECISION_DTYPE,
     MLP_LAYERNORM,
-    MODEL_CONFIG,
     MODEL_HISTORY,
     N_STEPS,
     NB_OBS_FORWARD,
@@ -116,6 +110,7 @@ from tmrl.config.constants import (  # noqa: F401
     OUTPUT_DROPOUT,
     PASSWORD,
     PER_TD_ALPHA,
+    PER_TD_BETA,
     PER_TD_ENABLED,
     PER_TD_EPS,
     PLAYER_RUNS_CONSUME_ON_READ,
@@ -128,17 +123,11 @@ from tmrl.config.constants import (  # noqa: F401
     POINTS_NUMBER,
     POLYAK,
     PORT,
-    PRAGMA_BEST,
-    PRAGMA_BEST_TQC,
-    PRAGMA_CUSTOM,
     PRAGMA_GAMEPAD,
     PRAGMA_LIDAR,
     PRAGMA_LIDAR_PROGRESS_IMAGES,
-    PRAGMA_MBEST_TQC,
     PRAGMA_PROGRESS,
     PRAGMA_RNN,
-    PRAGMA_TQC_GRAB,
-    PRAGMA_TQC_GRAB_IMAGES,
     PRAGMA_TRACKMAP,
     PRAGMA_TRACKMAP_IMAGES,
     PRINT_BYTESIZES,
@@ -146,17 +135,24 @@ from tmrl.config.constants import (  # noqa: F401
     PUBLIC_IP_SERVER,
     PYTORCH_PROFILER,
     QUANTILES_NUMBER,
+    R2D2_BURN_IN,
+    R2D2_NUM_SEQUENCES,
+    R2D2_REWIND,
+    R2D2_SEQUENCE_LENGTH,
+    RESET_TRAINING,
     RESIDUAL_MLP_HIDDEN_DIM,
     RESIDUAL_MLP_NUM_BLOCKS,
     RESIDUAL_MLP_NUM_BLOCKS_ACTOR,
     RESIDUAL_MLP_NUM_BLOCKS_CRITIC,
     REWARD_CONFIG,
+    REWARD_NORMALIZE_SCALE,
     RNN_DROPOUT,
     RNN_HIDDEN_SIZE,
     RNN_LENS,
     RNN_SIZES,
     ROUNDS_PER_EPOCH,
     RTGYM_INTERFACE,
+    RTGYM_TIME_STEP_DURATION,
     RUN_NAME,
     RW_MAX_SAMPLES_PER_EPISODE,
     RW_TEST_EPISODE_INTERVAL,
@@ -172,6 +168,7 @@ from tmrl.config.constants import (  # noqa: F401
     SPEED_BONUS,
     SPEED_MEDIUM_THRESHOLD,
     SPEED_MIN_THRESHOLD,
+    SPLIT_TRACK_OBSERVATION,
     SYNCHRONIZE_CUDA,
     TARGET_ENTROPY,
     TOP_QUANTILES_TO_DROP,
@@ -180,25 +177,22 @@ from tmrl.config.constants import (  # noqa: F401
     TRAINING_STEPS_PER_ROUND,
     UPDATE_BUFFER_INTERVAL,
     UPDATE_MODEL_INTERVAL,
-    USE_BEST_INTERFACE,
-    USE_BEST_TQC,
-    USE_CUSTOM_BACKBONE,
     USE_EFFICIENTNET,
     USE_FROZEN_EFFNET,
     USE_IMAGES,
+    USE_IMAGES_MOBILENET_PIPELINE,
+    USE_IMAGES_R2D2_SEQUENCE_BUFFER,
+    USE_IMAGES_WITH_WORLD_TELEMETRY_STACK,
     USE_LIDAR_OBSERVATIONS,
     USE_LIDAR_PROGRESS,
     USE_LIDAR_PROGRESS_IMAGES,
-    USE_MBEST_TQC,
+    USE_OBS_WORLD_TELEMETRY_LAYOUT,
     USE_RESIDUAL_MLP,
-    USE_RESIDUAL_SOPHY,
     USE_RNN,
     USE_RNN_MODEL,
     USE_SDE,
     USE_SIMBAV2,
-    USE_TQC_GRAB,
-    USE_TQC_GRAB_IMAGES,
-    USE_TRACK_CONV1D,
+    USE_SOPHY_RESIDUAL_ACTOR,
     USE_TRACKMAP,
     USE_TRACKMAP_IMAGES,
     USE_VIRTUAL_GAMEPAD,
@@ -216,26 +210,22 @@ from tmrl.config.constants import (  # noqa: F401
     WINDOW_WIDTH,
     ensure_wandb_api_key,
 )
-from tmrl.config.defaults import _DEFAULT_TMRL_CONFIG, deep_merge_defaults
 from tmrl.config.enums import AlgorithmName
-
-# Re-export all configuration components for backward compatibility
 from tmrl.config.loader import (
     CONFIG_COMPATIBILITY_ERROR_MESSAGE,
     CONFIG_FILE_PATH,
     CONFIG_VERSION,
     DEBUGGER,
     DEBUGGER_CONFIG,
-    ENV_CONFIG,
     MAIN_CONFIG,
     MINIMUM_CONFIG_VERSION,
     RTGYM_VERSION,
     SYSTEM,
-    TMRL_CONFIG,
     TMRL_FOLDER,
     create_config,
+    main_config_snapshot_redacted,
+    merged_config_snapshot_redacted,
 )
-from tmrl.config.models import AlgConfig, DebuggerConfig, EnvConfig, MainConfig, RewardConfig
 from tmrl.config.paths import (
     CHECKPOINT_PATH,
     CHECKPOINTS_FOLDER,
@@ -261,19 +251,16 @@ from tmrl.config.paths import (
     TRACKS_FOLDER,
     WEIGHTS_FOLDER,
 )
-
-# Algorithm constants not in constants.py (only defined here for backward compat)
-LR_ACTOR = ALG_CONFIG["LR_ACTOR"]
-LR_CRITIC = ALG_CONFIG["LR_CRITIC"]
-LR_ENTROPY = ALG_CONFIG["LR_ENTROPY"]
-ALPHA = ALG_CONFIG["ALPHA"]
-LEARN_ENTROPY_COEF = ALG_CONFIG["LEARN_ENTROPY_COEF"]
+from tmrl.config.schema.algorithm import AlgorithmConfig
+from tmrl.config.schema.environment import EnvironmentConfig, RewardConfig
+from tmrl.config.schema.main import MainConfig
+from tmrl.config.schema.model import ModelConfig
+from tmrl.config.schema.run_bundle import DebuggerConfig
 
 __all__ = [
     "ACTOR_WEIGHT_DECAY",
     "ACT_BUF_LEN",
     "ADAM_EPS",
-    "ALG_CONFIG",
     "ALPHA",
     "API_LAYERNORM",
     "API_MLP_SIZES",
@@ -320,7 +307,7 @@ __all__ = [
     "ENTROPY_FLOOR",
     "ENTROPY_SCHEDULE",
     "ENVIRONMENT_STEPS_BEFORE_TRAINING",
-    "ENV_CONFIG",
+    "FOG_DECAY_TEMPERATURE",
     "FROZEN_EFFNET_EMBED_DIM",
     "FROZEN_EFFNET_USE_DW_STEM",
     "FROZEN_EFFNET_VARIANT",
@@ -338,6 +325,7 @@ __all__ = [
     "IMG_SCALE_CHECK_ENV",
     "IMG_WIDTH",
     "INIT_GAS_BIAS",
+    "IQN_N_STEER_BINS",
     "LAP_COOLDOWN",
     "LAP_REWARD",
     "LEARN_ENTROPY_COEF",
@@ -353,21 +341,17 @@ __all__ = [
     "LR_ACTOR",
     "LR_CRITIC",
     "LR_ENTROPY",
+    "MAIN_CONFIG",
     "MAP_NAME",
     "MAX_EPOCHS",
-    "MAX_NB_STEPS_BEFORE_FAILURE",
     "MAX_NB_ZERO_REW_BEFORE_FAILURE",
     "MAX_SPEED_KMH",
     "MAX_TRAINING_STEPS_PER_ENVIRONMENT_STEP",
-    "MAIN_CONFIG",
-    "MainConfig",
     "MEMORY_SIZE",
     "MINIMUM_CONFIG_VERSION",
-    "MIN_NB_STEPS_BEFORE_FAILURE",
-    "MIN_NB_ZERO_REW_BEFORE_FAILURE",
+    "MIXED_PRECISION",
+    "MIXED_PRECISION_DTYPE",
     "MLP_LAYERNORM",
-    "MODEL_CONFIG",
-    "MODEL_HISTORY",
     "MODEL_HISTORY",
     "MODEL_PATH_SAVE_HISTORY",
     "MODEL_PATH_TRAINER",
@@ -384,8 +368,8 @@ __all__ = [
     "OUTPUT_FILES_FOLDER",
     "PASSWORD",
     "PATH_DATA",
-    "PATH_DATA",
     "PER_TD_ALPHA",
+    "PER_TD_BETA",
     "PER_TD_ENABLED",
     "PER_TD_EPS",
     "PLAYER_RUNS_CONSUME_ON_READ",
@@ -399,17 +383,11 @@ __all__ = [
     "POINTS_NUMBER",
     "POLYAK",
     "PORT",
-    "PRAGMA_BEST",
-    "PRAGMA_BEST_TQC",
-    "PRAGMA_CUSTOM",
     "PRAGMA_GAMEPAD",
     "PRAGMA_LIDAR",
     "PRAGMA_LIDAR_PROGRESS_IMAGES",
-    "PRAGMA_MBEST_TQC",
     "PRAGMA_PROGRESS",
     "PRAGMA_RNN",
-    "PRAGMA_TQC_GRAB",
-    "PRAGMA_TQC_GRAB_IMAGES",
     "PRAGMA_TRACKMAP",
     "PRAGMA_TRACKMAP_IMAGES",
     "PRINT_BYTESIZES",
@@ -417,6 +395,11 @@ __all__ = [
     "PUBLIC_IP_SERVER",
     "PYTORCH_PROFILER",
     "QUANTILES_NUMBER",
+    "R2D2_BURN_IN",
+    "R2D2_NUM_SEQUENCES",
+    "R2D2_REWIND",
+    "R2D2_SEQUENCE_LENGTH",
+    "RESET_TRAINING",
     "RESIDUAL_MLP_HIDDEN_DIM",
     "RESIDUAL_MLP_NUM_BLOCKS",
     "RESIDUAL_MLP_NUM_BLOCKS_ACTOR",
@@ -424,12 +407,14 @@ __all__ = [
     "REWARDS_CHECKPOINT_PATH",
     "REWARD_CONFIG",
     "REWARD_FOLDER",
+    "REWARD_NORMALIZE_SCALE",
     "REWARD_PATH",
     "RNN_HIDDEN_SIZE",
     "RNN_LENS",
     "RNN_SIZES",
     "ROUNDS_PER_EPOCH",
     "RTGYM_INTERFACE",
+    "RTGYM_TIME_STEP_DURATION",
     "RTGYM_VERSION",
     "RUN_NAME",
     "RW_MAX_SAMPLES_PER_EPISODE",
@@ -446,11 +431,10 @@ __all__ = [
     "SPEED_BONUS",
     "SPEED_MEDIUM_THRESHOLD",
     "SPEED_MIN_THRESHOLD",
+    "SPLIT_TRACK_OBSERVATION",
     "SYNCHRONIZE_CUDA",
     "SYSTEM",
     "TARGET_ENTROPY",
-    # Loader
-    "TMRL_CONFIG",
     "TMRL_FOLDER",
     "TOP_QUANTILES_TO_DROP",
     "TRACKMAP_CSV_LEFT",
@@ -464,27 +448,24 @@ __all__ = [
     "TRAINING_STEPS_PER_ROUND",
     "UPDATE_BUFFER_INTERVAL",
     "UPDATE_MODEL_INTERVAL",
-    "USE_BEST_INTERFACE",
-    "USE_BEST_TQC",
-    "USE_CUSTOM_BACKBONE",
     "USE_EFFICIENTNET",
     "USE_FROZEN_EFFNET",
     "USE_IMAGES",
+    "USE_IMAGES_MOBILENET_PIPELINE",
+    "USE_IMAGES_R2D2_SEQUENCE_BUFFER",
+    "USE_IMAGES_WITH_WORLD_TELEMETRY_STACK",
     "USE_LIDAR_OBSERVATIONS",
     "USE_LIDAR_PROGRESS",
     "USE_LIDAR_PROGRESS_IMAGES",
-    "USE_MBEST_TQC",
+    "USE_OBS_WORLD_TELEMETRY_LAYOUT",
     "USE_RESIDUAL_MLP",
-    "USE_RESIDUAL_SOPHY",
     "USE_RNN",
     "USE_RNN_MODEL",
     "USE_SDE",
     "USE_SIMBAV2",
-    "USE_TQC_GRAB",
-    "USE_TQC_GRAB_IMAGES",
+    "USE_SOPHY_RESIDUAL_ACTOR",
     "USE_TRACKMAP",
     "USE_TRACKMAP_IMAGES",
-    "USE_TRACK_CONV1D",
     "USE_VIRTUAL_GAMEPAD",
     "WANDB_DEBUG",
     "WANDB_DEBUG_REWARD",
@@ -499,14 +480,14 @@ __all__ = [
     "WEIGHT_CLIPPING_VALUE",
     "WINDOW_HEIGHT",
     "WINDOW_WIDTH",
-    "_DEFAULT_TMRL_CONFIG",
-    "AlgConfig",
-    # Enums
+    "AlgorithmConfig",
     "AlgorithmName",
     "DebuggerConfig",
-    "EnvConfig",
-    # Models
+    "EnvironmentConfig",
+    "MainConfig",
+    "ModelConfig",
     "RewardConfig",
     "create_config",
-    "deep_merge_defaults",
+    "main_config_snapshot_redacted",
+    "merged_config_snapshot_redacted",
 ]

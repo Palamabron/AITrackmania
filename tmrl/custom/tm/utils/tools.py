@@ -12,10 +12,29 @@ import numpy as np
 # local imports
 from tmrl.config import LIDAR_BLACK_THRESHOLD
 
+# OpenPlanet TQC_GrabData packet size (floats). Must match the plugin; 19 vs 20 misaligns
+# every frame and maps wrong fields (e.g. brake at index 8 read as end_of_track).
+TQC_GRAB_DATA_NB_FLOATS = 20
+
+
+def openplanet_grab_indices(nb_floats: int) -> tuple[int, tuple[int, int, int], int]:
+    """Return (speed_idx, (pos_x, pos_y, pos_z), end_of_track_idx) for GrabData layouts."""
+    if nb_floats >= 20:
+        # TQC 20-float: cp, lap, speed, pos x3, steer, gas, brake, end_of_track, …
+        return 2, (3, 4, 5), 9
+    # Legacy 19-float (older plugins)
+    return 0, (2, 3, 4), 8
+
 
 class TM2020OpenPlanetClient:
     # Script attributes:
-    def __init__(self, host="127.0.0.1", port=9000, struct_str=None, nb_floats=19):
+    def __init__(
+        self,
+        host="127.0.0.1",
+        port=9000,
+        struct_str=None,
+        nb_floats=TQC_GRAB_DATA_NB_FLOATS,
+    ):
         if struct_str is None:
             struct_str = "<" + "f" * nb_floats
         self._struct_str = struct_str

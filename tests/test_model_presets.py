@@ -1,0 +1,54 @@
+"""Validate canonical Hydra model presets against MainConfig schema."""
+
+from pathlib import Path
+
+import pytest
+from hydra import compose, initialize_config_dir
+from omegaconf import OmegaConf
+from tmrl.config.schema.main import MainConfig
+
+
+def _compose_dict_with_preset(preset: str) -> dict:
+    cfg_dir = (Path(__file__).resolve().parents[1] / "tmrl" / "config" / "defaults").resolve()
+    with initialize_config_dir(version_base=None, config_dir=str(cfg_dir)):
+        cfg = compose(config_name="config", overrides=[f"model={preset}"])
+    out = OmegaConf.to_container(cfg, resolve=True)
+    assert isinstance(out, dict)
+    return out
+
+
+PRESETS = [
+    "vanilla_cnn_actor_critic",
+    "vanilla_color_cnn_actor_critic",
+    "sophy_actor_critic",
+    "sophy_residual_actor_critic",
+    "mlp_actor_critic",
+    "residual_mlp_actor_critic",
+    "redq_mlp_actor_critic",
+    "rnn_actor_critic",
+    "effnet_actor_critic",
+]
+
+ALGORITHMS = ["sac", "iqn"]
+
+
+@pytest.mark.filterwarnings("ignore:IQN uses only:UserWarning")
+@pytest.mark.parametrize("preset", PRESETS)
+def test_model_preset_validates_main_config(preset: str):
+    raw = _compose_dict_with_preset(preset)
+    main_cfg = MainConfig.model_validate(raw)
+    assert main_cfg.model is not None, f"model section missing for {preset}"
+
+
+@pytest.mark.filterwarnings("ignore:IQN uses only:UserWarning")
+@pytest.mark.parametrize("algorithm", ALGORITHMS)
+@pytest.mark.parametrize("preset", PRESETS)
+def test_algorithm_model_matrix_composes(algorithm: str, preset: str):
+    cfg_dir = (Path(__file__).resolve().parents[1] / "tmrl" / "config" / "defaults").resolve()
+    with initialize_config_dir(version_base=None, config_dir=str(cfg_dir)):
+        cfg = compose(config_name="config", overrides=[f"algorithm={algorithm}", f"model={preset}"])
+    out = OmegaConf.to_container(cfg, resolve=True)
+    assert isinstance(out, dict)
+    main_cfg = MainConfig.model_validate(out)
+    assert main_cfg.algorithm is not None
+    assert main_cfg.model is not None

@@ -45,7 +45,7 @@ def build_tqc_sophy_tuple_observation_space(points_number: int | None = None) ->
         slip_coef,
         failure_counter,
     ]
-    if bool(cfg.REWARD_CONFIG.get("TRACK_CURVATURE_OBS", False)):
+    if bool(cfg.REWARD_CONFIG.get("track_curvature_obs", False)):
         curvature = spaces.Box(low=-1.0, high=1.0, shape=(n,), dtype=np.float32)
         spaces_list.append(curvature)
     return spaces.Tuple(tuple(spaces_list))

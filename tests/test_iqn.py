@@ -4,7 +4,7 @@ import numpy as np
 import torch
 from gymnasium import spaces
 from tmrl.custom.custom_algorithms.iqn import _quantile_huber_loss
-from tmrl.custom.models.DQNNet import (
+from tmrl.custom.models.discrete_actions.iqn_discrete_q_network import (
     CosineEmbedding,
     DQNActor,
     DuelingHead,

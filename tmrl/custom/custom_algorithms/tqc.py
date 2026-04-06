@@ -20,6 +20,7 @@ except ImportError:
 import contextlib
 
 import tmrl.config.constants as cfg
+from tmrl.config.loader import MAIN_CONFIG
 from tmrl.custom.custom_algorithms._common import (
     _amp_dtype,
     _amp_enabled,
@@ -33,10 +34,13 @@ from tmrl.custom.custom_algorithms._common import (
     sanitize_tensor,
     set_seed,
 )
-from tmrl.custom.models.Sophy import SophyActorCritic
+from tmrl.custom.models.hybrid_input.sophy import SophyActorCritic
 from tmrl.custom.utils.nn import copy_shared, no_grad
 from tmrl.training import TrainingAgent
 from tmrl.util import cached_property
+
+_ALGO = MAIN_CONFIG.algorithm
+_SCHED = MAIN_CONFIG.training.scheduler
 
 
 @dataclass(eq=False)
@@ -61,9 +65,9 @@ class TQCAgent(TrainingAgent):
     lr_entropy: float = 1e-3
     learn_entropy_coef: bool = True
     target_entropy: float | None = None
-    top_quantiles_to_drop: int = cfg.ALG_CONFIG["TOP_QUANTILES_TO_DROP"]
-    quantiles_number: int = cfg.ALG_CONFIG["QUANTILES_NUMBER"]
-    n_steps: int = cfg.ALG_CONFIG["N_STEPS"]
+    top_quantiles_to_drop: int = cfg.TOP_QUANTILES_TO_DROP
+    quantiles_number: int = cfg.QUANTILES_NUMBER
+    n_steps: int = cfg.N_STEPS
     betas_actor: tuple[float, ...] | None = None
     betas_critic: tuple[float, ...] | None = None
 
@@ -80,7 +84,7 @@ class TQCAgent(TrainingAgent):
         logger.debug(" device TQC: {}", device)
         self.model = model.to(device)
         self.model_target = no_grad(deepcopy(self.model))
-        pi_kwargs = {
+        pi_kwargs: dict[str, Any] = {
             "lr": self.lr_actor,
             "weight_decay": cfg.ACTOR_WEIGHT_DECAY,
             "eps": cfg.ADAM_EPS,
@@ -88,7 +92,7 @@ class TQCAgent(TrainingAgent):
         if self.betas_actor is not None:
             pi_kwargs["betas"] = tuple(self.betas_actor)
         self.actor_optimizer = Adam(self.model.actor.parameters(), **pi_kwargs)
-        q_kwargs = {
+        q_kwargs: dict[str, Any] = {
             "lr": self.lr_critic,
             "weight_decay": cfg.CRITIC_WEIGHT_DECAY,
             "eps": cfg.ADAM_EPS,
@@ -105,21 +109,21 @@ class TQCAgent(TrainingAgent):
         use_scaler = self.use_mixed_precision and (self.amp_dtype != torch.bfloat16)
         self.grad_scaler = torch.amp.GradScaler("cuda", enabled=use_scaler)
 
-        if len(cfg.SCHEDULER_CONFIG["NAME"]) > 0:
+        if _SCHED.name:
             self.actor_scheduler = CosineAnnealingWarmRestarts(
                 self.actor_optimizer,
-                cfg.SCHEDULER_CONFIG["T_0"],
-                cfg.SCHEDULER_CONFIG["T_mult"],
-                cfg.SCHEDULER_CONFIG["eta_min"],
-                cfg.SCHEDULER_CONFIG["last_epoch"],
+                _SCHED.t_0,
+                _SCHED.t_mult,
+                _SCHED.eta_min,
+                _SCHED.last_epoch,
             )
 
             self.critic_scheduler = CosineAnnealingWarmRestarts(
                 self.critic_optimizer,
-                cfg.SCHEDULER_CONFIG["T_0"],
-                cfg.SCHEDULER_CONFIG["T_mult"],
-                cfg.SCHEDULER_CONFIG["eta_min"],
-                cfg.SCHEDULER_CONFIG["last_epoch"],
+                _SCHED.t_0,
+                _SCHED.t_mult,
+                _SCHED.eta_min,
+                _SCHED.last_epoch,
             )
 
         self.quantiles_total = self.model.q1.num_quantiles + self.model.q2.num_quantiles
@@ -198,7 +202,7 @@ class TQCAgent(TrainingAgent):
         model = self.model_cls(observation_space, action_space)
         self.model = model.to(device)
         self.model_target = no_grad(deepcopy(self.model))
-        pi_kwargs = {
+        pi_kwargs: dict[str, Any] = {
             "lr": self.lr_actor,
             "weight_decay": cfg.ACTOR_WEIGHT_DECAY,
             "eps": cfg.ADAM_EPS,
@@ -206,7 +210,7 @@ class TQCAgent(TrainingAgent):
         if self.betas_actor is not None:
             pi_kwargs["betas"] = tuple(self.betas_actor)
         self.actor_optimizer = Adam(self.model.actor.parameters(), **pi_kwargs)
-        q_kwargs = {
+        q_kwargs: dict[str, Any] = {
             "lr": self.lr_critic,
             "weight_decay": cfg.CRITIC_WEIGHT_DECAY,
             "eps": cfg.ADAM_EPS,
@@ -240,13 +244,13 @@ class TQCAgent(TrainingAgent):
 
     def _get_bc_lambda(self) -> float:
         """Current BC coefficient: constant or linear annealing from START to END over steps."""
-        base = float(cfg.ALG_CONFIG.get("BC_LAMBDA", 0.0))
-        step_end = int(cfg.ALG_CONFIG.get("BC_ANNEAL_STEPS_END", 0))
+        base = float(_ALGO.bc_lambda)
+        step_end = int(_ALGO.bc_anneal_steps_end)
         if step_end <= 0:
             return base
-        start_val = float(cfg.ALG_CONFIG.get("BC_LAMBDA_START", 1.0))
-        end_val = float(cfg.ALG_CONFIG.get("BC_LAMBDA_END", 0.01))
-        step_start = int(cfg.ALG_CONFIG.get("BC_ANNEAL_STEPS_START", 0))
+        start_val = float(_ALGO.bc_lambda_start)
+        end_val = float(_ALGO.bc_lambda_end)
+        step_start = int(_ALGO.bc_anneal_steps_start)
         step = self._training_step
         if step <= step_start:
             return start_val
@@ -345,7 +349,7 @@ class TQCAgent(TrainingAgent):
             d = self._sanitize_tensor(d)
 
         # Reward scaling for Q-value stability (raw rewards ~200 -> ~1-2 when scale=200)
-        reward_normalize_scale = float(cfg.ALG_CONFIG.get("REWARD_NORMALIZE_SCALE", 1.0))
+        reward_normalize_scale = float(cfg.REWARD_NORMALIZE_SCALE)
         if reward_normalize_scale != 1.0 and reward_normalize_scale > 0:
             r = r / reward_normalize_scale
 
@@ -358,8 +362,8 @@ class TQCAgent(TrainingAgent):
                 f"Invalid n-step config: n_steps ({self.n_steps}) must be smaller than "
                 f"batch_size ({batch_size})."
             )
-        burn_in_len = int(cfg.ALG_CONFIG.get("R2D2_BURN_IN", 0))
-        _seq_len_cfg = int(cfg.ALG_CONFIG.get("R2D2_SEQUENCE_LENGTH", 0))
+        burn_in_len = int(cfg.R2D2_BURN_IN)
+        _seq_len_cfg = int(cfg.R2D2_SEQUENCE_LENGTH)
         if burn_in_len > 0 and _seq_len_cfg > 0 and burn_in_len >= _seq_len_cfg:
             raise ValueError(
                 f"R2D2_BURN_IN ({burn_in_len}) >= R2D2_SEQUENCE_LENGTH ({_seq_len_cfg}). "
@@ -368,7 +372,7 @@ class TQCAgent(TrainingAgent):
 
         if self.n_steps <= 1:
             truncated_batch_size = batch_size
-            _seq_len_cfg = int(cfg.ALG_CONFIG.get("R2D2_SEQUENCE_LENGTH", 0))
+            _seq_len_cfg = int(cfg.R2D2_SEQUENCE_LENGTH)
             if _seq_len_cfg > 0:
                 seq_len = _seq_len_cfg
                 step_in_seq = torch.arange(truncated_batch_size, device=r.device) % seq_len
@@ -378,7 +382,7 @@ class TQCAgent(TrainingAgent):
                 valid_n_step = None
         else:
             truncated_batch_size = batch_size - self.n_steps
-            seq_len = int(cfg.ALG_CONFIG.get("R2D2_SEQUENCE_LENGTH", 0))
+            seq_len = int(cfg.R2D2_SEQUENCE_LENGTH)
             if seq_len > 0:
                 step_in_seq = torch.arange(truncated_batch_size, device=r.device) % seq_len
                 # FIX: Mask out cross-sequence bleeding AND the detached Burn-In phase
@@ -445,7 +449,7 @@ class TQCAgent(TrainingAgent):
             next_z = torch.stack((q1_pi_targ, q2_pi_targ), dim=1)
             sorted_z, _ = torch.sort(next_z.reshape(batch_size, -1))
             effective_drop = self.total_quantiles_to_drop
-            if cfg.ALG_CONFIG.get("DYNAMIC_TRUNCATION_ENABLED", False):
+            if _ALGO.dynamic_truncation_enabled:
                 with torch.no_grad():
                     var_current = float(sorted_z.var().item())
                     self._trunc_var_history.append(var_current)
@@ -455,7 +459,7 @@ class TQCAgent(TrainingAgent):
                         pct_val = float(
                             np.percentile(
                                 self._trunc_var_history,
-                                cfg.ALG_CONFIG.get("DYNAMIC_TRUNCATION_VARIANCE_PCT", 0.9) * 100,
+                                _ALGO.dynamic_truncation_variance_pct * 100,
                             )
                         )
                         if var_current > pct_val:
@@ -577,11 +581,11 @@ class TQCAgent(TrainingAgent):
         q_pi = torch.nan_to_num(q_pi, nan=0.0, posinf=1e4, neginf=-1e4).clamp(-1e4, 1e4)
 
         # VCSE: scale alpha by critic std (more exploration in uncertain states)
-        if cfg.ALG_CONFIG.get("VCSE_ENABLED", False):
+        if _ALGO.vcse_enabled:
             q_stack = torch.stack((q1_pi.float().mean(1), q2_pi.float().mean(1)), dim=1)
             sigma_q = q_stack.std(dim=1)
-            alpha_base = float(cfg.ALG_CONFIG.get("VCSE_ALPHA_BASE", 0.0))
-            vcse_lambda = float(cfg.ALG_CONFIG.get("VCSE_LAMBDA", 0.5))
+            alpha_base = float(_ALGO.vcse_alpha_base)
+            vcse_lambda = float(_ALGO.vcse_lambda)
             alpha_per_sample = (
                 alpha_t.float().squeeze() + vcse_lambda * sigma_q
                 if alpha_t.dim() > 0
@@ -591,7 +595,7 @@ class TQCAgent(TrainingAgent):
             actor_loss_unmasked = alpha_per_sample * logp_actor - q_pi
         else:
             actor_loss_unmasked = alpha_t.float() * logp_actor - q_pi
-        mean_penalty_coef = float(cfg.ALG_CONFIG.get("MEAN_PENALTY_COEF", 0.05))
+        mean_penalty_coef = float(_ALGO.mean_penalty_coef)
 
         if seq_len > 0 and valid_n_step is not None:
             denom = valid_n_step.float().sum().clamp(min=1.0)
@@ -659,7 +663,7 @@ class TQCAgent(TrainingAgent):
         project_simbav2_weights(self.model)
 
         # ── 10. Post-update: scheduler, clipping, target update ──
-        if len(cfg.SCHEDULER_CONFIG["NAME"]) > 0:
+        if _SCHED.name:
             self.actor_scheduler.step(epoch + batch_index / iters)
             self.critic_scheduler.step(epoch + batch_index / iters)
         if cfg.WEIGHT_CLIPPING_ENABLED:
@@ -699,10 +703,7 @@ class TQCAgent(TrainingAgent):
             ret_dict["losses/critic"] = _tensor_to_scalar(critic_loss.detach())
             ret_dict["lrs/actor_lr"] = self.actor_optimizer.param_groups[0]["lr"]
             ret_dict["lrs/critic_lr"] = self.critic_optimizer.param_groups[0]["lr"]
-            if (
-                cfg.ALG_CONFIG.get("BC_LAMBDA", 0.0) > 0
-                or cfg.ALG_CONFIG.get("BC_ANNEAL_STEPS_END", 0) > 0
-            ):
+            if _ALGO.bc_lambda > 0 or _ALGO.bc_anneal_steps_end > 0:
                 ret_dict["bc/bc_lambda"] = self._get_bc_lambda()
             if critic_grad_norm is not None:
                 ret_dict["debug/critic_grad_norm"] = float(critic_grad_norm)

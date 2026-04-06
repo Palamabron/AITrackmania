@@ -397,7 +397,7 @@ class R2D2Memory(Memory, ABC):
         self.indices: list[int] = []
         self.cur_idx = 0
         self.batch_size = batch_size
-        self.rewind = cfg.TMRL_CONFIG["ALG"]["R2D2_REWIND"]
+        self.rewind = cfg.R2D2_REWIND
         assert 0.1 <= self.rewind <= 0.9, "R2D2 REWIND CONST SHOULD BE BETWEEN 0.1 AND 0.9"
         self.last_sample_demo_fraction = 0.0
         if not hasattr(self, "min_samples"):
@@ -451,8 +451,8 @@ class R2D2Memory(Memory, ABC):
         if not getattr(cfg, "PER_TD_ENABLED", False) or not self.priorities:
             self._last_per_is_weights = []
             return None
-        num_seq = cfg.ALG_CONFIG.get("R2D2_NUM_SEQUENCES", 0)
-        seq_len = cfg.ALG_CONFIG.get("R2D2_SEQUENCE_LENGTH", 0)
+        num_seq = cfg.R2D2_NUM_SEQUENCES
+        seq_len = cfg.R2D2_SEQUENCE_LENGTH
         if num_seq <= 0 or seq_len <= 0 or num_seq * seq_len != self.batch_size:
             self._last_per_is_weights = []
             return None
@@ -494,7 +494,7 @@ class R2D2Memory(Memory, ABC):
         probs = [w / total_w for w in seq_weights]
         chosen = np.random.choice(len(valid_starts), size=num_seq, replace=True, p=probs)
         indices: list[int] = []
-        beta = float(cfg.ALG_CONFIG.get("PER_TD_BETA", 0.4))
+        beta = float(cfg.PER_TD_BETA)
         n_sequences = max(1, len(valid_starts))
         is_weights: list[float] = []
         # Normalize by max weight in batch to bound gradients; do not use mean/sum normalization.
@@ -625,8 +625,8 @@ class R2D2Memory(Memory, ABC):
         Sample B independent sequences of length L from different episodes (i.i.d.).
         Returns None if disabled; caller falls back to contiguous sampling.
         """
-        num_seq = cfg.ALG_CONFIG.get("R2D2_NUM_SEQUENCES", 0)
-        seq_len = cfg.ALG_CONFIG.get("R2D2_SEQUENCE_LENGTH", 0)
+        num_seq = cfg.R2D2_NUM_SEQUENCES
+        seq_len = cfg.R2D2_SEQUENCE_LENGTH
         if num_seq <= 0 or seq_len <= 0 or num_seq * seq_len != self.batch_size:
             return None
         self._refresh_episode_metadata()
@@ -666,7 +666,7 @@ class R2D2Memory(Memory, ABC):
             weights = [1.0] * len(episode_ranges)
 
         # FoG recency bias: weight episodes by recency (later episodes = more recent data)
-        fog_temp = float(cfg.ALG_CONFIG.get("FOG_DECAY_TEMPERATURE", 0.0))
+        fog_temp = float(cfg.FOG_DECAY_TEMPERATURE)
         if fog_temp > 0 and len(episode_ranges) > 1:
             n_ep_total = len(episode_ranges)
             recency = np.array([i / max(1, n_ep_total - 1) for i in range(n_ep_total)])

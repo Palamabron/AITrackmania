@@ -80,10 +80,11 @@ def record_episode(
     if nb_episodes <= 0:
         raise ValueError("nb_episodes must be > 0")
 
-    if not cfg.PRAGMA_TQC_GRAB:
+    if not cfg.USE_OBS_WORLD_TELEMETRY_LAYOUT:
         raise NotImplementedError(
-            "Human recording is only supported for TQCGRAB interface. "
-            "Set RTGYM_INTERFACE to TQCGRAB in config."
+            "Human recording is only supported when environment.rtgym_interface includes the "
+            "world-telemetry observation layout (screen + world-state channels). "
+            "Set environment.rtgym_interface to a matching id in config."
         )
 
     env_config = cfg_obj.CONFIG_DICT.copy()

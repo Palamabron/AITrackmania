@@ -12,7 +12,6 @@ class TM2020InterfaceIMPALA(TM2020Interface):
         self,
         img_hist_len=1,
         gamepad=False,
-        min_nb_steps_before_failure=160,
         record=False,
         save_replay: bool = False,
         grayscale: bool = False,
@@ -26,7 +25,6 @@ class TM2020InterfaceIMPALA(TM2020Interface):
         super().__init__(
             img_hist_len=img_hist_len,
             gamepad=gamepad,
-            min_nb_steps_before_failure=min_nb_steps_before_failure,
             save_replays=save_replay,
             grayscale=grayscale,
             finish_reward=finish_reward,

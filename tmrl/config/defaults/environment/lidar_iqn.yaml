@@ -1,0 +1,46 @@
+# @package _global_
+# Explicit LIDAR preset for IQN / SDSAC (same values as tm20; use for clarity in overrides).
+# Select with: environment=lidar_iqn
+environment:
+  seed: 0
+  rtgym_interface: LIDAR
+  init_gas_bias: 0.0
+  map_name: ""
+  end_of_track_reward: 0.0
+  window_width: 640
+  window_height: 480
+  img_width: 64
+  img_height: 64
+  use_images: true
+  img_grayscale: true
+  sleep_time_at_reset: 1.5
+  img_hist_len: 4
+  min_zero_reward_steps_before_failure: 0
+  max_zero_reward_steps_before_failure: 0
+  min_seconds_before_failure: 0
+  oscillation_period: 0
+  forward_obs_count: 0
+  crash_penalty: 0.0
+  crash_cooldown: 0
+  constant_penalty: 0.0
+  lap_reward: 0.0
+  lap_cooldown: 0
+  checkpoint_reward: 0.0
+  linux_x_offset: 64
+  linux_y_offset: 70
+  img_scale_check_env: 1.0
+  obs_speed_scale: 1.0
+  obs_track_scale: 1.0
+  reward:
+    off_track_seconds_before_failure: 0.5
+  rtgym:
+    time_step_duration: 0.05
+    start_obs_capture: 0.04
+    time_step_timeout_factor: 1.0
+    act_buf_len: 2
+    reset_act_buf: true
+    benchmark: false
+    wait_on_done: true
+    ep_max_length: 1000
+    interface_kwargs:
+      save_replays: false

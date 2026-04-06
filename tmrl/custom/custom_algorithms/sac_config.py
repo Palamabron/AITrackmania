@@ -1,4 +1,4 @@
-"""SAC agent with hyperparameters from config (ALG_CONFIG)."""
+"""SAC agent with hyperparameters from validated MainConfig (constants)."""
 
 import itertools
 from copy import deepcopy
@@ -17,6 +17,7 @@ except ImportError:
     wandb = None  # type: ignore[assignment]
 
 import tmrl.config.constants as cfg
+from tmrl.config.loader import MAIN_CONFIG
 from tmrl.custom.custom_algorithms._common import (
     _amp_dtype,
     _amp_enabled,
@@ -27,19 +28,17 @@ from tmrl.custom.custom_algorithms._common import (
     polyak_update,
     set_seed,
 )
-from tmrl.custom.models.mlp import MLPActorCritic
+from tmrl.custom.models.vector_input.sac_mlp_actor_critic import MLPActorCritic
 from tmrl.custom.utils.nn import copy_shared, no_grad
 from tmrl.training import TrainingAgent
 from tmrl.util import cached_property
 
+_SCHED = MAIN_CONFIG.training.scheduler
+
 
 @dataclass(eq=False)
 class SpinupSacAgentConfig(TrainingAgent):
-    """SAC agent with hyperparameters read from config (ALG_CONFIG).
-
-    Same as SpinupSacAgent but lr_actor, lr_critic, lr_entropy, n_steps
-    default to cfg.ALG_CONFIG values for config-driven training.
-    """
+    """SAC agent with hyperparameters read from tmrl.config.constants."""
 
     observation_space: type[Any]
     action_space: type[Any]
@@ -48,12 +47,12 @@ class SpinupSacAgentConfig(TrainingAgent):
     gamma: float = 0.99
     polyak: float = 0.995
     alpha: float = 0.2
-    lr_actor: float = cfg.ALG_CONFIG["LR_ACTOR"]
-    lr_critic: float = cfg.ALG_CONFIG["LR_CRITIC"]
-    lr_entropy: float = cfg.ALG_CONFIG["LR_ENTROPY"]
+    lr_actor: float = cfg.LR_ACTOR
+    lr_critic: float = cfg.LR_CRITIC
+    lr_entropy: float = cfg.LR_ENTROPY
     learn_entropy_coef: bool = True
     target_entropy: float | None = None
-    n_steps: int = cfg.ALG_CONFIG["N_STEPS"]
+    n_steps: int = cfg.N_STEPS
 
     model_nograd = cached_property(lambda self: no_grad(copy_shared(self.model)))
 
@@ -84,21 +83,21 @@ class SpinupSacAgentConfig(TrainingAgent):
         use_scaler = self.use_mixed_precision and (self.amp_dtype != torch.bfloat16)
         self.grad_scaler = torch.amp.GradScaler("cuda", enabled=use_scaler)
 
-        if len(cfg.SCHEDULER_CONFIG["NAME"]) > 0:
+        if _SCHED.name:
             self.actor_scheduler = CosineAnnealingWarmRestarts(
                 self.actor_optimizer,
-                cfg.SCHEDULER_CONFIG["T_0"],
-                cfg.SCHEDULER_CONFIG["T_mult"],
-                cfg.SCHEDULER_CONFIG["eta_min"],
-                cfg.SCHEDULER_CONFIG["last_epoch"],
+                _SCHED.t_0,
+                _SCHED.t_mult,
+                _SCHED.eta_min,
+                _SCHED.last_epoch,
             )
 
             self.critic_scheduler = CosineAnnealingWarmRestarts(
                 self.critic_optimizer,
-                cfg.SCHEDULER_CONFIG["T_0"],
-                cfg.SCHEDULER_CONFIG["T_mult"],
-                cfg.SCHEDULER_CONFIG["eta_min"],
-                cfg.SCHEDULER_CONFIG["last_epoch"],
+                _SCHED.t_0,
+                _SCHED.t_mult,
+                _SCHED.eta_min,
+                _SCHED.last_epoch,
             )
 
         if self.target_entropy is None:
@@ -215,7 +214,7 @@ class SpinupSacAgentConfig(TrainingAgent):
             loss_actor.backward()
             self.actor_optimizer.step()
 
-        if len(cfg.SCHEDULER_CONFIG["NAME"]) > 0:
+        if _SCHED.name:
             self.actor_scheduler.step(epoch + batch_index / iters)
             self.critic_scheduler.step(epoch + batch_index / iters)
         if cfg.WEIGHT_CLIPPING_ENABLED:

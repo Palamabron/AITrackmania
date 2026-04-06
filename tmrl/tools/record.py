@@ -7,7 +7,11 @@ import numpy as np
 from loguru import logger
 
 import tmrl.config as cfg
-from tmrl.custom.tm.utils.tools import TM2020OpenPlanetClient
+from tmrl.custom.tm.utils.tools import (
+    TQC_GRAB_DATA_NB_FLOATS,
+    TM2020OpenPlanetClient,
+    openplanet_grab_indices,
+)
 
 PATH_REWARD = cfg.REWARD_PATH
 DATASET_PATH = cfg.DATASET_PATH
@@ -36,7 +40,8 @@ def record_reward_dist(path_reward=PATH_REWARD, use_keyboard=False):
             data = client.retrieve_data(
                 sleep_if_empty=0.01
             )  # we need many points to build a smooth curve
-            terminated = bool(data[8])
+            _eoti = openplanet_grab_indices(TQC_GRAB_DATA_NB_FLOATS)[2]
+            terminated = bool(data[_eoti])
 
             early_stop = False if not use_keyboard else keyboard.is_pressed("q")
 
@@ -72,7 +77,8 @@ def record_reward_dist(path_reward=PATH_REWARD, use_keyboard=False):
                 logger.info("All done")
                 return
             else:
-                positions.append([data[2], data[3], data[4]])
+                _, (_xi, _yi, _zi), _ = openplanet_grab_indices(TQC_GRAB_DATA_NB_FLOATS)
+                positions.append([data[_xi], data[_yi], data[_zi]])
         else:
             time.sleep(0.05)  # waiting for user to press E
 

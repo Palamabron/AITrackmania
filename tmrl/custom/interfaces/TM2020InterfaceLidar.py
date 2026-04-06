@@ -2,7 +2,7 @@ import numpy as np
 from gymnasium import spaces
 
 from tmrl.custom.interfaces.TM2020Interface import TM2020Interface
-from tmrl.custom.tm.utils.tools import Lidar
+from tmrl.custom.tm.utils.tools import Lidar, openplanet_grab_indices
 
 
 class TM2020InterfaceLidar(TM2020Interface):
@@ -10,26 +10,20 @@ class TM2020InterfaceLidar(TM2020Interface):
         self,
         img_hist_len=1,
         gamepad=False,
-        min_nb_steps_before_failure=int(20 * 3.5),
         save_replays: bool = False,
         **kwargs,
     ):
         super().__init__(
             img_hist_len=img_hist_len, gamepad=gamepad, save_replays=save_replays, **kwargs
         )
-        self.min_nb_steps_before_failure = min_nb_steps_before_failure
         self.window_interface = None
         self.lidar = None
 
     def grab_lidar_speed_and_data(self):
         img = self.window_interface.screenshot()[:, :, :3]
         data = self.client.retrieve_data()
-        speed = np.array(
-            [
-                data[0],
-            ],
-            dtype="float32",
-        )
+        _si, _, _ = openplanet_grab_indices(self.client.nb_floats)
+        speed = np.array([data[_si]], dtype="float32")
         lidar = self.lidar.lidar_20(img=img, show=False)
         return lidar, speed, data
 
@@ -58,13 +52,14 @@ class TM2020InterfaceLidar(TM2020Interface):
         obs must be a list of numpy arrays
         """
         img, speed, data = self.grab_lidar_speed_and_data()
+        _, (_xi, _yi, _zi), _eoti = openplanet_grab_indices(self.client.nb_floats)
         rew, terminated, _failure_counter = self.reward_function.compute_reward(
-            pos=np.array([data[2], data[3], data[4]])
+            pos=np.array([data[_xi], data[_yi], data[_zi]])
         )[:3]
         self.img_hist.append(img)
         imgs = np.array(list(self.img_hist), dtype="float32")
         obs = [speed, imgs]
-        end_of_track = bool(data[8])
+        end_of_track = bool(data[_eoti])
         info = {"end_of_track": end_of_track}
         if end_of_track:
             rew += self.finish_reward

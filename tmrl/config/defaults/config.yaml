@@ -1,0 +1,51 @@
+# @package _global_
+# TMRL Hydra entrypoint. Override groups, e.g.
+# `algorithm=sac model=vanilla_cnn_actor_critic`.
+# Model presets are full model-oriented files only (no aliases).
+# Default IQN path: residual MLP (+ optional GNN track split in local.yaml). For the Sophy
+# residual CNN/TQC preset: TMRL_HYDRA_OVERRIDES=model=sophy_residual_actor_critic
+defaults:
+  - _self_
+  - distributed: default
+  - training: default
+  - model: residual_mlp_actor_critic
+  - algorithm: iqn
+  - environment: tm20
+  - debugger: default
+
+schema_version: "0.6.0"
+
+run:
+  name: tmrl_run
+  reset_training: false
+  dataset_path: ""
+  buffers_maxlen: 500000
+  rw_max_samples_per_episode: 1000
+  rw_test_episode_interval: 5
+  rw_test_episodes_per_eval: 10
+
+wandb:
+  project: tmrl
+  entity: tmrl
+  api_key: ""
+  log_gradients: false
+  debug_reward: true
+  log_from_worker: true
+
+compute:
+  cuda_training: true
+  cuda_inference: false
+  virtual_gamepad: true
+
+player_runs:
+  online_injection: false
+  source_path: ""
+  consume_on_read: true
+  max_files_per_update: 1
+  demo_injection_repeat: 1
+  demo_sampling_weight: 1.0
+  demo_weight_decay_samples: 0
+  demo_weight_decay_slowdown: 1.0
+  per_alpha: 0.6
+  demo_max_batch_fraction: 1.0
+  demo_min_batch_fraction: 0.0

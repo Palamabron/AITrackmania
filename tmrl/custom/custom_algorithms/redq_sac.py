@@ -16,7 +16,7 @@ from tmrl.custom.custom_algorithms._common import (
     polyak_update,
     set_seed,
 )
-from tmrl.custom.models.mlp import REDQMLPActorCritic
+from tmrl.custom.models.vector_input.sac_mlp_actor_critic import REDQMLPActorCritic
 from tmrl.custom.utils.nn import copy_shared, no_grad
 from tmrl.training import TrainingAgent
 from tmrl.util import cached_property

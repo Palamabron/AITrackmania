@@ -25,7 +25,6 @@ class TM2020InterfaceTrackMap(TM2020InterfaceLidar):
         self,
         img_hist_len=1,
         gamepad=False,
-        min_nb_steps_before_failure=int(20 * 3.5),
         record=False,
         save_replay: bool = False,
     ):
@@ -35,8 +34,6 @@ class TM2020InterfaceTrackMap(TM2020InterfaceLidar):
         Args:
             img_hist_len (int): Length of the image history. Defaults to 1.
             gamepad (bool): Whether to use a gamepad for input. Defaults to False.
-            min_nb_steps_before_failure (int): Minimum steps before failure is considered.
-                Defaults to 70.
             record (bool): Whether to record the session. Defaults to False.
             save_replay (bool): Whether to save a replay. Defaults to False.
         """

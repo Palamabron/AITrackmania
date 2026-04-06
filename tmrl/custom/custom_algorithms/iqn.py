@@ -20,7 +20,7 @@ import torch
 from loguru import logger
 from torch.optim import Adam
 
-from tmrl.custom.models.model_blocks import SimbaV2Backbone
+from tmrl.custom.models.shared.neural_network_blocks import SimbaV2Backbone
 
 try:
     import wandb
@@ -35,7 +35,7 @@ from tmrl.custom.custom_algorithms._common import (
     sanitize_tensor,
     set_seed,
 )
-from tmrl.custom.models.DQNNet import DQNActor, IQNQNetwork
+from tmrl.custom.models.discrete_actions.iqn_discrete_q_network import DQNActor, IQNQNetwork
 from tmrl.custom.utils.nn import copy_shared, no_grad
 from tmrl.custom.utils.optim import GradientStabilizer
 from tmrl.training import TrainingAgent
@@ -399,7 +399,7 @@ class IQNAgent(TrainingAgent):
                 continuous_control_to_discrete_indices_batch,
             )
 
-            n_steer = int(cfg.ALG_CONFIG.get("IQN_N_STEER_BINS", 13))
+            n_steer = int(cfg.IQN_N_STEER_BINS)
             _, table = build_yosh_action_table(n_steer=n_steer)
             idx = continuous_control_to_discrete_indices_batch(a.cpu().numpy(), table)
             a = torch.from_numpy(idx).to(device=a.device, dtype=torch.long)
@@ -422,7 +422,7 @@ class IQNAgent(TrainingAgent):
             actions = actions[keep]
             batch_size = target_k
 
-        reward_scale = float(cfg.ALG_CONFIG.get("REWARD_NORMALIZE_SCALE", 1.0))
+        reward_scale = float(cfg.REWARD_NORMALIZE_SCALE)
         if reward_scale != 1.0 and reward_scale > 0:
             r = r / reward_scale
 

@@ -48,7 +48,6 @@ class TM2020InterfaceIMPALASophy(TM2020Interface):
         self,
         img_hist_len=1,
         gamepad=False,
-        min_nb_steps_before_failure=160,
         record=False,
         save_replay: bool = False,
         save_replays: bool | None = None,
@@ -68,8 +67,6 @@ class TM2020InterfaceIMPALASophy(TM2020Interface):
         Args:
             img_hist_len (int): Length of the image history. Defaults to 1.
             gamepad (bool): Whether to use a gamepad for input. Defaults to False.
-            min_nb_steps_before_failure (int): Minimum steps before failure is considered.
-                Defaults to 160.
             record (bool): Whether to record the session. Defaults to False.
             save_replay (bool): Whether to save a replay. Defaults to False.
             save_replays (bool, optional): Alias for save_replay. Defaults to None.
@@ -90,7 +87,6 @@ class TM2020InterfaceIMPALASophy(TM2020Interface):
         super().__init__(
             img_hist_len=img_hist_len,
             gamepad=gamepad,
-            min_nb_steps_before_failure=min_nb_steps_before_failure,
             save_replays=save_replay,
             grayscale=grayscale,
             finish_reward=finish_reward,
@@ -193,7 +189,7 @@ class TM2020InterfaceIMPALASophy(TM2020Interface):
         right_track = track_result[2]
         curvature_list = track_result[3] if len(track_result) == 4 else None
 
-        if bool(cfg.REWARD_CONFIG.get("TRACK_LOCAL_FRAME", False)):
+        if bool(cfg.REWARD_CONFIG.get("track_local_frame", False)):
             yaw = float(d["aim_yaw"][0])
             c, s = np.cos(yaw), np.sin(yaw)
             rot_matrix = np.array(((c, -s), (s, c)))

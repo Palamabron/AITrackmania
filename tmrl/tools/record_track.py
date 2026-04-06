@@ -12,11 +12,7 @@ from scipy.interpolate import CubicSpline
 from scipy.ndimage import gaussian_filter1d
 
 import tmrl.config as cfg
-from tmrl.custom.tm.utils.tools import TM2020OpenPlanetClient
-
-# Must match TQC_GrabData plugin (20 floats). Default 19 misaligns the byte stream
-# after the first frame and corrupts all subsequent data.
-TQC_GRAB_NB_FLOATS = 20
+from tmrl.custom.tm.utils.tools import TQC_GRAB_DATA_NB_FLOATS, TM2020OpenPlanetClient
 
 MIN_POSITIONS_FOR_TRACK = 50
 MIN_TRACK_LENGTH_M = (
@@ -53,7 +49,7 @@ def _filter_origin_points(positions: np.ndarray) -> np.ndarray:
 
 def record_track(path_track=cfg.TRACK_PATH_LEFT):
     positions = []
-    client = TM2020OpenPlanetClient(port=9000, nb_floats=TQC_GRAB_NB_FLOATS)
+    client = TM2020OpenPlanetClient(port=9000, nb_floats=TQC_GRAB_DATA_NB_FLOATS)
     path = path_track
 
     is_recording = False

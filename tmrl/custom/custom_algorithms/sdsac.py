@@ -40,7 +40,7 @@ from tmrl.custom.custom_algorithms._common import (
     sanitize_obs,
     set_seed,
 )
-from tmrl.custom.models.DQNNet import DQNActor
+from tmrl.custom.models.discrete_actions.iqn_discrete_q_network import DQNActor
 from tmrl.custom.utils.nn import copy_shared, no_grad
 from tmrl.custom.utils.optim import GradientStabilizer
 from tmrl.training import TrainingAgent
@@ -79,7 +79,7 @@ class DiscreteSACNetwork(nn.Module):
         n_cos: int = 64,
     ):
         super().__init__()
-        from tmrl.custom.models.DQNNet import IQNFeatureBackbone
+        from tmrl.custom.models.discrete_actions.iqn_discrete_q_network import IQNFeatureBackbone
 
         self.actor_backbone = IQNFeatureBackbone(
             observation_space, hidden_dim=hidden_dim, num_blocks=num_blocks_actor, n_cos=n_cos
@@ -305,7 +305,7 @@ class SDSACAgent(TrainingAgent):
             )
         actions = a.long().squeeze(-1)
 
-        reward_scale = float(cfg.ALG_CONFIG.get("REWARD_NORMALIZE_SCALE", 1.0))
+        reward_scale = float(cfg.REWARD_NORMALIZE_SCALE)
         if reward_scale != 1.0 and reward_scale > 0:
             r = r / reward_scale
 
@@ -327,8 +327,8 @@ class SDSACAgent(TrainingAgent):
             batch_size = target_k
 
         # -- Sequence-aware n-step returns (ported from TQC) --
-        burn_in_len = int(cfg.ALG_CONFIG.get("R2D2_BURN_IN", 0))
-        seq_len = int(cfg.ALG_CONFIG.get("R2D2_SEQUENCE_LENGTH", 0))
+        burn_in_len = int(cfg.R2D2_BURN_IN)
+        seq_len = int(cfg.R2D2_SEQUENCE_LENGTH)
 
         if self.n_steps > 1:
             truncated_batch_size = batch_size - self.n_steps

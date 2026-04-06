@@ -67,7 +67,7 @@ def _hflip_discrete_action(action_idx, n_steer: int | None = None):
         try:
             import tmrl.config.constants as cfg
 
-            n_steer = int(cfg.ALG_CONFIG.get("IQN_N_STEER_BINS", 13))
+            n_steer = int(cfg.IQN_N_STEER_BINS)
         except Exception:
             n_steer = 13
     n_steer = int(n_steer)

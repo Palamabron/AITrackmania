@@ -1,33 +1,27 @@
-"""Load Hydra-composed defaults, merge optional config.json, validate with Pydantic."""
+"""Compose Hydra YAML, apply optional overrides/secrets, validate with Pydantic."""
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 import platform
 from pathlib import Path
 from typing import Any, cast
 
+import yaml
 from dotenv import load_dotenv
 from hydra import compose, initialize_config_dir
 from loguru import logger
 from omegaconf import OmegaConf
 from packaging import version
 
-from tmrl.config.defaults import (
-    _DEFAULT_DEBUGGER_CONFIG,
-    _DEFAULT_ENV_CONFIG,
-    _DEFAULT_RTXGYM_CONFIG,
-    _DEFAULT_TMRL_CONFIG,
-    deep_merge_defaults,
-)
-from tmrl.config.enums import AlgorithmName
-from tmrl.config.models import MainConfig
+from tmrl.config.schema.main import MainConfig
 
-MINIMUM_CONFIG_VERSION = "0.6.0"
-CONFIG_COMPATIBILITY_ERROR_MESSAGE = (
-    "Perform a clean installation:\n(1) Uninstall TMRL,\n(2) Delete the TmrlData folder,\n"
-    "(3) Reinstall TMRL."
+MINIMUM_SCHEMA_VERSION = "0.6.0"
+CONFIG_UPGRADE_HINT = (
+    "Update ~/TmrlData/config/local.yaml to match the current schema (snake_case keys). "
+    "See tmrl/config/defaults/config.yaml in the package."
 )
 
 SYSTEM = platform.system()
@@ -37,272 +31,268 @@ TMRL_FOLDER = Path.home() / "TmrlData"
 if not TMRL_FOLDER.exists():
     raise RuntimeError(f"Missing folder: {TMRL_FOLDER}")
 
+CONFIG_DIR = TMRL_FOLDER / "config"
+LOCAL_OVERRIDE_PATH = CONFIG_DIR / "local.yaml"
+HYDRA_OVERRIDES_ENV = "TMRL_HYDRA_OVERRIDES"
+
 load_dotenv()
 load_dotenv(TMRL_FOLDER / ".env")
-load_dotenv(TMRL_FOLDER / "config" / ".env")
+load_dotenv(CONFIG_DIR / ".env")
 
-CONFIG_FILE_PATH = TMRL_FOLDER / "config" / "config.json"
+_HYDRA_CONF_DIR = Path(__file__).resolve().parent / "defaults"
 
-_HYDRA_CONF_DIR = Path(__file__).resolve().parent.parent / "conf"
+
+def _deep_merge(dst: dict[str, Any], src: dict[str, Any]) -> None:
+    for key, val in src.items():
+        if key in dst and isinstance(dst[key], dict) and isinstance(val, dict):
+            _deep_merge(cast(dict[str, Any], dst[key]), val)
+        else:
+            dst[key] = val
 
 
 def _compose_hydra_dict() -> dict[str, Any]:
+    hydra_overrides_raw = os.environ.get(HYDRA_OVERRIDES_ENV, "").strip()
+    hydra_overrides: list[str] = []
+    if hydra_overrides_raw:
+        try:
+            parsed = json.loads(hydra_overrides_raw)
+        except json.JSONDecodeError:
+            parsed = None
+        if isinstance(parsed, list):
+            if not all(isinstance(item, str) for item in parsed):
+                raise TypeError(f"{HYDRA_OVERRIDES_ENV} JSON list must contain only strings")
+            hydra_overrides = [item.strip() for item in parsed if item.strip()]
+        else:
+            hydra_overrides = [
+                item.strip() for item in hydra_overrides_raw.split(",") if item.strip()
+            ]
     if not _HYDRA_CONF_DIR.is_dir():
         raise RuntimeError(f"Missing Hydra config directory: {_HYDRA_CONF_DIR}")
     with initialize_config_dir(version_base=None, config_dir=str(_HYDRA_CONF_DIR)):
-        hydra_cfg = compose(config_name="config")
+        hydra_cfg = compose(config_name="config", overrides=hydra_overrides)
+    if hydra_overrides:
+        logger.info(
+            "Applied {} Hydra override(s) from {}", len(hydra_overrides), HYDRA_OVERRIDES_ENV
+        )
     out = OmegaConf.to_container(hydra_cfg, resolve=True)
     if not isinstance(out, dict):
-        raise TypeError("Hydra compose must produce a dict root")
+        raise TypeError("Hydra root must be a mapping")
     return cast(dict[str, Any], out)
 
 
-def _deep_merge_user_over(base: dict[str, Any], user: dict[str, Any]) -> None:
-    """Recursively overwrite base with user (user wins on leaves)."""
-    for key, val in user.items():
-        if key in base and isinstance(base[key], dict) and isinstance(val, dict):
-            _deep_merge_user_over(base[key], val)
-        else:
-            base[key] = val
+def _load_local_overrides() -> dict[str, Any] | None:
+    if not LOCAL_OVERRIDE_PATH.is_file():
+        return None
+    with open(LOCAL_OVERRIDE_PATH) as f:
+        data = yaml.safe_load(f)
+    if data is None:
+        return None
+    if not isinstance(data, dict):
+        raise TypeError(f"{LOCAL_OVERRIDE_PATH} must contain a YAML mapping at the root")
+    return cast(dict[str, Any], data)
 
 
-def _apply_legacy_env_and_reward(tm: dict[str, Any]) -> None:
-    """Mutate tm like the historical loader: ENV defaults, END_OF_TRACK, REWARD_CONFIG merge."""
-    _raw_env = dict(tm["ENV"])
+def _apply_env_secrets(cfg: dict[str, Any]) -> None:
+    wandb_key = os.getenv("WANDB_API_KEY") or os.getenv("WANDB_KEY")
+    if wandb_key:
+        wandb = cfg.setdefault("wandb", {})
+        if isinstance(wandb, dict):
+            wandb["api_key"] = wandb_key
+    password = os.getenv("TMRL_PASSWORD")
+    if password:
+        dist = cfg.setdefault("distributed", {})
+        if isinstance(dist, dict):
+            dist["password"] = password
 
-    _legacy_finish_reward = None
-    if isinstance(_raw_env.get("REWARD_CONFIG"), dict):
-        _legacy_finish_reward = _raw_env["REWARD_CONFIG"].get("END_OF_TRACK")
-    if "END_OF_TRACK_REWARD" not in _raw_env and _legacy_finish_reward is not None:
-        _raw_env["END_OF_TRACK_REWARD"] = _legacy_finish_reward
-    if _legacy_finish_reward is not None and "END_OF_TRACK_REWARD" in _raw_env:
+
+def _build_raw_config() -> dict[str, Any]:
+    merged = _compose_hydra_dict()
+    local = _load_local_overrides()
+    if local:
+        _deep_merge(merged, local)
+        logger.info("Loaded user overrides from {}", LOCAL_OVERRIDE_PATH)
+    _apply_env_secrets(merged)
+
+    overrides = os.environ.get("TMRL_CONFIG_OVERRIDES", "").strip()
+    if overrides:
         try:
-            if float(_legacy_finish_reward) != float(_raw_env["END_OF_TRACK_REWARD"]):
-                logger.warning(
-                    "Config contains both ENV.END_OF_TRACK_REWARD={} and legacy "
-                    "ENV.REWARD_CONFIG.END_OF_TRACK={}. Using END_OF_TRACK_REWARD.",
-                    _raw_env["END_OF_TRACK_REWARD"],
-                    _legacy_finish_reward,
-                )
-        except Exception:
-            logger.warning(
-                "Could not compare END_OF_TRACK_REWARD and legacy REWARD_CONFIG.END_OF_TRACK. "
-                "Using END_OF_TRACK_REWARD."
-            )
-    if isinstance(_raw_env.get("REWARD_CONFIG"), dict):
-        _raw_env["REWARD_CONFIG"].pop("END_OF_TRACK", None)
+            patch = json.loads(overrides)
+        except json.JSONDecodeError as e:
+            raise ValueError(
+                "TMRL_CONFIG_OVERRIDES must be a JSON object, e.g. "
+                '\'{"algorithm":{"lr_actor":3e-5}}\''
+            ) from e
+        if not isinstance(patch, dict):
+            raise TypeError("TMRL_CONFIG_OVERRIDES must be a JSON object at the root")
+        _deep_merge(merged, patch)
+        logger.info("Applied TMRL_CONFIG_OVERRIDES ({} top-level keys)", len(patch))
 
-    default_env = dict(_DEFAULT_ENV_CONFIG)
-    if "RTGYM_CONFIG" not in _raw_env:
-        default_env["RTGYM_CONFIG"] = dict(_DEFAULT_RTXGYM_CONFIG)
-
-    for k, v in default_env.items():
-        if k not in _raw_env:
-            _raw_env[k] = v
-
-    if isinstance(_raw_env.get("RTGYM_CONFIG"), dict):
-        _raw_env["RTGYM_CONFIG"].setdefault("reset_act_buf", True)
-
-    if isinstance(tm.get("REWARD_CONFIG"), dict):
-        _merge = _raw_env.get("REWARD_CONFIG") or {}
-        if isinstance(_merge, dict):
-            for _rk, _rv in tm["REWARD_CONFIG"].items():
-                _merge[_rk] = _rv
-            _raw_env["REWARD_CONFIG"] = _merge
-        else:
-            _raw_env["REWARD_CONFIG"] = dict(tm["REWARD_CONFIG"])
-
-    tm["ENV"] = _raw_env
-    tm.pop("REWARD_CONFIG", None)
-
-
-def _build_raw_tmrl_config() -> dict[str, Any]:
-    merged: dict[str, Any] = _compose_hydra_dict()
-    if CONFIG_FILE_PATH.is_file():
-        with open(CONFIG_FILE_PATH) as f:
-            user_cfg = json.load(f)
-        if isinstance(user_cfg, dict):
-            _deep_merge_user_over(merged, user_cfg)
-
-    deep_merge_defaults(merged, _DEFAULT_TMRL_CONFIG)
-
-    env_wandb_key = os.getenv("WANDB_API_KEY") or os.getenv("WANDB_KEY")
-    if env_wandb_key:
-        merged["WANDB_KEY"] = env_wandb_key
-    env_password = os.getenv("TMRL_PASSWORD")
-    if env_password:
-        merged["PASSWORD"] = env_password
-
-    if "__VERSION__" not in merged:
-        raise ValueError("config is outdated. " + CONFIG_COMPATIBILITY_ERROR_MESSAGE)
-    if version.parse(merged["__VERSION__"]) < version.parse(MINIMUM_CONFIG_VERSION):
+    if "schema_version" not in merged:
+        raise ValueError("Missing schema_version. " + CONFIG_UPGRADE_HINT)
+    if version.parse(merged["schema_version"]) < version.parse(MINIMUM_SCHEMA_VERSION):
         raise ValueError(
-            f"config version ({merged['__VERSION__']}) must be >= {MINIMUM_CONFIG_VERSION}. "
-            + CONFIG_COMPATIBILITY_ERROR_MESSAGE
+            f"schema_version {merged['schema_version']} is below minimum {MINIMUM_SCHEMA_VERSION}. "
+            + CONFIG_UPGRADE_HINT
         )
-
-    _apply_legacy_env_and_reward(merged)
     return merged
 
 
-_RAW_TMRL_CONFIG = _build_raw_tmrl_config()
-MAIN_CONFIG = MainConfig.model_validate(_RAW_TMRL_CONFIG)
-TMRL_CONFIG: dict[str, Any] = MAIN_CONFIG.model_dump(mode="json", by_alias=True)
-ENV_CONFIG: dict[str, Any] = cast(dict[str, Any], TMRL_CONFIG["ENV"])
-DEBUGGER_CONFIG = MAIN_CONFIG.DEBUGGER
-DEBUGGER: dict[str, Any] = TMRL_CONFIG.get("DEBUGGER", dict(_DEFAULT_DEBUGGER_CONFIG))
-CONFIG_VERSION = str(TMRL_CONFIG["__VERSION__"])
+_RAW_CONFIG = _build_raw_config()
+MAIN_CONFIG = MainConfig.model_validate(_RAW_CONFIG)
+CONFIG_VERSION = MAIN_CONFIG.schema_version
 
 
-def _validate_alg_config() -> None:
-    """Backward-compatible name; validation runs in AlgConfig model_validator."""
-    alg_config = TMRL_CONFIG["ALG"]
-    if (
-        AlgorithmName(alg_config["ALGORITHM"])
-        not in (AlgorithmName.TQC, AlgorithmName.IQN, AlgorithmName.SDSAC)
-        and alg_config["QUANTILES_NUMBER"] > 1
-    ):
-        raise ValueError("QUANTILES_NUMBER must be 1 when not using TQC or IQN")
+def merged_config_snapshot_redacted() -> dict[str, Any]:
+    """Post-merge config dict (Hydra + local.yaml + env), secrets stripped for archiving."""
+    out = copy.deepcopy(_RAW_CONFIG)
+    wandb = out.get("wandb")
+    if isinstance(wandb, dict) and wandb.get("api_key"):
+        wandb["api_key"] = "<redacted>"
+    dist = out.get("distributed")
+    if isinstance(dist, dict) and dist.get("password"):
+        dist["password"] = "<redacted>"
+    return out
 
 
-_validate_alg_config()
+def main_config_snapshot_redacted() -> dict[str, Any]:
+    """Validated :class:`~tmrl.config.schema.main.MainConfig` as JSON-friendly dict.
+
+    Secrets are redacted in the returned dict.
+    """
+    d = MAIN_CONFIG.model_dump(mode="json")
+    w = d.get("wandb")
+    if isinstance(w, dict) and w.get("api_key"):
+        w = dict(w)
+        w["api_key"] = "<redacted>"
+        d["wandb"] = w
+    dist = d.get("distributed")
+    if isinstance(dist, dict) and dist.get("password"):
+        dist = dict(dist)
+        dist["password"] = "<redacted>"
+        d["distributed"] = dist
+    return d
+
+
+MINIMUM_CONFIG_VERSION = MINIMUM_SCHEMA_VERSION
+CONFIG_COMPATIBILITY_ERROR_MESSAGE = CONFIG_UPGRADE_HINT
+CONFIG_FILE_PATH = LOCAL_OVERRIDE_PATH
+DEBUGGER = MAIN_CONFIG.debugger
+DEBUGGER_CONFIG = MAIN_CONFIG.debugger.model_dump()
 
 
 def create_config() -> dict[str, Any]:
-    """Flat training dict for custom algorithms (checkpoint / agent hyperparameter bundle)."""
-    from tmrl.config import POINTS_NUMBER
-
-    training_config: dict[str, Any] = {}
-    alg_config = TMRL_CONFIG["ALG"]
-    model_config = TMRL_CONFIG["MODEL"]
-    scheduler_config = model_config["SCHEDULER"]
-    env_config = TMRL_CONFIG["ENV"]
-
-    training_config["TRAINING_STEPS_PER_ROUND"] = model_config["TRAINING_STEPS_PER_ROUND"]
-    training_config["MAX_TRAINING_STEPS_PER_ENVIRONMENT_STEP"] = model_config[
-        "MAX_TRAINING_STEPS_PER_ENVIRONMENT_STEP"
-    ]
-    training_config["ENVIRONMENT_STEPS_BEFORE_TRAINING"] = model_config[
-        "ENVIRONMENT_STEPS_BEFORE_TRAINING"
-    ]
-    training_config["UPDATE_MODEL_INTERVAL"] = model_config["UPDATE_MODEL_INTERVAL"]
-    training_config["UPDATE_BUFFER_INTERVAL"] = model_config["UPDATE_BUFFER_INTERVAL"]
-    training_config["SAVE_MODEL_EVERY"] = model_config["SAVE_MODEL_EVERY"]
-    training_config["MEMORY_SIZE"] = model_config["MEMORY_SIZE"]
-    training_config["BATCH_SIZE"] = model_config["BATCH_SIZE"]
-
-    training_config["CNN_FILTERS"] = model_config["CNN_FILTERS"]
-    for layer_index, filter_size in enumerate(training_config["CNN_FILTERS"]):
-        training_config[f"CNN_FILTER{layer_index}"] = filter_size
-    training_config["CNN_OUTPUT_SIZE"] = model_config["CNN_OUTPUT_SIZE"]
-
-    training_config["RNN_SIZES"] = model_config["RNN_SIZES"]
-    for layer_index, size in enumerate(training_config["RNN_SIZES"]):
-        training_config[f"RNN_SIZE{layer_index}"] = size
-    training_config["RNN_LENS"] = model_config["RNN_LENS"]
-    for layer_index, length in enumerate(training_config["RNN_LENS"]):
-        training_config[f"RNN_LEN{layer_index}"] = length
-
-    training_config["API_MLP_SIZES"] = model_config["API_MLP_SIZES"]
-    for layer_index, size in enumerate(training_config["API_MLP_SIZES"]):
-        training_config[f"API_MLP_SIZE{layer_index}"] = size
-
-    training_config["API_LAYERNORM"] = model_config["API_LAYERNORM"]
-    training_config["NOISY_LINEAR_ACTOR"] = model_config["NOISY_LINEAR_ACTOR"]
-    training_config["NOISY_LINEAR_CRITIC"] = model_config["NOISY_LINEAR_CRITIC"]
-    training_config["RNN_DROPOUT"] = model_config["RNN_DROPOUT"]
-
-    training_config["USE_RESIDUAL_MLP"] = model_config.get("USE_RESIDUAL_MLP", False)
-    training_config["RESIDUAL_MLP_HIDDEN_DIM"] = model_config.get("RESIDUAL_MLP_HIDDEN_DIM", 256)
-    training_config["RESIDUAL_MLP_NUM_BLOCKS"] = model_config.get("RESIDUAL_MLP_NUM_BLOCKS", 6)
-    training_config["RESIDUAL_MLP_NUM_BLOCKS_ACTOR"] = model_config.get(
-        "RESIDUAL_MLP_NUM_BLOCKS_ACTOR", 0
-    )
-    training_config["RESIDUAL_MLP_NUM_BLOCKS_CRITIC"] = model_config.get(
-        "RESIDUAL_MLP_NUM_BLOCKS_CRITIC", 0
-    )
-    training_config["USE_RESIDUAL_SOPHY"] = model_config.get("USE_RESIDUAL_SOPHY", False)
-    training_config["USE_TRACK_CONV1D"] = model_config.get("USE_TRACK_CONV1D", True)
-    training_config["USE_SIMBAV2"] = model_config.get("USE_SIMBAV2", False)
-    training_config["TRACK_ENCODER"] = model_config.get("TRACK_ENCODER", "conv1d")
-    training_config["GNN_LAYERS"] = model_config.get("GNN_LAYERS", 3)
-    training_config["GNN_HIDDEN"] = model_config.get("GNN_HIDDEN", 64)
-    training_config["BINARY_BRAKE"] = model_config.get("BINARY_BRAKE", False)
-    training_config["USE_RNN"] = model_config.get("USE_RNN", False)
-    training_config["RNN_HIDDEN_SIZE"] = model_config.get("RNN_HIDDEN_SIZE", 0)
-    training_config["USE_EFFICIENTNET"] = model_config.get("USE_EFFICIENTNET", True)
-    training_config["USE_FROZEN_EFFNET"] = model_config.get("USE_FROZEN_EFFNET", False)
-    training_config["FROZEN_EFFNET_EMBED_DIM"] = model_config.get("FROZEN_EFFNET_EMBED_DIM", 256)
-    training_config["FROZEN_EFFNET_WIDTH_MULT"] = model_config.get("FROZEN_EFFNET_WIDTH_MULT", 0.5)
-    training_config["FROZEN_EFFNET_VARIANT"] = model_config.get("FROZEN_EFFNET_VARIANT", "xs")
-    training_config["FROZEN_EFFNET_USE_DW_STEM"] = model_config.get(
-        "FROZEN_EFFNET_USE_DW_STEM", False
+    """Flat snake_case dict for W&B logging and legacy helpers expecting one-level keys."""
+    from tmrl.config.constants import (
+        POINTS_NUMBER,
+        REWARD_CONFIG,
     )
 
-    training_config["MIN_NB_ZERO_REW_BEFORE_FAILURE"] = env_config["MIN_NB_ZERO_REW_BEFORE_FAILURE"]
-    training_config["MAX_NB_ZERO_REW_BEFORE_FAILURE"] = env_config["MAX_NB_ZERO_REW_BEFORE_FAILURE"]
-    training_config["MIN_NB_STEPS_BEFORE_FAILURE"] = env_config["MIN_NB_STEPS_BEFORE_FAILURE"]
-    training_config["OSCILLATION_PERIOD"] = env_config["OSCILLATION_PERIOD"]
-    training_config["CRASH_PENALTY"] = env_config["CRASH_PENALTY"]
-    training_config["CRASH_COOLDOWN"] = env_config["CRASH_COOLDOWN"]
-    training_config["CONSTANT_PENALTY"] = env_config["CONSTANT_PENALTY"]
-    training_config["LAP_REWARD"] = env_config["LAP_REWARD"]
-    training_config["LAP_COOLDOWN"] = env_config["LAP_COOLDOWN"]
-    training_config["CHECKPOINT_REWARD"] = env_config["CHECKPOINT_REWARD"]
-    training_config["CHECKPOINT_COOLDOWN"] = env_config.get("CHECKPOINT_COOLDOWN", 0)
-    training_config["REWARD_END_OF_TRACK"] = env_config["END_OF_TRACK_REWARD"]
+    m = MAIN_CONFIG
+    a = m.algorithm
+    t = m.training
+    r = m.model
+    e = m.environment
+    sched = t.scheduler
 
-    training_config["ALGORITHM"] = alg_config["ALGORITHM"]
-    training_config["QUANTILES_NUMBER"] = alg_config["QUANTILES_NUMBER"]
-    training_config["LEARN_ENTROPY_COEF"] = alg_config["LEARN_ENTROPY_COEF"]
-    training_config["LR_ACTOR"] = alg_config["LR_ACTOR"]
-    training_config["LR_CRITIC"] = alg_config["LR_CRITIC"]
-    training_config["LR_CRITIC_DIVIDED_BY_LR_ACTOR"] = (
-        training_config["LR_CRITIC"] / training_config["LR_ACTOR"]
-    )
-    training_config["N_STEPS"] = alg_config["N_STEPS"]
-    training_config["ACTOR_WEIGHT_DECAY"] = alg_config["ACTOR_WEIGHT_DECAY"]
-    training_config["CRITIC_WEIGHT_DECAY"] = alg_config["CRITIC_WEIGHT_DECAY"]
-    training_config["CLIPPING_WEIGHTS"] = alg_config["CLIPPING_WEIGHTS"]
-    training_config["CLIP_WEIGHTS_VALUE"] = (
-        1.0 if not training_config["CLIPPING_WEIGHTS"] else alg_config["CLIP_WEIGHTS_VALUE"]
-    )
-    training_config["POINTS_NUMBER"] = POINTS_NUMBER
-    training_config["POINTS_DISTANCE"] = alg_config["POINTS_DISTANCE"]
-    training_config["SPEED_BONUS"] = alg_config["SPEED_BONUS"]
-    training_config["SPEED_MIN_THRESHOLD"] = alg_config["SPEED_MIN_THRESHOLD"]
-    training_config["SPEED_MEDIUM_THRESHOLD"] = alg_config["SPEED_MEDIUM_THRESHOLD"]
-    training_config["LR_ENTROPY"] = alg_config["LR_ENTROPY"]
-    training_config["GAMMA"] = alg_config["GAMMA"]
-    training_config["POLYAK"] = alg_config["POLYAK"]
-    training_config["TARGET_ENTROPY"] = alg_config["TARGET_ENTROPY"]
-    training_config["TOP_QUANTILES_TO_DROP"] = alg_config["TOP_QUANTILES_TO_DROP"]
-    training_config["BC_LAMBDA"] = float(alg_config.get("BC_LAMBDA", 0.0))
-    training_config["BC_LAMBDA_START"] = float(alg_config.get("BC_LAMBDA_START", 1.0))
-    training_config["BC_LAMBDA_END"] = float(alg_config.get("BC_LAMBDA_END", 0.01))
-    training_config["BC_ANNEAL_STEPS_START"] = int(alg_config.get("BC_ANNEAL_STEPS_START", 0))
-    training_config["BC_ANNEAL_STEPS_END"] = int(alg_config.get("BC_ANNEAL_STEPS_END", 2_000_000))
-
-    if (
-        alg_config["QUANTILES_NUMBER"] != 1
-        and AlgorithmName(alg_config["ALGORITHM"]) == AlgorithmName.SAC
-    ):
-        raise ValueError("SAC requires QUANTILES_NUMBER equal to 1")
-
-    training_config["R2D2_REWIND"] = alg_config["R2D2_REWIND"]
-    training_config["R2D2_NUM_SEQUENCES"] = alg_config.get("R2D2_NUM_SEQUENCES", 0)
-    training_config["R2D2_SEQUENCE_LENGTH"] = alg_config.get("R2D2_SEQUENCE_LENGTH", 0)
-    training_config["R2D2_BURN_IN"] = alg_config.get("R2D2_BURN_IN", 0)
-    training_config["ADAM_EPS"] = alg_config["ADAM_EPS"]
-
-    training_config["SCHEDULER_T_0"] = scheduler_config["T_0"]
-    training_config["SCHEDULER_T_mult"] = scheduler_config["T_mult"]
-    training_config["SCHEDULER_eta_min"] = scheduler_config["eta_min"]
-    training_config["SCHEDULER_last_epoch"] = scheduler_config["last_epoch"]
-
-    training_config["IMG_WIDTH"] = env_config["IMG_WIDTH"]
-    training_config["IMG_HEIGHT"] = env_config["IMG_HEIGHT"]
-    training_config["IMG_GRAYSCALE"] = env_config.get("IMG_GRAYSCALE", False)
-    training_config["IMG_HIST_LEN"] = env_config["IMG_HIST_LEN"]
-
-    return training_config
+    flat: dict[str, Any] = {
+        "training_steps_per_round": t.training_steps_per_round,
+        "max_training_steps_per_environment_step": t.max_training_steps_per_environment_step,
+        "environment_steps_before_training": t.environment_steps_before_training,
+        "update_model_interval": t.update_model_interval,
+        "update_buffer_interval": t.update_buffer_interval,
+        "save_model_every": t.save_model_every,
+        "memory_size": t.memory_size,
+        "batch_size": t.batch_size,
+        "cnn_filters": list(r.cnn_filters),
+        "cnn_output_size": r.cnn_output_size,
+        "rnn_sizes": list(r.rnn_sizes),
+        "rnn_lens": list(r.rnn_lens),
+        "api_mlp_sizes": list(r.api_mlp_sizes),
+        "api_layernorm": r.api_layernorm,
+        "noisy_linear_actor": r.noisy_linear_actor,
+        "noisy_linear_critic": r.noisy_linear_critic,
+        "rnn_dropout": r.rnn_dropout,
+        "use_residual_mlp": r.use_residual_mlp,
+        "residual_mlp_hidden_dim": r.residual_mlp_hidden_dim,
+        "residual_mlp_num_blocks": r.residual_mlp_num_blocks,
+        "residual_mlp_num_blocks_actor": r.residual_mlp_num_blocks_actor,
+        "residual_mlp_num_blocks_critic": r.residual_mlp_num_blocks_critic,
+        "use_sophy_residual_actor": r.use_sophy_residual_actor,
+        "split_track_observation": r.split_track_observation,
+        "use_simbav2": r.use_simbav2,
+        "track_encoder": r.track_encoder,
+        "gnn_layers": r.gnn_layers,
+        "gnn_hidden": r.gnn_hidden,
+        "binary_brake": r.binary_brake,
+        "use_rnn": r.use_rnn,
+        "rnn_hidden_size": r.rnn_hidden_size,
+        "use_efficientnet": r.use_efficientnet,
+        "use_frozen_effnet": r.use_frozen_effnet,
+        "frozen_effnet_embed_dim": r.frozen_effnet_embed_dim,
+        "frozen_effnet_width_mult": r.frozen_effnet_width_mult,
+        "frozen_effnet_variant": r.frozen_effnet_variant,
+        "frozen_effnet_use_dw_stem": r.frozen_effnet_use_dw_stem,
+        "min_zero_reward_steps_before_failure": e.min_zero_reward_steps_before_failure,
+        "max_zero_reward_steps_before_failure": e.max_zero_reward_steps_before_failure,
+        "min_seconds_before_failure": float(REWARD_CONFIG["min_seconds_before_failure"]),
+        "off_track_seconds_before_failure": float(
+            REWARD_CONFIG["off_track_seconds_before_failure"]
+        ),
+        "oscillation_period": e.oscillation_period,
+        "crash_penalty": e.crash_penalty,
+        "crash_cooldown": e.crash_cooldown,
+        "constant_penalty": e.constant_penalty,
+        "lap_reward": e.lap_reward,
+        "lap_cooldown": e.lap_cooldown,
+        "checkpoint_reward": e.checkpoint_reward,
+        "checkpoint_cooldown": 0,
+        "reward_end_of_track": e.end_of_track_reward,
+        "algorithm": a.name,
+        "quantiles_number": a.quantiles_number,
+        "learn_entropy_coef": a.learn_entropy_coef,
+        "lr_actor": a.lr_actor,
+        "lr_critic": a.lr_critic,
+        "lr_critic_divided_by_lr_actor": a.lr_critic / a.lr_actor if a.lr_actor else 0.0,
+        "n_steps": a.n_steps,
+        "actor_weight_decay": a.actor_weight_decay,
+        "critic_weight_decay": a.critic_weight_decay,
+        "clipping_weights": a.clipping_weights,
+        "clip_weights_value": 1.0 if not a.clipping_weights else a.clip_weights_value,
+        "points_number": POINTS_NUMBER,
+        "points_distance": a.points_distance,
+        "speed_bonus": a.speed_bonus,
+        "speed_min_threshold": a.speed_min_threshold,
+        "speed_medium_threshold": a.speed_medium_threshold,
+        "lr_entropy": a.lr_entropy,
+        "gamma": a.gamma,
+        "polyak": a.polyak,
+        "target_entropy": a.target_entropy,
+        "top_quantiles_to_drop": a.top_quantiles_to_drop,
+        "bc_lambda": float(a.bc_lambda),
+        "bc_lambda_start": float(a.bc_lambda_start),
+        "bc_lambda_end": float(a.bc_lambda_end),
+        "bc_anneal_steps_start": a.bc_anneal_steps_start,
+        "bc_anneal_steps_end": a.bc_anneal_steps_end,
+        "r2d2_rewind": a.r2d2_rewind,
+        "r2d2_num_sequences": a.r2d2_num_sequences,
+        "r2d2_sequence_length": a.r2d2_sequence_length,
+        "r2d2_burn_in": a.r2d2_burn_in,
+        "adam_eps": a.adam_eps,
+        "scheduler_t_0": sched.t_0,
+        "scheduler_t_mult": sched.t_mult,
+        "scheduler_eta_min": sched.eta_min,
+        "scheduler_last_epoch": sched.last_epoch,
+        "img_width": e.img_width,
+        "img_height": e.img_height,
+        "img_grayscale": e.img_grayscale,
+        "img_hist_len": e.img_hist_len,
+    }
+    for i, f in enumerate(flat["cnn_filters"]):
+        flat[f"cnn_filter{i}"] = f
+    for i, s in enumerate(flat["rnn_sizes"]):
+        flat[f"rnn_size{i}"] = s
+    for i, ln in enumerate(flat["rnn_lens"]):
+        flat[f"rnn_len{i}"] = ln
+    for i, s in enumerate(flat["api_mlp_sizes"]):
+        flat[f"api_mlp_size{i}"] = s
+    return flat

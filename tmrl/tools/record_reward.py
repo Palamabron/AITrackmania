@@ -12,10 +12,11 @@ from scipy.interpolate import CubicSpline
 from scipy.ndimage import gaussian_filter1d
 
 import tmrl.config as cfg
-from tmrl.custom.tm.utils.tools import TM2020OpenPlanetClient
-
-# Must match TQC_GrabData plugin (20 floats). Default 19 would misalign and corrupt trajectory.
-TQC_GRAB_NB_FLOATS = 20
+from tmrl.custom.tm.utils.tools import (
+    TQC_GRAB_DATA_NB_FLOATS,
+    TM2020OpenPlanetClient,
+    openplanet_grab_indices,
+)
 
 PATH_REWARD = cfg.REWARD_PATH
 DATASET_PATH = cfg.DATASET_PATH
@@ -26,7 +27,7 @@ MIN_POSITIONS_FOR_RECORDING = 50
 
 def record_reward_dist(path_reward=PATH_REWARD, use_keyboard=False):
     positions = []
-    client = TM2020OpenPlanetClient(port=9000, nb_floats=TQC_GRAB_NB_FLOATS)
+    client = TM2020OpenPlanetClient(port=9000, nb_floats=TQC_GRAB_DATA_NB_FLOATS)
     # When using keyboard, save to current directory so you can find the file easily.
     if use_keyboard:
         path = os.path.abspath(os.path.join(os.getcwd(), f"reward_{cfg.MAP_NAME}.pkl"))
@@ -65,7 +66,8 @@ def record_reward_dist(path_reward=PATH_REWARD, use_keyboard=False):
             data = client.retrieve_data(
                 sleep_if_empty=0.01
             )  # we need many points to build a smooth curve
-            terminated = bool(data[8])
+            _eoti = openplanet_grab_indices(TQC_GRAB_DATA_NB_FLOATS)[2]
+            terminated = bool(data[_eoti])
             early_stop = use_keyboard and stop_requested
             # Keyboard mode: stop on Enter only; ignore "lap finished" to allow full lap.
             should_stop = early_stop or (terminated and not use_keyboard)
