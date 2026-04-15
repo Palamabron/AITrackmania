@@ -224,6 +224,32 @@ class TM2020Interface(RealTimeGymInterface):
             logger.debug("crashed: True (episode will terminate)")
             self.crash_cooldown = 10
 
+    def crash_fallback(self, current_speed):
+        """
+        Kinematic fallback for collision detection in case of gamepad rumble malfunction.
+
+        Calculates the velocity drop between the previous and current frame. If the
+        deceleration exceeds a dynamic threshold (flat base drop + relative speed drop),
+        the environment is flagged as crashed.
+
+        Args:
+            current_speed (float): The current speed of the agent in km/h.
+
+        Mutates:
+            self.is_crashed (bool): Set to True if a kinematic collision is detected.
+            self.crash_cooldown (int): Set to 10 to debounce hardware callbacks.
+        """
+        last_speed = getattr(self, "_last_speed_kmh", current_speed)
+        delta_v = last_speed - current_speed
+
+        base_drop = 20.0
+        speed_factor = 0.20
+        dynamic_threshold = base_drop + (last_speed * speed_factor)
+
+        if delta_v > dynamic_threshold:
+            self.is_crashed = True
+            self.crash_cooldown = 10
+
     def initialize(self):
         """Calls initialize_common and sets the interface as initialized."""
         self.initialize_common()
@@ -324,6 +350,8 @@ class TM2020Interface(RealTimeGymInterface):
         else:
             self.send_control(self.get_default_action())
         self.reset_race()
+        self.is_crashed = False
+        self.crash_cooldown = 0
         time_sleep = (
             max(0, cfg.SLEEP_TIME_AT_RESET - 0.1) if self.gamepad else cfg.SLEEP_TIME_AT_RESET
         )

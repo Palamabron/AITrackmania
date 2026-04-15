@@ -33,7 +33,6 @@ class TM2020InterfaceTQC(TM2020InterfaceIMPALASophy):
             tuple: A tuple containing (observation, reward, terminated, info).
         """
         data = self.grab_data()
-        self.is_crashed = bool(data[18])
         cur_cp = int(data[0])
         cur_lap = int(data[1])
 
@@ -51,6 +50,10 @@ class TM2020InterfaceTQC(TM2020InterfaceIMPALASophy):
         steer_angle = np.array(data[14:16], dtype="float32")
         slip_coef = np.array(data[16:18], dtype="float32")
         gear = np.array([data[19] / 5.0], dtype="float32")
+
+        if not self.is_crashed:
+            self.crash_fallback(speed_kmh)
+        self._last_speed_kmh = speed_kmh
 
         rew, terminated, failure_counter, reward_sum = self.reward_function.compute_reward(
             pos=pos,
@@ -117,7 +120,7 @@ class TM2020InterfaceTQC(TM2020InterfaceIMPALASophy):
             track_list = [x / cfg.OBS_TRACK_SCALE for x in track_list]
         track_info = [np.array(track_list, dtype="float32")]
 
-        if not self.is_crashed:
+        if self.crash_cooldown > 0:
             self.crash_cooldown -= 1
 
         race_progress = np.array([race_progress], dtype="float32")
