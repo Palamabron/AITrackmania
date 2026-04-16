@@ -107,7 +107,7 @@ class TM2020InterfaceIMPALAwoImages(TM2020Interface):
         cur_cp = int(data[0])
         cur_lap = int(data[1])
 
-        speed = np.array([data[2]], dtype="float32")
+        speed_kmh = data[2] * 3.6
 
         pos = np.array([data[3], data[4], data[5]], dtype="float32")
 
@@ -129,10 +129,14 @@ class TM2020InterfaceIMPALAwoImages(TM2020Interface):
 
         end_of_track = bool(data[9])
 
+        if not self.is_crashed:
+            self.crash_fallback(speed_kmh)
+        self._last_speed_kmh = speed_kmh
+
         rew, terminated, failure_counter, reward_sum = self.reward_function.compute_reward(
             pos=pos,
             crashed=bool(self.is_crashed),
-            speed=speed[0],
+            speed=speed_kmh,
             next_cp=self.cur_checkpoint < cur_cp,
             next_lap=self.cur_lap < cur_lap,
             end_of_track=end_of_track,
@@ -166,7 +170,7 @@ class TM2020InterfaceIMPALAwoImages(TM2020Interface):
             info["position_patched"] = True
 
         observation = [
-            speed,
+            speed_kmh,
             acceleration,
             jerk,
             race_progress,

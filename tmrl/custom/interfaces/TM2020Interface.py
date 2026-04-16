@@ -221,7 +221,6 @@ class TM2020Interface(RealTimeGymInterface):
         """Callback for detecting crashes via gamepad vibration."""
         self.is_crashed = large_motor > 100 and self.crash_cooldown <= 0
         if self.is_crashed:
-            logger.debug("crashed: True (episode will terminate)")
             self.crash_cooldown = 10
 
     def crash_fallback(self, current_speed):
