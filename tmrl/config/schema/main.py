@@ -10,6 +10,8 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from tmrl.config.schema.algorithm import AlgorithmConfig
 from tmrl.config.schema.distributed import DistributedConfig
 from tmrl.config.schema.environment import EnvironmentConfig
+from tmrl.config.schema.interface import InterfaceConfig
+from tmrl.config.schema.memory import MemoryConfig
 from tmrl.config.schema.model import ModelConfig
 from tmrl.config.schema.run_bundle import (
     ComputeConfig,
@@ -43,6 +45,12 @@ class MainConfig(BaseModel):
         description="Networking, security, and timeout knobs for tlspyo.",
     )
     training: TrainingConfig = Field(..., description="Optimization loop and replay sizes.")
+    memory: MemoryConfig = Field(
+        default_factory=MemoryConfig, description="Replay buffer selection."
+    )
+    interface: InterfaceConfig = Field(
+        default_factory=InterfaceConfig, description="Hydra interface preset selection."
+    )
     model: ModelConfig = Field(..., description="Policy and value network layout.")
     algorithm: AlgorithmConfig = Field(..., description="RL algorithm hyperparameters.")
     environment: EnvironmentConfig = Field(..., description="Simulator interface and reward.")

@@ -6,8 +6,10 @@ import numpy as np
 
 from tmrl.custom.memories.base import MemoryTM, last_true_in_list, replace_hist_before_eoe
 from tmrl.custom.memories.enums import BufferField, TMFullField, TMFullObsField
+from tmrl.registry import MEMORIES
 
 
+@MEMORIES.register("full")
 class MemoryTMFull(MemoryTM):
     """Full-featured TrackMania replay memory with images."""
 

@@ -2,42 +2,46 @@
 
 import os
 import pickle
+from typing import Any
 
 import cv2
 import numpy as np
 from gymnasium import spaces
 from scipy import spatial
 
-import tmrl.config as cfg
+from tmrl.config.paths import TRACK_PATH_LEFT, TRACK_PATH_RIGHT
 from tmrl.custom.interfaces.TM2020InterfaceLidarProgress import TM2020InterfaceLidarProgress
 from tmrl.custom.tm.utils.tools import openplanet_grab_indices
+from tmrl.registry import INTERFACES
 
 
-def _load_track_from_config():
-    """Load track left/right from config pkl paths. Returns (map_left, map_right) as (2,N) (x,z)."""
+def _load_track_pkl(left_path: str, right_path: str):
+    """Load track left/right pkl paths. Returns (map_left, map_right) as (2,N) (x,z)."""
 
-    # pkl from record_track.py: (N, 3) with columns x, y, z. TrackMap uses (x, z) = columns 0 and 2.
     def load(path):
         if not os.path.exists(path):
-            return np.array([[0.0, 1.0], [0.0, 1.0]])  # dummy (2, 2)
+            return np.array([[0.0, 1.0], [0.0, 1.0]])
         with open(path, "rb") as f:
             pts = pickle.load(f)
         pts = np.asarray(pts)
         if pts.ndim == 1:
             pts = np.expand_dims(pts, 0)
         if pts.shape[1] >= 3:
-            return pts[:, [0, 2]].T  # (2, N) x, z
-        return pts.T  # (2, N)
+            return pts[:, [0, 2]].T
+        return pts.T
 
-    return load(cfg.TRACK_PATH_LEFT), load(cfg.TRACK_PATH_RIGHT)
+    return load(left_path), load(right_path)
 
 
+@INTERFACES.register("trackmap_images")
 class TM2020InterfaceTrackMapImages(TM2020InterfaceLidarProgress):
     """
     Images + pre-recorded track left/right (world-space points ahead).
     Observation: (speed, progress, track_information, image_history).
     Uses TmrlData/track/track_<MAP_NAME>_left.pkl and _right.pkl.
     """
+
+    image_hist: list[Any]
 
     def __init__(
         self,
@@ -55,9 +59,9 @@ class TM2020InterfaceTrackMapImages(TM2020InterfaceLidarProgress):
             **kwargs,
         )
         self.grayscale = grayscale
-        self.resize_to = resize_to or (cfg.IMG_WIDTH, cfg.IMG_HEIGHT)
+        self.resize_to = resize_to or (64, 64)
         self.image_hist = []
-        self.map_left, self.map_right = _load_track_from_config()
+        self.map_left, self.map_right = _load_track_pkl(TRACK_PATH_LEFT, TRACK_PATH_RIGHT)
         self.look_ahead_distance = 15
         self.nearby_correction = 60
 
@@ -103,6 +107,7 @@ class TM2020InterfaceTrackMapImages(TM2020InterfaceLidarProgress):
         return l_x, l_z, r_x, r_z
 
     def grab_speed_data_track_and_image(self):
+        assert self.window_interface is not None and self.client is not None
         raw_img = self.window_interface.screenshot()[:, :, :3]
         data = self.client.retrieve_data()
         _si, (_xi, _yi, _zi), _ = openplanet_grab_indices(self.client.nb_floats)
@@ -136,15 +141,18 @@ class TM2020InterfaceTrackMapImages(TM2020InterfaceLidarProgress):
         progress = np.array([0], dtype="float32")
         images = np.array(list(self.image_hist), dtype="float32")
         obs = [speed, progress, track_information, images]
+        assert self.reward_function is not None
         self.reward_function.reset()
         return obs, {}
 
     def get_obs_rew_terminated_info(self):
         speed, data, track_information, img = self.grab_speed_data_track_and_image()
+        assert self.client is not None and self.reward_function is not None
         _, (_xi, _yi, _zi), _eoti = openplanet_grab_indices(self.client.nb_floats)
         rew, terminated, _failure_counter = self.reward_function.compute_reward(
             pos=np.array([data[_xi], data[_yi], data[_zi]])
         )[:3]
+        rew_val = float(rew)
         progress = np.array(
             [self.reward_function.cur_idx / max(1, self.reward_function.datalen)],
             dtype="float32",
@@ -156,10 +164,10 @@ class TM2020InterfaceTrackMapImages(TM2020InterfaceLidarProgress):
         end_of_track = bool(data[_eoti])
         info = {"end_of_track": end_of_track}
         if end_of_track:
-            rew += self.finish_reward
+            rew_val += self.finish_reward
             terminated = True
-        rew = np.float32(rew)
-        return obs, rew, terminated, info
+        rew_out = np.float32(rew_val)
+        return obs, rew_out, terminated, info
 
     def get_observation_space(self):
         c = 1 if self.grayscale else 3

@@ -1,6 +1,6 @@
 # standard library imports
 from copy import deepcopy
-from typing import cast
+from typing import Any, MutableMapping, cast
 
 # third-party imports
 import numpy as np
@@ -52,18 +52,21 @@ def copy_shared(model_a):
     # torch.cuda.Stream cannot be pickled/deepcopied; make deepcopy replace it with None
     # (copied model will recreate streams on first use where needed)
     stream_type = getattr(getattr(torch, "cuda", None), "Stream", None)
+    dispatch = cast(
+        MutableMapping[type, Any] | None, getattr(copy_module, "_deepcopy_dispatch", None)
+    )
     old_dispatch = None
-    if stream_type is not None:
-        old_dispatch = copy_module._deepcopy_dispatch.get(stream_type)
-        copy_module._deepcopy_dispatch[stream_type] = lambda obj, memo: None
+    if stream_type is not None and dispatch is not None:
+        old_dispatch = dispatch.get(stream_type)
+        dispatch[stream_type] = lambda obj, memo: None
     try:
         model_b = deepcopy(model_a)
     finally:
-        if stream_type is not None:
+        if stream_type is not None and dispatch is not None:
             if old_dispatch is not None:
-                copy_module._deepcopy_dispatch[stream_type] = old_dispatch
+                dispatch[stream_type] = old_dispatch
             else:
-                copy_module._deepcopy_dispatch.pop(stream_type, None)
+                dispatch.pop(stream_type, None)
     sda = model_a.state_dict(keep_vars=True)
     sdb = model_b.state_dict(keep_vars=True)
     for key in sda:
@@ -160,7 +163,7 @@ class TanhNormal(Distribution):
         Calculates the log probability of a given value.
         """
         if hasattr(x, "pre_tanh_value"):
-            pre_tanh_value = x.pre_tanh_value
+            pre_tanh_value = cast(torch.Tensor, getattr(x, "pre_tanh_value"))
         else:
             pre_tanh_value = (torch.log(1 + x + self.epsilon) - torch.log(1 - x + self.epsilon)) / 2
         assert x.dim() == 2, "x must be 2D"
@@ -175,7 +178,7 @@ class TanhNormal(Distribution):
             sample_shape = torch.Size()
         z = self.normal.sample(sample_shape)
         out = torch.tanh(z)
-        out.pre_tanh_value = z
+        setattr(out, "pre_tanh_value", z)
         return out
 
     def rsample(self, sample_shape=None):
@@ -183,7 +186,7 @@ class TanhNormal(Distribution):
             sample_shape = torch.Size()
         z = self.normal.rsample(sample_shape)
         out = torch.tanh(z)
-        out.pre_tanh_value = z
+        setattr(out, "pre_tanh_value", z)
         return out
 
 

@@ -16,12 +16,13 @@ from tmrl.custom.custom_algorithms._common import (
     polyak_update,
     set_seed,
 )
-from tmrl.custom.models.vector_input.sac_mlp_actor_critic import REDQMLPActorCritic
 from tmrl.custom.utils.nn import copy_shared, no_grad
+from tmrl.registry import ALGORITHMS
 from tmrl.training import TrainingAgent
 from tmrl.util import cached_property
 
 
+@ALGORITHMS.register("REDQSAC")
 @dataclass(eq=False)
 class REDQSACAgent(TrainingAgent):
     """REDQ (Randomized Ensemble Double Q-learning) SAC agent.
@@ -29,23 +30,36 @@ class REDQSACAgent(TrainingAgent):
     Uses an ensemble of Q-networks; each update samples a subset for the target
     to reduce overestimation while allowing more gradient updates per environment
     step (UTD ratio > 1).
+
+    All hyperparameters are required constructor arguments — values must be
+    supplied explicitly by the config pipeline (no hidden numeric defaults).
     """
 
+    # --- Required: core hyperparameters ---
     observation_space: type[Any]
     action_space: type[Any]
+    model_cls: type[Any]
+    gamma: float
+    polyak: float
+    alpha: float
+    lr_actor: float
+    lr_critic: float
+    lr_entropy: float
+    learn_entropy_coef: bool
+    n: int
+    m: int
+    q_updates_per_policy_update: int
+
+    # --- Required: optimizer ---
+    weight_decay: float
+
+    # --- Required: mixed precision ---
+    mixed_precision: bool
+    mixed_precision_dtype: str
+
+    # --- Structural defaults (None = auto-detect / optional) ---
     device: str | None = None
-    model_cls: type[Any] = REDQMLPActorCritic
-    gamma: float = 0.99
-    polyak: float = 0.995
-    alpha: float = 0.2
-    lr_actor: float = 1e-3
-    lr_critic: float = 1e-3
-    lr_entropy: float = 1e-3
-    learn_entropy_coef: bool = True
     target_entropy: float | None = None
-    n: int = 10
-    m: int = 2
-    q_updates_per_policy_update: int = 1
 
     model_nograd = cached_property(lambda self: no_grad(copy_shared(self.model)))
 
@@ -59,14 +73,15 @@ class REDQSACAgent(TrainingAgent):
         self.model = model.to(device)
         self.model_target = no_grad(deepcopy(self.model))
         self.pi_optimizer = Adam(
-            self.model.actor.parameters(), lr=self.lr_actor, weight_decay=0.001
+            self.model.actor.parameters(), lr=self.lr_actor, weight_decay=self.weight_decay
         )
         self.q_optimizer_list = [
-            Adam(q.parameters(), lr=self.lr_critic, weight_decay=0.001) for q in self.model.qs
+            Adam(q.parameters(), lr=self.lr_critic, weight_decay=self.weight_decay)
+            for q in self.model.qs
         ]
         self.criterion = torch.nn.MSELoss()
-        self.use_mixed_precision = _amp_enabled(device)
-        self.amp_dtype = _amp_dtype()
+        self.use_mixed_precision = _amp_enabled(device, self.mixed_precision)
+        self.amp_dtype = _amp_dtype(self.mixed_precision_dtype)
         use_scaler = self.use_mixed_precision and (self.amp_dtype != torch.bfloat16)
         self.grad_scaler = torch.amp.GradScaler("cuda", enabled=use_scaler)
         self.i_update = 0

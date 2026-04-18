@@ -1,4 +1,9 @@
-"""SAC agent with hyperparameters from validated MainConfig (constants)."""
+"""SAC agent with hyperparameters passed as explicit constructor arguments.
+
+This is a legacy config-driven variant of SAC (SpinupSacAgentConfig).
+Not registered in the ALGORITHMS registry — use SpinupSacAgent instead
+for the modern pipeline.
+"""
 
 import itertools
 from copy import deepcopy
@@ -16,8 +21,6 @@ try:
 except ImportError:
     wandb = None  # type: ignore[assignment]
 
-import tmrl.config.constants as cfg
-from tmrl.config.loader import MAIN_CONFIG
 from tmrl.custom.custom_algorithms._common import (
     _amp_dtype,
     _amp_enabled,
@@ -28,31 +31,57 @@ from tmrl.custom.custom_algorithms._common import (
     polyak_update,
     set_seed,
 )
-from tmrl.custom.models.vector_input.sac_mlp_actor_critic import MLPActorCritic
 from tmrl.custom.utils.nn import copy_shared, no_grad
 from tmrl.training import TrainingAgent
 from tmrl.util import cached_property
 
-_SCHED = MAIN_CONFIG.training.scheduler
-
 
 @dataclass(eq=False)
 class SpinupSacAgentConfig(TrainingAgent):
-    """SAC agent with hyperparameters read from tmrl.config.constants."""
+    """SAC agent with all hyperparameters as explicit constructor arguments.
 
+    All hyperparameters are required constructor arguments — values must be
+    supplied explicitly by the caller (no hidden numeric defaults from cfg).
+    """
+
+    # --- Required: core SAC ---
     observation_space: type[Any]
     action_space: type[Any]
+    model_cls: type[Any]
+    gamma: float
+    polyak: float
+    alpha: float
+    lr_actor: float
+    lr_critic: float
+    lr_entropy: float
+    learn_entropy_coef: bool
+    n_steps: int
+
+    # --- Required: optimizer / regularisation ---
+    actor_weight_decay: float
+    critic_weight_decay: float
+    adam_eps: float
+
+    # --- Required: mixed precision ---
+    mixed_precision: bool
+    mixed_precision_dtype: str
+
+    # --- Required: debugging / flags ---
+    debug_mode: bool
+    wandb_gradients: bool
+    wandb_debug: bool
+    weight_clipping_enabled: bool
+
+    # --- Required: scheduler ---
+    scheduler_name: str
+    scheduler_t_0: int
+    scheduler_t_mult: int
+    scheduler_eta_min: float
+    scheduler_last_epoch: int
+
+    # --- Structural defaults ---
     device: str | None = None
-    model_cls: type[Any] = MLPActorCritic
-    gamma: float = 0.99
-    polyak: float = 0.995
-    alpha: float = 0.2
-    lr_actor: float = cfg.LR_ACTOR
-    lr_critic: float = cfg.LR_CRITIC
-    lr_entropy: float = cfg.LR_ENTROPY
-    learn_entropy_coef: bool = True
     target_entropy: float | None = None
-    n_steps: int = cfg.N_STEPS
 
     model_nograd = cached_property(lambda self: no_grad(copy_shared(self.model)))
 
@@ -69,35 +98,35 @@ class SpinupSacAgentConfig(TrainingAgent):
         self.actor_optimizer = Adam(
             self.model.actor.parameters(),
             lr=self.lr_actor,
-            weight_decay=cfg.ACTOR_WEIGHT_DECAY,
-            eps=cfg.ADAM_EPS,
+            weight_decay=self.actor_weight_decay,
+            eps=self.adam_eps,
         )
         self.critic_optimizer = Adam(
             itertools.chain(self.model.q1.parameters(), self.model.q2.parameters()),
             lr=self.lr_critic,
-            weight_decay=cfg.CRITIC_WEIGHT_DECAY,
-            eps=cfg.ADAM_EPS,
+            weight_decay=self.critic_weight_decay,
+            eps=self.adam_eps,
         )
-        self.use_mixed_precision = _amp_enabled(device)
-        self.amp_dtype = _amp_dtype()
+        self.use_mixed_precision = _amp_enabled(device, self.mixed_precision)
+        self.amp_dtype = _amp_dtype(self.mixed_precision_dtype)
         use_scaler = self.use_mixed_precision and (self.amp_dtype != torch.bfloat16)
         self.grad_scaler = torch.amp.GradScaler("cuda", enabled=use_scaler)
 
-        if _SCHED.name:
+        if self.scheduler_name:
             self.actor_scheduler = CosineAnnealingWarmRestarts(
                 self.actor_optimizer,
-                _SCHED.t_0,
-                _SCHED.t_mult,
-                _SCHED.eta_min,
-                _SCHED.last_epoch,
+                self.scheduler_t_0,
+                self.scheduler_t_mult,
+                self.scheduler_eta_min,
+                self.scheduler_last_epoch,
             )
 
             self.critic_scheduler = CosineAnnealingWarmRestarts(
                 self.critic_optimizer,
-                _SCHED.t_0,
-                _SCHED.t_mult,
-                _SCHED.eta_min,
-                _SCHED.last_epoch,
+                self.scheduler_t_0,
+                self.scheduler_t_mult,
+                self.scheduler_eta_min,
+                self.scheduler_last_epoch,
             )
 
         if self.target_entropy is None:
@@ -112,7 +141,7 @@ class SpinupSacAgentConfig(TrainingAgent):
         else:
             self.alpha_t = torch.tensor(float(self.alpha)).to(self.device)
 
-        if cfg.WANDB_GRADIENTS and wandb is not None:
+        if self.wandb_gradients and wandb is not None:
             wandb.watch(self.model, log_freq=10)
 
     def get_actor(self) -> Any:
@@ -121,7 +150,7 @@ class SpinupSacAgentConfig(TrainingAgent):
     def train(  # type: ignore[override]
         self, batch: tuple, epoch: int, batch_index: int, iters: int
     ) -> dict:
-        if cfg.DEBUG_MODE:
+        if self.debug_mode:
             torch.autograd.set_detect_anomaly(True)
         o, a, r, o2, d = batch[0], batch[1], batch[2], batch[3], batch[4]
 
@@ -158,7 +187,6 @@ class SpinupSacAgentConfig(TrainingAgent):
                 r, d, self.gamma, self.n_steps
             )
             r = n_step_return[:truncated_batch_size].squeeze(-1)
-            # Do NOT slice o/o2: they are tuples; slicing would change tuple length, not batch dim.
             n_step_not_done = n_step_not_done[:truncated_batch_size].squeeze(-1)
         with torch.no_grad():
             with autocast_ctx():
@@ -196,7 +224,7 @@ class SpinupSacAgentConfig(TrainingAgent):
             self.critic_optimizer.step()
         self.model.q1.requires_grad_(False)
         self.model.q2.requires_grad_(False)
-        if cfg.WEIGHT_CLIPPING_ENABLED:
+        if self.weight_clipping_enabled:
             clip_model_weights(self.model.q1)
             clip_model_weights(self.model.q2)
         with autocast_ctx():
@@ -214,10 +242,10 @@ class SpinupSacAgentConfig(TrainingAgent):
             loss_actor.backward()
             self.actor_optimizer.step()
 
-        if _SCHED.name:
+        if self.scheduler_name:
             self.actor_scheduler.step(epoch + batch_index / iters)
             self.critic_scheduler.step(epoch + batch_index / iters)
-        if cfg.WEIGHT_CLIPPING_ENABLED:
+        if self.weight_clipping_enabled:
             clip_model_weights(self.model.actor)
         self.model.q1.requires_grad_(True)
         self.model.q2.requires_grad_(True)
@@ -283,7 +311,7 @@ class SpinupSacAgentConfig(TrainingAgent):
                 "lrs/actor_lr": self.actor_optimizer.param_groups[0]["lr"],
                 "lrs/critic_lr": self.critic_optimizer.param_groups[0]["lr"],
             }
-            if cfg.WANDB_DEBUG:
+            if self.wandb_debug:
                 ts = truncated_batch_size
                 q1_o2_a2 = self.model.q1(o2, a2)[:ts]
                 q2_o2_a2 = self.model.q2(o2, a2)[:ts]

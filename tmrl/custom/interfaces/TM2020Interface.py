@@ -7,6 +7,7 @@ and computing rewards and termination conditions.
 import platform
 import time
 from collections import deque
+from typing import Any
 
 import cv2
 import numpy as np
@@ -14,8 +15,6 @@ from gymnasium import spaces
 from loguru import logger
 from rtgym import RealTimeGymInterface
 
-import tmrl.config as cfg
-from tmrl.config.loader import MAIN_CONFIG
 from tmrl.custom.tm.utils.auto_drift import compute_drift_steer, is_auto_drift_action
 from tmrl.custom.tm.utils.compute_reward import RewardFunction
 from tmrl.custom.tm.utils.control_gamepad import (
@@ -40,11 +39,10 @@ from tmrl.custom.tm.utils.tools import (
     save_ghost,
 )
 from tmrl.custom.tm.utils.window import WindowInterface
-
-# Globals
-CHECK_FORWARD = 500  # this allows (and rewards) 50m cuts
+from tmrl.registry import INTERFACES
 
 
+@INTERFACES.register("vision")
 class TM2020Interface(RealTimeGymInterface):
     """
     Base API for controlling TrackMania 2020 via rtgym.
@@ -53,6 +51,16 @@ class TM2020Interface(RealTimeGymInterface):
     with the TrackMania game via OpenPlanet.
     """
 
+    j: Any
+    window_interface: WindowInterface | None
+    reward_function: RewardFunction | None
+    client: TM2020OpenPlanetClient | None
+    small_window: bool | None
+    img_hist: Any
+    is_crashed: bool | None
+    last_time: float | None
+    img: Any
+
     def __init__(
         self,
         img_hist_len: int = 4,
@@ -60,29 +68,34 @@ class TM2020Interface(RealTimeGymInterface):
         save_replays: bool = False,
         grayscale: bool = True,
         resize_to=(64, 64),
-        finish_reward=None,
-        constant_penalty=None,
-        crash_penalty=None,
+        finish_reward: float = 1.0,
+        constant_penalty: float = 0.0,
+        crash_penalty: float = 10.0,
         record_human: bool = False,
+        reward_path: str | None = None,
+        reward_check_forward: int = 500,
+        reward_check_backward: int = 10,
+        reward_max_stray: float = 50.0,
+        sleep_time_at_reset: float = 1.5,
+        window_width: int = 256,
+        window_height: int = 128,
+        discrete_n_steer_bins: int = 0,
+        reward_config: dict | None = None,
+        is_lidar: bool = False,
+        track_path_left: str = "",
+        track_path_right: str = "",
+        time_step_duration: float = 0.05,
+        points_distance: float = 1.0,
+        lap_cooldown: int = 0,
+        config_file_path: str = "",
+        use_wandb: bool = False,
+        wandb_project: str = "tmrl",
+        wandb_entity: str = "tmrl",
+        wandb_run_id: str = "",
+        wandb_api_key: str = "",
+        wandb_config: dict | None = None,
         **kwargs,
     ):
-        """
-        Initializes the TM2020Interface.
-
-        Args:
-            img_hist_len (int): Number of history images to include in observations. Defaults to 4.
-            gamepad (bool): Whether to use a virtual gamepad for control. Defaults to True.
-            save_replays (bool): Whether to save TrackMania replays on successful episodes.
-                Defaults to False.
-            grayscale (bool): Whether to output grayscale images. Defaults to True.
-            resize_to (tuple): (width, height) to resize output images. Defaults to (64, 64).
-            finish_reward (float, optional): Reward for finishing the track.
-                Defaults to cfg.END_OF_TRACK_REWARD.
-            constant_penalty (float, optional): Penalty per step. Defaults to 0.0.
-            crash_penalty (float, optional): Penalty for crashing. Defaults to 10.0.
-            record_human (bool): Whether to allow human control for recording. Defaults to False.
-            **kwargs: Additional keyword arguments.
-        """
         self.is_crashed = None
         self.last_time = None
         self.img_hist_len = img_hist_len
@@ -98,25 +111,38 @@ class TM2020Interface(RealTimeGymInterface):
         self.save_replays = save_replays
         self.grayscale = grayscale
         self.resize_to = resize_to
-        self.finish_reward = finish_reward if finish_reward is not None else cfg.END_OF_TRACK_REWARD
-        self.constant_penalty = (
-            constant_penalty
-            if constant_penalty is not None
-            else cfg.REWARD_CONFIG.get("constant_penalty", 0.0)
-        )
+        self.finish_reward = float(finish_reward)
+        self.constant_penalty = float(constant_penalty)
         self.initialized = False
-        self.crash_penalty = (
-            crash_penalty
-            if crash_penalty is not None
-            else cfg.REWARD_CONFIG.get("crash_penalty", 10.0)
-        )
+        self.crash_penalty = float(crash_penalty)
         self.crash_cooldown = 0
         self.crash_curr = 0
-        _alg = MAIN_CONFIG.algorithm
+        self.reward_path = reward_path
+        self.reward_check_forward = reward_check_forward
+        self.reward_check_backward = reward_check_backward
+        self.reward_max_stray = reward_max_stray
+        self.sleep_time_at_reset = sleep_time_at_reset
+        self.window_width = window_width
+        self.window_height = window_height
+        self._reward_config = reward_config
+        self._is_lidar = is_lidar
+        self._track_path_left = track_path_left
+        self._track_path_right = track_path_right
+        self._time_step_duration = time_step_duration
+        self._points_distance = points_distance
+        self._lap_cooldown = lap_cooldown
+        self._config_file_path = config_file_path
+        self._use_wandb = use_wandb
+        self._wandb_project = wandb_project
+        self._wandb_entity = wandb_entity
+        self._wandb_run_id = wandb_run_id
+        self._wandb_api_key = wandb_api_key
+        self._wandb_config = wandb_config
         self.discrete_action_table: list[np.ndarray] | None = None
-        if _alg.name in ("IQN", "SDSAC"):
-            _n_steer = int(_alg.iqn_n_steer_bins)
-            _, self.discrete_action_table = build_yosh_action_table(n_steer=_n_steer)
+        if discrete_n_steer_bins > 0:
+            _, self.discrete_action_table = build_yosh_action_table(
+                n_steer=discrete_n_steer_bins
+            )
         self._send_control_logged = False
         self._img_buf: np.ndarray | None = None
         self._img_hist_count = 0
@@ -170,8 +196,9 @@ class TM2020Interface(RealTimeGymInterface):
             try:
                 import vgamepad as vg
 
-                self.j = vg.VX360Gamepad()
-                self.j.register_notification(callback_function=self.crash_callback)
+                pad = vg.VX360Gamepad()
+                pad.register_notification(callback_function=self.crash_callback)
+                self.j = pad
                 logger.info("Virtual gamepad (Xbox 360) initialized for control.")
             except OSError as e:
                 if "libevdev" in str(e) or "libevdev" in str(e.__cause__ or ""):
@@ -192,7 +219,9 @@ class TM2020Interface(RealTimeGymInterface):
         else:
             logger.info("Using keyboard for control (VIRTUAL_GAMEPAD=false).")
         self.window_interface = WindowInterface("Trackmania")
-        self.window_interface.move_and_resize()
+        self.window_interface.move_and_resize(
+            w=self.window_width, h=self.window_height
+        )
         self.last_time = time.time()
         self.img_hist = deque(maxlen=self.img_hist_len)
         self.img = None
@@ -200,12 +229,26 @@ class TM2020Interface(RealTimeGymInterface):
         self._img_hist_count = 0
         self._img_hist_cursor = 0
         self.reward_function = RewardFunction(
-            reward_data_path=cfg.REWARD_PATH,
-            nb_obs_forward=cfg.REWARD_CONFIG.get("check_forward", 500),
-            nb_obs_backward=cfg.REWARD_CONFIG.get("check_backward", 10),
-            max_dist_from_traj=cfg.REWARD_CONFIG.get("max_stray", 50.0),
+            reward_data_path=self.reward_path or "",
+            nb_obs_forward=self.reward_check_forward,
+            nb_obs_backward=self.reward_check_backward,
+            max_dist_from_traj=self.reward_max_stray,
             crash_penalty=self.crash_penalty,
             constant_penalty=self.constant_penalty,
+            reward_config=self._reward_config,
+            is_lidar=self._is_lidar,
+            track_path_left=self._track_path_left,
+            track_path_right=self._track_path_right,
+            time_step_duration=self._time_step_duration,
+            points_distance=self._points_distance,
+            lap_cooldown=self._lap_cooldown,
+            config_file_path=self._config_file_path,
+            use_wandb=self._use_wandb,
+            wandb_project=self._wandb_project,
+            wandb_entity=self._wandb_entity,
+            wandb_run_id=self._wandb_run_id,
+            wandb_api_key=self._wandb_api_key,
+            wandb_config=self._wandb_config,
         )
         if self.client is None:
             self.client = TM2020OpenPlanetClient()
@@ -292,6 +335,7 @@ class TM2020Interface(RealTimeGymInterface):
         Returns:
             tuple: (data, img)
         """
+        assert self.window_interface is not None and self.client is not None
         img = self.window_interface.screenshot()[:, :, :3]  # BGR ordering
         if self.resize_to is not None:
             img = cv2.resize(img, self.resize_to)
@@ -321,7 +365,9 @@ class TM2020Interface(RealTimeGymInterface):
             self.send_control(self.get_default_action())
         self.reset_race()
         time_sleep = (
-            max(0, cfg.SLEEP_TIME_AT_RESET - 0.1) if self.gamepad else cfg.SLEEP_TIME_AT_RESET
+            max(0, self.sleep_time_at_reset - 0.1)
+            if self.gamepad
+            else self.sleep_time_at_reset
         )
         time.sleep(time_sleep)
 
@@ -342,6 +388,7 @@ class TM2020Interface(RealTimeGymInterface):
             self._push_img(img)
         imgs = self._get_img_hist_array()
         obs = [self._speed_arr.copy(), self._gear_arr.copy(), self._rpm_arr.copy(), imgs]
+        assert self.reward_function is not None
         self.reward_function.reset()
         return obs, {}
 
@@ -350,7 +397,7 @@ class TM2020Interface(RealTimeGymInterface):
         if self.gamepad:
             gamepad_close_finish_pop_up_tm20(self.j)
         else:
-            mouse_close_finish_pop_up_tm20(small_window=self.small_window)
+            mouse_close_finish_pop_up_tm20(small_window=bool(self.small_window))
 
     def wait(self):
         """Pauses the interface and waits for the next episode."""
@@ -370,6 +417,7 @@ class TM2020Interface(RealTimeGymInterface):
             tuple: (observation, reward, terminated, info)
         """
         data, img = self.grab_data_and_img()
+        assert self.client is not None and self.reward_function is not None
         _si, (_xi, _yi, _zi), _eoti = openplanet_grab_indices(self.client.nb_floats)
         self._speed_arr[0] = data[_si]
         self._last_speed_kmh = float(data[_si])
@@ -382,6 +430,7 @@ class TM2020Interface(RealTimeGymInterface):
         reward, terminated, _failure_counter, _ = self.reward_function.compute_reward(
             pos=np.array([data[_xi], data[_yi], data[_zi]])
         )
+        reward_f = float(reward)
         self._push_img(img)
         imgs = self._get_img_hist_array()
         observation = [self._speed_arr.copy(), self._gear_arr.copy(), self._rpm_arr.copy(), imgs]
@@ -389,11 +438,11 @@ class TM2020Interface(RealTimeGymInterface):
         info = {"end_of_track": end_of_track}
         if end_of_track:
             terminated = True
-            reward += self.finish_reward
+            reward_f += self.finish_reward
             if self.save_replays:
                 mouse_save_replay_tm20(True)
-        reward = np.float32(reward)
-        return observation, reward, terminated, info
+        reward_out = np.float32(reward_f)
+        return observation, reward_out, terminated, info
 
     def get_observation_space(self) -> spaces.Tuple:
         """Returns the Gymnasium observation space."""
@@ -403,7 +452,7 @@ class TM2020Interface(RealTimeGymInterface):
         if self.resize_to is not None:
             w, h = self.resize_to
         else:
-            w, h = cfg.WINDOW_WIDTH, cfg.WINDOW_HEIGHT
+            w, h = self.window_width, self.window_height
         if self.grayscale:
             img = spaces.Box(low=0.0, high=255.0, shape=(self.img_hist_len, h, w))
         else:

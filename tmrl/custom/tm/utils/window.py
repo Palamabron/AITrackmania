@@ -3,8 +3,6 @@ import platform
 import numpy as np
 from loguru import logger
 
-import tmrl.config as cfg
-
 if platform.system() == "Windows":
     import win32con
     import win32gui
@@ -57,7 +55,7 @@ if platform.system() == "Windows":
             win32gui.ReleaseDC(hwnd, hdc)
             return img
 
-        def move_and_resize(self, x=1, y=0, w=cfg.WINDOW_WIDTH, h=cfg.WINDOW_HEIGHT):
+        def move_and_resize(self, x=1, y=0, w=256, h=128):
             x += self.x_origin_offset
             y += self.y_origin_offset
             w += self.w_diff
@@ -151,7 +149,7 @@ elif platform.system() == "Linux":
         pass
 
     class WindowInterface:  # type: ignore[no-redef]
-        def __init__(self, window_name):
+        def __init__(self, window_name, linux_x_offset: int = 0, linux_y_offset: int = 0):
             self.sct = mss.mss()
 
             self.window_name = window_name
@@ -165,8 +163,8 @@ elif platform.system() == "Linux":
             self.h = None
             self.x = None
             self.y = None
-            self.x_offset = cfg.LINUX_X_OFFSET
-            self.y_offset = cfg.LINUX_Y_OFFSET
+            self.x_offset = linux_x_offset
+            self.y_offset = linux_y_offset
 
             self.process = None
 
@@ -200,7 +198,7 @@ elif platform.system() == "Linux":
                 logger.error("failed to capture screenshot")
                 raise e
 
-        def move_and_resize(self, x=0, y=0, w=cfg.WINDOW_WIDTH, h=cfg.WINDOW_HEIGHT):
+        def move_and_resize(self, x=0, y=0, w=256, h=128):
             logger.debug(f"prepare {self.window_name} to {w}x{h} @ {x}, {y}")
 
             try:

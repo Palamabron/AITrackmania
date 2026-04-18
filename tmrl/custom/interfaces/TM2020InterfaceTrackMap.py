@@ -11,8 +11,10 @@ from scipy import spatial
 from tmrl.config.paths import TRACKMAP_CSV_LEFT, TRACKMAP_CSV_RIGHT
 from tmrl.custom.interfaces.TM2020InterfaceLidar import TM2020InterfaceLidar
 from tmrl.custom.utils.control_mouse import mouse_save_replay_tm20
+from tmrl.registry import INTERFACES
 
 
+@INTERFACES.register("trackmap")
 class TM2020InterfaceTrackMap(TM2020InterfaceLidar):
     """
     Interface for TrackMania 2020 using track map information.
@@ -27,20 +29,12 @@ class TM2020InterfaceTrackMap(TM2020InterfaceLidar):
         gamepad=False,
         record=False,
         save_replay: bool = False,
+        **kwargs,
     ):
-        """
-        Initializes the TM2020InterfaceTrackMap.
-
-        Args:
-            img_hist_len (int): Length of the image history. Defaults to 1.
-            gamepad (bool): Whether to use a gamepad for input. Defaults to False.
-            record (bool): Whether to record the session. Defaults to False.
-            save_replay (bool): Whether to save a replay. Defaults to False.
-        """
-        super().__init__(img_hist_len=img_hist_len, gamepad=gamepad, save_replays=save_replay)
+        super().__init__(
+            img_hist_len=img_hist_len, gamepad=gamepad, save_replays=save_replay, **kwargs
+        )
         self.record = record
-        self.window_interface = None
-        self.lidar = None
         self.last_pos = [0, 0]
         self.index = 0
         self.map_left = np.loadtxt(TRACKMAP_CSV_LEFT, delimiter=",")
@@ -87,6 +81,7 @@ class TM2020InterfaceTrackMap(TM2020InterfaceLidar):
         Returns:
             list: Raw data from the game client.
         """
+        assert self.client is not None
         data = self.client.retrieve_data()
         return data
 
@@ -135,24 +130,25 @@ class TM2020InterfaceTrackMap(TM2020InterfaceLidar):
         end_of_track = bool(data[8])
         info = {"end_of_track": end_of_track}
         crash_penalty = -10
-        reward = 0
+        reward = 0.0
         if crash == 1:
             reward += crash_penalty
 
+        assert self.reward_function is not None
         if end_of_track:
             reward += self.finish_reward
             terminated = True
-            failure_counter = 0
+            failure_counter = 0.0
             if self.save_replays:
                 mouse_save_replay_tm20()
         else:
             rew, terminated, failure_counter = self.reward_function.compute_reward(
                 pos=np.array([data[2], data[3], data[4]])
             )[:3]
-            reward += rew
+            reward += float(rew)
 
-        failure_counter = float(failure_counter)
-        reward = np.float32(reward)
+        failure_counter_f = float(failure_counter)
+        reward_out = np.float32(float(reward))
         obs = [
             speed,
             gear,
@@ -162,9 +158,9 @@ class TM2020InterfaceTrackMap(TM2020InterfaceLidar):
             steering_angle,
             slipping_tires,
             crash,
-            failure_counter,
+            np.array([failure_counter_f], dtype="float32"),
         ]
-        return obs, reward, terminated, info
+        return obs, reward_out, terminated, info
 
     def normalize_track(self, l_x, l_z, r_x, r_z, car_position, yaw):
         """
@@ -214,7 +210,7 @@ class TM2020InterfaceTrackMap(TM2020InterfaceLidar):
         steering_angle = np.array([data[19]], dtype="float32")
         slipping_tires = np.array(data[20:24], dtype="float32")
         crash = np.array([data[24]], dtype="float32")
-        failure_counter = 0.0
+        failure_counter = np.array([0.0], dtype="float32")
         obs = [
             speed,
             gear,
@@ -226,6 +222,7 @@ class TM2020InterfaceTrackMap(TM2020InterfaceLidar):
             crash,
             failure_counter,
         ]
+        assert self.reward_function is not None
         self.reward_function.reset()
         return obs, {}
 

@@ -8,6 +8,8 @@ defaults:
   - _self_
   - distributed: default
   - training: default
+  - memory: default
+  - interface: default
   - model: residual_mlp_actor_critic
   - algorithm: iqn
   - environment: tm20

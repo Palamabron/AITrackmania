@@ -31,10 +31,11 @@ try:
 except ImportError:
     wandb = None  # type: ignore[assignment]
 
-import tmrl.config.constants as cfg
 from tmrl.custom.custom_algorithms._common import (
     _compute_n_step_return_and_bootstrap_mask,
     _tensor_to_scalar,
+    amp_setup,
+    autocast_context,
     polyak_update,
     project_simbav2_weights,
     sanitize_obs,
@@ -43,6 +44,7 @@ from tmrl.custom.custom_algorithms._common import (
 from tmrl.custom.models.discrete_actions.iqn_discrete_q_network import DQNActor
 from tmrl.custom.utils.nn import copy_shared, no_grad
 from tmrl.custom.utils.optim import GradientStabilizer
+from tmrl.registry import ALGORITHMS
 from tmrl.training import TrainingAgent
 from tmrl.util import cached_property, wandb_monotonic_step
 
@@ -170,47 +172,63 @@ class DiscreteSACActor(DQNActor):
         return action.squeeze().cpu().numpy().astype(np.int64)
 
 
+@ALGORITHMS.register("SDSAC")
 @dataclass(eq=False)
 class SDSACAgent(TrainingAgent):
     """Stable Discrete SAC agent with Double Avg Q, Q-clip, and Entropy Penalty.
 
     Designed for Trackmania with the same observation encoding as IQN but
     using a soft actor-critic framework for discrete actions.
+
+    All hyperparameters are required constructor arguments — values must be
+    supplied explicitly by the config pipeline (no hidden numeric defaults).
     """
 
-    observation_space: Any = None
-    action_space: Any = None
+    # --- Required: spaces ---
+    observation_space: Any
+    action_space: Any
+
+    # --- Required: architecture ---
+    hidden_dim: int
+    num_blocks_actor: int
+    num_blocks_critic: int
+    n_cos: int
+    n_actions: int
+
+    # --- Required: SAC hyper-parameters ---
+    gamma: float
+    lr_actor: float
+    lr_critic: float
+    lr_alpha: float
+    tau_polyak: float
+    n_steps: int
+    auto_alpha: bool
+    alpha_init: float
+
+    # --- Required: SD-SAC tricks ---
+    use_avg_q: bool
+    use_clip_q: bool
+    clip_q_epsilon: float
+    use_entropy_penalty: bool
+    entropy_penalty_beta: float
+
+    # --- Required: optimizer ---
+    weight_decay: float
+
+    # --- Required: EDER (0 = disabled) ---
+    eder_oversample_ratio: int
+
+    # --- Required: previously hidden globals ---
+    reward_normalize_scale: float
+    r2d2_burn_in: int
+    r2d2_sequence_length: int
+
+    # --- Required: mixed precision ---
+    mixed_precision: bool
+    mixed_precision_dtype: str
+
+    # --- Structural defaults (None = auto-detect / optional) ---
     device: str | None = None
-
-    # Architecture
-    hidden_dim: int = 256
-    num_blocks_actor: int = 2
-    num_blocks_critic: int = 4
-    n_cos: int = 64
-    n_actions: int = 78
-
-    # SAC hyper-parameters
-    gamma: float = 0.99
-    lr_actor: float = 5e-5
-    lr_critic: float = 5e-5
-    lr_alpha: float = 3e-5
-    tau_polyak: float = 0.005
-    n_steps: int = 3
-    auto_alpha: bool = True
-    alpha_init: float = 0.05
-
-    # SD-SAC tricks
-    use_avg_q: bool = True
-    use_clip_q: bool = True
-    clip_q_epsilon: float = 0.5
-    use_entropy_penalty: bool = True
-    entropy_penalty_beta: float = 0.5
-
-    # Misc
-    weight_decay: float = 0.0
-
-    # EDER (set via config; 0 = disabled)
-    eder_oversample_ratio: int = 0
 
     model_nograd = cached_property(lambda self: no_grad(copy_shared(self.model)))
 
@@ -243,7 +261,10 @@ class SDSACAgent(TrainingAgent):
             weight_decay=self.weight_decay,
         )
 
-        # Auto-tuned alpha
+        self.use_mixed_precision, self.amp_dtype, self.grad_scaler = amp_setup(
+            device, self.mixed_precision, self.mixed_precision_dtype
+        )
+
         self.log_alpha: torch.Tensor | None
         self.alpha_optimizer: Adam | None
         if self.auto_alpha:
@@ -305,7 +326,7 @@ class SDSACAgent(TrainingAgent):
             )
         actions = a.long().squeeze(-1)
 
-        reward_scale = float(cfg.REWARD_NORMALIZE_SCALE)
+        reward_scale = float(self.reward_normalize_scale)
         if reward_scale != 1.0 and reward_scale > 0:
             r = r / reward_scale
 
@@ -326,9 +347,9 @@ class SDSACAgent(TrainingAgent):
             actions = actions[keep]
             batch_size = target_k
 
-        # -- Sequence-aware n-step returns (ported from TQC) --
-        burn_in_len = int(cfg.R2D2_BURN_IN)
-        seq_len = int(cfg.R2D2_SEQUENCE_LENGTH)
+        # -- Sequence-aware n-step returns --
+        burn_in_len = int(self.r2d2_burn_in)
+        seq_len = int(self.r2d2_sequence_length)
 
         if self.n_steps > 1:
             truncated_batch_size = batch_size - self.n_steps
@@ -361,6 +382,9 @@ class SDSACAgent(TrainingAgent):
 
         alpha_t = float(self._alpha) if isinstance(self._alpha, (int, float)) else self._alpha
 
+        def autocast_ctx():
+            return autocast_context(self.use_mixed_precision, self.amp_dtype)
+
         # -- Target Q --
         with torch.no_grad():
             if self.n_steps > 1:
@@ -371,28 +395,32 @@ class SDSACAgent(TrainingAgent):
             else:
                 o2_target = tuple(t[:truncated_batch_size] for t in o2)
 
-            logits_next = self.model.actor_logits(o2_target)
-            dist_next = Categorical(logits=logits_next)
-            probs_next = dist_next.probs
+            with autocast_ctx():
+                logits_next = self.model.actor_logits(o2_target)
+                dist_next = Categorical(logits=logits_next)
+                probs_next = dist_next.probs
 
-            if self.use_avg_q:
-                q_target = (self.model_target.q1(o2_target) + self.model_target.q2(o2_target)) * 0.5
-            else:
-                q_target = torch.min(
-                    self.model_target.q1(o2_target), self.model_target.q2(o2_target)
-                )
+                if self.use_avg_q:
+                    q_target = (
+                        self.model_target.q1(o2_target) + self.model_target.q2(o2_target)
+                    ) * 0.5
+                else:
+                    q_target = torch.min(
+                        self.model_target.q1(o2_target), self.model_target.q2(o2_target)
+                    )
 
             v_next = (probs_next * q_target).sum(dim=-1) + alpha_t * dist_next.entropy()
             target = n_step_return + gamma_n * bootstrap_mask * v_next
 
         # -- Critic losses --
-        current_q1_all = self.model.q1(o_t)
-        current_q2_all = self.model.q2(o_t)
+        with autocast_ctx():
+            current_q1_all = self.model.q1(o_t)
+            current_q2_all = self.model.q2(o_t)
         current_q1 = current_q1_all.gather(1, actions_t.unsqueeze(1)).squeeze(1)
         current_q2 = current_q2_all.gather(1, actions_t.unsqueeze(1)).squeeze(1)
 
         if self.use_clip_q:
-            with torch.no_grad():
+            with torch.no_grad(), autocast_ctx():
                 q1_old = self.model_target.q1(o_t).gather(1, actions_t.unsqueeze(1)).squeeze(1)
                 q2_old = self.model_target.q2(o_t).gather(1, actions_t.unsqueeze(1)).squeeze(1)
             clipped_q1 = q1_old + (current_q1 - q1_old).clamp(
@@ -420,21 +448,28 @@ class SDSACAgent(TrainingAgent):
                 critic_loss = F.mse_loss(current_q1, target) + F.mse_loss(current_q2, target)
 
         self.critic_optimizer.zero_grad()
-        critic_loss.backward()
+        if self.use_mixed_precision:
+            self.grad_scaler.scale(critic_loss).backward()
+        else:
+            critic_loss.backward()
         critic_grad_norm = self._grad_stabilizer_critic.step(
             list(self.model.q1_backbone.parameters())
             + list(self.model.q1_head.parameters())
             + list(self.model.q2_backbone.parameters())
             + list(self.model.q2_head.parameters())
         )
-        self.critic_optimizer.step()
+        if self.use_mixed_precision:
+            self.grad_scaler.step(self.critic_optimizer)
+        else:
+            self.critic_optimizer.step()
 
         # -- Actor loss --
-        logits = self.model.actor_logits(o_t)
+        with autocast_ctx():
+            logits = self.model.actor_logits(o_t)
         dist = Categorical(logits=logits)
         entropy = dist.entropy()
 
-        with torch.no_grad():
+        with torch.no_grad(), autocast_ctx():
             if self.use_avg_q:
                 q_for_actor = (self.model.q1(o_t) + self.model.q2(o_t)) * 0.5
             else:
@@ -448,7 +483,7 @@ class SDSACAgent(TrainingAgent):
             actor_loss = actor_loss_unmasked.mean()
 
         if self.use_entropy_penalty:
-            with torch.no_grad():
+            with torch.no_grad(), autocast_ctx():
                 target_logits = self.model_target.actor_logits(o_t)
                 target_dist = Categorical(logits=target_logits)
                 target_entropy = target_dist.entropy()
@@ -456,11 +491,18 @@ class SDSACAgent(TrainingAgent):
             actor_loss = actor_loss + self.entropy_penalty_beta * entropy_penalty
 
         self.actor_optimizer.zero_grad()
-        actor_loss.backward()
+        if self.use_mixed_precision:
+            self.grad_scaler.scale(actor_loss).backward()
+        else:
+            actor_loss.backward()
         actor_grad_norm = self._grad_stabilizer_actor.step(
             list(self.model.actor_backbone.parameters()) + list(self.model.actor_head.parameters())
         )
-        self.actor_optimizer.step()
+        if self.use_mixed_precision:
+            self.grad_scaler.step(self.actor_optimizer)
+            self.grad_scaler.update()
+        else:
+            self.actor_optimizer.step()
 
         # -- Alpha update --
         alpha_loss_val = 0.0

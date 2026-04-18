@@ -6,6 +6,18 @@ import numpy as np
 
 # Steering is at index 2 in [gas, brake, steer] (control_gamepad / send_control).
 ACTION_STEER_INDEX = 2
+_DISCRETE_STEER_BINS: int | None = None
+
+
+def configure_discrete_steer_bins(n_steer: int) -> None:
+    """Set runtime steering-bin count used for discrete action mirroring."""
+    n_steer_int = int(n_steer)
+    _set_discrete_steer_bins(n_steer_int if n_steer_int > 0 else None)
+
+
+def _set_discrete_steer_bins(n_steer: int | None) -> None:
+    global _DISCRETE_STEER_BINS
+    _DISCRETE_STEER_BINS = n_steer
 
 
 def fog_recency_resample(
@@ -59,18 +71,17 @@ def _hflip_discrete_action(action_idx, n_steer: int | None = None):
 
     Args:
         action_idx: Scalar integer action index.
-        n_steer: Number of steer bins. If None, uses config IQN_N_STEER_BINS or 13.
+        n_steer: Number of steer bins for Yosh discrete control. If omitted,
+            uses bins configured via ``configure_discrete_steer_bins``.
     """
     from tmrl.custom.tm.utils.discrete_control import YOSH_N_BRAKE, YOSH_N_GAS
 
+    n_steer = _DISCRETE_STEER_BINS if n_steer is None else int(n_steer)
     if n_steer is None:
-        try:
-            import tmrl.config.constants as cfg
-
-            n_steer = int(cfg.IQN_N_STEER_BINS)
-        except Exception:
-            n_steer = 13
-    n_steer = int(n_steer)
+        raise RuntimeError(
+            "Discrete action flip requested without a configured steer-bin count. "
+            "Set discrete_n_steer_bins in memory construction."
+        )
     idx = int(action_idx)
     gas_brake = YOSH_N_GAS * YOSH_N_BRAKE
     steer_idx = idx // gas_brake
@@ -86,7 +97,12 @@ def _hflip_action(action):
     For discrete (DQN) actions, mirrors the steer index within the composite action.
     """
     if _is_discrete_action(action):
-        return _hflip_discrete_action(action)
+        if _DISCRETE_STEER_BINS is None:
+            raise RuntimeError(
+                "Discrete action flip requested before steer bins were configured. "
+                "Pass discrete_n_steer_bins from config to memory constructors."
+            )
+        return _hflip_discrete_action(action, _DISCRETE_STEER_BINS)
     action_arr = np.array(action, dtype=np.float32, copy=True)
     if len(action_arr) >= 3:
         action_arr[ACTION_STEER_INDEX] *= -1.0

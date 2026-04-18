@@ -13,7 +13,6 @@ from torch import nn
 from torch.distributions import Normal
 from torch.nn import Conv2d, Module
 
-import tmrl.config as cfg
 from tmrl.actor import TorchActorModule
 from tmrl.custom.models.shared.model_constants import (
     LOG_STD_MAX,
@@ -404,11 +403,11 @@ def remove_colors(images):
 
 
 class VanillaCNN(Module):
-    def __init__(self, q_net):
+    def __init__(self, q_net, img_height: int = 64, img_width: int = 64, img_hist_len: int = 4):
         super().__init__()
         self.q_net = q_net
-        self.h_out, self.w_out = cfg.IMG_HEIGHT, cfg.IMG_WIDTH
-        hist = cfg.IMG_HIST_LEN
+        self.h_out, self.w_out = img_height, img_width
+        hist = img_hist_len
 
         self.conv1 = Conv2d(hist, 64, 8, stride=2)
         self.h_out, self.w_out = conv2d_out_dims(self.conv1, self.h_out, self.w_out)

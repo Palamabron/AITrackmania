@@ -16,8 +16,8 @@ from torch import nn
 from torch.distributions import Normal
 from torchrl.modules import NoisyLinear
 
-import tmrl.config as cfg
 from tmrl.actor import TorchActorModule
+from tmrl.registry import MODELS
 from tmrl.custom.models.shared.model_constants import LOG_STD_MAX, LOG_STD_MIN
 from tmrl.custom.models.shared.neural_network_blocks import residual_mlp_backbone, simba_v2_backbone
 from tmrl.custom.utils.nn import GSDEModule
@@ -50,6 +50,7 @@ def mlp(sizes, dim_obs, activation=nn.ReLU):
     return model
 
 
+@MODELS.register("sophy_critic")
 class QRCNNSophy(nn.Module):
     """
     Quantile Regression Critic for Sophy architecture.
@@ -59,11 +60,16 @@ class QRCNNSophy(nn.Module):
         self,
         observation_space,
         action_space,
-        rnn_sizes=cfg.RNN_SIZES,
-        rnn_lens=cfg.RNN_LENS,
-        mlp_branch_sizes=cfg.API_MLP_SIZES,
+        rnn_sizes: list | None = None,
+        rnn_lens: list | None = None,
+        mlp_branch_sizes: list | None = None,
         activation=nn.ReLU,
-        seed: int = cfg.SEED,
+        seed: int = 42,
+        quantiles_number: int = 1,
+        api_layernorm: bool = False,
+        mlp_layernorm: bool = False,
+        noisy_linear_critic: bool = False,
+        output_dropout: float = 0.0,
     ):
         """
         Initializes the QRCNNSophy.
@@ -71,28 +77,39 @@ class QRCNNSophy(nn.Module):
         Args:
             observation_space: Gymnasium observation space.
             action_space: Gymnasium action space.
-            rnn_sizes: List of RNN layer sizes. Defaults to cfg.RNN_SIZES.
-            rnn_lens: List of RNN lengths. Defaults to cfg.RNN_LENS.
-            mlp_branch_sizes: List of sizes for MLP branches. Defaults to cfg.API_MLP_SIZES.
+            rnn_sizes: List of RNN layer sizes. Defaults to [64].
+            rnn_lens: List of RNN lengths. Defaults to [1].
+            mlp_branch_sizes: List of sizes for MLP branches. Defaults to [64].
             activation: Activation function class. Defaults to nn.ReLU.
-            seed (int): Random seed. Defaults to cfg.SEED.
+            seed: Random seed.
+            quantiles_number: Number of quantiles for TQC.
+            api_layernorm: Whether to apply LayerNorm to the API input.
+            mlp_layernorm: Whether to apply LayerNorm after the MLP branch.
+            noisy_linear_critic: Whether to use NoisyLinear for the output.
+            output_dropout: Dropout rate for the output.
         """
         super().__init__()
         torch.manual_seed(seed)
+
+        rnn_sizes = rnn_sizes or [64]
+        rnn_lens = rnn_lens or [1]
+        mlp_branch_sizes = mlp_branch_sizes or [64]
 
         self.activation = activation()
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         dim_obs = sum(math.prod(s for s in space.shape) for space in observation_space)
         dim_act = action_space.shape[0]
-        self.num_quantiles = cfg.QUANTILES_NUMBER
+        self.num_quantiles = quantiles_number
 
         self.mlp_api = mlp(mlp_branch_sizes[:-1], dim_obs, activation)
 
-        if cfg.API_LAYERNORM:
+        self._api_layernorm = api_layernorm
+        if api_layernorm:
             self.layernorm_api = nn.LayerNorm(dim_obs)
 
-        if cfg.MLP_LAYERNORM:
+        self._mlp_layernorm = mlp_layernorm
+        if mlp_layernorm:
             self.layernorm_mlp = nn.LayerNorm(mlp_branch_sizes[-2])
 
         self.mlp_act = mlp([mlp_branch_sizes[-1]], mlp_branch_sizes[-2] + dim_act, activation)
@@ -102,15 +119,16 @@ class QRCNNSophy(nn.Module):
             nn.SiLU(),
         )
 
-        if cfg.NOISY_LINEAR_CRITIC:
+        if noisy_linear_critic:
             self.model_out = NoisyLinear(
                 rnn_sizes[0], self.num_quantiles, device=self.device, std_init=0.01
             )
         else:
             self.model_out = nn.Linear(mlp_branch_sizes[-1], self.num_quantiles)
 
-        if cfg.OUTPUT_DROPOUT > 0.0:
-            self.dropout = nn.Dropout(cfg.OUTPUT_DROPOUT)
+        self._output_dropout = output_dropout
+        if output_dropout > 0.0:
+            self.dropout = nn.Dropout(output_dropout)
 
     def forward(self, observation, act):
         """
@@ -133,12 +151,12 @@ class QRCNNSophy(nn.Module):
         obs_seq_cat = torch.cat(observation, -1)
         obs_seq_cat = obs_seq_cat.view(batch_size, -1).float()
 
-        if cfg.API_LAYERNORM:
+        if self._api_layernorm:
             obs_seq_cat = self.layernorm_api(obs_seq_cat)
 
         mlp_api_out = self.activation(self.mlp_api(obs_seq_cat))
 
-        if cfg.MLP_LAYERNORM:
+        if self._mlp_layernorm:
             mlp_api_out = self.layernorm_mlp(mlp_api_out)
 
         cat_mlp_api_act_out = torch.cat([mlp_api_out, act], dim=-1)
@@ -149,12 +167,13 @@ class QRCNNSophy(nn.Module):
 
         model_out = self.model_out(head_out)
 
-        if cfg.OUTPUT_DROPOUT > 0.0:
+        if self._output_dropout > 0.0:
             model_out = self.dropout(model_out)
 
         return torch.squeeze(model_out, -1)
 
 
+@MODELS.register("sophy_actor")
 class SquashedActorSophy(TorchActorModule):
     """
     Actor network for Sophy architecture with squashed Gaussian distribution.
@@ -164,11 +183,16 @@ class SquashedActorSophy(TorchActorModule):
         self,
         observation_space,
         action_space,
-        rnn_sizes=cfg.RNN_SIZES,
-        rnn_lens=cfg.RNN_LENS,
-        mlp_branch_sizes=cfg.API_MLP_SIZES,
+        rnn_sizes: list | None = None,
+        rnn_lens: list | None = None,
+        mlp_branch_sizes: list | None = None,
         activation=nn.ReLU,
-        seed: int = cfg.SEED,
+        seed: int = 42,
+        api_layernorm: bool = False,
+        mlp_layernorm: bool = False,
+        noisy_linear_actor: bool = False,
+        output_dropout: float = 0.0,
+        init_gas_bias: float = 0.0,
     ):
         """
         Initializes the SquashedActorSophy.
@@ -176,14 +200,23 @@ class SquashedActorSophy(TorchActorModule):
         Args:
             observation_space: Gymnasium observation space.
             action_space: Gymnasium action space.
-            rnn_sizes: List of RNN layer sizes. Defaults to cfg.RNN_SIZES.
-            rnn_lens: List of RNN lengths. Defaults to cfg.RNN_LENS.
-            mlp_branch_sizes: List of sizes for MLP branches. Defaults to cfg.API_MLP_SIZES.
+            rnn_sizes: List of RNN layer sizes. Defaults to [64].
+            rnn_lens: List of RNN lengths. Defaults to [1].
+            mlp_branch_sizes: List of sizes for MLP branches. Defaults to [64].
             activation: Activation function class. Defaults to nn.ReLU.
-            seed (int): Random seed. Defaults to cfg.SEED.
+            seed: Random seed.
+            api_layernorm: Whether to apply LayerNorm to the API input.
+            mlp_layernorm: Whether to apply LayerNorm after the MLP branch.
+            noisy_linear_actor: Whether to use NoisyLinear for the output.
+            output_dropout: Dropout rate for the output.
+            init_gas_bias: Initial bias for the gas (throttle) output.
         """
         super().__init__(observation_space, action_space)
         torch.manual_seed(seed)
+
+        rnn_sizes = rnn_sizes or [64]
+        rnn_lens = rnn_lens or [1]
+        mlp_branch_sizes = mlp_branch_sizes or [64]
 
         self.activation = activation()
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -194,10 +227,12 @@ class SquashedActorSophy(TorchActorModule):
 
         self.mlp_api = mlp(mlp_branch_sizes, dim_obs, activation)
 
-        if cfg.API_LAYERNORM:
+        self._api_layernorm = api_layernorm
+        if api_layernorm:
             self.layernorm_api = nn.LayerNorm(dim_obs)
 
-        if cfg.MLP_LAYERNORM:
+        self._mlp_layernorm = mlp_layernorm
+        if mlp_layernorm:
             self.layernorm_mlp = nn.LayerNorm(mlp_branch_sizes[-1])
 
         self.head_proj = nn.Sequential(
@@ -205,21 +240,22 @@ class SquashedActorSophy(TorchActorModule):
             nn.SiLU(),
         )
 
-        if cfg.NOISY_LINEAR_ACTOR:
+        if noisy_linear_actor:
             self.model_out = NoisyLinear(
                 rnn_sizes[0], mlp_out_size, device=self.device, std_init=0.01
             )
         else:
             self.model_out = nn.Linear(mlp_branch_sizes[-1], mlp_out_size)
 
-        if cfg.OUTPUT_DROPOUT > 0.0:
-            self.dropout = nn.Dropout(cfg.OUTPUT_DROPOUT)
+        self._output_dropout = output_dropout
+        if output_dropout > 0.0:
+            self.dropout = nn.Dropout(output_dropout)
 
         self.mu_layer = nn.Linear(mlp_out_size, dim_act)
         self.log_std_layer = nn.Linear(mlp_out_size, dim_act)
-        if dim_act > 0 and cfg.INIT_GAS_BIAS != 0.0:
+        if dim_act > 0 and init_gas_bias != 0.0:
             with torch.no_grad():
-                self.mu_layer.bias.data[0] = cfg.INIT_GAS_BIAS
+                self.mu_layer.bias.data[0] = init_gas_bias
         self.act_limit = action_space.high[0]
         self.log_std_min = LOG_STD_MIN
         self.log_std_max = LOG_STD_MAX
@@ -248,19 +284,19 @@ class SquashedActorSophy(TorchActorModule):
         obs_seq_cat = torch.cat(observation, -1)
         obs_seq_cat = obs_seq_cat.view(batch_size, -1).float()
 
-        if cfg.API_LAYERNORM:
+        if self._api_layernorm:
             obs_seq_cat = self.layernorm_api(obs_seq_cat)
 
         mlp_api_out = self.activation(self.mlp_api(obs_seq_cat))
 
-        if cfg.MLP_LAYERNORM:
+        if self._mlp_layernorm:
             mlp_api_out = self.layernorm_mlp(mlp_api_out)
 
         head_out = self.head_proj(mlp_api_out)
 
         model_out = self.model_out(head_out)
 
-        if cfg.OUTPUT_DROPOUT > 0.0:
+        if self._output_dropout > 0.0:
             model_out = self.dropout(model_out)
 
         mu = self.mu_layer(model_out)
@@ -305,6 +341,7 @@ class SquashedActorSophy(TorchActorModule):
             return a.cpu().numpy()
 
 
+@MODELS.register("sophy_ac")
 class SophyActorCritic(nn.Module):
     """
     Actor-critic architecture for Sophy.
@@ -314,11 +351,11 @@ class SophyActorCritic(nn.Module):
         self,
         observation_space,
         action_space,
-        rnn_sizes=cfg.RNN_SIZES,
-        rnn_lens=cfg.RNN_LENS,
-        mlp_branch_sizes=cfg.API_MLP_SIZES,
+        rnn_sizes: list | None = None,
+        rnn_lens: list | None = None,
+        mlp_branch_sizes: list | None = None,
         activation=nn.ReLU,
-        seed: int = cfg.SEED,
+        seed: int = 42,
     ):
         """
         Initializes the SophyActorCritic.
@@ -326,13 +363,16 @@ class SophyActorCritic(nn.Module):
         Args:
             observation_space: Gymnasium observation space.
             action_space: Gymnasium action space.
-            rnn_sizes: List of RNN layer sizes. Defaults to cfg.RNN_SIZES.
-            rnn_lens: List of RNN lengths. Defaults to cfg.RNN_LENS.
-            mlp_branch_sizes: List of sizes for MLP branches. Defaults to cfg.API_MLP_SIZES.
+            rnn_sizes: List of RNN layer sizes. Defaults to [64].
+            rnn_lens: List of RNN lengths. Defaults to [1].
+            mlp_branch_sizes: List of sizes for MLP branches. Defaults to [64].
             activation: Activation function class. Defaults to nn.ReLU.
-            seed (int): Random seed. Defaults to cfg.SEED.
+            seed: Random seed.
         """
         super().__init__()
+        rnn_sizes = rnn_sizes or [64]
+        rnn_lens = rnn_lens or [1]
+        mlp_branch_sizes = mlp_branch_sizes or [64]
         self.actor = SquashedActorSophy(
             observation_space,
             action_space,
@@ -447,12 +487,10 @@ class _TrackGNN(nn.Module):
         return cast(torch.Tensor, out.mean(dim=1))
 
 
-def _build_track_gnn_branch(dim_track: int, hidden_dim: int) -> nn.Module:
+def _build_track_gnn_branch(dim_track: int, hidden_dim: int, gnn_hidden: int = 64, gnn_layers: int = 3) -> nn.Module:
     assert dim_track >= 3, "track dim must be at least 3"
     assert dim_track % 3 == 0, "track dim must be 6*N (3 channels)"
     num_nodes = dim_track // 3
-    gnn_hidden = getattr(cfg, "GNN_HIDDEN", 64)
-    gnn_layers = getattr(cfg, "GNN_LAYERS", 3)
     gnn = _TrackGNN(
         num_nodes=num_nodes,
         in_dim=3,
@@ -467,9 +505,9 @@ def _build_track_gnn_branch(dim_track: int, hidden_dim: int) -> nn.Module:
     )
 
 
-def _make_backbone(input_dim: int, hidden_dim: int, num_blocks: int) -> nn.Module:
+def _make_backbone(input_dim: int, hidden_dim: int, num_blocks: int, use_simbav2: bool = False) -> nn.Module:
     """Build residual MLP or SimbaV2 backbone depending on config."""
-    if getattr(cfg, "USE_SIMBAV2", False):
+    if use_simbav2:
         return simba_v2_backbone(input_dim, hidden_dim, num_blocks)
     return residual_mlp_backbone(input_dim, hidden_dim, num_blocks)
 
@@ -493,6 +531,7 @@ def _obs_to_flat_tensor(observation, batch_size: int) -> torch.Tensor:
     return torch.cat(obs_list, -1).float()
 
 
+@MODELS.register("sophy_residual_actor")
 class SquashedActorSophyResidual(TorchActorModule):
     """
     Sophy actor with residual MLP backbone and optional Conv1d track branch and RNN.
@@ -503,15 +542,30 @@ class SquashedActorSophyResidual(TorchActorModule):
         self,
         observation_space,
         action_space,
-        hidden_dim=cfg.RESIDUAL_MLP_HIDDEN_DIM,
-        num_blocks=cfg.RESIDUAL_MLP_NUM_BLOCKS,
-        seed: int = cfg.SEED,
+        hidden_dim: int = 256,
+        num_blocks: int = 3,
+        seed: int = 42,
         use_sde: bool = False,
         log_std_init: float = -3.0,
         sde_clip_mean: float = 2.0,
+        split_track_observation: bool = True,
+        use_rnn: bool = False,
+        rnn_hidden_size: int | None = None,
+        track_encoder: str = "conv1d",
+        api_layernorm: bool = False,
+        binary_brake: bool = False,
+        init_gas_bias: float = 0.0,
+        output_dropout: float = 0.0,
+        r2d2_sequence_length: int = 0,
+        r2d2_burn_in: int = 0,
+        use_simbav2: bool = False,
+        gnn_hidden: int = 64,
+        gnn_layers: int = 3,
     ):
         super().__init__(observation_space, action_space)
         torch.manual_seed(seed)
+
+        rnn_hidden = rnn_hidden_size if rnn_hidden_size is not None else hidden_dim
 
         dim_obs = sum(math.prod(s for s in space.shape) for space in observation_space)
         dim_act = action_space.shape[0]
@@ -519,16 +573,14 @@ class SquashedActorSophyResidual(TorchActorModule):
         self._dim_obs = dim_obs
         self.use_sde = use_sde
         self._sde_clip_mean = sde_clip_mean
-        self._use_track_conv = (
-            getattr(cfg, "SPLIT_TRACK_OBSERVATION", True) and len(observation_space) > 1
-        )
+        self._use_track_conv = split_track_observation and len(observation_space) > 1
         if self._use_track_conv:
             dim_track_first = math.prod(observation_space[0].shape)
             if dim_track_first % 3 != 0:
-                # Ego-only space (e.g. asymmetric actor): first slot is not track
                 self._use_track_conv = False
-        self._use_rnn = getattr(cfg, "USE_RNN", False)
-        rnn_hidden = getattr(cfg, "RNN_HIDDEN_SIZE", hidden_dim)
+        self._use_rnn = use_rnn
+        self._r2d2_sequence_length = r2d2_sequence_length
+        self._r2d2_burn_in = r2d2_burn_in
 
         if self._use_track_conv:
             dim_track = math.prod(observation_space[0].shape)
@@ -536,11 +588,10 @@ class SquashedActorSophyResidual(TorchActorModule):
             assert dim_track % 3 == 0, "track_info should be 6*N (left+center+right)"
             self._dim_track = dim_track
             self._dim_physics = dim_physics
-            track_encoder = getattr(cfg, "TRACK_ENCODER", "conv1d")
             if track_encoder == "spline_mlp":
                 self.track_conv = _build_track_spline_mlp_branch(dim_track, hidden_dim)
             elif track_encoder == "gnn":
-                self.track_conv = _build_track_gnn_branch(dim_track, hidden_dim)
+                self.track_conv = _build_track_gnn_branch(dim_track, hidden_dim, gnn_hidden=gnn_hidden, gnn_layers=gnn_layers)
             else:
                 self.track_conv = _build_track_conv1d_branch(dim_track, hidden_dim)
             self.physics_proj = nn.Sequential(
@@ -556,14 +607,14 @@ class SquashedActorSophyResidual(TorchActorModule):
             else:
                 backbone_input_dim = joint_dim
             self.layernorm_joint = nn.LayerNorm(backbone_input_dim)
-            self.backbone = _make_backbone(backbone_input_dim, hidden_dim, num_blocks)
+            self.backbone = _make_backbone(backbone_input_dim, hidden_dim, num_blocks, use_simbav2=use_simbav2)
             self.layernorm_api = None
         else:
-            self.layernorm_api = nn.LayerNorm(dim_obs) if cfg.API_LAYERNORM else None
-            self.backbone = _make_backbone(dim_obs, hidden_dim, num_blocks)
+            self.layernorm_api = nn.LayerNorm(dim_obs) if api_layernorm else None
+            self.backbone = _make_backbone(dim_obs, hidden_dim, num_blocks, use_simbav2=use_simbav2)
 
         self.head_proj = nn.Sequential(nn.Linear(hidden_dim, hidden_dim), nn.SiLU())
-        self._binary_brake = getattr(cfg, "BINARY_BRAKE", False) and dim_act >= 3
+        self._binary_brake = binary_brake and dim_act >= 3
         self.brake_logits_layer: nn.Linear | None
         if self._binary_brake:
             self._cont_dim = 2
@@ -581,14 +632,14 @@ class SquashedActorSophyResidual(TorchActorModule):
         else:
             self.log_std_layer = nn.Linear(hidden_dim, self._cont_dim)
 
-        if dim_act > 0 and cfg.INIT_GAS_BIAS != 0.0:
+        if dim_act > 0 and init_gas_bias != 0.0:
             with torch.no_grad():
-                self.mu_layer.bias.data[0] = cfg.INIT_GAS_BIAS
+                self.mu_layer.bias.data[0] = init_gas_bias
         self.act_limit = act_limit
         self.log_std_min = LOG_STD_MIN
         self.log_std_max = LOG_STD_MAX
         self._dim_act = dim_act
-        self.dropout = nn.Dropout(cfg.OUTPUT_DROPOUT) if cfg.OUTPUT_DROPOUT > 0.0 else None
+        self.dropout = nn.Dropout(output_dropout) if output_dropout > 0.0 else None
 
     def reset_noise(self, batch_size: int = 1) -> None:
         """Sample new gSDE exploration matrix. No-op if gSDE is disabled."""
@@ -648,12 +699,9 @@ class SquashedActorSophyResidual(TorchActorModule):
         if self._use_track_conv:
             joint = self._joint_features(observation, batch_size)
             if self._use_rnn and self.rnn is not None:
-                seq_len = int(cfg.R2D2_SEQUENCE_LENGTH)
+                seq_len = int(self._r2d2_sequence_length)
 
-                # --- FIX: R2D2 Burn-in Protocol ---
-                # If using RNN, we bifurcate the sequence into Burn-In (Detached)
-                # and Active Learning (BPTT).
-                burn_in_len = int(cfg.R2D2_BURN_IN)
+                burn_in_len = int(self._r2d2_burn_in)
 
                 if (
                     seq_len > 0
@@ -664,21 +712,15 @@ class SquashedActorSophyResidual(TorchActorModule):
                     num_seq = batch_size // seq_len
                     joint_seq = joint.view(num_seq, seq_len, -1)
 
-                    # Stage 1: Hidden State Recovery (No Gradients)
-                    # Burn-in no_grad to avoid gradient leak; recover hidden from current weights.
                     with torch.no_grad():
-                        # Process first B steps to correct representational drift
                         joint_burn = joint_seq[:, :burn_in_len, :]
                         self.rnn.flatten_parameters()
                         _, h_burn = self.rnn(joint_burn)
 
-                    # Stage 2: Active Learning (Attach Gradients)
                     joint_active = joint_seq[:, burn_in_len:, :]
                     self.rnn.flatten_parameters()
                     out_active, _ = self.rnn(joint_active, h_burn)
 
-                    # Need to return full sequence size to match actions/rewards
-                    # So we pad the burn_in part with detached outputs or zeros
                     with torch.no_grad():
                         out_burn, _ = self.rnn(joint_burn)
 
@@ -721,7 +763,9 @@ class SquashedActorSophyResidual(TorchActorModule):
 
     def _policy_head_standard(self, out, mu, test, with_logprob):
         """Standard Gaussian + tanh policy head."""
-        log_std = self.log_std_layer(out)
+        log_std_layer = self.log_std_layer
+        assert log_std_layer is not None
+        log_std = log_std_layer(out)
         log_std = torch.clamp(log_std, self.log_std_min, self.log_std_max)
         std = torch.exp(log_std)
         pi_distribution = Normal(mu, std)
@@ -737,15 +781,17 @@ class SquashedActorSophyResidual(TorchActorModule):
         Clamp pre-tanh mean to [-sde_clip_mean, sde_clip_mean] so actions never saturate
         (tanh(±2) ≈ ±0.96). Forward still returns raw mu for mean_penalty gradient.
         """
+        sde = self.sde
+        assert sde is not None
         latent_sde = out.float()
         mu = mu.float()
         mu_clipped = torch.clamp(mu, -self._sde_clip_mean, self._sde_clip_mean)
-        variance = self.sde.get_variance(latent_sde)
-        pi_distribution = Normal(mu_clipped, torch.sqrt(variance + self.sde.epsilon))
+        variance = sde.get_variance(latent_sde)
+        pi_distribution = Normal(mu_clipped, torch.sqrt(variance + sde.epsilon))
         if test:
             pi_action = mu_clipped
         else:
-            noise = self.sde.get_noise(latent_sde)
+            noise = sde.get_noise(latent_sde)
             pi_action = mu_clipped + noise
         logp_pi = None
         if with_logprob:
@@ -758,7 +804,9 @@ class SquashedActorSophyResidual(TorchActorModule):
         mu = self.mu_layer(out)
 
         if self._binary_brake:
-            brake_logits = self.brake_logits_layer(out).float()
+            brake_lin = self.brake_logits_layer
+            assert brake_lin is not None
+            brake_logits = brake_lin(out).float()
             if self.use_sde and self.sde is not None:
                 pi_cont, logp_cont, _ = self._policy_head_sde(out, mu, test, with_logprob)
             else:
@@ -808,6 +856,7 @@ class SquashedActorSophyResidual(TorchActorModule):
             return a.cpu().numpy()
 
 
+@MODELS.register("sophy_residual_critic")
 class QRCNNSophyResidual(nn.Module):
     """
     Sophy critic (TQC quantiles) with residual MLP backbone and optional
@@ -818,9 +867,22 @@ class QRCNNSophyResidual(nn.Module):
         self,
         observation_space,
         action_space,
-        hidden_dim=cfg.RESIDUAL_MLP_HIDDEN_DIM,
-        num_blocks=cfg.RESIDUAL_MLP_NUM_BLOCKS,
-        seed: int = cfg.SEED,
+        hidden_dim: int = 256,
+        num_blocks: int = 3,
+        seed: int = 42,
+        quantiles_number: int = 1,
+        split_track_observation: bool = True,
+        use_rnn: bool = False,
+        rnn_hidden_size: int | None = None,
+        track_encoder: str = "conv1d",
+        api_layernorm: bool = False,
+        noisy_linear_critic: bool = False,
+        output_dropout: float = 0.0,
+        r2d2_sequence_length: int = 0,
+        r2d2_burn_in: int = 0,
+        use_simbav2: bool = False,
+        gnn_hidden: int = 64,
+        gnn_layers: int = 3,
     ):
         """
         Initializes the QRCNNSophyResidual.
@@ -828,27 +890,41 @@ class QRCNNSophyResidual(nn.Module):
         Args:
             observation_space: Gymnasium observation space.
             action_space: Gymnasium action space.
-            hidden_dim (int): Hidden dimension for MLP. Defaults to cfg.RESIDUAL_MLP_HIDDEN_DIM.
-            num_blocks (int): Number of residual blocks. Defaults to cfg.RESIDUAL_MLP_NUM_BLOCKS.
-            seed (int): Random seed. Defaults to cfg.SEED.
+            hidden_dim: Hidden dimension for MLP.
+            num_blocks: Number of residual blocks.
+            seed: Random seed.
+            quantiles_number: Number of quantiles for TQC.
+            split_track_observation: Whether to split track observation into a Conv1d branch.
+            use_rnn: Whether to use an RNN layer.
+            rnn_hidden_size: Hidden size for the RNN (defaults to hidden_dim if None).
+            track_encoder: Type of track encoder ("conv1d", "spline_mlp", or "gnn").
+            api_layernorm: Whether to apply LayerNorm to the API input.
+            noisy_linear_critic: Whether to use NoisyLinear for the output.
+            output_dropout: Dropout rate for the output.
+            r2d2_sequence_length: Sequence length for R2D2 protocol.
+            r2d2_burn_in: Burn-in length for R2D2 protocol.
+            use_simbav2: Whether to use SimbaV2 backbone instead of residual MLP.
+            gnn_hidden: Hidden dim for GNN track encoder.
+            gnn_layers: Number of GNN layers for track encoder.
         """
         super().__init__()
         torch.manual_seed(seed)
 
+        rnn_hidden = rnn_hidden_size if rnn_hidden_size is not None else hidden_dim
+
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         dim_obs = sum(math.prod(s for s in space.shape) for space in observation_space)
         dim_act = action_space.shape[0]
-        self.num_quantiles = cfg.QUANTILES_NUMBER
+        self.num_quantiles = quantiles_number
 
-        self._use_track_conv = (
-            getattr(cfg, "SPLIT_TRACK_OBSERVATION", True) and len(observation_space) > 1
-        )
+        self._use_track_conv = split_track_observation and len(observation_space) > 1
         if self._use_track_conv:
             dim_track_first = math.prod(observation_space[0].shape)
             if dim_track_first % 3 != 0:
                 self._use_track_conv = False
-        self._use_rnn = getattr(cfg, "USE_RNN", False)
-        rnn_hidden = getattr(cfg, "RNN_HIDDEN_SIZE", hidden_dim)
+        self._use_rnn = use_rnn
+        self._r2d2_sequence_length = r2d2_sequence_length
+        self._r2d2_burn_in = r2d2_burn_in
 
         if self._use_track_conv:
             dim_track = math.prod(observation_space[0].shape)
@@ -856,11 +932,10 @@ class QRCNNSophyResidual(nn.Module):
             assert dim_track % 3 == 0, "track_info should be 6*N"
             self._dim_track = dim_track
             self._dim_physics = dim_physics
-            track_encoder = getattr(cfg, "TRACK_ENCODER", "conv1d")
             if track_encoder == "spline_mlp":
                 self.track_conv = _build_track_spline_mlp_branch(dim_track, hidden_dim)
             elif track_encoder == "gnn":
-                self.track_conv = _build_track_gnn_branch(dim_track, hidden_dim)
+                self.track_conv = _build_track_gnn_branch(dim_track, hidden_dim, gnn_hidden=gnn_hidden, gnn_layers=gnn_layers)
             else:
                 self.track_conv = _build_track_conv1d_branch(dim_track, hidden_dim)
             self.physics_proj = nn.Sequential(
@@ -876,21 +951,21 @@ class QRCNNSophyResidual(nn.Module):
             else:
                 backbone_input_dim = joint_dim
             self.layernorm_joint = nn.LayerNorm(backbone_input_dim)
-            self.backbone = _make_backbone(backbone_input_dim, hidden_dim, num_blocks)
+            self.backbone = _make_backbone(backbone_input_dim, hidden_dim, num_blocks, use_simbav2=use_simbav2)
             self.layernorm_api = None
         else:
-            self.layernorm_api = nn.LayerNorm(dim_obs) if cfg.API_LAYERNORM else None
-            self.backbone = _make_backbone(dim_obs, hidden_dim, num_blocks)
+            self.layernorm_api = nn.LayerNorm(dim_obs) if api_layernorm else None
+            self.backbone = _make_backbone(dim_obs, hidden_dim, num_blocks, use_simbav2=use_simbav2)
 
         self.mlp_act = nn.Linear(hidden_dim + dim_act, hidden_dim)
         self.head_proj = nn.Sequential(nn.Linear(hidden_dim, hidden_dim), nn.SiLU())
-        if cfg.NOISY_LINEAR_CRITIC:
+        if noisy_linear_critic:
             self.model_out = NoisyLinear(
                 hidden_dim, self.num_quantiles, device=self.device, std_init=0.01
             )
         else:
             self.model_out = nn.Linear(hidden_dim, self.num_quantiles)
-        self.dropout = nn.Dropout(cfg.OUTPUT_DROPOUT) if cfg.OUTPUT_DROPOUT > 0.0 else None
+        self.dropout = nn.Dropout(output_dropout) if output_dropout > 0.0 else None
 
     def _joint_features(self, observation, batch_size: int) -> torch.Tensor:
         """
@@ -951,12 +1026,9 @@ class QRCNNSophyResidual(nn.Module):
         if self._use_track_conv:
             joint = self._joint_features(observation, batch_size)
             if self._use_rnn and self.rnn is not None:
-                seq_len = int(cfg.R2D2_SEQUENCE_LENGTH)
+                seq_len = int(self._r2d2_sequence_length)
 
-                # --- FIX: R2D2 Burn-in Protocol ---
-                # If using RNN, we bifurcate the sequence into Burn-In (Detached)
-                # and Active Learning (BPTT).
-                burn_in_len = int(cfg.R2D2_BURN_IN)
+                burn_in_len = int(self._r2d2_burn_in)
 
                 if (
                     seq_len > 0
@@ -967,21 +1039,15 @@ class QRCNNSophyResidual(nn.Module):
                     num_seq = batch_size // seq_len
                     joint_seq = joint.view(num_seq, seq_len, -1)
 
-                    # Stage 1: Hidden State Recovery (No Gradients)
-                    # Burn-in no_grad to avoid gradient leak; recover hidden from current weights.
                     with torch.no_grad():
-                        # Process first B steps to correct representational drift
                         joint_burn = joint_seq[:, :burn_in_len, :]
                         self.rnn.flatten_parameters()
                         _, h_burn = self.rnn(joint_burn)
 
-                    # Stage 2: Active Learning (Attach Gradients)
                     joint_active = joint_seq[:, burn_in_len:, :]
                     self.rnn.flatten_parameters()
                     out_active, _ = self.rnn(joint_active, h_burn)
 
-                    # Need to return full sequence size to match actions/rewards
-                    # So we pad the burn_in part with detached outputs or zeros
                     with torch.no_grad():
                         out_burn, _ = self.rnn(joint_burn)
 
@@ -1013,6 +1079,7 @@ class QRCNNSophyResidual(nn.Module):
         return torch.squeeze(self.model_out(out), -1)
 
 
+@MODELS.register("sophy_residual_ac")
 class SophyResidualActorCritic(nn.Module):
     """
     Actor-critic for TQC with residual MLP backbone (LayerNorm + SiLU).
@@ -1023,10 +1090,10 @@ class SophyResidualActorCritic(nn.Module):
         self,
         observation_space,
         action_space,
-        hidden_dim=cfg.RESIDUAL_MLP_HIDDEN_DIM,
-        num_blocks_actor=cfg.RESIDUAL_MLP_NUM_BLOCKS_ACTOR,
-        num_blocks_critic=cfg.RESIDUAL_MLP_NUM_BLOCKS_CRITIC,
-        seed: int = cfg.SEED,
+        hidden_dim: int = 256,
+        num_blocks_actor: int = 3,
+        num_blocks_critic: int = 3,
+        seed: int = 42,
         use_sde: bool = False,
         log_std_init: float = -3.0,
         sde_clip_mean: float = 2.0,
@@ -1037,15 +1104,13 @@ class SophyResidualActorCritic(nn.Module):
         Args:
             observation_space: Gymnasium observation space.
             action_space: Gymnasium action space.
-            hidden_dim (int): Hidden dimension for MLP. Defaults to cfg.RESIDUAL_MLP_HIDDEN_DIM.
-            num_blocks_actor (int): Number of residual blocks for actor.
-                Defaults to cfg.RESIDUAL_MLP_NUM_BLOCKS_ACTOR.
-            num_blocks_critic (int): Number of residual blocks for critic.
-                Defaults to cfg.RESIDUAL_MLP_NUM_BLOCKS_CRITIC.
-            seed (int): Random seed. Defaults to cfg.SEED.
-            use_sde (bool): Enable generalized State-Dependent Exploration.
-            log_std_init (float): Initial log-std for gSDE.
-            sde_clip_mean (float): Clip pre-tanh mean when using gSDE.
+            hidden_dim: Hidden dimension for MLP.
+            num_blocks_actor: Number of residual blocks for actor.
+            num_blocks_critic: Number of residual blocks for critic.
+            seed: Random seed.
+            use_sde: Enable generalized State-Dependent Exploration.
+            log_std_init: Initial log-std for gSDE.
+            sde_clip_mean: Clip pre-tanh mean when using gSDE.
         """
         super().__init__()
         self.actor = SquashedActorSophyResidual(
@@ -1148,6 +1213,7 @@ class _AsymmetricActorAdapter(TorchActorModule):
 
 
 # ASYMMETRIC EGO/GLOBAL SEPARATOR
+@MODELS.register("sophy_asymmetric_ac")
 class AsymmetricSophyResidualActorCritic(nn.Module):
     """
     Implements the Blueprint from GT Sophy:
@@ -1159,10 +1225,10 @@ class AsymmetricSophyResidualActorCritic(nn.Module):
         self,
         observation_space,
         action_space,
-        hidden_dim=cfg.RESIDUAL_MLP_HIDDEN_DIM,
-        num_blocks_actor=cfg.RESIDUAL_MLP_NUM_BLOCKS_ACTOR,
-        num_blocks_critic=cfg.RESIDUAL_MLP_NUM_BLOCKS_CRITIC,
-        seed: int = cfg.SEED,
+        hidden_dim: int = 256,
+        num_blocks_actor: int = 3,
+        num_blocks_critic: int = 3,
+        seed: int = 42,
         use_sde: bool = False,
         log_std_init: float = -3.0,
         sde_clip_mean: float = 2.0,

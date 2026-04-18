@@ -1,6 +1,7 @@
 # standard library imports
 import pickle
 import time
+from typing import Any
 
 # third-party imports
 import numpy as np
@@ -21,7 +22,7 @@ def record_reward_dist(path_reward=PATH_REWARD, use_keyboard=False):
     if use_keyboard:
         import keyboard
 
-    positions = []
+    position_rows: list[list[float]] = []
     client = TM2020OpenPlanetClient()
     path = path_reward
 
@@ -47,19 +48,19 @@ def record_reward_dist(path_reward=PATH_REWARD, use_keyboard=False):
 
             if early_stop or terminated:
                 logger.info("Computing reward function checkpoints from captured positions...")
-                logger.info(f"Initial number of captured positions: {len(positions)}")
-                positions = np.array(positions)
+                logger.info(f"Initial number of captured positions: {len(position_rows)}")
+                positions = np.asarray(position_rows, dtype=np.float64)
 
-                final_positions = [positions[0]]
+                final_positions_list: list[Any] = [positions[0]]
                 dist_between_points = 0.1
                 j = 1
                 move_by = dist_between_points
-                pt1 = final_positions[-1]
+                pt1 = final_positions_list[-1]
                 while j < len(positions):
                     pt2 = positions[j]
                     pt, dst = line(pt1, pt2, move_by)
                     if pt is not None:  # a point was created
-                        final_positions.append(pt)  # add the point to the list
+                        final_positions_list.append(pt)  # add the point to the list
                         move_by = dist_between_points
                         pt1 = pt
                     else:  # we passed pt2 without creating a new point
@@ -67,7 +68,7 @@ def record_reward_dist(path_reward=PATH_REWARD, use_keyboard=False):
                         j += 1
                         move_by = dst  # remaining distance
 
-                final_positions = np.array(final_positions)
+                final_positions = np.asarray(final_positions_list, dtype=np.float64)
                 logger.info(
                     f"Final number of checkpoints in the reward function: {len(final_positions)}"
                 )
@@ -78,7 +79,7 @@ def record_reward_dist(path_reward=PATH_REWARD, use_keyboard=False):
                 return
             else:
                 _, (_xi, _yi, _zi), _ = openplanet_grab_indices(TQC_GRAB_DATA_NB_FLOATS)
-                positions.append([data[_xi], data[_yi], data[_zi]])
+                position_rows.append([data[_xi], data[_yi], data[_zi]])
         else:
             time.sleep(0.05)  # waiting for user to press E
 

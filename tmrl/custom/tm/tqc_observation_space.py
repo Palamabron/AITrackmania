@@ -9,12 +9,23 @@ from __future__ import annotations
 import numpy as np
 from gymnasium import spaces
 
-import tmrl.config as cfg
 
+def build_tqc_sophy_tuple_observation_space(
+    points_number: int | None = None,
+    track_curvature_obs: bool = False,
+) -> spaces.Tuple:
+    """Tuple-of-Box layout for TQCGRAB-style telemetry (no images, no act-in-obs tail).
 
-def build_tqc_sophy_tuple_observation_space(points_number: int | None = None) -> spaces.Tuple:
-    """Tuple-of-Box layout for TQCGRAB-style telemetry (no images, no act-in-obs tail)."""
-    n = int(cfg.POINTS_NUMBER if points_number is None else points_number)
+    Args:
+        points_number: Number of track look-ahead points. Falls back to
+            ``MAIN_CONFIG.algorithm.num_track_points`` when ``None``.
+        track_curvature_obs: Whether to include a curvature observation box.
+    """
+    if points_number is None:
+        from tmrl.config.loader import MAIN_CONFIG
+
+        points_number = int(MAIN_CONFIG.algorithm.num_track_points)
+    n = int(points_number)
     track = spaces.Box(low=-100.0, high=100.0, shape=(6 * n,))
     speed = spaces.Box(low=0.0, high=1000.0, shape=(1,))
     acceleration = spaces.Box(low=-100.0, high=100.0, shape=(1,))
@@ -45,7 +56,7 @@ def build_tqc_sophy_tuple_observation_space(points_number: int | None = None) ->
         slip_coef,
         failure_counter,
     ]
-    if bool(cfg.REWARD_CONFIG.get("track_curvature_obs", False)):
+    if track_curvature_obs:
         curvature = spaces.Box(low=-1.0, high=1.0, shape=(n,), dtype=np.float32)
         spaces_list.append(curvature)
     return spaces.Tuple(tuple(spaces_list))

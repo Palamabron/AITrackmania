@@ -1,20 +1,25 @@
 """Interface that provides both camera images and LIDAR (speed + progress + LIDAR + images)."""
 
+from typing import Any
+
 import cv2
 import numpy as np
 from gymnasium import spaces
 
-import tmrl.config as cfg
 from tmrl.custom.interfaces.TM2020InterfaceLidarProgress import TM2020InterfaceLidarProgress
 from tmrl.custom.tm.utils.tools import openplanet_grab_indices
+from tmrl.registry import INTERFACES
 
 
+@INTERFACES.register("lidar_progress_images")
 class TM2020InterfaceLidarProgressImages(TM2020InterfaceLidarProgress):
     """
     LIDAR + progress + camera images from the same screenshot.
     Observation: (speed, progress, lidar_history, image_history).
     Use with a fusion model (e.g. frozen EffNet for images + residual MLP for vector).
     """
+
+    image_hist: list[Any]
 
     def __init__(
         self,
@@ -32,11 +37,12 @@ class TM2020InterfaceLidarProgressImages(TM2020InterfaceLidarProgress):
             **kwargs,
         )
         self.grayscale = grayscale
-        self.resize_to = resize_to or (cfg.IMG_WIDTH, cfg.IMG_HEIGHT)
+        self.resize_to = resize_to or (64, 64)
         self.image_hist = []
 
     def grab_lidar_speed_data_and_image(self):
         """Screenshot once; compute LIDAR and return resized image for the model."""
+        assert self.window_interface is not None and self.client is not None and self.lidar is not None
         raw_img = self.window_interface.screenshot()[:, :, :3]
         data = self.client.retrieve_data()
         _si, _, _ = openplanet_grab_indices(self.client.nb_floats)
@@ -64,15 +70,19 @@ class TM2020InterfaceLidarProgressImages(TM2020InterfaceLidarProgress):
         lidars = np.array(list(self.img_hist), dtype="float32")
         images = np.array(list(self.image_hist), dtype="float32")
         obs = [speed, progress, lidars, images]
+        assert self.reward_function is not None
         self.reward_function.reset()
         return obs, {}
 
     def get_obs_rew_terminated_info(self):
         lidar, speed, data, img = self.grab_lidar_speed_data_and_image()
+        assert self.client is not None and self.reward_function is not None
+        assert self.img_hist is not None
         _, (_xi, _yi, _zi), _eoti = openplanet_grab_indices(self.client.nb_floats)
         rew, terminated, _failure_counter = self.reward_function.compute_reward(
             pos=np.array([data[_xi], data[_yi], data[_zi]])
         )[:3]
+        rew_val = float(rew)
         progress = np.array(
             [self.reward_function.cur_idx / max(1, self.reward_function.datalen)],
             dtype="float32",
@@ -89,10 +99,10 @@ class TM2020InterfaceLidarProgressImages(TM2020InterfaceLidarProgress):
         end_of_track = bool(data[_eoti])
         info = {"end_of_track": end_of_track}
         if end_of_track:
-            rew += self.finish_reward
+            rew_val += self.finish_reward
             terminated = True
-        rew = np.float32(rew)
-        return obs, rew, terminated, info
+        rew_out = np.float32(rew_val)
+        return obs, rew_out, terminated, info
 
     def get_observation_space(self):
         c = 1 if self.grayscale else 3

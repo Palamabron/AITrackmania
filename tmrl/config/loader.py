@@ -142,6 +142,25 @@ MAIN_CONFIG = MainConfig.model_validate(_RAW_CONFIG)
 CONFIG_VERSION = MAIN_CONFIG.schema_version
 
 
+def _log_resolved_config() -> None:
+    """Log the full resolved config (secrets redacted) before objects are built."""
+    d = MAIN_CONFIG.model_dump(mode="json")
+    for section_key in ("wandb", "distributed"):
+        section = d.get(section_key)
+        if isinstance(section, dict):
+            for secret in ("api_key", "password"):
+                if section.get(secret):
+                    section[secret] = "<redacted>"
+    logger.info(
+        "Resolved TMRL configuration (schema_version={}):\n{}",
+        CONFIG_VERSION,
+        yaml.safe_dump(d, sort_keys=False, default_flow_style=False),
+    )
+
+
+_log_resolved_config()
+
+
 def merged_config_snapshot_redacted() -> dict[str, Any]:
     """Post-merge config dict (Hydra + local.yaml + env), secrets stripped for archiving."""
     out = copy.deepcopy(_RAW_CONFIG)
@@ -254,8 +273,9 @@ def create_config() -> dict[str, Any]:
         "lr_critic": a.lr_critic,
         "lr_critic_divided_by_lr_actor": a.lr_critic / a.lr_actor if a.lr_actor else 0.0,
         "n_steps": a.n_steps,
-        "actor_weight_decay": a.actor_weight_decay,
-        "critic_weight_decay": a.critic_weight_decay,
+        "weight_decay": a.weight_decay,
+        "actor_weight_decay": a.weight_decay,
+        "critic_weight_decay": a.weight_decay,
         "clipping_weights": a.clipping_weights,
         "clip_weights_value": 1.0 if not a.clipping_weights else a.clip_weights_value,
         "points_number": POINTS_NUMBER,

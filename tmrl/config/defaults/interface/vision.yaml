@@ -1,0 +1,8 @@
+# @package _global_
+defaults:
+  - default
+  - _self_
+
+interface:
+  name: vision
+  _target_: tmrl.custom.interfaces.TM2020Interface.TM2020Interface

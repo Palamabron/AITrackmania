@@ -12,7 +12,7 @@ from typing import Any
 import numpy as np
 from loguru import logger
 
-import tmrl.config as cfg
+from tmrl.custom.memories.utils import configure_discrete_steer_bins
 from tmrl.util import collate_torch
 
 __docformat__ = "google"
@@ -155,7 +155,7 @@ class Memory(ABC):
 
         self.stat_test_return = 0.0
         self.stat_train_return = 0.0
-        self.stat_test_steps = 0
+        self.stat_test_steps = 0.0
         self.stat_train_steps = 0
         self.stat_test_finish_time = 0.0
         self.stat_test_finished_count = 0
@@ -365,17 +365,21 @@ class R2D2Memory(Memory, ABC):
         batch_size=256,
         dataset_path="",
         crc_debug=False,
+        rewards_index: int = 18,
+        r2d2_rewind: float = 0.5,
+        per_td_enabled: bool = False,
+        per_td_alpha: float = 0.6,
+        per_td_beta: float = 0.4,
+        per_td_eps: float = 1e-6,
+        r2d2_num_sequences: int = 0,
+        r2d2_sequence_length: int = 0,
+        player_runs_per_alpha: float = 0.0,
+        fog_decay_temperature: float = 0.0,
+        demo_min_batch_fraction: float = 0.0,
+        demo_max_batch_fraction: float = 1.0,
+        discrete_n_steer_bins: int = 0,
     ):
-        """
-        Args:
-            device (str): output tensors will be collated to this device
-            nb_steps (int): number of steps per round
-            sample_preprocessor (callable): can be used for data augmentation
-            memory_size (int): size of the circular buffer
-            batch_size (int): batch size of the output tensors
-            dataset_path (str): an offline dataset may be provided here to initialize the memory
-            crc_debug (bool): False usually, True when using CRC debugging of the pipeline
-        """
+        configure_discrete_steer_bins(discrete_n_steer_bins)
         super().__init__(
             memory_size=memory_size,
             batch_size=batch_size,
@@ -385,7 +389,7 @@ class R2D2Memory(Memory, ABC):
             crc_debug=crc_debug,
             device=device,
         )
-        self.rewards_index = 19 if cfg.USE_IMAGES else 18
+        self.rewards_index = rewards_index
         self.previous_episode = 0
         self.end_episodes_indices: list[int] = []
         self.chosen_episode = 0
@@ -397,13 +401,22 @@ class R2D2Memory(Memory, ABC):
         self.indices: list[int] = []
         self.cur_idx = 0
         self.batch_size = batch_size
-        self.rewind = cfg.R2D2_REWIND
+        self.rewind = r2d2_rewind
         assert 0.1 <= self.rewind <= 0.9, "R2D2 REWIND CONST SHOULD BE BETWEEN 0.1 AND 0.9"
         self.last_sample_demo_fraction = 0.0
         if not hasattr(self, "min_samples"):
             self.min_samples = 0
         self._episode_metadata_dirty = True
-        # Prioritized Experience Replay (TD-error): priority per buffer index
+        self.per_td_enabled = per_td_enabled
+        self.per_td_alpha = per_td_alpha
+        self.per_td_beta = per_td_beta
+        self.per_td_eps = per_td_eps
+        self.r2d2_num_sequences = r2d2_num_sequences
+        self.r2d2_sequence_length = r2d2_sequence_length
+        self.player_runs_per_alpha = player_runs_per_alpha
+        self.fog_decay_temperature = fog_decay_temperature
+        self.demo_min_batch_fraction = demo_min_batch_fraction
+        self.demo_max_batch_fraction = demo_max_batch_fraction
         self.priorities: list[float] = []
         self._last_per_is_weights: list[float] = []
         if len(self.data) > 0 and len(self.data[0]) > 0:
@@ -411,14 +424,14 @@ class R2D2Memory(Memory, ABC):
 
     def _extend_priorities(self, n: int) -> None:
         """Extend priorities for n new buffer entries (max of current or 1.0)."""
-        if not getattr(cfg, "PER_TD_ENABLED", False):
+        if not self.per_td_enabled:
             return
         max_p = max(self.priorities) if self.priorities else 1.0
         self.priorities.extend([max_p] * n)
 
     def _trim_priorities(self, to_trim: int) -> None:
         """Trim the first to_trim entries from priorities (after buffer trim)."""
-        if getattr(cfg, "PER_TD_ENABLED", False) and self.priorities and to_trim > 0:
+        if self.per_td_enabled and self.priorities and to_trim > 0:
             self.priorities = self.priorities[to_trim:]
 
     def clear(self) -> None:
@@ -434,9 +447,9 @@ class R2D2Memory(Memory, ABC):
 
     def update_priorities(self, indices: tuple[int, ...], td_errors: np.ndarray) -> None:
         """Update priorities for the given transition indices (item space) using TD errors."""
-        if not getattr(cfg, "PER_TD_ENABLED", False) or not self.priorities:
+        if not self.per_td_enabled or not self.priorities:
             return
-        eps = getattr(cfg, "PER_TD_EPS", 1e-6)
+        eps = self.per_td_eps
         td_flat = np.asarray(td_errors).flatten()
         min_samp = getattr(self, "min_samples", 0)
         for k, item in enumerate(indices):
@@ -448,11 +461,11 @@ class R2D2Memory(Memory, ABC):
 
     def _sample_indices_td_priority(self) -> tuple[int, ...] | None:
         """Sample indices with probability proportional to (sum of priorities)^PER_TD_ALPHA."""
-        if not getattr(cfg, "PER_TD_ENABLED", False) or not self.priorities:
+        if not self.per_td_enabled or not self.priorities:
             self._last_per_is_weights = []
             return None
-        num_seq = cfg.R2D2_NUM_SEQUENCES
-        seq_len = cfg.R2D2_SEQUENCE_LENGTH
+        num_seq = self.r2d2_num_sequences
+        seq_len = self.r2d2_sequence_length
         if num_seq <= 0 or seq_len <= 0 or num_seq * seq_len != self.batch_size:
             self._last_per_is_weights = []
             return None
@@ -465,8 +478,8 @@ class R2D2Memory(Memory, ABC):
         if max_item < seq_len - 1:
             self._last_per_is_weights = []
             return None
-        alpha = getattr(cfg, "PER_TD_ALPHA", 0.6)
-        eps = getattr(cfg, "PER_TD_EPS", 1e-6)
+        alpha = self.per_td_alpha
+        eps = self.per_td_eps
         prev_end_buf = -1
         valid_starts: list[tuple[int, int]] = []
         seq_weights: list[float] = []
@@ -494,7 +507,7 @@ class R2D2Memory(Memory, ABC):
         probs = [w / total_w for w in seq_weights]
         chosen = np.random.choice(len(valid_starts), size=num_seq, replace=True, p=probs)
         indices: list[int] = []
-        beta = float(cfg.PER_TD_BETA)
+        beta = float(self.per_td_beta)
         n_sequences = max(1, len(valid_starts))
         is_weights: list[float] = []
         # Normalize by max weight in batch to bound gradients; do not use mean/sum normalization.
@@ -625,8 +638,8 @@ class R2D2Memory(Memory, ABC):
         Sample B independent sequences of length L from different episodes (i.i.d.).
         Returns None if disabled; caller falls back to contiguous sampling.
         """
-        num_seq = cfg.R2D2_NUM_SEQUENCES
-        seq_len = cfg.R2D2_SEQUENCE_LENGTH
+        num_seq = self.r2d2_num_sequences
+        seq_len = self.r2d2_sequence_length
         if num_seq <= 0 or seq_len <= 0 or num_seq * seq_len != self.batch_size:
             return None
         self._refresh_episode_metadata()
@@ -636,7 +649,6 @@ class R2D2Memory(Memory, ABC):
         max_item = len(self) - 1
         if max_item < seq_len - 1:
             return None
-        # Episode boundaries in "item" space (get_transition(item)); item in [0, len(self)-1]
         prev_end_buf = -1
         episode_ranges = []
         episode_rewards = []
@@ -658,15 +670,14 @@ class R2D2Memory(Memory, ABC):
             weights = (
                 self.normalize_list(weights) if len(weights) > 1 else [1.0] * len(episode_ranges)
             )
-        per_alpha = getattr(cfg, "PLAYER_RUNS_PER_ALPHA", 0.0)
+        per_alpha = self.player_runs_per_alpha
         if per_alpha > 0:
             _eps = 1e-6
             weights = [(max(0.0, float(w)) + _eps) ** per_alpha for w in weights]
         if sum(weights) <= 0:
             weights = [1.0] * len(episode_ranges)
 
-        # FoG recency bias: weight episodes by recency (later episodes = more recent data)
-        fog_temp = float(cfg.FOG_DECAY_TEMPERATURE)
+        fog_temp = float(self.fog_decay_temperature)
         if fog_temp > 0 and len(episode_ranges) > 1:
             n_ep_total = len(episode_ranges)
             recency = np.array([i / max(1, n_ep_total - 1) for i in range(n_ep_total)])
@@ -691,7 +702,7 @@ class R2D2Memory(Memory, ABC):
         non_demo_eps = [i for i in range(n_ep) if not episode_is_demo[i]]
 
         # Enforce DEMO_MIN_BATCH_FRACTION: guarantee a floor of demo sequences
-        demo_min_frac = getattr(cfg, "DEMO_MIN_BATCH_FRACTION", 0.0)
+        demo_min_frac = self.demo_min_batch_fraction
         if demo_min_frac > 0 and demo_eps and non_demo_eps:
             min_demo_seqs = max(1, int(demo_min_frac * num_seq))
             current_demo = [j for j, ep in enumerate(ep_order) if episode_is_demo[ep]]
@@ -706,7 +717,7 @@ class R2D2Memory(Memory, ABC):
                         ep_order[pos] = random.choice(demo_eps)
 
         # Enforce DEMO_MAX_BATCH_FRACTION: cap demo sequences
-        demo_max_frac = getattr(cfg, "DEMO_MAX_BATCH_FRACTION", 1.0)
+        demo_max_frac = self.demo_max_batch_fraction
         if demo_max_frac < 1.0 and demo_eps:
             max_demo_seqs = max(1, int(demo_max_frac * num_seq))
             if non_demo_eps:
@@ -736,7 +747,7 @@ class R2D2Memory(Memory, ABC):
         Otherwise when R2D2_NUM_SEQUENCES and R2D2_SEQUENCE_LENGTH are set, samples
         B independent sequences of length L (by reward or uniformly).
         """
-        if getattr(cfg, "PER_TD_ENABLED", False):
+        if self.per_td_enabled:
             td_result = self._sample_indices_td_priority()
             if td_result is not None:
                 return td_result
@@ -778,7 +789,7 @@ class R2D2Memory(Memory, ABC):
                         if sum(self.reward_sums) > 0
                         else self.normalize_list(self.reward_sums)
                     )
-                    per_alpha = getattr(cfg, "PLAYER_RUNS_PER_ALPHA", 0.0)
+                    per_alpha = self.player_runs_per_alpha
                     if per_alpha > 0:
                         _eps = 1e-6
                         sampling_weights = [
@@ -869,7 +880,7 @@ class R2D2Memory(Memory, ABC):
                 raise RuntimeError("Cannot sample from empty replay memory")
             batch_size = min(self.batch_size, n)
             indices = tuple(random.sample(range(n), batch_size))
-        per_td = getattr(cfg, "PER_TD_ENABLED", False)
+        per_td = self.per_td_enabled
         is_weights = getattr(self, "_last_per_is_weights", [])
         batch = []
         for pos, idx in enumerate(indices):

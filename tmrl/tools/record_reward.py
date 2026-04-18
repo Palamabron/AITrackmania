@@ -3,6 +3,7 @@ import contextlib
 import os
 import pickle
 import threading
+from typing import Any
 
 # third-party imports
 import numpy as np
@@ -26,7 +27,7 @@ MIN_POSITIONS_FOR_RECORDING = 50
 
 
 def record_reward_dist(path_reward=PATH_REWARD, use_keyboard=False):
-    positions = []
+    position_rows: list[list[float]] = []
     client = TM2020OpenPlanetClient(port=9000, nb_floats=TQC_GRAB_DATA_NB_FLOATS)
     # When using keyboard, save to current directory so you can find the file easily.
     if use_keyboard:
@@ -72,37 +73,37 @@ def record_reward_dist(path_reward=PATH_REWARD, use_keyboard=False):
             # Keyboard mode: stop on Enter only; ignore "lap finished" to allow full lap.
             should_stop = early_stop or (terminated and not use_keyboard)
             if should_stop:
-                if len(positions) < MIN_POSITIONS_FOR_RECORDING:
+                if len(position_rows) < MIN_POSITIONS_FOR_RECORDING:
                     if early_stop:
                         # Ignore spurious/buffered Enter; keep recording until we have enough.
                         stop_requested = False
                     # Ignore "lap finished" when we have almost no data (game often sends at start).
-                    if use_keyboard and len(positions) == 0:
+                    if use_keyboard and len(position_rows) == 0:
                         logger.debug(
                             "Ignoring lap-finished signal with 0 positions; keep recording."
                         )
-                    elif use_keyboard and len(positions) != last_too_few_logged:
-                        last_too_few_logged = len(positions)
+                    elif use_keyboard and len(position_rows) != last_too_few_logged:
+                        last_too_few_logged = len(position_rows)
                         logger.warning(
-                            f"Too few positions ({len(positions)}). "
+                            f"Too few positions ({len(position_rows)}). "
                             f"Need at least {MIN_POSITIONS_FOR_RECORDING}. "
                             "Drive along the track, then press Enter here to stop."
                         )
                     continue
                 logger.info("Computing reward function checkpoints from captured positions...")
-                logger.info(f"Initial number of captured positions: {len(positions)}")
-                positions = np.array(positions)
+                logger.info(f"Initial number of captured positions: {len(position_rows)}")
+                positions = np.asarray(position_rows, dtype=np.float64)
 
-                final_positions = [positions[0]]
+                final_positions_list: list[Any] = [positions[0]]
                 dist_between_points = 1.05
                 j = 1
                 move_by = dist_between_points
-                pt1 = final_positions[-1]
+                pt1 = final_positions_list[-1]
                 while j < len(positions):
                     pt2 = positions[j]
                     pt, dst = line(pt1, pt2, move_by)
                     if pt is not None:  # a point was created
-                        final_positions.append(pt)  # add the point to the list
+                        final_positions_list.append(pt)  # add the point to the list
                         move_by = dist_between_points
                         pt1 = pt
                     else:  # we passed pt2 without creating a new point
@@ -110,7 +111,7 @@ def record_reward_dist(path_reward=PATH_REWARD, use_keyboard=False):
                         j += 1
                         move_by = dst  # remaining distance
 
-                final_positions = np.array(final_positions)
+                final_positions = np.asarray(final_positions_list, dtype=np.float64)
                 if len(final_positions) < 2:
                     logger.error(
                         f"Not enough distinct positions ({len(final_positions)}) for trajectory. "
@@ -136,7 +137,7 @@ def record_reward_dist(path_reward=PATH_REWARD, use_keyboard=False):
                     )
                 return
             else:
-                positions.append([data[3], data[4], data[5]])
+                position_rows.append([data[3], data[4], data[5]])
 
 
 def space_points(points):

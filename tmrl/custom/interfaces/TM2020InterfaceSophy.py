@@ -9,9 +9,9 @@ Sophy-like model architecture.
 import numpy as np
 from loguru import logger
 
-import tmrl.config as cfg
 from tmrl.custom.interfaces.TM2020Interface import TM2020Interface
 from tmrl.custom.utils.control_mouse import mouse_save_replay_tm20
+from tmrl.registry import INTERFACES
 
 # Openplanet GrabData plugin indices (positional data from self.client.retrieve_data())
 _IDX_CHECKPOINT = 0
@@ -36,6 +36,7 @@ _IDX_CRASHED = 18
 _IDX_GEAR = 19
 
 
+@INTERFACES.register("sophy")
 class TM2020InterfaceIMPALASophy(TM2020Interface):
     """
     Interface for TrackMania 2020 using a Sophy-like model architecture with IMPALA.
@@ -53,35 +54,16 @@ class TM2020InterfaceIMPALASophy(TM2020Interface):
         save_replays: bool | None = None,
         grayscale: bool = False,
         resize_to: tuple = (128, 64),
-        finish_reward=cfg.END_OF_TRACK_REWARD,
+        finish_reward: float = 0.0,
         constant_penalty: float = 0.05,
-        crash_penalty=cfg.CRASH_PENALTY,
-        checkpoint_reward=cfg.CHECKPOINT_REWARD,
-        lap_reward=cfg.LAP_REWARD,
+        crash_penalty: float = 0.0,
+        checkpoint_reward: float = 0.0,
+        lap_reward: float = 0.0,
         record_human: bool = False,
+        points_number: int = 5,
+        track_local_frame: bool = False,
         **kwargs,
     ):
-        """
-        Initializes the TM2020InterfaceIMPALASophy.
-
-        Args:
-            img_hist_len (int): Length of the image history. Defaults to 1.
-            gamepad (bool): Whether to use a gamepad for input. Defaults to False.
-            record (bool): Whether to record the session. Defaults to False.
-            save_replay (bool): Whether to save a replay. Defaults to False.
-            save_replays (bool, optional): Alias for save_replay. Defaults to None.
-            grayscale (bool): Whether to use grayscale images. Defaults to False.
-            resize_to (tuple): Dimensions to resize images to. Defaults to (128, 64).
-            finish_reward (float): Reward for finishing the track.
-                Defaults to cfg.END_OF_TRACK_REWARD.
-            constant_penalty (float): Constant penalty per step. Defaults to 0.05.
-            crash_penalty (float): Penalty for crashing. Defaults to cfg.CRASH_PENALTY.
-            checkpoint_reward (float): Reward for passing a checkpoint.
-                Defaults to cfg.CHECKPOINT_REWARD.
-            lap_reward (float): Reward for completing a lap. Defaults to cfg.LAP_REWARD.
-            record_human (bool): Whether to record human inputs. Defaults to False.
-            **kwargs: Additional keyword arguments for the parent class.
-        """
         if save_replays is not None:
             save_replay = save_replays
         super().__init__(
@@ -97,12 +79,12 @@ class TM2020InterfaceIMPALASophy(TM2020Interface):
             **kwargs,
         )
         self.record = record
-        self.window_interface = None
         self.cur_lap = 0
         self.cur_checkpoint = 0
         self.lap_reward = lap_reward
         self.checkpoint_reward = checkpoint_reward
-        self.points_number = cfg.POINTS_NUMBER
+        self.points_number = points_number
+        self.track_local_frame = track_local_frame
         # Spacing-based lookahead uses RewardFunction._points_number (trajectory length at load).
         # cfg.POINTS_NUMBER comes from the same file at import time but can theoretically differ
         # (e.g. reload / edge cases); mismatch breaks Tuple Box shapes vs get_track_info output and
@@ -183,13 +165,14 @@ class TM2020InterfaceIMPALASophy(TM2020Interface):
         Returns:
             list: A list of NumPy arrays forming the observation.
         """
+        assert self.reward_function is not None
         track_result = self.reward_function.get_track_info(pos, self.points_number)
         left_track = track_result[0]
         center_track = track_result[1]
         right_track = track_result[2]
         curvature_list = track_result[3] if len(track_result) == 4 else None
 
-        if bool(cfg.REWARD_CONFIG.get("track_local_frame", False)):
+        if self.track_local_frame:
             yaw = float(d["aim_yaw"][0])
             c, s = np.cos(yaw), np.sin(yaw)
             rot_matrix = np.array(((c, -s), (s, c)))
@@ -230,6 +213,7 @@ class TM2020InterfaceIMPALASophy(TM2020Interface):
         Returns:
             list: Raw data from the game client.
         """
+        assert self.client is not None
         data = self.client.retrieve_data()
         return data
 
@@ -240,6 +224,7 @@ class TM2020InterfaceIMPALASophy(TM2020Interface):
         Returns:
             tuple: A tuple containing (observation, reward, terminated, info).
         """
+        assert self.reward_function is not None
         data = self.grab_data()
         cur_cp = int(data[_IDX_CHECKPOINT])
         cur_lap = int(data[_IDX_LAP])
@@ -262,6 +247,7 @@ class TM2020InterfaceIMPALASophy(TM2020Interface):
             input_steer=float(data[_IDX_INPUT_STEER]),
             gear=float(data[_IDX_GEAR]),
         )
+        failure_counter_val = float(failure_counter)
 
         self.cur_checkpoint = cur_cp
         self.cur_lap = cur_lap
@@ -270,7 +256,7 @@ class TM2020InterfaceIMPALASophy(TM2020Interface):
 
         if end_of_track:
             terminated = True
-            failure_counter = 0.0
+            failure_counter_val = 0.0
             if self.save_replays:
                 mouse_save_replay_tm20(True)
 
@@ -279,14 +265,14 @@ class TM2020InterfaceIMPALASophy(TM2020Interface):
         if not self.is_crashed:
             self.crash_cooldown -= 1
 
-        total_obs = self._build_observation(d, race_progress, failure_counter, d["pos"])
+        total_obs = self._build_observation(d, race_progress, failure_counter_val, d["pos"])
         info = {"reward_sum": reward_sum, "end_of_track": bool(end_of_track)}
         if getattr(self.client, "_last_retrieve_invalid", False):
             terminated = True
             info["telemetry_invalid"] = True
         if getattr(self.client, "_last_retrieve_position_patched", False):
             info["position_patched"] = True
-        reward = np.float32(rew)
+        reward = np.float32(float(rew))
         return total_obs, reward, terminated, info
 
     def reset(self, seed=None, options=None):
@@ -308,6 +294,7 @@ class TM2020InterfaceIMPALASophy(TM2020Interface):
 
         d = self._parse_data(data)
 
+        assert self.reward_function is not None
         self.reward_function.reset()
 
         total_obs = self._build_observation(d, race_progress=0.0, failure_counter=0.0, pos=d["pos"])

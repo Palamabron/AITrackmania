@@ -10,7 +10,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.distributions.normal import Normal
 
-import tmrl.config as cfg
 from tmrl.actor import TorchActorModule
 from tmrl.custom.models.shared.base import (
     LOG_STD_MAX,
@@ -29,10 +28,10 @@ from tmrl.custom.models.shared.neural_network_blocks import (
 from tmrl.util import prod
 
 
-def _gnn_effnet_image_index(observation_space) -> int:
+def _gnn_effnet_image_index(observation_space, img_height: int = 64, img_width: int = 64) -> int:
     """Find the image observation index in a GNN-EffNet style observation space."""
     spaces = _obs_spaces_list(observation_space)
-    h, w = getattr(cfg, "IMG_HEIGHT", 64), getattr(cfg, "IMG_WIDTH", 64)
+    h, w = img_height, img_width
     for i, sp in enumerate(spaces):
         if hasattr(sp, "shape") and sp.shape is not None and len(sp.shape) >= 3:
             s = sp.shape

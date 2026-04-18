@@ -27,10 +27,11 @@ try:
 except ImportError:
     wandb = None  # type: ignore[assignment]
 
-import tmrl.config.constants as cfg
 from tmrl.custom.custom_algorithms._common import (
     _compute_n_step_return_and_bootstrap_mask,
     _tensor_to_scalar,
+    amp_setup,
+    autocast_context,
     sanitize_obs,
     sanitize_tensor,
     set_seed,
@@ -38,6 +39,7 @@ from tmrl.custom.custom_algorithms._common import (
 from tmrl.custom.models.discrete_actions.iqn_discrete_q_network import DQNActor, IQNQNetwork
 from tmrl.custom.utils.nn import copy_shared, no_grad
 from tmrl.custom.utils.optim import GradientStabilizer
+from tmrl.registry import ALGORITHMS
 from tmrl.training import TrainingAgent
 from tmrl.util import cached_property, wandb_monotonic_step
 
@@ -175,58 +177,85 @@ def _quantile_huber_loss(
     return loss.mean()
 
 
+def _signed_value_rescale(x: torch.Tensor, eps: float) -> torch.Tensor:
+    """Signed value transform used to tame large bootstrap targets."""
+    abs_x = x.abs()
+    return torch.sign(x) * (torch.sqrt(abs_x + 1.0) - 1.0) + eps * x
+
+
+@ALGORITHMS.register("IQN")
 @dataclass(eq=False)
 class IQNAgent(TrainingAgent):
     """IQN agent for discrete control with Double DQN and Dueling heads.
 
     Operates on a Discrete action space (single int index per step).
     The Q-network outputs quantile values for every action in one pass.
+
+    All hyperparameters are required constructor arguments — values must be
+    supplied explicitly by the config pipeline (no hidden numeric defaults).
     """
 
-    observation_space: Any = None
-    action_space: Any = None
-    device: str | None = None
+    observation_space: Any
+    action_space: Any
 
     # Architecture
-    hidden_dim: int = 256
-    num_blocks: int = 3
-    n_cos: int = 64
-    dueling: bool = True
-    n_actions: int = 78
+    hidden_dim: int
+    num_blocks: int
+    n_cos: int
+    dueling: bool
+    n_actions: int
 
     # IQN
-    n_quantiles_train: int = 64
-    n_quantiles_target: int = 64
-    n_quantiles_eval: int = 32
+    n_quantiles_train: int
+    n_quantiles_target: int
+    n_quantiles_eval: int
 
     # DQN
-    gamma: float = 0.99
-    lr: float = 1e-4
-    n_steps: int = 3
-    double_dqn: bool = True
-    target_update_freq: int = 1000
+    gamma: float
+    lr: float
+    n_steps: int
+    double_dqn: bool
+    target_update_freq: int
 
     # Epsilon-greedy: cosine | ramp | cosine_anneal | linear
-    epsilon_schedule_mode: str = "cosine"
-    epsilon_start: float = 1.0  # used at step 0; in ramp also defines first-cycle peak
-    epsilon_end: float = 0.005  # baseline (floor); for linear/cosine_anneal = floor
-    epsilon_decay_steps: float = 500000.0  # for "linear" and "cosine_anneal" only
-    epsilon_cosine_t0: float = 50000.0  # first cycle length (steps)
-    epsilon_cosine_tmult: float = 1.5  # each cycle is this much longer than previous
-    epsilon_cosine_decay: float = 0.8  # amplitude decay per cycle
-    epsilon_cosine_initial_amplitude: float = 0.1  # first cycle peak (cosine mode only)
-    epsilon_cosine_floor_fraction: float = 0.0  # last fraction of cycle at floor (0 = disabled)
-    # If > 0: last N steps of cycle at floor (overrides fraction)
-    epsilon_cosine_floor_steps: int = 0
+    epsilon_schedule_mode: str
+    epsilon_start: float
+    epsilon_end: float
+    epsilon_decay_steps: float
+    epsilon_cosine_t0: float
+    epsilon_cosine_tmult: float
+    epsilon_cosine_decay: float
+    epsilon_cosine_initial_amplitude: float
+    epsilon_cosine_floor_fraction: float
+    epsilon_cosine_floor_steps: int
 
     # Smooth exploration: hold random action this many steps (DQNActor)
-    explore_repeat_steps: int = 4
+    explore_repeat_steps: int
 
-    # Misc
-    weight_decay: float = 0.0
+    # Optimizer / regularisation
+    weight_decay: float
+    adam_eps: float
+    grad_clip: float
+    huber_kappa: float
+    use_value_rescaling: bool
+    value_rescaling_eps: float
+    soft_target_tau: float
+    log_target_stats: bool
 
     # EDER diversity filtering (0 = disabled)
-    eder_oversample_ratio: int = 0
+    eder_oversample_ratio: int
+
+    # Previously hidden globals — now explicit
+    iqn_n_steer_bins: int
+    reward_normalize_scale: float
+    backup_clip_range: float
+
+    # Mixed precision
+    mixed_precision: bool
+    mixed_precision_dtype: str
+
+    # Structural defaults (None = auto-detect)
+    device: str | None = None
 
     model_nograd = cached_property(lambda self: no_grad(copy_shared(self.model)))
 
@@ -249,7 +278,10 @@ class IQNAgent(TrainingAgent):
             self.model.parameters(),
             lr=self.lr,
             weight_decay=self.weight_decay,
-            eps=1e-8,
+            eps=float(self.adam_eps),
+        )
+        self.use_mixed_precision, self.amp_dtype, self.grad_scaler = amp_setup(
+            device, self.mixed_precision, self.mixed_precision_dtype
         )
 
         self._training_step = 0
@@ -258,7 +290,8 @@ class IQNAgent(TrainingAgent):
         logger.info(
             "IQNAgent: n_actions={}, dueling={}, double={}, n_steps={}, gamma={:.3f}, "
             "eps mode={}, decay_steps={}, t0={}, tmult={}, decay={}, init_amp={}, "
-            "floor_frac={}, floor_steps={}",
+            "floor_frac={}, floor_steps={}, huber_kappa={}, value_rescaling={}, "
+            "rescale_eps={}, soft_target_tau={}",
             self.n_actions,
             self.dueling,
             self.double_dqn,
@@ -272,6 +305,10 @@ class IQNAgent(TrainingAgent):
             self.epsilon_cosine_initial_amplitude,
             self.epsilon_cosine_floor_fraction,
             self.epsilon_cosine_floor_steps,
+            self.huber_kappa,
+            self.use_value_rescaling,
+            self.value_rescaling_eps,
+            self.soft_target_tau,
         )
         _obs = self.observation_space
         _obs_dim = (
@@ -280,10 +317,7 @@ class IQNAgent(TrainingAgent):
             else math.prod(_obs.shape or ())
         )
         logger.info(
-            "IQNAgent model fingerprint: POINTS_NUMBER={}, USE_RNN_MODEL={}, "
-            "observation_space total_dim={}",
-            cfg.POINTS_NUMBER,
-            cfg.USE_RNN_MODEL,
+            "IQNAgent model fingerprint: observation_space total_dim={}",
             _obs_dim,
         )
 
@@ -354,7 +388,7 @@ class IQNAgent(TrainingAgent):
         )
         # Share weights: copy state dict from the no-grad model
         wrapper.q_net.load_state_dict(actor.state_dict())
-        wrapper.epsilon = self._epsilon
+        wrapper.set_epsilon(self._epsilon)
         return wrapper
 
     _sanitize_tensor = staticmethod(sanitize_tensor)
@@ -399,7 +433,7 @@ class IQNAgent(TrainingAgent):
                 continuous_control_to_discrete_indices_batch,
             )
 
-            n_steer = int(cfg.IQN_N_STEER_BINS)
+            n_steer = int(self.iqn_n_steer_bins)
             _, table = build_yosh_action_table(n_steer=n_steer)
             idx = continuous_control_to_discrete_indices_batch(a.cpu().numpy(), table)
             a = torch.from_numpy(idx).to(device=a.device, dtype=torch.long)
@@ -422,7 +456,7 @@ class IQNAgent(TrainingAgent):
             actions = actions[keep]
             batch_size = target_k
 
-        reward_scale = float(cfg.REWARD_NORMALIZE_SCALE)
+        reward_scale = float(self.reward_normalize_scale)
         if reward_scale != 1.0 and reward_scale > 0:
             r = r / reward_scale
 
@@ -438,22 +472,29 @@ class IQNAgent(TrainingAgent):
             bootstrap_mask = 1.0 - d.squeeze(-1)
             gamma_n = self.gamma
 
-        tau = torch.rand(batch_size, self.n_quantiles_train, device=device)
-        current_quantiles, _ = self.model(o, tau=tau)
-        action_idx = repeat(actions, "b -> b n 1", n=self.n_quantiles_train)
-        current_q = current_quantiles.gather(2, action_idx).squeeze(2)
+        def autocast_ctx():
+            return autocast_context(self.use_mixed_precision, self.amp_dtype)
+
+        with autocast_ctx():
+            tau = torch.rand(batch_size, self.n_quantiles_train, device=device)
+            current_quantiles, _ = self.model(o, tau=tau)
+            action_idx = repeat(actions, "b -> b n 1", n=self.n_quantiles_train)
+            current_q = current_quantiles.gather(2, action_idx).squeeze(2)
 
         with torch.no_grad():
             tau_prime = torch.rand(batch_size, self.n_quantiles_target, device=device)
 
-            if self.double_dqn:
-                online_q_next = self.model.q_values(o2, n_quantiles=self.n_quantiles_eval)
-                next_actions = online_q_next.argmax(dim=-1)
-            else:
-                target_q_next = self.model_target.q_values(o2, n_quantiles=self.n_quantiles_eval)
-                next_actions = target_q_next.argmax(dim=-1)
+            with autocast_ctx():
+                if self.double_dqn:
+                    online_q_next = self.model.q_values(o2, n_quantiles=self.n_quantiles_eval)
+                    next_actions = online_q_next.argmax(dim=-1)
+                else:
+                    target_q_next = self.model_target.q_values(
+                        o2, n_quantiles=self.n_quantiles_eval
+                    )
+                    next_actions = target_q_next.argmax(dim=-1)
 
-            target_quantiles, _ = self.model_target(o2, tau=tau_prime)
+                target_quantiles, _ = self.model_target(o2, tau=tau_prime)
             next_action_idx = repeat(next_actions, "b -> b n 1", n=self.n_quantiles_target)
             next_q = target_quantiles.gather(2, next_action_idx).squeeze(2)
 
@@ -461,13 +502,35 @@ class IQNAgent(TrainingAgent):
                 rearrange(n_step_return, "b -> b 1")
                 + gamma_n * rearrange(bootstrap_mask, "b -> b 1") * next_q
             )
+            backup_clip = float(self.backup_clip_range)
+            if backup_clip > 0.0:
+                target = target.clamp(min=-backup_clip, max=backup_clip)
 
-        loss = _quantile_huber_loss(current_q, target, tau)
+        current_for_loss = current_q
+        target_for_loss = target
+        if self.use_value_rescaling:
+            current_for_loss = _signed_value_rescale(current_for_loss, self.value_rescaling_eps)
+            target_for_loss = _signed_value_rescale(target_for_loss, self.value_rescaling_eps)
+
+        loss = _quantile_huber_loss(
+            current_for_loss, target_for_loss, tau, kappa=self.huber_kappa
+        )
 
         self.optimizer.zero_grad()
-        loss.backward()
-        grad_norm = self._grad_stabilizer.step(self.model.parameters())
-        self.optimizer.step()
+        if self.use_mixed_precision:
+            self.grad_scaler.scale(loss).backward()
+            if self.grad_clip > 0.0:
+                self.grad_scaler.unscale_(self.optimizer)
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), float(self.grad_clip))
+            grad_norm = self._grad_stabilizer.step(self.model.parameters())
+            self.grad_scaler.step(self.optimizer)
+            self.grad_scaler.update()
+        else:
+            loss.backward()
+            if self.grad_clip > 0.0:
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), float(self.grad_clip))
+            grad_norm = self._grad_stabilizer.step(self.model.parameters())
+            self.optimizer.step()
 
         backbone = getattr(self.model, "backbone", None)
         if backbone is not None:
@@ -475,15 +538,20 @@ class IQNAgent(TrainingAgent):
             if isinstance(inner, SimbaV2Backbone):
                 inner.project_weights()
 
-        if self._training_step % self.target_update_freq == 0:
+        if self.soft_target_tau > 0.0:
+            tau_polyak = float(self.soft_target_tau)
+            with torch.no_grad():
+                for p_tgt, p_src in zip(
+                    self.model_target.parameters(), self.model.parameters(), strict=False
+                ):
+                    p_tgt.data.lerp_(p_src.data, tau_polyak)
+        elif self._training_step % self.target_update_freq == 0:
             self.model_target.load_state_dict(self.model.state_dict())
             for p in self.model_target.parameters():
                 p.requires_grad = False
 
         iqn_loss_scalar = _tensor_to_scalar(loss)
         ret = {
-            "losses/actor": 0.0,
-            "losses/critic": iqn_loss_scalar,
             "loss/iqn_loss": iqn_loss_scalar,
             "exploration/epsilon": eps,
             "q/mean_q": _tensor_to_scalar(current_q.mean()),
@@ -492,6 +560,16 @@ class IQNAgent(TrainingAgent):
             "debug/grad_ema_norm": self._grad_stabilizer.ema_norm,
             "train/step": self._training_step,
         }
+        if self.log_target_stats:
+            with torch.no_grad():
+                td_abs = (target.mean(dim=1) - current_q.mean(dim=1)).abs()
+                td_p95 = (
+                    torch.quantile(td_abs, 0.95) if td_abs.numel() > 1 else td_abs.max()
+                )
+                ret["q/target_mean"] = _tensor_to_scalar(target.mean())
+                ret["q/target_max"] = _tensor_to_scalar(target.max())
+                ret["debug/td_abs_mean"] = _tensor_to_scalar(td_abs.mean())
+                ret["debug/td_abs_p95"] = _tensor_to_scalar(td_p95)
 
         if wandb is not None and wandb.run is not None:
             wandb.log(ret, step=wandb_monotonic_step(self._training_step, wandb.run))

@@ -14,8 +14,10 @@ from tmrl.custom.memories.enums import (
     TMLidarProgressImagesObsField,
     TMLidarProgressObsField,
 )
+from tmrl.registry import MEMORIES
 
 
+@MEMORIES.register("lidar")
 class MemoryTMLidar(MemoryTM):
     """Replay memory for TrackMania with LIDAR observations."""
 
@@ -123,6 +125,7 @@ class MemoryTMLidar(MemoryTM):
         return self
 
 
+@MEMORIES.register("lidar_progress")
 class MemoryTMLidarProgress(MemoryTM):
     """Replay memory for TrackMania with LIDAR and progress observations."""
 
@@ -241,6 +244,7 @@ class MemoryTMLidarProgress(MemoryTM):
         return self
 
 
+@MEMORIES.register("lidar_progress_images")
 class MemoryTMLidarProgressImages(MemoryTM):
     """Replay memory for (speed, progress, lidar, images) observations."""
 

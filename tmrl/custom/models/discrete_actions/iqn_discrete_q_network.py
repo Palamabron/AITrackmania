@@ -12,14 +12,15 @@ The network outputs Q(s, a) for every discrete action in a single forward pass.
 """
 
 import math
+from typing import Any, cast
 
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-import tmrl.config as cfg
 from tmrl.actor import TorchActorModule
+from tmrl.registry import MODELS
 from tmrl.custom.models.hybrid_input.sophy import (
     _build_track_conv1d_branch,
     _build_track_gnn_branch,
@@ -63,6 +64,20 @@ class CosineEmbedding(nn.Module):
         return F.relu(self.linear(cos_features))
 
 
+_IQN_BACKBONE_KWARGS = frozenset({
+    "split_track_observation",
+    "track_encoder",
+    "use_rnn",
+    "rnn_hidden_size",
+    "api_layernorm",
+    "use_simbav2",
+    "r2d2_sequence_length",
+    "r2d2_burn_in",
+    "gnn_hidden",
+    "gnn_layers",
+})
+
+
 class IQNFeatureBackbone(nn.Module):
     """Shared feature extractor for the IQN Q-network.
 
@@ -77,12 +92,22 @@ class IQNFeatureBackbone(nn.Module):
         hidden_dim: int = 256,
         num_blocks: int = 3,
         n_cos: int = 64,
+        split_track_observation: bool = True,
+        track_encoder: str = "conv1d",
+        use_rnn: bool = False,
+        rnn_hidden_size: int | None = None,
+        api_layernorm: bool = False,
+        use_simbav2: bool = False,
+        r2d2_sequence_length: int = 0,
+        r2d2_burn_in: int = 0,
+        gnn_hidden: int = 64,
+        gnn_layers: int = 3,
     ):
         super().__init__()
+        self._r2d2_sequence_length = r2d2_sequence_length
+        self._r2d2_burn_in = r2d2_burn_in
         dim_obs = sum(math.prod(s for s in space.shape) for space in observation_space)
-        self._use_track_conv = (
-            getattr(cfg, "SPLIT_TRACK_OBSERVATION", True) and len(observation_space) > 1
-        )
+        self._use_track_conv = split_track_observation and len(observation_space) > 1
         if self._use_track_conv:
             dim_track_first = math.prod(observation_space[0].shape)
             if dim_track_first % 3 != 0:
@@ -92,11 +117,12 @@ class IQNFeatureBackbone(nn.Module):
             dim_track = math.prod(observation_space[0].shape)
             dim_physics = dim_obs - dim_track
             self._dim_track = dim_track
-            track_encoder_name = getattr(cfg, "TRACK_ENCODER", "conv1d")
-            if track_encoder_name == "spline_mlp":
+            if track_encoder == "spline_mlp":
                 self.track_conv = _build_track_spline_mlp_branch(dim_track, hidden_dim)
-            elif track_encoder_name == "gnn":
-                self.track_conv = _build_track_gnn_branch(dim_track, hidden_dim)
+            elif track_encoder == "gnn":
+                self.track_conv = _build_track_gnn_branch(
+                    dim_track, hidden_dim, gnn_hidden=gnn_hidden, gnn_layers=gnn_layers
+                )
             else:
                 self.track_conv = _build_track_conv1d_branch(dim_track, hidden_dim)
             self.physics_proj = nn.Sequential(
@@ -105,8 +131,8 @@ class IQNFeatureBackbone(nn.Module):
                 nn.SiLU(),
             )
             joint_dim = 2 * hidden_dim
-            self._use_rnn = bool(getattr(cfg, "USE_RNN_MODEL", False))
-            rnn_hidden = int(getattr(cfg, "RNN_HIDDEN_SIZE", hidden_dim))
+            self._use_rnn = bool(use_rnn)
+            rnn_hidden = int(rnn_hidden_size if rnn_hidden_size is not None else hidden_dim)
             self.rnn: nn.GRU | None
             if self._use_rnn:
                 self.rnn = nn.GRU(joint_dim, rnn_hidden, num_layers=1, batch_first=True)
@@ -120,11 +146,11 @@ class IQNFeatureBackbone(nn.Module):
             self._dim_track = 0
             self.rnn = None
             self._use_rnn = False
-            self.layernorm_api = nn.LayerNorm(dim_obs) if cfg.API_LAYERNORM else None
+            self.layernorm_api = nn.LayerNorm(dim_obs) if api_layernorm else None
             backbone_input_dim = dim_obs
 
         self.backbone: nn.Module
-        if getattr(cfg, "USE_SIMBAV2", False):
+        if use_simbav2:
             self.backbone = simba_v2_backbone(backbone_input_dim, hidden_dim, num_blocks)
         else:
             self.backbone = residual_mlp_backbone(backbone_input_dim, hidden_dim, num_blocks)
@@ -144,8 +170,8 @@ class IQNFeatureBackbone(nn.Module):
         if self.rnn is None:
             return joint
         batch_size = joint.shape[0]
-        seq_len = int(cfg.R2D2_SEQUENCE_LENGTH)
-        burn_in_len = int(cfg.R2D2_BURN_IN)
+        seq_len = self._r2d2_sequence_length
+        burn_in_len = self._r2d2_burn_in
 
         if seq_len > 0 and batch_size % seq_len == 0 and burn_in_len > 0 and burn_in_len < seq_len:
             num_seq = batch_size // seq_len
@@ -252,14 +278,17 @@ class IQNQNetwork(nn.Module):
         num_blocks: int = 3,
         n_cos: int = 64,
         dueling: bool = True,
+        **backbone_kwargs,
     ):
         super().__init__()
         self.n_actions = n_actions
+        bb_kw = {k: v for k, v in backbone_kwargs.items() if k in _IQN_BACKBONE_KWARGS}
         self.backbone = IQNFeatureBackbone(
             observation_space,
             hidden_dim=hidden_dim,
             num_blocks=num_blocks,
             n_cos=n_cos,
+            **bb_kw,
         )
         self.head: nn.Module
         if dueling:
@@ -307,6 +336,7 @@ class IQNQNetwork(nn.Module):
         return qv.mean(dim=1)
 
 
+@MODELS.register("dqn_actor")
 class DQNActor(TorchActorModule):
     """Actor for DQN rollout workers: wraps IQNQNetwork with epsilon-greedy.
 
@@ -326,6 +356,7 @@ class DQNActor(TorchActorModule):
         epsilon: float = 0.00005,
         n_quantiles_eval: int = 32,
         explore_repeat_steps: int = 1,
+        **backbone_kwargs,
     ):
         super().__init__(observation_space, action_space)
         self.q_net = IQNQNetwork(
@@ -335,6 +366,7 @@ class DQNActor(TorchActorModule):
             num_blocks=num_blocks,
             n_cos=n_cos,
             dueling=dueling,
+            **backbone_kwargs,
         )
         # Store epsilon as a buffer so it is included in state_dict and
         # survives save_to_bytes/load_from_bytes serialization.
@@ -346,12 +378,16 @@ class DQNActor(TorchActorModule):
         self._last_explore_action: np.ndarray | None = None
 
     @property
-    def epsilon(self):
-        return self._epsilon_buf.item()
+    def epsilon(self) -> float:
+        b = cast(Any, self._epsilon_buf)
+        scalars = b.detach().cpu().reshape(-1).tolist()
+        return float(scalars[0])
 
-    @epsilon.setter
-    def epsilon(self, value):
-        self._epsilon_buf.fill_(value)
+    def set_epsilon(self, value: float | int) -> None:
+        """Update exploration epsilon (buffer scalar; same semantics as former property setter)."""
+        b = cast(Any, self._epsilon_buf)
+        with torch.no_grad():
+            b.copy_(torch.tensor(float(value), dtype=b.dtype, device=b.device))
 
     def forward(self, observation, **kwargs):
         return self.q_net.q_values(observation, n_quantiles=self.n_quantiles_eval)

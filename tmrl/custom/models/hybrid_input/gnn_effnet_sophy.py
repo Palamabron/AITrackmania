@@ -13,7 +13,6 @@ import torch.nn.functional as F
 from torch.distributions.normal import Normal
 from torchrl.modules import NoisyLinear
 
-import tmrl.config as cfg
 from tmrl.actor import TorchActorModule
 from tmrl.custom.models.image_input.efficientnet import (
     _gnn_effnet_image_index,
@@ -30,6 +29,7 @@ from tmrl.custom.models.shared.neural_network_blocks import (
     residual_mlp_backbone,
 )
 from tmrl.custom.utils.nn import GSDEModule
+from tmrl.registry import MODELS
 from tmrl.util import prod
 
 _LOG2 = float(np.log(2.0))
@@ -76,13 +76,16 @@ class _TrackGNN(nn.Module):
         return cast(torch.Tensor, out.mean(dim=1))
 
 
-def _build_track_gnn_branch(dim_track: int, hidden_dim: int) -> nn.Module:
+def _build_track_gnn_branch(
+    dim_track: int,
+    hidden_dim: int,
+    gnn_hidden: int = 64,
+    gnn_layers: int = 3,
+) -> nn.Module:
     """Build a GNN-based track encoding branch."""
     assert dim_track >= 3, "track dim must be at least 3"
     assert dim_track % 3 == 0, "track dim must be 6*N (3 channels)"
     num_nodes = dim_track // 3
-    gnn_hidden = getattr(cfg, "GNN_HIDDEN", 64)
-    gnn_layers = getattr(cfg, "GNN_LAYERS", 3)
     gnn = _TrackGNN(
         num_nodes=num_nodes,
         in_dim=3,
@@ -136,6 +139,7 @@ class _GnnEffNetJointFeaturesMixin:
     _image_index: int
     _dim_track: int
     _use_rnn: bool
+    _r2d2_sequence_length: int
     track_gnn: nn.Module
     image_encoder: nn.Module
     img_proj: nn.Module
@@ -156,7 +160,7 @@ class _GnnEffNetJointFeaturesMixin:
     def _apply_rnn(self, joint: torch.Tensor, batch_size: int) -> torch.Tensor:
         if not self._use_rnn or self.rnn is None:
             return joint
-        seq_len = int(cfg.R2D2_SEQUENCE_LENGTH)
+        seq_len = int(self._r2d2_sequence_length)
         if seq_len > 0 and batch_size % seq_len == 0:
             num_seq = batch_size // seq_len
             joint = joint.view(num_seq, seq_len, -1)
@@ -171,6 +175,7 @@ class _GnnEffNetJointFeaturesMixin:
         return joint
 
 
+@MODELS.register("gnn_effnet_sophy_residual_actor")
 class SquashedActorGnnEffNetSophyResidual(_GnnEffNetJointFeaturesMixin, TorchActorModule):
     """Sophy-style actor with GNN track encoder, EfficientNet image encoder, and residual MLP."""
 
@@ -185,15 +190,22 @@ class SquashedActorGnnEffNetSophyResidual(_GnnEffNetJointFeaturesMixin, TorchAct
         variant: str = "xs",
         use_dw_stem: bool = False,
         use_frozen_effnet: bool = True,
-        seed: int = cfg.SEED,
+        seed: int = 42,
         use_sde: bool = False,
         log_std_init: float = -3.0,
         sde_clip_mean: float = 2.0,
+        use_rnn: bool = False,
+        rnn_hidden_size: int | None = None,
+        binary_brake: bool = False,
+        output_dropout: float = 0.0,
+        init_gas_bias: float = 0.0,
+        r2d2_sequence_length: int = 0,
     ):
         super().__init__(observation_space, action_space)
         torch.manual_seed(seed)
         self.use_sde = use_sde
         self._sde_clip_mean = sde_clip_mean
+        self._r2d2_sequence_length = r2d2_sequence_length
         spaces = _obs_spaces_list(observation_space)
         image_index = _gnn_effnet_image_index(observation_space)
         self._image_index = image_index
@@ -226,8 +238,8 @@ class SquashedActorGnnEffNetSophyResidual(_GnnEffNetJointFeaturesMixin, TorchAct
             nn.SiLU(),
         )
         joint_dim = hidden_dim + embed_dim + hidden_dim
-        self._use_rnn = getattr(cfg, "USE_RNN", False)
-        rnn_hidden = getattr(cfg, "RNN_HIDDEN_SIZE", hidden_dim)
+        self._use_rnn = use_rnn
+        rnn_hidden = rnn_hidden_size if rnn_hidden_size is not None else hidden_dim
         self.rnn: nn.GRU | None
         if self._use_rnn:
             self.rnn = nn.GRU(joint_dim, rnn_hidden, batch_first=True)
@@ -238,7 +250,7 @@ class SquashedActorGnnEffNetSophyResidual(_GnnEffNetJointFeaturesMixin, TorchAct
         self.layernorm_joint = nn.LayerNorm(backbone_input_dim)
         self.backbone = residual_mlp_backbone(backbone_input_dim, hidden_dim, num_blocks)
         self.head_proj = nn.Sequential(nn.Linear(hidden_dim, hidden_dim), nn.SiLU())
-        self._binary_brake = getattr(cfg, "BINARY_BRAKE", False) and dim_act >= 3
+        self._binary_brake = binary_brake and dim_act >= 3
         self.brake_logits_layer: nn.Linear | None
         if self._binary_brake:
             self._cont_dim = 2
@@ -257,10 +269,10 @@ class SquashedActorGnnEffNetSophyResidual(_GnnEffNetJointFeaturesMixin, TorchAct
             self.log_std_layer = nn.Linear(hidden_dim, self._cont_dim)
 
         self.act_limit = act_limit
-        self.dropout = nn.Dropout(cfg.OUTPUT_DROPOUT) if cfg.OUTPUT_DROPOUT > 0.0 else None
-        if dim_act > 0 and getattr(cfg, "INIT_GAS_BIAS", 0.0) != 0.0:
+        self.dropout = nn.Dropout(output_dropout) if output_dropout > 0.0 else None
+        if dim_act > 0 and init_gas_bias != 0.0:
             with torch.no_grad():
-                self.mu_layer.bias.data[0] = cfg.INIT_GAS_BIAS
+                self.mu_layer.bias.data[0] = init_gas_bias
 
     def reset_noise(self, batch_size: int = 1) -> None:
         """Sample new gSDE exploration matrix. No-op if gSDE is disabled."""
@@ -283,7 +295,9 @@ class SquashedActorGnnEffNetSophyResidual(_GnnEffNetJointFeaturesMixin, TorchAct
     _SQUASH_LOGPROB_CLAMP = 20.0
 
     def _policy_head_standard(self, out, mu, test, with_logprob):
-        log_std = self.log_std_layer(out).float()
+        log_std_layer = self.log_std_layer
+        assert log_std_layer is not None
+        log_std = log_std_layer(out).float()
         log_std = torch.clamp(log_std, LOG_STD_MIN, LOG_STD_MAX)
         std = torch.exp(log_std)
         pi_distribution = Normal(mu, std)
@@ -300,15 +314,17 @@ class SquashedActorGnnEffNetSophyResidual(_GnnEffNetJointFeaturesMixin, TorchAct
     def _policy_head_sde(self, out, mu, test, with_logprob):
         """Clamp pre-tanh mean to [-sde_clip_mean, sde_clip_mean] so actions never saturate.
         Forward still returns raw mu for mean_penalty gradient."""
+        sde = self.sde
+        assert sde is not None
         latent_sde = out.float()
         mu = mu.float()
         mu_clipped = torch.clamp(mu, -self._sde_clip_mean, self._sde_clip_mean)
-        variance = self.sde.get_variance(latent_sde)
-        pi_distribution = Normal(mu_clipped, torch.sqrt(variance + self.sde.epsilon))
+        variance = sde.get_variance(latent_sde)
+        pi_distribution = Normal(mu_clipped, torch.sqrt(variance + sde.epsilon))
         if test:
             pi_action = mu_clipped
         else:
-            noise = self.sde.get_noise(latent_sde)
+            noise = sde.get_noise(latent_sde)
             pi_action = mu_clipped + noise
         logp_pi = None
         if with_logprob:
@@ -334,7 +350,9 @@ class SquashedActorGnnEffNetSophyResidual(_GnnEffNetJointFeaturesMixin, TorchAct
         mu = self.mu_layer(out).float()
 
         if self._binary_brake:
-            brake_logits = self.brake_logits_layer(out).float()
+            brake_lin = self.brake_logits_layer
+            assert brake_lin is not None
+            brake_logits = brake_lin(out).float()
             if self.use_sde and self.sde is not None:
                 pi_cont, logp_cont, _ = self._policy_head_sde(out, mu, test, with_logprob)
             else:
@@ -373,6 +391,7 @@ class SquashedActorGnnEffNetSophyResidual(_GnnEffNetJointFeaturesMixin, TorchAct
             return res
 
 
+@MODELS.register("gnn_effnet_sophy_residual_critic")
 class QRCNNGnnEffNetSophyResidual(_GnnEffNetJointFeaturesMixin, nn.Module):
     """Sophy-style quantile regression critic with GNN, EfficientNet, and residual MLP."""
 
@@ -387,17 +406,24 @@ class QRCNNGnnEffNetSophyResidual(_GnnEffNetJointFeaturesMixin, nn.Module):
         variant: str = "xs",
         use_dw_stem: bool = False,
         use_frozen_effnet: bool = True,
-        seed: int = cfg.SEED,
+        seed: int = 42,
+        quantiles_number: int = 1,
+        use_rnn: bool = False,
+        rnn_hidden_size: int | None = None,
+        noisy_linear_critic: bool = False,
+        output_dropout: float = 0.0,
+        r2d2_sequence_length: int = 0,
     ):
         super().__init__()
         torch.manual_seed(seed)
+        self._r2d2_sequence_length = r2d2_sequence_length
         spaces = _obs_spaces_list(observation_space)
         image_index = _gnn_effnet_image_index(observation_space)
         self._image_index = image_index
         dim_track, dim_physics = _gnn_effnet_physics_dims(observation_space, image_index)
         self._dim_track = dim_track
         dim_act = action_space.shape[0]
-        self.num_quantiles = cfg.QUANTILES_NUMBER
+        self.num_quantiles = quantiles_number
 
         self.track_gnn = _build_track_gnn_branch(dim_track, hidden_dim)
         nb_channels_in = (
@@ -423,8 +449,8 @@ class QRCNNGnnEffNetSophyResidual(_GnnEffNetJointFeaturesMixin, nn.Module):
             nn.SiLU(),
         )
         joint_dim = hidden_dim + embed_dim + hidden_dim
-        self._use_rnn = getattr(cfg, "USE_RNN", False)
-        rnn_hidden = getattr(cfg, "RNN_HIDDEN_SIZE", hidden_dim)
+        self._use_rnn = use_rnn
+        rnn_hidden = rnn_hidden_size if rnn_hidden_size is not None else hidden_dim
         self.rnn: nn.GRU | None
         if self._use_rnn:
             self.rnn = nn.GRU(joint_dim, rnn_hidden, batch_first=True)
@@ -436,7 +462,7 @@ class QRCNNGnnEffNetSophyResidual(_GnnEffNetJointFeaturesMixin, nn.Module):
         self.backbone = residual_mlp_backbone(backbone_input_dim, hidden_dim, num_blocks)
         self.mlp_act = nn.Linear(hidden_dim + dim_act, hidden_dim)
         self.head_proj = nn.Sequential(nn.Linear(hidden_dim, hidden_dim), nn.SiLU())
-        if cfg.NOISY_LINEAR_CRITIC:
+        if noisy_linear_critic:
             self.model_out = NoisyLinear(
                 hidden_dim,
                 self.num_quantiles,
@@ -445,7 +471,7 @@ class QRCNNGnnEffNetSophyResidual(_GnnEffNetJointFeaturesMixin, nn.Module):
             )
         else:
             self.model_out = nn.Linear(hidden_dim, self.num_quantiles)
-        self.dropout = nn.Dropout(cfg.OUTPUT_DROPOUT) if cfg.OUTPUT_DROPOUT > 0.0 else None
+        self.dropout = nn.Dropout(output_dropout) if output_dropout > 0.0 else None
 
     def forward(self, observation, act):
         if isinstance(observation, (tuple, list)):
@@ -463,6 +489,7 @@ class QRCNNGnnEffNetSophyResidual(_GnnEffNetJointFeaturesMixin, nn.Module):
         return torch.squeeze(self.model_out(out), -1)
 
 
+@MODELS.register("gnn_effnet_sophy_residual_ac")
 class GnnEffNetSophyResidualActorCritic(nn.Module):
     """Complete actor-critic with GNN track + EffNet image + Sophy residual MLP."""
 
@@ -478,7 +505,7 @@ class GnnEffNetSophyResidualActorCritic(nn.Module):
         variant: str = "xs",
         use_dw_stem: bool = False,
         use_frozen_effnet: bool = True,
-        seed: int = cfg.SEED,
+        seed: int = 42,
         use_sde: bool = False,
         log_std_init: float = -3.0,
         sde_clip_mean: float = 2.0,

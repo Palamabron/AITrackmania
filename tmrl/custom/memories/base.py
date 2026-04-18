@@ -6,7 +6,9 @@ from typing import Any
 import numpy as np
 
 from tmrl.custom.memories.enums import BufferField, GenericField
+from tmrl.custom.memories.utils import configure_discrete_steer_bins
 from tmrl.memory import TorchMemory
+from tmrl.registry import MEMORIES
 
 
 def last_true_in_list(li: list[bool]) -> int | None:
@@ -30,6 +32,7 @@ def replace_hist_before_eoe(hist: list, eoe_idx_in_hist: int) -> None:
                 hist[i] = hist[i + 1]
 
 
+@MEMORIES.register("generic")
 class GenericTorchMemory(TorchMemory):
     """Generic torch-based memory for simple replay buffer scenarios."""
 
@@ -42,7 +45,9 @@ class GenericTorchMemory(TorchMemory):
         sample_preprocessor: Callable[..., Any] | None = None,
         crc_debug: bool = False,
         device: str = "cpu",
+        discrete_n_steer_bins: int = 0,
     ):
+        configure_discrete_steer_bins(discrete_n_steer_bins)
         super().__init__(
             memory_size=memory_size,
             batch_size=batch_size,
@@ -114,6 +119,7 @@ class GenericTorchMemory(TorchMemory):
         )
 
 
+@MEMORIES.register("tm_base")
 class MemoryTM(TorchMemory):
     """Base class for TrackMania replay memories with temporal structure."""
 
@@ -128,7 +134,9 @@ class MemoryTM(TorchMemory):
         sample_preprocessor: Callable[..., Any] | None = None,
         crc_debug: bool = False,
         device: str = "cpu",
+        discrete_n_steer_bins: int = 0,
     ):
+        configure_discrete_steer_bins(discrete_n_steer_bins)
         self.imgs_obs = imgs_obs
         self.act_buf_len = act_buf_len
         self.min_samples = max(self.imgs_obs, self.act_buf_len)

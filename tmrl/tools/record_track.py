@@ -48,7 +48,7 @@ def _filter_origin_points(positions: np.ndarray) -> np.ndarray:
 
 
 def record_track(path_track=cfg.TRACK_PATH_LEFT):
-    positions = []
+    position_rows: list[list[float]] = []
     client = TM2020OpenPlanetClient(port=9000, nb_floats=TQC_GRAB_DATA_NB_FLOATS)
     path = path_track
 
@@ -61,12 +61,12 @@ def record_track(path_track=cfg.TRACK_PATH_LEFT):
             data = client.retrieve_data(
                 sleep_if_empty=0.01
             )  # we need many points to build a smooth curve
-            length_m = _track_length_m(positions)
+            length_m = _track_length_m(position_rows)
             # Stop only when user presses Q (ignore game 'terminated')
             if keyboard.is_pressed("q"):
-                if len(positions) < MIN_POSITIONS_FOR_TRACK:
+                if len(position_rows) < MIN_POSITIONS_FOR_TRACK:
                     logger.warning(
-                        f"Too few positions ({len(positions)}). Drive the full track, "
+                        f"Too few positions ({len(position_rows)}). Drive the full track, "
                         f"then press Q. Need at least {MIN_POSITIONS_FOR_TRACK}."
                     )
                     continue
@@ -77,10 +77,8 @@ def record_track(path_track=cfg.TRACK_PATH_LEFT):
                     )
                     continue
                 logger.info("Computing reward function checkpoints from captured positions...")
-                logger.info(f"Initial number of captured positions: {len(positions)}")
-                positions = np.array(positions)
-
-                positions = _filter_origin_points(positions)
+                logger.info(f"Initial number of captured positions: {len(position_rows)}")
+                positions = _filter_origin_points(np.asarray(position_rows, dtype=np.float64))
 
                 length_after = _track_length_m(positions)
                 logger.info(
@@ -104,7 +102,7 @@ def record_track(path_track=cfg.TRACK_PATH_LEFT):
                 logger.info("All done")
                 return
             else:
-                positions.append([data[3], data[4], data[5]])
+                position_rows.append([data[3], data[4], data[5]])
         else:
             time.sleep(0.05)  # waiting for user to press E
 

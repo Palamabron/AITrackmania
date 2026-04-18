@@ -15,7 +15,7 @@ import threading
 import time
 from collections.abc import Callable, Generator
 from os.path import exists
-from typing import Any
+from typing import Any, cast
 
 import gymnasium
 import numpy as np
@@ -85,12 +85,13 @@ def _start_relay_windows_tcp(
     def run_server():
         from twisted.internet import reactor
 
-        _orig_run = reactor.run
+        _reactor = cast(Any, reactor)
+        _orig_run = _reactor.run
 
         def run_without_signals(install_signal_handlers=0):
             return _orig_run(installSignalHandlers=install_signal_handlers)
 
-        reactor.run = run_without_signals
+        _reactor.run = run_without_signals
         try:
             server.run()
         except Exception as e:
@@ -133,7 +134,7 @@ class Buffer:
         self.stat_train_return = 0.0
         self.stat_test_return = 0.0
         self.stat_train_steps = 0
-        self.stat_test_steps = 0
+        self.stat_test_steps = 0.0
         self.stat_test_finish_time = 0.0
         self.stat_test_finished_track = False
         self.stat_test_finished_count = 0
@@ -313,7 +314,8 @@ class Server:
             try:
                 from twisted.internet import reactor
 
-                reactor.callFromThread(reactor.stop)
+                _reactor = cast(Any, reactor)
+                _reactor.callFromThread(_reactor.stop)
             except Exception:
                 pass
             relay_thread_join_timeout = 5.0
@@ -1153,7 +1155,7 @@ class RolloutWorker:
             if terminated or truncated:
                 break
         self.buffer.stat_test_return = ret
-        self.buffer.stat_test_steps = steps
+        self.buffer.stat_test_steps = float(steps)
         if not train:
             dt = float(cfg.RTGYM_TIME_STEP_DURATION)
             end_of_track = saw_end_of_track or (

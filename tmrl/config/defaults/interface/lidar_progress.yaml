@@ -1,0 +1,10 @@
+# @package _global_
+defaults:
+  - default
+  - _self_
+
+interface:
+  name: lidar_progress
+  _target_: tmrl.custom.interfaces.TM2020InterfaceLidarProgress.TM2020InterfaceLidarProgress
+  img_hist_len: 1
+  gamepad: false

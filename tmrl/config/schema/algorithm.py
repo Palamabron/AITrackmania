@@ -10,8 +10,17 @@ from pydantic import BaseModel, ConfigDict, Field, PositiveInt, model_validator
 class AlgorithmConfig(BaseModel):
     """Trainer-specific optimization, exploration, and distributional RL knobs."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
+    hydra_target: str | None = Field(
+        default=None,
+        alias="_target_",
+        description=(
+            "Fully-qualified class path for the training agent. "
+            "Used by the registry for validation and forward-compatible "
+            "with hydra.utils.instantiate."
+        ),
+    )
     name: Literal["SAC", "TQC", "REDQSAC", "IQN", "SDSAC"] = Field(
         ...,
         description="Which learner class to construct (continuous SAC/TQC/REDQ or discrete IQN).",
@@ -76,23 +85,33 @@ class AlgorithmConfig(BaseModel):
     )
     r2d2_rewind: Annotated[float, Field(ge=0.0, le=1.0)] = Field(
         default=0.5,
-        description="Probability of temporal rewind augmentation for R2D2-style replay.",
+        description=(
+            "R2D2-style replay only (MTQC / TQCGRAB interfaces): temporal rewind augmentation "
+            "probability. Unused for LIDAR tuple memory."
+        ),
     )
     r2d2_num_sequences: int = Field(
         default=0,
         ge=0,
-        description="Parallel sequences per minibatch; 0 selects i.i.d. transition replay.",
+        description=(
+            "R2D2-style replay only: parallel sequences per minibatch; 0 uses i.i.d. transitions. "
+            "Unused for LIDAR tuple memory."
+        ),
     )
     r2d2_sequence_length: int = Field(
         default=0,
         ge=0,
-        description=("Time dimension L of each recurrent sequence; BxL should match batch layout."),
+        description=(
+            "R2D2-style replay only: sequence length L for recurrent / stacked batches. "
+            "IQN GNN+Lidar uses this only if USE_RNN_MODEL and batch layout matches."
+        ),
     )
     r2d2_burn_in: int = Field(
         default=0,
         ge=0,
         description=(
-            "Prefix timesteps without gradient for hidden-state warm-up in recurrent replay."
+            "R2D2-style replay / GRU path: burn-in prefix without full BPTT. "
+            "Unused for plain LIDAR MLP IQN."
         ),
     )
     optimizer_actor: str = Field(
@@ -111,13 +130,12 @@ class AlgorithmConfig(BaseModel):
         default=None,
         description="Optional (beta1, beta2) for Adam on the critic.",
     )
-    l2_actor: float | None = Field(
-        default=None,
-        description="Optional AdamW weight decay on actor weights.",
-    )
-    l2_critic: float | None = Field(
-        default=None,
-        description="Optional AdamW weight decay on critic weights.",
+    weight_decay: Annotated[float, Field(ge=0.0)] = Field(
+        default=0.0,
+        description=(
+            "Single optimizer weight decay (AdamW semantics when using adamw): applied to actor "
+            "and critic in SAC/TQC, to both SDSAC optimizers, and to the IQN Q-network. 0 disables."
+        ),
     )
     grad_clip_actor: Annotated[float, Field(ge=0.0)] = Field(
         default=1.0,
@@ -167,16 +185,6 @@ class AlgorithmConfig(BaseModel):
         default=1.0,
         description="Absolute bound used when clipping_weights is enabled.",
     )
-    actor_weight_decay: Annotated[float, Field(ge=0.0)] = Field(
-        default=0.0,
-        description=(
-            "Legacy L2 penalty coefficient applied via optimizer weight decay on the actor."
-        ),
-    )
-    critic_weight_decay: Annotated[float, Field(ge=0.0)] = Field(
-        default=0.0,
-        description="Legacy L2 penalty coefficient for critic parameters.",
-    )
     num_track_points: int = Field(
         default=0,
         ge=0,
@@ -200,7 +208,10 @@ class AlgorithmConfig(BaseModel):
     )
     adam_eps: Annotated[float, Field(gt=0.0)] = Field(
         default=1e-8,
-        description="Epsilon term stabilizing Adam denominator.",
+        description=(
+            "Adam epsilon (SAC via sac_config, TQC optimizers, IQN Q-network Adam). "
+            "REDQ-SAC uses its own hardcoded optimizers."
+        ),
     )
     bc_lambda: Annotated[float, Field(ge=0.0)] = Field(
         default=0.0,
@@ -296,12 +307,19 @@ class AlgorithmConfig(BaseModel):
     )
     fog_decay_temperature: Annotated[float, Field(gt=0.0)] = Field(
         default=3.0,
-        description="Gating temperature for future-observation dropout (FOG) regularization.",
+        description=(
+            "FoG (forgetful observation gating) episode bias in R2D2-style memory sampling "
+            "(tmrl.memory): >0 weights recent episodes; 0 disables. "
+            "No effect on LIDAR tuple replay."
+        ),
     )
     eder_oversample_ratio: int = Field(
         default=0,
         ge=0,
-        description="Extra oversampling factor for EDER-style data expansion when enabled.",
+        description=(
+            "IQN / SDSAC: batch diversity filter oversample ratio (>=2 enables EDER-style filter). "
+            "0 disables. Unused for SAC/TQC/REDQ."
+        ),
     )
     sdsac_avg_q: bool = Field(
         default=True,
@@ -394,6 +412,31 @@ class AlgorithmConfig(BaseModel):
     iqn_grad_clip: Annotated[float, Field(ge=0.0)] = Field(
         default=10.0,
         description="Global grad norm cap for IQN; set 0 to disable.",
+    )
+    iqn_huber_kappa: Annotated[float, Field(gt=0.0)] = Field(
+        default=1.0,
+        description="Huber threshold κ for IQN quantile regression.",
+    )
+    iqn_use_value_rescaling: bool = Field(
+        default=True,
+        description=(
+            "Apply signed value rescaling h(x) in IQN loss to damp large targets/TD errors."
+        ),
+    )
+    iqn_value_rescaling_eps: Annotated[float, Field(gt=0.0)] = Field(
+        default=1e-3,
+        description="Epsilon term in signed value rescaling h(x).",
+    )
+    iqn_soft_target_tau: Annotated[float, Field(ge=0.0, le=1.0)] = Field(
+        default=0.005,
+        description=(
+            "Polyak coefficient for IQN target network (set 0 to disable soft updates "
+            "and keep hard updates by iqn_target_update_freq)."
+        ),
+    )
+    iqn_log_target_stats: bool = Field(
+        default=True,
+        description="Log IQN target/TD distribution diagnostics to wandb.",
     )
     iqn_epsilon_cosine_initial_amplitude: Annotated[float, Field(ge=0.0, le=1.0)] = Field(
         default=0.1,

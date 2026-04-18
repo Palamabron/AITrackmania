@@ -5,36 +5,40 @@ from __future__ import annotations
 from typing import Any
 
 import rtgym
+from loguru import logger
 
 import tmrl.config.constants as cfg
 import tmrl.config.loader as loader
 import tmrl.config.paths as cfg_paths
-import tmrl.custom.models.image_input.impala as impala_module
-import tmrl.custom.models.hybrid_input.sophy as Sophy_models
+
+# Side-effect imports: trigger @register decorators for interfaces, memories, and models
+import tmrl.custom.custom_algorithms.iqn
+import tmrl.custom.custom_algorithms.redq_sac
+import tmrl.custom.custom_algorithms.sac
+import tmrl.custom.custom_algorithms.sdsac
+import tmrl.custom.custom_algorithms.tqc
+import tmrl.custom.interfaces.TM2020Interface
+import tmrl.custom.interfaces.TM2020InterfaceIMPALA
+import tmrl.custom.interfaces.TM2020InterfaceIMPALAwoImages
+import tmrl.custom.interfaces.TM2020InterfaceLidar
+import tmrl.custom.interfaces.TM2020InterfaceLidarImages
+import tmrl.custom.interfaces.TM2020InterfaceLidarProgress
+import tmrl.custom.interfaces.TM2020InterfaceSophy
+import tmrl.custom.interfaces.TM2020InterfaceTQC
+import tmrl.custom.interfaces.TM2020InterfaceTrackMap
+import tmrl.custom.interfaces.TM2020InterfaceTrackMapImages
+import tmrl.custom.memories.base
+import tmrl.custom.memories.r2d2
+import tmrl.custom.memories.tm_best
+import tmrl.custom.memories.tm_full
+import tmrl.custom.memories.tm_lidar
+import tmrl.custom.models.discrete_actions.iqn_discrete_q_network
+import tmrl.custom.models.hybrid_input.gnn_effnet_sophy
+import tmrl.custom.models.hybrid_input.sophy
+import tmrl.custom.models.image_input.impala  # noqa: F401
 from tmrl.config.schema.main import MainConfig
-from tmrl.custom.custom_algorithms import IQNAgent
-from tmrl.custom.custom_algorithms import REDQSACAgent as REDQ_Agent
-from tmrl.custom.custom_algorithms import SpinupSacAgent as SAC_Agent
-from tmrl.custom.custom_algorithms import TQCAgent as TQC_Agent
-from tmrl.custom.custom_algorithms.sdsac import SDSACAgent
 from tmrl.custom.custom_checkpoints import update_run_instance
-from tmrl.custom.interfaces.TM2020Interface import TM2020Interface
-from tmrl.custom.interfaces.TM2020InterfaceIMPALA import TM2020InterfaceIMPALA
-from tmrl.custom.interfaces.TM2020InterfaceLidar import TM2020InterfaceLidar
-from tmrl.custom.interfaces.TM2020InterfaceLidarImages import TM2020InterfaceLidarProgressImages
-from tmrl.custom.interfaces.TM2020InterfaceLidarProgress import TM2020InterfaceLidarProgress
-from tmrl.custom.interfaces.TM2020InterfaceSophy import TM2020InterfaceIMPALASophy
-from tmrl.custom.interfaces.TM2020InterfaceTQC import TM2020InterfaceTQC
-from tmrl.custom.interfaces.TM2020InterfaceTrackMap import TM2020InterfaceTrackMap
-from tmrl.custom.interfaces.TM2020InterfaceTrackMapImages import TM2020InterfaceTrackMapImages
 from tmrl.custom.memories import (
-    MemoryR2D2,
-    MemoryR2D2woImages,
-    MemoryTMBest,
-    MemoryTMFull,
-    MemoryTMLidar,
-    MemoryTMLidarProgress,
-    MemoryTMLidarProgressImages,
     get_local_buffer_sample_lidar,
     get_local_buffer_sample_lidar_progress,
     get_local_buffer_sample_lidar_progress_images,
@@ -57,11 +61,6 @@ from tmrl.custom.models import (
     VanillaCNNActorCritic,
     VanillaColorCNNActorCritic,
 )
-from tmrl.custom.models.discrete_actions.iqn_discrete_q_network import DQNActor
-from tmrl.custom.models.hybrid_input.sophy import (
-    SophyResidualActorCritic,
-    SquashedActorSophyResidual,
-)
 from tmrl.custom.tm.tm_preprocessors import (
     obs_preprocessor_lidar_progress_images_act_in_obs,
     obs_preprocessor_mobilenet_act_in_obs,
@@ -71,6 +70,7 @@ from tmrl.custom.tm.tm_preprocessors import (
     obs_preprocessor_tqcgrab_act_in_obs,
 )
 from tmrl.envs import GenericGymEnv
+from tmrl.registry import ALGORITHMS, INTERFACES, MEMORIES, MODELS
 from tmrl.training_offline import TorchTrainingOffline
 from tmrl.util import partial
 
@@ -119,6 +119,35 @@ def _validate_runtime_compatibility() -> None:
         )
 
 
+def _model_arch_kwargs() -> dict[str, Any]:
+    """Extract model architecture params from Pydantic ModelConfig for constructor injection."""
+    arch = model_cfg
+    _rnn_hidden = arch.rnn_hidden_size if arch.rnn_hidden_size > 0 else None
+    return {
+        "seed": 42,
+        "split_track_observation": arch.split_track_observation,
+        "track_encoder": arch.track_encoder,
+        "use_rnn": arch.use_rnn,
+        "rnn_hidden_size": _rnn_hidden,
+        "api_layernorm": arch.api_layernorm,
+        "mlp_layernorm": arch.mlp_layernorm,
+        "use_simbav2": arch.use_simbav2,
+        "output_dropout": arch.output_dropout,
+        "noisy_linear_critic": arch.noisy_linear_critic,
+        "noisy_linear_actor": arch.noisy_linear_actor,
+        "binary_brake": arch.binary_brake,
+        "gnn_hidden": arch.gnn_hidden,
+        "gnn_layers": arch.gnn_layers,
+        "r2d2_sequence_length": int(algorithm.r2d2_sequence_length),
+        "r2d2_burn_in": int(algorithm.r2d2_burn_in),
+        "quantiles_number": int(algorithm.quantiles_number),
+        "init_gas_bias": 0.0,
+        "rnn_sizes": list(arch.rnn_sizes),
+        "rnn_lens": list(arch.rnn_lens),
+        "rnn_dropout": arch.rnn_dropout,
+    }
+
+
 def _train_model_and_policy() -> tuple[Any, Any]:
     """Select (train_model_cls_or_partial, policy_partial) from model + algorithm.
 
@@ -128,6 +157,10 @@ def _train_model_and_policy() -> tuple[Any, Any]:
     alg = algorithm
     arch = model_cfg
     rtgym_iface = M.environment.rtgym_interface
+    _arch_kw = _model_arch_kwargs()
+
+    dqn_actor_cls = MODELS.get("dqn_actor")
+
     if cfg.PRAGMA_LIDAR:
         if ALG_NAME in ("IQN", "SDSAC"):
             iqn_kw = {
@@ -139,8 +172,9 @@ def _train_model_and_policy() -> tuple[Any, Any]:
                 "n_quantiles_eval": alg.iqn_num_quantiles_eval,
                 "epsilon": alg.iqn_epsilon_start,
                 "explore_repeat_steps": alg.iqn_explore_repeat_steps,
+                **_arch_kw,
             }
-            return None, partial(DQNActor, **iqn_kw)
+            return None, partial(dqn_actor_cls, **iqn_kw)
         if (cfg.PRAGMA_LIDAR_PROGRESS_IMAGES or cfg.PRAGMA_TRACKMAP_IMAGES) and ALG_NAME == "SAC":
             lidar_images_kw = {
                 "image_index": 3,
@@ -183,8 +217,9 @@ def _train_model_and_policy() -> tuple[Any, Any]:
                 "n_quantiles_eval": alg.iqn_num_quantiles_eval,
                 "epsilon": alg.iqn_epsilon_start,
                 "explore_repeat_steps": alg.iqn_explore_repeat_steps,
+                **_arch_kw,
             }
-            return None, partial(DQNActor, **iqn_kw)
+            return None, partial(dqn_actor_cls, **iqn_kw)
         if (
             cfg.USE_IMAGES
             and not cfg.USE_OBS_WORLD_TELEMETRY_LAYOUT
@@ -202,26 +237,98 @@ def _train_model_and_policy() -> tuple[Any, Any]:
                 partial(SquashedGaussianFrozenEffNetResidualActor, **frozen_effnet_kw),
             )
         if cfg.USE_IMAGES and not cfg.USE_OBS_WORLD_TELEMETRY_LAYOUT:
-            return impala_module.QRCNNActorCritic, impala_module.SquashedActorQRCNN
+            impala_ac_cls = MODELS.get("impala_ac")
+            impala_actor_cls = MODELS.get("impala_qr_actor")
+            _impala_kw = {
+                "rnn_sizes": list(arch.rnn_sizes),
+                "rnn_lens": list(arch.rnn_lens),
+                "api_mlp_sizes": list(arch.api_mlp_sizes),
+                "seed": 42,
+            }
+            return (
+                partial(impala_ac_cls, **_impala_kw),
+                partial(
+                    impala_actor_cls,
+                    **_impala_kw,
+                    **{
+                        k: _arch_kw[k]
+                        for k in (
+                            "api_layernorm",
+                            "mlp_layernorm",
+                            "output_dropout",
+                            "noisy_linear_actor",
+                            "rnn_dropout",
+                        )
+                    },
+                    grayscale=cfg.GRAYSCALE,
+                ),
+            )
         if (
             cfg.USE_OBS_WORLD_TELEMETRY_LAYOUT
             and not cfg.USE_IMAGES
             and arch.use_sophy_residual_actor
         ):
+            sophy_res_ac_cls = MODELS.get("sophy_residual_ac")
+            sophy_res_actor_cls = MODELS.get("sophy_residual_actor")
             res_sophy_kw = {
                 "hidden_dim": arch.residual_mlp_hidden_dim,
                 "num_blocks": arch.residual_mlp_num_blocks,
+                "seed": 42,
+            }
+            _actor_kw = {
+                **res_sophy_kw,
+                **{
+                    k: _arch_kw[k]
+                    for k in (
+                        "split_track_observation",
+                        "use_rnn",
+                        "rnn_hidden_size",
+                        "track_encoder",
+                        "api_layernorm",
+                        "binary_brake",
+                        "init_gas_bias",
+                        "output_dropout",
+                        "r2d2_sequence_length",
+                        "r2d2_burn_in",
+                        "use_simbav2",
+                        "gnn_hidden",
+                        "gnn_layers",
+                    )
+                },
             }
             return (
-                partial(SophyResidualActorCritic, **res_sophy_kw),
-                partial(SquashedActorSophyResidual, **res_sophy_kw),
+                partial(sophy_res_ac_cls, **res_sophy_kw),
+                partial(sophy_res_actor_cls, **_actor_kw),
             )
-        return Sophy_models.SophyActorCritic, Sophy_models.SquashedActorSophy
+        sophy_ac_cls = MODELS.get("sophy_ac")
+        sophy_actor_cls = MODELS.get("sophy_actor")
+        _sophy_kw = {
+            "rnn_sizes": list(arch.rnn_sizes),
+            "rnn_lens": list(arch.rnn_lens),
+            "api_mlp_sizes": list(arch.api_mlp_sizes),
+            "seed": 42,
+        }
+        return (
+            partial(sophy_ac_cls, **_sophy_kw),
+            partial(
+                sophy_actor_cls,
+                **_sophy_kw,
+                **{
+                    k: _arch_kw[k]
+                    for k in (
+                        "api_layernorm",
+                        "mlp_layernorm",
+                        "noisy_linear_actor",
+                        "output_dropout",
+                        "init_gas_bias",
+                    )
+                },
+            ),
+        )
 
     if cfg.PRAGMA_RNN:
         raise ValueError(
-            "Unsupported combination: PRAGMA_RNN=true with non-lidar interface "
-            f"{rtgym_iface!r}."
+            f"Unsupported combination: PRAGMA_RNN=true with non-lidar interface {rtgym_iface!r}."
         )
     if ALG_NAME != "SAC":
         raise ValueError(
@@ -238,82 +345,107 @@ _validate_runtime_compatibility()
 TRAIN_MODEL, POLICY = _train_model_and_policy()
 
 
-def _rtgym_interface_partial() -> Any:
+def _determine_interface_name() -> str:
+    """Derive the interface registry key from legacy PRAGMA flags."""
     if cfg.PRAGMA_LIDAR:
         if cfg.PRAGMA_TRACKMAP_IMAGES:
-            return partial(
-                TM2020InterfaceTrackMapImages,
-                img_hist_len=cfg.IMG_HIST_LEN,
-                gamepad=cfg.PRAGMA_GAMEPAD,
-                grayscale=cfg.GRAYSCALE,
-                resize_to=(cfg.IMG_WIDTH, cfg.IMG_HEIGHT),
-            )
+            return "trackmap_images"
         if cfg.PRAGMA_LIDAR_PROGRESS_IMAGES:
-            return partial(
-                TM2020InterfaceLidarProgressImages,
-                img_hist_len=cfg.IMG_HIST_LEN,
-                gamepad=cfg.PRAGMA_GAMEPAD,
-                grayscale=cfg.GRAYSCALE,
-                resize_to=(cfg.IMG_WIDTH, cfg.IMG_HEIGHT),
-            )
+            return "lidar_progress_images"
         if cfg.PRAGMA_PROGRESS:
-            return partial(
-                TM2020InterfaceLidarProgress,
-                img_hist_len=cfg.IMG_HIST_LEN,
-                gamepad=cfg.PRAGMA_GAMEPAD,
-            )
+            return "lidar_progress"
         if cfg.PRAGMA_TRACKMAP:
-            return partial(
-                TM2020InterfaceTrackMap,
-                img_hist_len=cfg.IMG_HIST_LEN,
-                gamepad=cfg.PRAGMA_GAMEPAD,
-            )
-        return partial(
-            TM2020InterfaceLidar,
-            img_hist_len=cfg.IMG_HIST_LEN,
-            gamepad=cfg.PRAGMA_GAMEPAD,
-        )
-
-    common_image = {
-        "img_hist_len": cfg.IMG_HIST_LEN,
-        "gamepad": cfg.PRAGMA_GAMEPAD,
-        "grayscale": cfg.GRAYSCALE,
-        "resize_to": (cfg.IMG_WIDTH, cfg.IMG_HEIGHT),
-    }
-    common_reward = {
-        "crash_penalty": cfg.CRASH_PENALTY,
-        "constant_penalty": cfg.CONSTANT_PENALTY,
-        "checkpoint_reward": cfg.CHECKPOINT_REWARD,
-        "lap_reward": cfg.LAP_REWARD,
-    }
+            return "trackmap"
+        return "lidar"
     if cfg.USE_OBS_WORLD_TELEMETRY_LAYOUT:
-        return partial(TM2020InterfaceTQC, **common_image, **common_reward)
+        return "tqc"
     if _USE_IMAGES_MOBILENET_PIPELINE:
         if cfg.USE_IMAGES:
-            return partial(TM2020InterfaceIMPALA, **common_image, **common_reward)
-        return partial(TM2020InterfaceIMPALASophy, **common_image, **common_reward)
-    return partial(TM2020Interface, **common_image)
+            return "impala"
+        return "sophy"
+    return "vision"
 
 
+def _rtgym_interface_partial() -> Any:
+    name = _determine_interface_name()
+    iface_cls = INTERFACES.get(name)
+    alg = algorithm
+
+    env = M.environment
+    _n_steer = int(alg.iqn_n_steer_bins) if ALG_NAME in ("IQN", "SDSAC") else 0
+
+    _rtgym_dt = float(env.rtgym.time_step_duration)
+
+    common: dict[str, Any] = {
+        "img_hist_len": cfg.IMG_HIST_LEN,
+        "gamepad": cfg.PRAGMA_GAMEPAD,
+        "reward_path": cfg_paths.REWARD_PATH,
+        "reward_check_forward": int(env.reward.check_forward),
+        "reward_check_backward": int(env.reward.check_backward),
+        "reward_max_stray": float(env.reward.max_stray),
+        "sleep_time_at_reset": float(env.sleep_time_at_reset),
+        "window_width": int(env.window_width),
+        "window_height": int(env.window_height),
+        "finish_reward": float(env.end_of_track_reward),
+        "discrete_n_steer_bins": _n_steer,
+        # Reward function params (passed through interface to RewardFunction)
+        "reward_config": env.reward.model_dump(),
+        "is_lidar": bool(cfg.PRAGMA_LIDAR),
+        "track_path_left": str(cfg_paths.TRACK_PATH_LEFT),
+        "track_path_right": str(cfg_paths.TRACK_PATH_RIGHT),
+        "time_step_duration": _rtgym_dt,
+        "points_distance": float(algorithm.points_distance),
+        "lap_cooldown": int(env.lap_cooldown),
+        "config_file_path": str(loader.CONFIG_FILE_PATH),
+        "use_wandb": bool(M.wandb.log_from_worker),
+        "wandb_project": str(M.wandb.project),
+        "wandb_entity": str(M.wandb.entity),
+        "wandb_run_id": str(M.run.name),
+        "wandb_api_key": str(M.wandb.api_key),
+        "wandb_config": loader.create_config(),
+    }
+
+    if name in ("trackmap_images", "lidar_progress_images"):
+        common["grayscale"] = cfg.GRAYSCALE
+        common["resize_to"] = (cfg.IMG_WIDTH, cfg.IMG_HEIGHT)
+
+    if name in ("impala", "impala_wo_images", "sophy", "tqc", "vision"):
+        common["grayscale"] = cfg.GRAYSCALE
+        common["resize_to"] = (cfg.IMG_WIDTH, cfg.IMG_HEIGHT)
+
+    if name in ("impala", "impala_wo_images", "sophy", "tqc"):
+        common["crash_penalty"] = float(env.crash_penalty)
+        common["constant_penalty"] = float(env.constant_penalty)
+        common["checkpoint_reward"] = float(env.checkpoint_reward)
+        common["lap_reward"] = float(env.lap_reward)
+        common["points_number"] = int(cfg.POINTS_NUMBER)
+
+    if name in ("sophy", "tqc"):
+        common["track_local_frame"] = bool(env.reward.track_local_frame)
+
+    if name == "tqc":
+        common["obs_speed_scale"] = float(cfg.OBS_SPEED_SCALE)
+        common["obs_track_scale"] = float(cfg.OBS_TRACK_SCALE)
+        common["min_steps_end_of_track"] = int(env.reward.min_steps)
+        common["min_episode_length_guaranteed"] = int(env.reward.min_episode_length_guaranteed)
+
+    return partial(iface_cls, **common)
+
+
+INTERFACE_NAME = _determine_interface_name()
 RTGYM_INTERFACE_CLASS = _rtgym_interface_partial()
+
+logger.info(
+    "Interface: registry_key={}, class={}, mixed_precision={}, mixed_precision_dtype={}",
+    INTERFACE_NAME,
+    RTGYM_INTERFACE_CLASS.func.__name__,
+    algorithm.mixed_precision,
+    algorithm.mixed_precision_dtype,
+)
 
 
 def _interface_display_name() -> str:
-    if cfg.PRAGMA_LIDAR:
-        if cfg.PRAGMA_TRACKMAP_IMAGES:
-            return "TrackMapImages"
-        if cfg.PRAGMA_LIDAR_PROGRESS_IMAGES:
-            return "LidarProgressImages"
-        if cfg.PRAGMA_PROGRESS:
-            return "LidarProgress"
-        if cfg.PRAGMA_TRACKMAP:
-            return "TrackMap"
-        return "Lidar"
-    if cfg.USE_OBS_WORLD_TELEMETRY_LAYOUT:
-        return "ImagesWorldTelemetry" if cfg.USE_IMAGES else "WorldTelemetry"
-    if _USE_IMAGES_MOBILENET_PIPELINE:
-        return "ImagesMobilenet" if cfg.USE_IMAGES else "ImagesMobilenetVector"
-    return "Full"
+    return INTERFACE_NAME
 
 
 INTERFACE_DISPLAY_NAME = _interface_display_name()
@@ -362,38 +494,67 @@ SAMPLE_PREPROCESSOR = None
 assert not cfg.PRAGMA_RNN, "RNNs not supported yet"
 
 
-def _pick_memory_class() -> type[Any]:
+def _determine_memory_name() -> str:
+    """Map PRAGMA flags to a MEMORIES registry key."""
+    explicit = M.memory.memory_type
+    if explicit != "auto":
+        return explicit
     if cfg.PRAGMA_LIDAR:
         if cfg.PRAGMA_LIDAR_PROGRESS_IMAGES or cfg.PRAGMA_TRACKMAP_IMAGES:
-            return MemoryTMLidarProgressImages
+            return "lidar_progress_images"
         if cfg.PRAGMA_PROGRESS:
-            return MemoryTMLidarProgress
-        return MemoryTMLidar
+            return "lidar_progress"
+        return "lidar"
     if cfg.USE_IMAGES_MOBILENET_PIPELINE:
-        return MemoryTMBest
+        return "best"
     if cfg.USE_IMAGES_R2D2_SEQUENCE_BUFFER:
-        return (
-            MemoryR2D2
-            if (cfg.USE_IMAGES and not cfg.USE_OBS_WORLD_TELEMETRY_LAYOUT)
-            else MemoryR2D2woImages
-        )
-    return MemoryTMFull
+        if cfg.USE_IMAGES and not cfg.USE_OBS_WORLD_TELEMETRY_LAYOUT:
+            return "r2d2"
+        return "r2d2_wo_images"
+    return "full"
 
 
-MEM = _pick_memory_class()
+_mem_name = _determine_memory_name()
+MEM = MEMORIES.get(_mem_name)
 
-MEMORY = partial(
-    MEM,
-    memory_size=cfg.MEMORY_SIZE,
-    batch_size=cfg.BATCH_SIZE,
-    sample_preprocessor=SAMPLE_PREPROCESSOR,
-    dataset_path=cfg_paths.DATASET_PATH,
-    imgs_obs=cfg.IMG_HIST_LEN,
-    act_buf_len=cfg.ACT_BUF_LEN,
-    crc_debug=cfg.CRC_DEBUG,
+_memory_kwargs: dict[str, Any] = {
+    "memory_size": cfg.MEMORY_SIZE,
+    "batch_size": cfg.BATCH_SIZE,
+    "sample_preprocessor": SAMPLE_PREPROCESSOR,
+    "dataset_path": cfg_paths.DATASET_PATH,
+    "imgs_obs": cfg.IMG_HIST_LEN,
+    "act_buf_len": cfg.ACT_BUF_LEN,
+    "crc_debug": cfg.CRC_DEBUG,
+    "discrete_n_steer_bins": int(algorithm.iqn_n_steer_bins) if ALG_NAME in ("IQN", "SDSAC") else 0,
+}
+
+_is_r2d2_memory = _mem_name.startswith("r2d2")
+if _is_r2d2_memory:
+    _memory_kwargs.update(
+        rewards_index=19 if cfg.USE_IMAGES else 18,
+        r2d2_rewind=float(cfg.R2D2_REWIND),
+        per_td_enabled=bool(cfg.PER_TD_ENABLED),
+        per_td_alpha=float(cfg.PER_TD_ALPHA),
+        per_td_beta=float(cfg.PER_TD_BETA),
+        per_td_eps=float(cfg.PER_TD_EPS),
+        r2d2_num_sequences=int(cfg.R2D2_NUM_SEQUENCES),
+        r2d2_sequence_length=int(cfg.R2D2_SEQUENCE_LENGTH),
+        player_runs_per_alpha=float(cfg.PLAYER_RUNS_PER_ALPHA),
+        fog_decay_temperature=float(cfg.FOG_DECAY_TEMPERATURE),
+        demo_min_batch_fraction=float(cfg.DEMO_MIN_BATCH_FRACTION),
+        demo_max_batch_fraction=float(cfg.DEMO_MAX_BATCH_FRACTION),
+    )
+
+MEMORY = partial(MEM, **_memory_kwargs)
+
+logger.info(
+    "Memory: registry_key={!r}, class={}, r2d2_params={}",
+    _mem_name,
+    MEM.__name__,
+    _is_r2d2_memory,
 )
 
-_device = "cuda" if cfg.CUDA_TRAINING else "cpu"
+_device = "cuda" if M.compute.cuda_training else "cpu"
 alg = algorithm
 _common_agent_kw = {
     "device": _device,
@@ -411,38 +572,90 @@ _common_agent_kw = {
 
 def _build_agent() -> Any:
     if ALG_NAME == "SAC":
+        sac_cls = ALGORITHMS.get("SAC")
+        _wd = float(alg.weight_decay)
         return partial(
-            SAC_Agent,
+            sac_cls,
             **_common_agent_kw,
             optimizer_actor=alg.optimizer_actor,
             optimizer_critic=alg.optimizer_critic,
             betas_actor=alg.betas_actor,
             betas_critic=alg.betas_critic,
-            l2_actor=alg.l2_actor,
-            l2_critic=alg.l2_critic,
+            l2_actor=_wd if _wd > 0.0 else None,
+            l2_critic=_wd if _wd > 0.0 else None,
+            debug_mode=M.debugger.debug_mode,
+            mixed_precision=bool(alg.mixed_precision),
+            mixed_precision_dtype=str(alg.mixed_precision_dtype),
         )
     if ALG_NAME == "TQC":
+        tqc_cls = ALGORITHMS.get("TQC")
+        _wd = float(alg.weight_decay)
+        sched = M.training.scheduler
         return partial(
-            TQC_Agent,
+            tqc_cls,
             **_common_agent_kw,
             top_quantiles_to_drop=alg.top_quantiles_to_drop,
             quantiles_number=alg.quantiles_number,
             n_steps=alg.n_steps,
+            actor_weight_decay=_wd,
+            critic_weight_decay=_wd,
+            adam_eps=float(alg.adam_eps),
+            betas_actor=alg.betas_actor,
+            betas_critic=alg.betas_critic,
+            entropy_schedule=str(alg.entropy_schedule),
+            entropy_floor=float(alg.entropy_floor),
+            entropy_cosine_t0=int(alg.entropy_cosine_t0),
+            entropy_cosine_tmult=float(alg.entropy_cosine_tmult),
+            entropy_cosine_decay=float(alg.entropy_cosine_decay),
+            reward_normalize_scale=float(alg.reward_normalize_scale),
+            backup_clip_range=float(alg.backup_clip_range),
+            grad_clip_actor=float(alg.grad_clip_actor),
+            grad_clip_critic=float(alg.grad_clip_critic),
+            weight_clipping_enabled=bool(alg.clipping_weights),
+            mean_penalty_coef=float(alg.mean_penalty_coef),
+            bc_lambda=float(alg.bc_lambda),
+            bc_lambda_start=float(alg.bc_lambda_start),
+            bc_lambda_end=float(alg.bc_lambda_end),
+            bc_anneal_steps_start=int(alg.bc_anneal_steps_start),
+            bc_anneal_steps_end=int(alg.bc_anneal_steps_end),
+            dynamic_truncation_enabled=bool(alg.dynamic_truncation_enabled),
+            dynamic_truncation_variance_pct=float(alg.dynamic_truncation_variance_pct),
+            vcse_enabled=bool(alg.vcse_enabled),
+            vcse_alpha_base=float(alg.vcse_alpha_base),
+            vcse_lambda=float(alg.vcse_lambda),
+            r2d2_burn_in=int(alg.r2d2_burn_in),
+            r2d2_sequence_length=int(alg.r2d2_sequence_length),
+            per_td_enabled=bool(alg.per_td_enabled),
+            wandb_debug=M.wandb.debug_reward,
+            wandb_gradients=M.wandb.log_gradients,
+            scheduler_name=str(sched.name or ""),
+            scheduler_t_0=int(sched.t_0),
+            scheduler_t_mult=int(sched.t_mult),
+            scheduler_eta_min=float(sched.eta_min),
+            scheduler_last_epoch=int(sched.last_epoch),
+            mixed_precision=bool(alg.mixed_precision),
+            mixed_precision_dtype=str(alg.mixed_precision_dtype),
         )
     if ALG_NAME == "REDQSAC":
+        redq_cls = ALGORITHMS.get("REDQSAC")
         return partial(
-            REDQ_Agent,
+            redq_cls,
             **_common_agent_kw,
             n=alg.redq_n,
             m=alg.redq_m,
             q_updates_per_policy_update=alg.redq_q_updates_per_policy_update,
+            weight_decay=float(alg.weight_decay),
+            mixed_precision=bool(alg.mixed_precision),
+            mixed_precision_dtype=str(alg.mixed_precision_dtype),
         )
     if ALG_NAME == "IQN":
+        iqn_cls = ALGORITHMS.get("IQN")
         return partial(
-            IQNAgent,
+            iqn_cls,
             device=_device,
             hidden_dim=model_cfg.residual_mlp_hidden_dim,
             num_blocks=model_cfg.residual_mlp_num_blocks,
+            n_actions=int(alg.iqn_n_actions),
             n_quantiles_train=alg.iqn_num_quantiles_train,
             n_quantiles_target=alg.iqn_num_quantiles_target,
             n_quantiles_eval=alg.iqn_num_quantiles_eval,
@@ -464,14 +677,32 @@ def _build_agent() -> Any:
             target_update_freq=alg.iqn_target_update_freq,
             double_dqn=alg.iqn_double_dqn,
             dueling=alg.iqn_dueling,
+            huber_kappa=float(alg.iqn_huber_kappa),
+            use_value_rescaling=bool(alg.iqn_use_value_rescaling),
+            value_rescaling_eps=float(alg.iqn_value_rescaling_eps),
+            soft_target_tau=float(alg.iqn_soft_target_tau),
+            log_target_stats=bool(alg.iqn_log_target_stats),
+            eder_oversample_ratio=int(alg.eder_oversample_ratio),
+            weight_decay=float(alg.weight_decay),
+            adam_eps=float(alg.adam_eps),
+            grad_clip=float(alg.iqn_grad_clip),
+            iqn_n_steer_bins=int(alg.iqn_n_steer_bins),
+            reward_normalize_scale=float(alg.reward_normalize_scale),
+            backup_clip_range=float(alg.backup_clip_range),
+            mixed_precision=bool(alg.mixed_precision),
+            mixed_precision_dtype=str(alg.mixed_precision_dtype),
         )
     if ALG_NAME == "SDSAC":
+        sdsac_cls = ALGORITHMS.get("SDSAC")
+        _nba = model_cfg.residual_mlp_num_blocks_actor
+        _nbc = model_cfg.residual_mlp_num_blocks_critic
+        _nb = model_cfg.residual_mlp_num_blocks
         return partial(
-            SDSACAgent,
+            sdsac_cls,
             device=_device,
             hidden_dim=model_cfg.residual_mlp_hidden_dim,
-            num_blocks_actor=cfg.RESIDUAL_MLP_NUM_BLOCKS_ACTOR,
-            num_blocks_critic=cfg.RESIDUAL_MLP_NUM_BLOCKS_CRITIC,
+            num_blocks_actor=_nba if _nba > 0 else _nb,
+            num_blocks_critic=_nbc if _nbc > 0 else _nb,
             n_cos=alg.iqn_n_cos,
             n_actions=alg.iqn_n_actions,
             gamma=alg.gamma,
@@ -488,7 +719,12 @@ def _build_agent() -> Any:
             use_entropy_penalty=alg.sdsac_entropy_penalty,
             entropy_penalty_beta=alg.sdsac_entropy_penalty_beta,
             eder_oversample_ratio=alg.eder_oversample_ratio,
-            weight_decay=alg.actor_weight_decay,
+            weight_decay=float(alg.weight_decay),
+            reward_normalize_scale=float(alg.reward_normalize_scale),
+            r2d2_burn_in=int(alg.r2d2_burn_in),
+            r2d2_sequence_length=int(alg.r2d2_sequence_length),
+            mixed_precision=bool(alg.mixed_precision),
+            mixed_precision_dtype=str(alg.mixed_precision_dtype),
         )
     raise ValueError(f"Unknown algorithm: {ALG_NAME}")
 
@@ -505,17 +741,17 @@ TRAINER = partial(
     TorchTrainingOffline,
     env_cls=ENV_CLS,
     memory_cls=MEMORY,
-    epochs=cfg.MAX_EPOCHS,
-    rounds=cfg.ROUNDS_PER_EPOCH,
-    steps=cfg.TRAINING_STEPS_PER_ROUND,
-    update_model_interval=cfg.UPDATE_MODEL_INTERVAL,
-    update_buffer_interval=cfg.UPDATE_BUFFER_INTERVAL,
-    max_training_steps_per_env_step=cfg.MAX_TRAINING_STEPS_PER_ENVIRONMENT_STEP,
-    python_profiling=cfg.PROFILE_TRAINER,
-    pytorch_profiling=cfg.PYTORCH_PROFILER,
+    epochs=M.training.max_epochs,
+    rounds=M.training.rounds_per_epoch,
+    steps=M.training.training_steps_per_round,
+    update_model_interval=M.training.update_model_interval,
+    update_buffer_interval=M.training.update_buffer_interval,
+    max_training_steps_per_env_step=M.training.max_training_steps_per_environment_step,
+    python_profiling=M.debugger.profile_trainer,
+    pytorch_profiling=M.debugger.pytorch_profiler,
     training_agent_cls=AGENT,
     agent_scheduler=None,
-    start_training=cfg.ENVIRONMENT_STEPS_BEFORE_TRAINING,
+    start_training=M.training.environment_steps_before_training,
 )
 
 DUMP_RUN_INSTANCE_FN = None

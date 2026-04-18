@@ -715,7 +715,7 @@ class SACTrainingAgent(TrainingAgent):
         """
         return self.model_nograd.actor
 
-    def train(self, batch):
+    def train(self, batch, epoch=None, batch_index=None, iters=None):
         """
         Executes a training iteration from batched training samples (batches of RL transitions).
 

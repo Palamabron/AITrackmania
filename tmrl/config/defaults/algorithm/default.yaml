@@ -24,8 +24,7 @@ algorithm:
   optimizer_critic: adam
   betas_actor: [0.9, 0.999]
   betas_critic: [0.9, 0.999]
-  l2_actor: 0.0
-  l2_critic: 0.0
+  weight_decay: 0.0
   grad_clip_actor: 1.0
   grad_clip_critic: 1.0
   backup_clip_range: 100.0
@@ -38,8 +37,6 @@ algorithm:
   vcse_alpha_base: 0.03
   clipping_weights: false
   clip_weights_value: 1.0
-  actor_weight_decay: 0.0
-  critic_weight_decay: 0.0
   num_track_points: 0
   points_distance: 0.0
   speed_bonus: 0.0

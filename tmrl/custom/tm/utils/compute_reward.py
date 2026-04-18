@@ -11,13 +11,11 @@ import os
 import pickle
 import shutil
 import tempfile
+from typing import Any
 
 import numpy as np
 from loguru import logger
 
-import tmrl.config as cfg
-import wandb
-from tmrl.config.loader import MAIN_CONFIG
 from tmrl.config.spacing_lookahead import points_number_from_spacing_config
 
 OFF_TRACK_PROGRESS_ZERO_MULTIPLIER = 2.0
@@ -112,6 +110,12 @@ def _resample_polyline_by_arc_length(points: np.ndarray, num_points: int) -> np.
     return np.array(result, dtype=np.float64)
 
 
+def _ensure_wandb_api_key(api_key: str) -> None:
+    """Set WANDB_API_KEY env var if not already present and a key was provided."""
+    if "WANDB_API_KEY" not in os.environ and api_key:
+        os.environ["WANDB_API_KEY"] = api_key
+
+
 class RewardFunction:
     """Reward and termination logic for TrackMania 2020 RL.
 
@@ -128,17 +132,29 @@ class RewardFunction:
         max_dist_from_traj: float = 23.5,
         crash_penalty: float = 10.0,
         constant_penalty: float = 0.0,
+        *,
+        # --- Track geometry ---
+        is_lidar: bool = False,
+        track_path_left: str = "",
+        track_path_right: str = "",
+        # --- Reward tuning (from RewardConfig.model_dump()) ---
+        reward_config: dict[str, Any] | None = None,
+        # --- Timing ---
+        time_step_duration: float = 0.05,
+        # --- Operational ---
+        points_distance: float = 1.0,
+        lap_cooldown: int = 0,
+        config_file_path: str = "",
+        # --- W&B logging ---
+        use_wandb: bool = False,
+        wandb_project: str = "tmrl",
+        wandb_entity: str = "tmrl",
+        wandb_run_id: str = "",
+        wandb_api_key: str = "",
+        wandb_config: dict[str, Any] | None = None,
     ) -> None:
-        """Initialize reward function with trajectory and config.
+        rc = reward_config or {}
 
-        Args:
-            reward_data_path: Path to the reference trajectory pickle file.
-            nb_obs_forward: Number of trajectory points to look forward for progress.
-            nb_obs_backward: Number of trajectory points to look backward (rewind check).
-            max_dist_from_traj: Max distance from trajectory before off-track failure.
-            crash_penalty: Penalty applied on crash event.
-            constant_penalty: Per-step penalty.
-        """
         self.reward_data_path = reward_data_path
         if not os.path.isfile(reward_data_path):
             raise FileNotFoundError(
@@ -151,30 +167,30 @@ class RewardFunction:
 
         self.datalen = len(self.data)
 
-        if cfg.PRAGMA_LIDAR:
-            if not os.path.isfile(cfg.TRACK_PATH_LEFT):
+        if is_lidar:
+            if not os.path.isfile(track_path_left):
                 raise FileNotFoundError(
-                    f"LIDAR requires left track boundary: missing {cfg.TRACK_PATH_LEFT}"
+                    f"LIDAR requires left track boundary: missing {track_path_left}"
                 )
-            if not os.path.isfile(cfg.TRACK_PATH_RIGHT):
+            if not os.path.isfile(track_path_right):
                 raise FileNotFoundError(
-                    f"LIDAR requires right track boundary: missing {cfg.TRACK_PATH_RIGHT}"
+                    f"LIDAR requires right track boundary: missing {track_path_right}"
                 )
-            with open(cfg.TRACK_PATH_LEFT, "rb") as f:
+            with open(track_path_left, "rb") as f:
                 self.left_track = np.asarray(pickle.load(f), dtype=np.float64)
-            with open(cfg.TRACK_PATH_RIGHT, "rb") as f:
+            with open(track_path_right, "rb") as f:
                 self.right_track = np.asarray(pickle.load(f), dtype=np.float64)
         else:
-            if not os.path.isfile(cfg.TRACK_PATH_LEFT):
+            if not os.path.isfile(track_path_left):
                 self.left_track = np.array([[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]])
             else:
-                with open(cfg.TRACK_PATH_LEFT, "rb") as f:
+                with open(track_path_left, "rb") as f:
                     self.left_track = np.asarray(pickle.load(f), dtype=np.float64)
 
-            if not os.path.isfile(cfg.TRACK_PATH_RIGHT):
+            if not os.path.isfile(track_path_right):
                 self.right_track = np.array([[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]])
             else:
-                with open(cfg.TRACK_PATH_RIGHT, "rb") as f:
+                with open(track_path_right, "rb") as f:
                     self.right_track = np.asarray(pickle.load(f), dtype=np.float64)
 
         self._has_boundaries = (
@@ -210,18 +226,15 @@ class RewardFunction:
         self.nb_obs_forward = nb_obs_forward
         self.nb_obs_backward = nb_obs_backward
 
-        self.max_dist_from_traj = float(cfg.REWARD_CONFIG.get("max_stray", max_dist_from_traj))
+        self.max_dist_from_traj = float(rc.get("max_stray", max_dist_from_traj))
 
-        # Single sim tick (seconds) from rtgym for grace + no-progress timeouts
-        rtgym = MAIN_CONFIG.environment.rtgym_config_dict()
-        raw_dt = float(rtgym.get("time_step_duration", 0.05))
+        raw_dt = float(time_step_duration)
         if raw_dt >= 1.0:
             self._time_step_duration = raw_dt / 1000.0
         else:
             self._time_step_duration = raw_dt
 
-        config_path = str(cfg.CONFIG_FILE_PATH)
-        no_prog_sec = float(cfg.REWARD_CONFIG.get("min_seconds_before_failure", 0.0))
+        no_prog_sec = float(rc.get("min_seconds_before_failure", 0.0))
         if no_prog_sec > 0.0:
             self._max_no_progress_steps = max(
                 1,
@@ -246,7 +259,7 @@ class RewardFunction:
                 no_prog_sec,
                 self._max_no_progress_steps,
                 self._time_step_duration,
-                config_path,
+                config_file_path,
             )
         else:
             self._max_no_progress_steps = 0
@@ -254,10 +267,10 @@ class RewardFunction:
             self._last_progress_step = 0
             logger.info(
                 "Reward: min_seconds_before_failure=0 → no stagnant-progress timeout. {}",
-                config_path,
+                config_file_path,
             )
 
-        _ot_grace_sec = float(cfg.REWARD_CONFIG.get("off_track_seconds_before_failure", 0.5))
+        _ot_grace_sec = float(rc.get("off_track_seconds_before_failure", 0.5))
         if _ot_grace_sec <= 0.0:
             self._off_track_grace_steps = 0
         else:
@@ -267,7 +280,7 @@ class RewardFunction:
             _ot_grace_sec,
             self._off_track_grace_steps,
             self._time_step_duration,
-            config_path,
+            config_file_path,
         )
 
         self.step_counter = 0
@@ -282,58 +295,51 @@ class RewardFunction:
             max(1.0, float(self._cumulative_dist[-1])) if self.datalen >= 1 else 1.0
         )
 
-        self._progress_reward_full_lap = float(
-            cfg.REWARD_CONFIG.get("progress_reward_full_lap", 200.0)
-        )
-        self._speed_reward_weight = float(cfg.REWARD_CONFIG.get("speed_reward_weight", 0.25))
-        self._speed_reward_exponent = float(cfg.REWARD_CONFIG.get("speed_reward_exponent", 1.0))
-        self._speed_reward_alignment_floor = float(
-            cfg.REWARD_CONFIG.get("speed_reward_alignment_floor", 0.0)
-        )
-        self._max_speed_kmh = float(cfg.REWARD_CONFIG.get("max_speed_kmh", 100.0))
-        self._constant_penalty = float(cfg.REWARD_CONFIG.get("constant_penalty", constant_penalty))
-        self._drift_reward_weight = float(cfg.REWARD_CONFIG.get("drift_reward_weight", 0.0))
-        self._drift_optimal_angle_deg = float(
-            cfg.REWARD_CONFIG.get("drift_optimal_angle_deg", 12.0)
-        )
-        self._drift_sigma_deg = float(cfg.REWARD_CONFIG.get("drift_sigma_deg", 8.0))
-        self._drift_threshold_kmh = float(cfg.REWARD_CONFIG.get("drift_threshold_kmh", 80.0))
-        self._max_track_width = float(cfg.REWARD_CONFIG.get("max_track_width", 35.0))
-        self.crash_penalty = float(cfg.REWARD_CONFIG.get("crash_penalty", 2.0))
-        self._reward_clip_floor = float(cfg.REWARD_CONFIG.get("reward_clip_floor", 5.0))
-        self._reward_scale = float(cfg.REWARD_CONFIG.get("reward_scale", 1.0))
-        self._end_of_track_reward = float(cfg.REWARD_CONFIG.get("end_of_track_reward", 10.0))
-        self._track_curvature_obs = bool(cfg.REWARD_CONFIG.get("track_curvature_obs", False))
-        self._progress_min_alignment = float(cfg.REWARD_CONFIG.get("progress_min_alignment", 0.0))
+        self._progress_reward_full_lap = float(rc.get("progress_reward_full_lap", 200.0))
+        self._speed_reward_weight = float(rc.get("speed_reward_weight", 0.25))
+        self._speed_reward_exponent = float(rc.get("speed_reward_exponent", 1.0))
+        self._speed_reward_alignment_floor = float(rc.get("speed_reward_alignment_floor", 0.0))
+        self._max_speed_kmh = float(rc.get("max_speed_kmh", 100.0))
+        self._constant_penalty = float(rc.get("constant_penalty", constant_penalty))
+        self._drift_reward_weight = float(rc.get("drift_reward_weight", 0.0))
+        self._drift_optimal_angle_deg = float(rc.get("drift_optimal_angle_deg", 12.0))
+        self._drift_sigma_deg = float(rc.get("drift_sigma_deg", 8.0))
+        self._drift_threshold_kmh = float(rc.get("drift_threshold_kmh", 80.0))
+        self._max_track_width = float(rc.get("max_track_width", 35.0))
+        self.crash_penalty = float(rc.get("crash_penalty", 2.0))
+        self._reward_clip_floor = float(rc.get("reward_clip_floor", 5.0))
+        self._reward_scale = float(rc.get("reward_scale", 1.0))
+        self._end_of_track_reward = float(rc.get("end_of_track_reward", 10.0))
+        self._track_curvature_obs = bool(rc.get("track_curvature_obs", False))
+        self._progress_min_alignment = float(rc.get("progress_min_alignment", 0.0))
         self._velocity_alignment_reward_weight = float(
-            cfg.REWARD_CONFIG.get("velocity_alignment_reward_weight", 0.0)
+            rc.get("velocity_alignment_reward_weight", 0.0)
         )
-        self._barrier_touch_penalty = float(cfg.REWARD_CONFIG.get("barrier_touch_penalty", 0.0))
-        self._barrier_touch_radius = float(cfg.REWARD_CONFIG.get("barrier_touch_radius", 0.25))
-        self._barrier_touch_min_speed_kmh = float(
-            cfg.REWARD_CONFIG.get("barrier_touch_min_speed_kmh", 5.0)
-        )
+        self._barrier_touch_penalty = float(rc.get("barrier_touch_penalty", 0.0))
+        self._barrier_touch_radius = float(rc.get("barrier_touch_radius", 0.25))
+        self._barrier_touch_min_speed_kmh = float(rc.get("barrier_touch_min_speed_kmh", 5.0))
 
         self._drift_weight_start = float(
-            cfg.REWARD_CONFIG.get("drift_reward_weight_start", self._drift_reward_weight)
+            rc.get("drift_reward_weight_start", self._drift_reward_weight)
         )
-        self._drift_weight_end = float(cfg.REWARD_CONFIG.get("drift_reward_weight_end", 0.0))
-        self._drift_anneal_steps = int(cfg.REWARD_CONFIG.get("drift_anneal_steps", 0))
+        self._drift_weight_end = float(rc.get("drift_reward_weight_end", 0.0))
+        self._drift_anneal_steps = int(rc.get("drift_anneal_steps", 0))
         self._global_env_steps: int = 0
 
         self._term_reason: str | None = None
-        self.lap_cur_cooldown = cfg.LAP_COOLDOWN
+        self._lap_cooldown_init = lap_cooldown
+        self.lap_cur_cooldown = lap_cooldown
         self.new_lap = False
         self.episode_reward = 0.0
         self.furthest_race_progress = 0.0
         self.furthest_reached_idx = 0
         self._logged_run_this_episode = False
-        self._use_wandb = getattr(cfg, "WANDB_WORKER", True)
+        self._use_wandb = use_wandb
         self._checkpoint_stride = max(
-            1, min(len(self.data), int(cfg.POINTS_DISTANCE / max(self.average_distance, 0.01)))
+            1, min(len(self.data), int(points_distance / max(self.average_distance, 0.01)))
         )
-        _track_pct = float(cfg.REWARD_CONFIG.get("track_look_ahead_pct", 0.0))
-        _track_spacing = float(cfg.REWARD_CONFIG.get("track_point_spacing_m", 0.0))
+        _track_pct = float(rc.get("track_look_ahead_pct", 0.0))
+        _track_spacing = float(rc.get("track_point_spacing_m", 0.0))
         self._points_number: int | None
         if _track_pct > 0 and _track_spacing > 0 and self.datalen > 1:
             self._points_number = points_number_from_spacing_config(
@@ -344,21 +350,23 @@ class RewardFunction:
             self._point_spacing_m = 0.0
             self._points_number = None
 
-        self._debug_reward = bool(cfg.REWARD_CONFIG.get("debug_reward_components", False))
-        self._debug_log_interval = int(cfg.REWARD_CONFIG.get("debug_log_interval", 100))
+        self._debug_reward = bool(rc.get("debug_reward_components", False))
+        self._debug_log_interval = int(rc.get("debug_log_interval", 100))
         self.prev_pos: np.ndarray | None = None
         self._reset_debug_accumulators()
 
         if self._use_wandb:
+            import wandb
+
             wandb_dir = tempfile.mkdtemp()
             atexit.register(shutil.rmtree, wandb_dir, ignore_errors=True)
-            cfg.ensure_wandb_api_key()
+            _ensure_wandb_api_key(wandb_api_key)
             try:
                 wandb.init(
-                    project=cfg.WANDB_PROJECT,
-                    entity=cfg.WANDB_ENTITY,
-                    id=cfg.WANDB_RUN_ID + " WORKER",
-                    config=cfg.create_config(),
+                    project=wandb_project,
+                    entity=wandb_entity,
+                    id=wandb_run_id + " WORKER",
+                    config=wandb_config or {},
                     job_type="worker",
                     dir=wandb_dir,
                 )
@@ -366,7 +374,7 @@ class RewardFunction:
                 logger.warning(f"wandb error: {exc}")
 
     def get_n_next_checkpoints_xy(
-        self, position: list[float], number_of_next_points: int
+        self, position: list[float] | np.ndarray, number_of_next_points: int
     ) -> list[float]:
         """Next N checkpoint (x, z) coordinates relative to position, scaled by 10.
 
@@ -404,7 +412,7 @@ class RewardFunction:
         return best_index, min_dist
 
     def get_track_info(
-        self, position: list[float], points_number: int
+        self, position: list[float] | np.ndarray, points_number: int
     ) -> (
         tuple[list[float], list[float], list[float]]
         | tuple[list[float], list[float], list[float], list[float]]
@@ -749,6 +757,8 @@ class RewardFunction:
                 self._log_episode_debug_summary()
 
             if self._use_wandb:
+                import wandb
+
                 self._episode_count = getattr(self, "_episode_count", 0) + 1
                 log_dict: dict[str, float | int | str] = {
                     "run/reward": self.episode_reward,
@@ -781,7 +791,7 @@ class RewardFunction:
         self._term_reason = None
         self.episode_reward = 0.0
         self.new_lap = False
-        self.lap_cur_cooldown = cfg.LAP_COOLDOWN
+        self.lap_cur_cooldown = self._lap_cooldown_init
         self.furthest_race_progress = 0.0
         self._logged_run_this_episode = False
         self.prev_pos = None

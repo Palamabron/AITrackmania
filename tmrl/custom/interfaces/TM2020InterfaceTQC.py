@@ -2,14 +2,15 @@ import cv2
 import numpy as np
 from gymnasium import spaces
 
-import tmrl.config as cfg
 from tmrl.custom.interfaces.TM2020InterfaceSophy import TM2020InterfaceIMPALASophy
 from tmrl.custom.tm.utils.tools import TM2020OpenPlanetClient
+from tmrl.registry import INTERFACES
 
 TQC_GRAB_NB_FLOATS = 20
 _DEFAULT_MIN_STEPS_END_OF_TRACK = 50
 
 
+@INTERFACES.register("tqc")
 class TM2020InterfaceTQC(TM2020InterfaceIMPALASophy):
     """
     Interface for TrackMania 2020 using the TQC_GrabData plugin.
@@ -18,10 +19,23 @@ class TM2020InterfaceTQC(TM2020InterfaceIMPALASophy):
     and processes the 20-float data packets into observations for the RL agent.
     """
 
+    def __init__(
+        self,
+        obs_speed_scale: float = 1.0,
+        obs_track_scale: float = 1.0,
+        min_steps_end_of_track: int = 50,
+        min_episode_length_guaranteed: int = 100,
+        **kwargs,
+    ):
+        super().__init__(**kwargs)
+        self.obs_speed_scale = obs_speed_scale
+        self.obs_track_scale = obs_track_scale
+        self.min_steps_end_of_track = max(
+            _DEFAULT_MIN_STEPS_END_OF_TRACK, min_steps_end_of_track
+        )
+        self.min_episode_length_guaranteed = min_episode_length_guaranteed
+
     def initialize_common(self):
-        """
-        Initializes the common components of the interface, including the game client.
-        """
         self.client = TM2020OpenPlanetClient(port=9000, nb_floats=TQC_GRAB_NB_FLOATS)
         super().initialize_common()
 
@@ -32,13 +46,14 @@ class TM2020InterfaceTQC(TM2020InterfaceIMPALASophy):
         Returns:
             tuple: A tuple containing (observation, reward, terminated, info).
         """
+        assert self.reward_function is not None
         data = self.grab_data()
         self.is_crashed = bool(data[18])
         cur_cp = int(data[0])
         cur_lap = int(data[1])
 
         speed_kmh = data[2] * 3.6
-        speed = np.array([speed_kmh / cfg.OBS_SPEED_SCALE], dtype="float32")
+        speed = np.array([speed_kmh / self.obs_speed_scale], dtype="float32")
         pos = np.array([data[3], data[4], data[5]], dtype="float32")
         input_steer = np.array([data[6]], dtype="float32")
         input_gas_pedal = np.array([data[7]], dtype="float32")
@@ -65,6 +80,7 @@ class TM2020InterfaceTQC(TM2020InterfaceIMPALASophy):
             gear=float(data[19]),
             slip_angle_deg=None,
         )
+        failure_counter_val = float(failure_counter)
         self._dbg_last_step = {
             "terminated": bool(terminated),
             "end_of_track": bool(end_of_track),
@@ -73,16 +89,13 @@ class TM2020InterfaceTQC(TM2020InterfaceIMPALASophy):
             "step_counter": int(getattr(self.reward_function, "step_counter", -1)),
         }
 
-        race_progress = self.reward_function.compute_race_progress()
+        race_progress_scalar = self.reward_function.compute_race_progress()
 
         self._steps_since_reset = getattr(self, "_steps_since_reset", 0) + 1
-        min_steps_before_finish = max(
-            _DEFAULT_MIN_STEPS_END_OF_TRACK,
-            cfg.REWARD_CONFIG.get("min_steps", _DEFAULT_MIN_STEPS_END_OF_TRACK),
-        )
+        min_steps_before_finish = self.min_steps_end_of_track
         if end_of_track and self._steps_since_reset >= min_steps_before_finish:
             terminated = True
-            failure_counter = 0.0
+            failure_counter_val = 0.0
             if self.save_replays:
                 from tmrl.custom.utils.control_mouse import mouse_save_replay_tm20
 
@@ -96,7 +109,7 @@ class TM2020InterfaceTQC(TM2020InterfaceIMPALASophy):
         right_track = track_result[2]
         curvature_list = track_result[3] if len(track_result) == 4 else None
 
-        if bool(cfg.REWARD_CONFIG.get("track_local_frame", False)):
+        if self.track_local_frame:
             yaw = float(data[12])
             cos_y, sin_y = np.cos(yaw), np.sin(yaw)
 
@@ -113,20 +126,20 @@ class TM2020InterfaceTQC(TM2020InterfaceIMPALASophy):
             right_track = _rotate(right_track)
 
         track_list = left_track + center_track + right_track
-        if cfg.OBS_TRACK_SCALE != 1.0:
-            track_list = [x / cfg.OBS_TRACK_SCALE for x in track_list]
+        if self.obs_track_scale != 1.0:
+            track_list = [x / self.obs_track_scale for x in track_list]
         track_info = [np.array(track_list, dtype="float32")]
 
         if not self.is_crashed:
             self.crash_cooldown -= 1
 
-        race_progress = np.array([race_progress], dtype="float32")
+        race_progress_arr = np.array([race_progress_scalar], dtype="float32")
         max_count = max(
             1.0,
             getattr(self.reward_function, "_max_no_progress_steps", 200.0),
         )
-        failure_counter = np.array(
-            [float(failure_counter) / max_count],
+        failure_counter_arr = np.array(
+            [failure_counter_val / max_count],
             dtype="float32",
         )
         info = {"reward_sum": reward_sum, "end_of_track": bool(end_of_track)}
@@ -140,7 +153,7 @@ class TM2020InterfaceTQC(TM2020InterfaceIMPALASophy):
             speed,
             acceleration,
             jerk,
-            race_progress,
+            race_progress_arr,
             input_steer,
             input_gas_pedal,
             input_brake,
@@ -149,7 +162,7 @@ class TM2020InterfaceTQC(TM2020InterfaceIMPALASophy):
             aim_pitch,
             steer_angle,
             slip_coef,
-            failure_counter,
+            failure_counter_arr,
         ]
         if curvature_list is not None:
             curv = np.clip(np.array(curvature_list, dtype="float32") * 10.0, -1.0, 1.0)
@@ -159,15 +172,14 @@ class TM2020InterfaceTQC(TM2020InterfaceIMPALASophy):
         self.cur_checkpoint = cur_cp
         self.cur_lap = cur_lap
 
-        min_guaranteed = int(cfg.REWARD_CONFIG.get("min_episode_length_guaranteed", 100))
         min_length = max(
-            min_guaranteed,
-            2 * cfg.REWARD_CONFIG.get("min_steps", _DEFAULT_MIN_STEPS_END_OF_TRACK),
+            self.min_episode_length_guaranteed,
+            2 * self.min_steps_end_of_track,
         )
         if self._steps_since_reset < min_length:
             terminated = False
 
-        reward = np.float32(rew)
+        reward = np.float32(float(rew))
         return total_obs, reward, terminated, info
 
     def reset(self, seed=None, options=None):
@@ -181,21 +193,23 @@ class TM2020InterfaceTQC(TM2020InterfaceIMPALASophy):
         Returns:
             tuple: (observation, info)
         """
+        rf = self.reward_function
         if (
-            getattr(self, "reward_function", None) is not None
-            and getattr(self.reward_function, "step_counter", 0) > 0
-            and not getattr(self.reward_function, "_logged_run_this_episode", False)
+            rf is not None
+            and getattr(rf, "step_counter", 0) > 0
+            and not getattr(rf, "_logged_run_this_episode", False)
         ):
-            self.reward_function.log_model_run(terminated=True, end_of_track=False)
+            rf.log_model_run(terminated=True, end_of_track=False)
         self.reset_common()
         self._steps_since_reset = 0
         data = self.grab_data()
+        assert self.reward_function is not None
 
         self.cur_lap = 0
         self.cur_checkpoint = 0
 
         speed_kmh = data[2] * 3.6
-        speed = np.array([speed_kmh / cfg.OBS_SPEED_SCALE], dtype="float32")
+        speed = np.array([speed_kmh / self.obs_speed_scale], dtype="float32")
         pos = np.array([data[3], data[4], data[5]], dtype="float32")
         input_steer = np.array([data[6]], dtype="float32")
         input_gas_pedal = np.array([data[7]], dtype="float32")
@@ -217,7 +231,7 @@ class TM2020InterfaceTQC(TM2020InterfaceIMPALASophy):
         right_track = track_result[2]
         curvature_list = track_result[3] if len(track_result) == 4 else None
 
-        if bool(cfg.REWARD_CONFIG.get("track_local_frame", False)):
+        if self.track_local_frame:
             yaw = float(data[12])
             cos_y, sin_y = np.cos(yaw), np.sin(yaw)
 
@@ -234,8 +248,8 @@ class TM2020InterfaceTQC(TM2020InterfaceIMPALASophy):
             right_track = _rotate(right_track)
 
         track_list = left_track + center_track + right_track
-        if cfg.OBS_TRACK_SCALE != 1.0:
-            track_list = [x / cfg.OBS_TRACK_SCALE for x in track_list]
+        if self.obs_track_scale != 1.0:
+            track_list = [x / self.obs_track_scale for x in track_list]
         track_info = [np.array(track_list, dtype="float32")]
 
         observation = [
@@ -263,26 +277,29 @@ class TM2020InterfaceTQC(TM2020InterfaceIMPALASophy):
         return total_obs, info
 
 
+@INTERFACES.register("tqc_with_images")
 class TM2020InterfaceTQCWithImages(TM2020InterfaceTQC):
     def get_observation_space(self):
         base_spaces = super().get_observation_space()
         spaces_list = list(base_spaces.spaces)
-        h, w = cfg.IMG_HEIGHT, cfg.IMG_WIDTH
-        if cfg.GRAYSCALE:
+        w, h = self.resize_to if self.resize_to is not None else (self.window_width, self.window_height)
+        if self.grayscale:
             img_space = spaces.Box(
-                low=0.0, high=255.0, shape=(cfg.IMG_HIST_LEN, h, w), dtype=np.float32
+                low=0.0, high=255.0, shape=(self.img_hist_len, h, w), dtype=np.float32
             )
         else:
             img_space = spaces.Box(
-                low=0.0, high=255.0, shape=(cfg.IMG_HIST_LEN, h, w, 3), dtype=np.float32
+                low=0.0, high=255.0, shape=(self.img_hist_len, h, w, 3), dtype=np.float32
             )
         spaces_list.append(img_space)
         return spaces.Tuple(tuple(spaces_list))
 
     def _capture_and_process_image(self):
+        assert self.window_interface is not None
         img = self.window_interface.screenshot()[:, :, :3]
-        img = cv2.resize(img, (cfg.IMG_WIDTH, cfg.IMG_HEIGHT))
-        img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if cfg.GRAYSCALE else img[:, :, ::-1]
+        w, h = self.resize_to if self.resize_to is not None else (self.window_width, self.window_height)
+        img = cv2.resize(img, (w, h))
+        img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if self.grayscale else img[:, :, ::-1]
         return img.astype(np.float32)
 
     def get_obs_rew_terminated_info(self):

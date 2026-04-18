@@ -9,9 +9,9 @@ from torch.autograd import Variable
 from torch.distributions import Normal
 from torchrl.modules import NoisyLinear
 
-import tmrl.config as cfg
 from tmrl.actor import TorchActorModule
 from tmrl.custom.models.shared.model_constants import LOG_STD_MAX, LOG_STD_MIN
+from tmrl.registry import MODELS
 
 
 def gru(input_size, rnn_size, rnn_len, dropout: float = 0.1):
@@ -76,9 +76,17 @@ def init_kaiming(layer):
     torch.nn.init.zeros_(layer.bias)
 
 
+@MODELS.register("impala_cnn")
 class CNNModule(nn.Module):
     def __init__(
-        self, mlp_out_size: int = cfg.CNN_OUTPUT_SIZE, activation=nn.LeakyReLU, seed: int = cfg.SEED
+        self,
+        mlp_out_size: int = 256,
+        activation=nn.LeakyReLU,
+        seed: int = 42,
+        img_height: int = 64,
+        img_width: int = 64,
+        img_hist_len: int = 4,
+        cnn_filters: list[int] | None = None,
     ):
         super().__init__()
         torch.manual_seed(seed)
@@ -87,13 +95,19 @@ class CNNModule(nn.Module):
         torch.backends.cudnn.deterministic = True
         torch.backends.cudnn.benchmark = False
 
+        cnn_filters = cnn_filters or [64, 64, 128, 128]
+
+        self.img_height = img_height
+        self.img_width = img_width
+        self.img_hist_len = img_hist_len
+
         self.activation = activation()
         self.conv_groups = 2
         self.conv_blocks = nn.ModuleList()
         self.out_activation = nn.ReLU()
-        h_out, w_out = cfg.IMG_HEIGHT, cfg.IMG_WIDTH
-        hist = cfg.IMG_HIST_LEN
-        filters = cfg.CNN_FILTERS
+        h_out, w_out = img_height, img_width
+        hist = img_hist_len
+        filters = cnn_filters
 
         def calculate_output_size(h_w, kernel_size, stride, padding, pool_kernel=3, pool_stride=2):
             h, w = h_w
@@ -159,7 +173,7 @@ class CNNModule(nn.Module):
             h_out, w_out = calculate_output_size((h_out, w_out), kernel_size=3, stride=1, padding=1)
 
         self.flatten = nn.Flatten()
-        flat_features = self.flattendim((cfg.IMG_HIST_LEN, cfg.IMG_HEIGHT, cfg.IMG_WIDTH))
+        flat_features = self.flattendim((self.img_hist_len, self.img_height, self.img_width))
         self.mlp_out_size = mlp_out_size
         self.fc1 = nn.Linear(in_features=flat_features, out_features=mlp_out_size)
         self.initialize_weights()
@@ -224,7 +238,11 @@ class CNNModule(nn.Module):
         for i, layer in enumerate(self.conv_blocks):
             if i % 2 == 0:
                 residual = x
-            if (residual.size(2) == x.size(2) or residual.size(3) == x.size(3)) and i > 0:
+            if (
+                residual is not None
+                and i > 0
+                and (residual.size(2) == x.size(2) or residual.size(3) == x.size(3))
+            ):
                 x = x + residual
             x = layer(x)
 
@@ -235,16 +253,24 @@ class CNNModule(nn.Module):
         return x
 
 
+@MODELS.register("impala_qr_critic")
 class QRCNNQFunction(nn.Module):
     def __init__(
         self,
         observation_space,
         action_space,
-        rnn_sizes=cfg.RNN_SIZES,
-        rnn_lens=cfg.RNN_LENS,
-        mlp_branch_sizes=cfg.API_MLP_SIZES,
+        rnn_sizes: list | None = None,
+        rnn_lens: list | None = None,
+        mlp_branch_sizes: list | None = None,
         activation=nn.ReLU,
-        seed: int = cfg.SEED,
+        seed: int = 42,
+        quantiles_number: int = 1,
+        api_layernorm: bool = False,
+        mlp_layernorm: bool = False,
+        rnn_dropout: float = 0.0,
+        noisy_linear_critic: bool = False,
+        output_dropout: float = 0.0,
+        grayscale: bool = False,
     ):
         super().__init__()
         torch.manual_seed(seed)
@@ -253,6 +279,15 @@ class QRCNNQFunction(nn.Module):
         torch.backends.cudnn.deterministic = True
         torch.backends.cudnn.benchmark = False
 
+        rnn_sizes = rnn_sizes or [64]
+        rnn_lens = rnn_lens or [1]
+        mlp_branch_sizes = mlp_branch_sizes or [256]
+
+        self.grayscale = grayscale
+        self.api_layernorm = api_layernorm
+        self.mlp_layernorm = mlp_layernorm
+        self.output_dropout_rate = output_dropout
+
         self.cnn_module = CNNModule()
         self.activation = activation()
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -260,14 +295,14 @@ class QRCNNQFunction(nn.Module):
         dim_obs = sum(math.prod(s for s in space.shape) for space in observation_space)
         dim_obs -= math.prod(s for s in observation_space[-3].shape)
         dim_act = action_space.shape[0]
-        self.num_quantiles = cfg.QUANTILES_NUMBER
+        self.num_quantiles = quantiles_number
 
         self.mlp_api = mlp(mlp_branch_sizes, dim_obs, activation)
 
-        if cfg.API_LAYERNORM:
+        if api_layernorm:
             self.layernorm_api = nn.LayerNorm(dim_obs)
 
-        if cfg.MLP_LAYERNORM:
+        if mlp_layernorm:
             self.layernorm_mlp = nn.LayerNorm(mlp_branch_sizes[-1])
 
         self.rnn_block_api = lstm(mlp_branch_sizes[-1], rnn_sizes[0], rnn_lens[0])
@@ -276,18 +311,18 @@ class QRCNNQFunction(nn.Module):
             self.cnn_module.mlp_out_size + rnn_sizes[0] + dim_act,
             rnn_sizes[1],
             rnn_lens[1],
-            dropout=cfg.RNN_DROPOUT,
+            dropout=rnn_dropout,
         )
 
-        if cfg.NOISY_LINEAR_CRITIC:
+        if noisy_linear_critic:
             self.model_out = NoisyLinear(
                 rnn_sizes[0], self.num_quantiles, device=self.device, std_init=0.01
             )
         else:
             self.model_out = nn.Linear(rnn_sizes[0], self.num_quantiles)
 
-        if cfg.OUTPUT_DROPOUT > 0.0:
-            self.dropout = nn.Dropout(cfg.OUTPUT_DROPOUT)
+        if output_dropout > 0.0:
+            self.dropout = nn.Dropout(output_dropout)
 
         self.h0 = None
         self.h1 = None
@@ -307,11 +342,11 @@ class QRCNNQFunction(nn.Module):
 
         cnn_branch_input = observation[-3].float()
         if batch_size == 1:
-            if not cfg.GRAYSCALE:
+            if not self.grayscale:
                 cnn_branch_input = cnn_branch_input.permute(0, 3, 1, 2)
             conv_branch_out = self.cnn_module(cnn_branch_input)
         else:
-            if not cfg.GRAYSCALE:
+            if not self.grayscale:
                 cnn_branch_input = cnn_branch_input.permute(0, 3, 1, 2)
             conv_branch_out = self.cnn_module(cnn_branch_input)
 
@@ -345,12 +380,12 @@ class QRCNNQFunction(nn.Module):
         obs_seq_cat = torch.cat(observation_except_img, -1)
         obs_seq_cat = obs_seq_cat.view(batch_size, -1).float()
 
-        if cfg.API_LAYERNORM:
+        if self.api_layernorm:
             obs_seq_cat = self.layernorm_api(obs_seq_cat)
 
         mlp_api_out = self.activation(self.mlp_api(obs_seq_cat))
 
-        if cfg.MLP_LAYERNORM:
+        if self.mlp_layernorm:
             mlp_api_out = self.layernorm_mlp(mlp_api_out)
 
         rnn_block_api_out, (h0, c0) = self.rnn_block_api(mlp_api_out, (h0, c0))
@@ -361,7 +396,7 @@ class QRCNNQFunction(nn.Module):
 
         model_out = self.model_out(rnn_block_api_out)
 
-        if cfg.OUTPUT_DROPOUT > 0.0:
+        if self.output_dropout_rate > 0.0:
             model_out = self.dropout(model_out)
 
         if save_hidden:
@@ -373,6 +408,7 @@ class QRCNNQFunction(nn.Module):
         return torch.squeeze(model_out, -1)
 
 
+@MODELS.register("impala_qr_actor")
 class SquashedActorQRCNN(TorchActorModule):
     """Squashed Gaussian policy over QRCNN features; default args must match config."""
 
@@ -380,11 +416,17 @@ class SquashedActorQRCNN(TorchActorModule):
         self,
         observation_space,
         action_space,
-        rnn_sizes=cfg.RNN_SIZES,
-        rnn_lens=cfg.RNN_LENS,
-        mlp_branch_sizes=cfg.API_MLP_SIZES,
+        rnn_sizes: list | None = None,
+        rnn_lens: list | None = None,
+        mlp_branch_sizes: list | None = None,
         activation=nn.ReLU,
-        seed: int = cfg.SEED,
+        seed: int = 42,
+        api_layernorm: bool = False,
+        mlp_layernorm: bool = False,
+        rnn_dropout: float = 0.0,
+        noisy_linear_actor: bool = False,
+        output_dropout: float = 0.0,
+        grayscale: bool = False,
     ):
         super().__init__(observation_space, action_space)
         torch.manual_seed(seed)
@@ -392,6 +434,15 @@ class SquashedActorQRCNN(TorchActorModule):
         random.seed(seed)
         torch.backends.cudnn.deterministic = True
         torch.backends.cudnn.benchmark = False
+
+        rnn_sizes = rnn_sizes or [64]
+        rnn_lens = rnn_lens or [1]
+        mlp_branch_sizes = mlp_branch_sizes or [256]
+
+        self.grayscale = grayscale
+        self.api_layernorm = api_layernorm
+        self.mlp_layernorm = mlp_layernorm
+        self.output_dropout_rate = output_dropout
 
         self.cnn_module = CNNModule()
         self.activation = activation()
@@ -404,10 +455,10 @@ class SquashedActorQRCNN(TorchActorModule):
 
         self.mlp_api = mlp(mlp_branch_sizes, dim_obs, activation)
 
-        if cfg.API_LAYERNORM:
+        if api_layernorm:
             self.layernorm_api = nn.LayerNorm(dim_obs)
 
-        if cfg.MLP_LAYERNORM:
+        if mlp_layernorm:
             self.layernorm_mlp = nn.LayerNorm(mlp_branch_sizes[-1])
 
         self.rnn_block_api = lstm(mlp_branch_sizes[-1], rnn_sizes[0], rnn_lens[0])
@@ -416,18 +467,18 @@ class SquashedActorQRCNN(TorchActorModule):
             self.cnn_module.mlp_out_size + rnn_sizes[0],
             rnn_sizes[1],
             rnn_lens[1],
-            dropout=cfg.RNN_DROPOUT,
+            dropout=rnn_dropout,
         )
 
-        if cfg.NOISY_LINEAR_ACTOR:
+        if noisy_linear_actor:
             self.model_out = NoisyLinear(
                 rnn_sizes[0], self.num_quantiles, device=self.device, std_init=0.01
             )
         else:
             self.model_out = nn.Linear(rnn_sizes[0], mlp_out_size)
 
-        if cfg.OUTPUT_DROPOUT > 0.0:
-            self.dropout = nn.Dropout(cfg.OUTPUT_DROPOUT)
+        if output_dropout > 0.0:
+            self.dropout = nn.Dropout(output_dropout)
 
         self.mu_layer = nn.Linear(mlp_out_size, dim_act)
         self.log_std_layer = nn.Linear(mlp_out_size, dim_act)
@@ -452,12 +503,12 @@ class SquashedActorQRCNN(TorchActorModule):
 
         cnn_branch_input = observation[-3].float()
         if batch_size == 1:
-            if not cfg.GRAYSCALE:
+            if not self.grayscale:
                 cnn_branch_input = cnn_branch_input.permute(0, 3, 1, 2)
 
             conv_branch_out = self.cnn_module(cnn_branch_input)
         else:
-            if not cfg.GRAYSCALE:
+            if not self.grayscale:
                 cnn_branch_input = cnn_branch_input.permute(0, 3, 1, 2)
 
             conv_branch_out = self.cnn_module(cnn_branch_input)
@@ -492,12 +543,12 @@ class SquashedActorQRCNN(TorchActorModule):
         obs_seq_cat = torch.cat(observation_except_img, -1)
         obs_seq_cat = obs_seq_cat.view(batch_size, -1).float()
 
-        if cfg.API_LAYERNORM:
+        if self.api_layernorm:
             obs_seq_cat = self.layernorm_api(obs_seq_cat)
 
         mlp_api_out = self.activation(self.mlp_api(obs_seq_cat))
 
-        if cfg.MLP_LAYERNORM:
+        if self.mlp_layernorm:
             mlp_api_out = self.layernorm_mlp(mlp_api_out)
 
         rnn_block_api_out, (h0, c0) = self.rnn_block_api(mlp_api_out, (h0, c0))
@@ -508,7 +559,7 @@ class SquashedActorQRCNN(TorchActorModule):
 
         model_out = self.model_out(rnn_block_api_out)
 
-        if cfg.OUTPUT_DROPOUT > 0.0:
+        if self.output_dropout_rate > 0.0:
             model_out = self.dropout(model_out)
 
         mu = self.mu_layer(model_out)
@@ -550,6 +601,7 @@ class SquashedActorQRCNN(TorchActorModule):
             return a.cpu().numpy()
 
 
+@MODELS.register("impala_ac")
 class QRCNNActorCritic(nn.Module):
     """QRCNN actor-critic; default constructor args must match config."""
 
@@ -557,11 +609,11 @@ class QRCNNActorCritic(nn.Module):
         self,
         observation_space,
         action_space,
-        rnn_sizes=cfg.RNN_SIZES,
-        rnn_lens=cfg.RNN_LENS,
-        mlp_branch_sizes=cfg.API_MLP_SIZES,
+        rnn_sizes: list | None = None,
+        rnn_lens: list | None = None,
+        mlp_branch_sizes: list | None = None,
         activation=nn.ReLU,
-        seed: int = cfg.SEED,
+        seed: int = 42,
     ):
         super().__init__()
         torch.manual_seed(seed)
@@ -569,6 +621,10 @@ class QRCNNActorCritic(nn.Module):
         random.seed(seed)
         torch.backends.cudnn.deterministic = True
         torch.backends.cudnn.benchmark = False
+
+        rnn_sizes = rnn_sizes or [64]
+        rnn_lens = rnn_lens or [1]
+        mlp_branch_sizes = mlp_branch_sizes or [256]
 
         self.actor = SquashedActorQRCNN(
             observation_space, action_space, rnn_sizes, rnn_lens, mlp_branch_sizes, activation

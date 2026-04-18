@@ -5,14 +5,12 @@ from contextlib import nullcontext
 import numpy as np
 import torch
 
-import tmrl.config.constants as cfg
 
-
-def set_seed(seed: int = cfg.SEED) -> None:
+def set_seed(seed: int = 42) -> None:
     """Set random seeds for reproducibility.
 
     Args:
-        seed: Random seed for NumPy and PyTorch. Defaults to config SEED.
+        seed: Random seed for NumPy and PyTorch.
     """
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -23,10 +21,9 @@ def set_seed(seed: int = cfg.SEED) -> None:
     torch.backends.cudnn.benchmark = False
 
 
-def _amp_enabled(device: str | None) -> bool:
+def _amp_enabled(device: str | None, mixed_precision: bool) -> bool:
     """Return True if mixed-precision (AMP) is enabled and device supports it."""
-    use_mp = cfg.MIXED_PRECISION
-    return use_mp and torch.cuda.is_available() and str(device).startswith("cuda")
+    return mixed_precision and torch.cuda.is_available() and str(device).startswith("cuda")
 
 
 def _tensor_to_scalar(value: torch.Tensor | float) -> float:
@@ -46,9 +43,26 @@ def _tensor_to_scalar(value: torch.Tensor | float) -> float:
     return float(value)
 
 
-def _amp_dtype() -> torch.dtype:
+def _amp_dtype(mixed_precision_dtype: str = "bfloat16") -> torch.dtype:
     """Return torch dtype for mixed precision (bfloat16 or float16)."""
-    return torch.bfloat16 if str(cfg.MIXED_PRECISION_DTYPE).lower() == "bfloat16" else torch.float16
+    return torch.bfloat16 if mixed_precision_dtype.lower() == "bfloat16" else torch.float16
+
+
+def amp_setup(
+    device: str | None, mixed_precision: bool, mixed_precision_dtype: str
+) -> tuple[bool, torch.dtype, torch.amp.GradScaler]:
+    """One-call AMP setup from config fields.
+
+    Returns:
+        Tuple of (use_amp, amp_dtype, grad_scaler).  When *mixed_precision* is
+        False or the device is CPU the scaler is created in disabled mode and
+        ``use_amp`` is False so callers can branch cheaply.
+    """
+    use_amp = _amp_enabled(device, mixed_precision)
+    dtype = _amp_dtype(mixed_precision_dtype)
+    use_scaler = use_amp and dtype != torch.bfloat16
+    scaler = torch.amp.GradScaler("cuda", enabled=use_scaler)
+    return use_amp, dtype, scaler
 
 
 def sanitize_tensor(t: torch.Tensor) -> torch.Tensor:
@@ -123,9 +137,7 @@ def _compute_n_step_return_and_bootstrap_mask(
     return n_step_returns.unsqueeze(-1), bootstrap_not_done.unsqueeze(-1)
 
 
-def clip_model_weights(
-    model: torch.nn.Module, max_value: float = cfg.WEIGHT_CLIPPING_VALUE
-) -> None:
+def clip_model_weights(model: torch.nn.Module, max_value: float = 1.0) -> None:
     """Clip all model parameters to [-max_value, max_value]."""
     for param in model.parameters():
         param.data.clamp_(-max_value, max_value)

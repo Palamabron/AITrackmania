@@ -1,0 +1,15 @@
+# @package _global_
+defaults:
+  - default
+  - _self_
+
+algorithm:
+  _target_: tmrl.custom.custom_algorithms.sdsac.SDSACAgent
+  name: SDSAC
+  learn_entropy_coef: true
+  n_steps: 3
+  sdsac_avg_q: true
+  sdsac_clip_q: true
+  sdsac_clip_q_epsilon: 0.5
+  sdsac_entropy_penalty: true
+  sdsac_entropy_penalty_beta: 0.5

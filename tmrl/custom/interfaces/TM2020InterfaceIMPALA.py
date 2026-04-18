@@ -2,11 +2,12 @@ import cv2
 import numpy as np
 from gymnasium import spaces
 
-import tmrl.config as cfg
 from tmrl.custom.interfaces.TM2020Interface import TM2020Interface
 from tmrl.custom.utils.control_mouse import mouse_save_replay_tm20
+from tmrl.registry import INTERFACES
 
 
+@INTERFACES.register("impala")
 class TM2020InterfaceIMPALA(TM2020Interface):
     def __init__(
         self,
@@ -16,11 +17,13 @@ class TM2020InterfaceIMPALA(TM2020Interface):
         save_replay: bool = False,
         grayscale: bool = False,
         resize_to: tuple = (128, 64),
-        finish_reward=cfg.END_OF_TRACK_REWARD,
+        finish_reward: float = 0.0,
         constant_penalty: float = 0.05,
-        crash_penalty=cfg.CRASH_PENALTY,
-        checkpoint_reward=cfg.CHECKPOINT_REWARD,
-        lap_reward=cfg.LAP_REWARD,
+        crash_penalty: float = 0.0,
+        checkpoint_reward: float = 0.0,
+        lap_reward: float = 0.0,
+        points_number: int = 5,
+        **kwargs,
     ):
         super().__init__(
             img_hist_len=img_hist_len,
@@ -31,14 +34,14 @@ class TM2020InterfaceIMPALA(TM2020Interface):
             resize_to=resize_to,
             constant_penalty=constant_penalty,
             crash_penalty=crash_penalty,
+            **kwargs,
         )
         self.record = record
-        self.window_interface = None
         self.cur_lap = 0
         self.cur_checkpoint = 0
         self.lap_reward = lap_reward
         self.checkpoint_reward = checkpoint_reward
-        self.points_number = cfg.POINTS_NUMBER
+        self.points_number = points_number
 
     def get_observation_space(self):
         # https://gymnasium.farama.org/api/spaces/
@@ -77,7 +80,7 @@ class TM2020InterfaceIMPALA(TM2020Interface):
         if self.resize_to is not None:
             w, h = self.resize_to
         else:
-            w, h = cfg.WINDOW_WIDTH, cfg.WINDOW_HEIGHT
+            w, h = self.window_width, self.window_height
         if self.grayscale:
             img = spaces.Box(
                 low=0.0, high=255.0, shape=(self.img_hist_len, h, w)
@@ -126,6 +129,7 @@ class TM2020InterfaceIMPALA(TM2020Interface):
         return data, img
 
     def grab_data(self):
+        assert self.client is not None
         data = self.client.retrieve_data()
         return data
 
@@ -135,6 +139,7 @@ class TM2020InterfaceIMPALA(TM2020Interface):
         obs must be a list of numpy arrays
         """
         data, img = self.grab_data_and_img()
+        assert self.reward_function is not None and self.img_hist is not None
         # print(f"data: {data}")
         cur_cp = int(data[0])
         cur_lap = int(data[1])
@@ -166,11 +171,12 @@ class TM2020InterfaceIMPALA(TM2020Interface):
             next_cp=self.cur_checkpoint < cur_cp,
             next_lap=self.cur_lap < cur_lap,
         )
+        failure_counter_val = float(failure_counter)
 
         self.img_hist.append(img)
         imgs = np.array(list(self.img_hist))
 
-        race_progress = self.reward_function.compute_race_progress()
+        race_progress_scalar = self.reward_function.compute_race_progress()
 
         next_checkpoints = self.reward_function.get_n_next_checkpoints_xy(pos, self.points_number)
 
@@ -181,13 +187,13 @@ class TM2020InterfaceIMPALA(TM2020Interface):
 
         if end_of_track:
             terminated = True
-            failure_counter = 0.0
+            failure_counter_val = 0.0
             if self.save_replays:
                 mouse_save_replay_tm20(True)
 
-        race_progress = np.array([race_progress], dtype="float32")
+        race_progress_arr = np.array([race_progress_scalar], dtype="float32")
 
-        failure_counter = np.array([float(failure_counter)])
+        failure_counter_arr = np.array([failure_counter_val], dtype=np.float32)
         info = {"reward_sum": reward_sum, "end_of_track": bool(end_of_track)}
         if getattr(self.client, "_last_retrieve_invalid", False):
             terminated = True
@@ -199,7 +205,7 @@ class TM2020InterfaceIMPALA(TM2020Interface):
             speed,
             acceleration,
             jerk,
-            race_progress,
+            race_progress_arr,
             input_steer,
             input_gas_pedal,
             input_brake,
@@ -208,7 +214,7 @@ class TM2020InterfaceIMPALA(TM2020Interface):
             aim_pitch,
             steer_angle,
             slip_coef,
-            failure_counter,
+            failure_counter_arr,
             imgs,
         ]
 
@@ -216,7 +222,7 @@ class TM2020InterfaceIMPALA(TM2020Interface):
 
         total_obs[0] = np.array(total_obs[0])
 
-        reward = np.float32(rew)
+        reward = np.float32(float(rew))
         # print(f"Reward: {reward}, crashed {bool(crashed)}, race progress {...}")
         return total_obs, reward, terminated, info
 
@@ -234,6 +240,7 @@ class TM2020InterfaceIMPALA(TM2020Interface):
         # else:
         self.reset_common()
         data, img = self.grab_data_and_img()
+        assert self.reward_function is not None and self.img_hist is not None
 
         self.cur_lap = 0
         self.cur_checkpoint = 0

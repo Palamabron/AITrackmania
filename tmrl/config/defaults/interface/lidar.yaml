@@ -1,0 +1,10 @@
+# @package _global_
+defaults:
+  - default
+  - _self_
+
+interface:
+  name: lidar
+  _target_: tmrl.custom.interfaces.TM2020InterfaceLidar.TM2020InterfaceLidar
+  img_hist_len: 1
+  gamepad: false

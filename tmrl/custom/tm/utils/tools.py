@@ -9,8 +9,7 @@ from threading import Lock, Thread
 import cv2
 import numpy as np
 
-# local imports
-from tmrl.config import LIDAR_BLACK_THRESHOLD
+LIDAR_BLACK_THRESHOLD = [55, 55, 55]
 
 # OpenPlanet TQC_GrabData packet size (floats). Must match the plugin; 19 vs 20 misaligns
 # every frame and maps wrong fields (e.g. brake at index 8 read as end_of_track).
