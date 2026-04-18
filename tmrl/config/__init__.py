@@ -223,6 +223,7 @@ from tmrl.config.loader import (
     SYSTEM,
     TMRL_FOLDER,
     create_config,
+    format_merged_config_yaml_readable,
     main_config_snapshot_redacted,
     merged_config_snapshot_redacted,
 )
@@ -488,6 +489,7 @@ __all__ = [
     "ModelConfig",
     "RewardConfig",
     "create_config",
+    "format_merged_config_yaml_readable",
     "main_config_snapshot_redacted",
     "merged_config_snapshot_redacted",
 ]

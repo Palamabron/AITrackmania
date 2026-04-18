@@ -23,10 +23,13 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-import yaml
 from loguru import logger
 
-from tmrl.config.loader import MAIN_CONFIG, merged_config_snapshot_redacted
+from tmrl.config.loader import (
+    MAIN_CONFIG,
+    format_merged_config_yaml_readable,
+    merged_config_snapshot_redacted,
+)
 
 
 def _truthy_env(name: str) -> bool:
@@ -145,21 +148,9 @@ def write_run_repro_bundle(checkpoint_path: str) -> list[Path]:
         }
 
         with open(merged_path, "w", encoding="utf-8") as f:
-            yaml.safe_dump(
-                merged,
-                f,
-                sort_keys=False,
-                default_flow_style=False,
-                allow_unicode=True,
-            )
+            f.write(format_merged_config_yaml_readable(merged))
         with open(validated_path, "w", encoding="utf-8") as f:
-            yaml.safe_dump(
-                validated,
-                f,
-                sort_keys=False,
-                default_flow_style=False,
-                allow_unicode=True,
-            )
+            f.write(format_merged_config_yaml_readable(validated))
         with open(provenance_path, "w", encoding="utf-8") as f:
             json.dump(provenance, f, indent=2)
 

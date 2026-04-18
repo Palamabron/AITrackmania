@@ -650,6 +650,8 @@ def _build_agent() -> Any:
         )
     if ALG_NAME == "IQN":
         iqn_cls = ALGORITHMS.get("IQN")
+        _iqn_arch_kw = _model_arch_kwargs()
+        _rnn_hs = _iqn_arch_kw.get("rnn_hidden_size")
         return partial(
             iqn_cls,
             device=_device,
@@ -691,6 +693,16 @@ def _build_agent() -> Any:
             backup_clip_range=float(alg.backup_clip_range),
             mixed_precision=bool(alg.mixed_precision),
             mixed_precision_dtype=str(alg.mixed_precision_dtype),
+            split_track_observation=bool(_iqn_arch_kw["split_track_observation"]),
+            track_encoder=str(_iqn_arch_kw["track_encoder"]),
+            use_rnn=bool(_iqn_arch_kw["use_rnn"]),
+            rnn_hidden_size=int(_rnn_hs) if _rnn_hs is not None else None,
+            api_layernorm=bool(_iqn_arch_kw["api_layernorm"]),
+            use_simbav2=bool(_iqn_arch_kw["use_simbav2"]),
+            r2d2_sequence_length=int(_iqn_arch_kw["r2d2_sequence_length"]),
+            r2d2_burn_in=int(_iqn_arch_kw["r2d2_burn_in"]),
+            gnn_hidden=int(_iqn_arch_kw["gnn_hidden"]),
+            gnn_layers=int(_iqn_arch_kw["gnn_layers"]),
         )
     if ALG_NAME == "SDSAC":
         sdsac_cls = ALGORITHMS.get("SDSAC")

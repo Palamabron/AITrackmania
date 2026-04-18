@@ -257,6 +257,18 @@ class IQNAgent(TrainingAgent):
     # Structural defaults (None = auto-detect)
     device: str | None = None
 
+    # Backbone architecture kwargs (must match worker — forwarded to IQNQNetwork)
+    split_track_observation: bool = True
+    track_encoder: str = "conv1d"
+    use_rnn: bool = False
+    rnn_hidden_size: int | None = None
+    api_layernorm: bool = False
+    use_simbav2: bool = False
+    r2d2_sequence_length: int = 0
+    r2d2_burn_in: int = 0
+    gnn_hidden: int = 64
+    gnn_layers: int = 3
+
     model_nograd = cached_property(lambda self: no_grad(copy_shared(self.model)))
 
     def __post_init__(self) -> None:
@@ -270,6 +282,16 @@ class IQNAgent(TrainingAgent):
             num_blocks=self.num_blocks,
             n_cos=self.n_cos,
             dueling=self.dueling,
+            split_track_observation=self.split_track_observation,
+            track_encoder=self.track_encoder,
+            use_rnn=self.use_rnn,
+            rnn_hidden_size=self.rnn_hidden_size,
+            api_layernorm=self.api_layernorm,
+            use_simbav2=self.use_simbav2,
+            r2d2_sequence_length=self.r2d2_sequence_length,
+            r2d2_burn_in=self.r2d2_burn_in,
+            gnn_hidden=self.gnn_hidden,
+            gnn_layers=self.gnn_layers,
         ).to(device)
 
         self.model_target = no_grad(deepcopy(self.model))
@@ -385,6 +407,16 @@ class IQNAgent(TrainingAgent):
             epsilon=self._epsilon,
             n_quantiles_eval=self.n_quantiles_eval,
             explore_repeat_steps=self.explore_repeat_steps,
+            split_track_observation=self.split_track_observation,
+            track_encoder=self.track_encoder,
+            use_rnn=self.use_rnn,
+            rnn_hidden_size=self.rnn_hidden_size,
+            api_layernorm=self.api_layernorm,
+            use_simbav2=self.use_simbav2,
+            r2d2_sequence_length=self.r2d2_sequence_length,
+            r2d2_burn_in=self.r2d2_burn_in,
+            gnn_hidden=self.gnn_hidden,
+            gnn_layers=self.gnn_layers,
         )
         # Share weights: copy state dict from the no-grad model
         wrapper.q_net.load_state_dict(actor.state_dict())

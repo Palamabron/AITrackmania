@@ -142,25 +142,6 @@ MAIN_CONFIG = MainConfig.model_validate(_RAW_CONFIG)
 CONFIG_VERSION = MAIN_CONFIG.schema_version
 
 
-def _log_resolved_config() -> None:
-    """Log the full resolved config (secrets redacted) before objects are built."""
-    d = MAIN_CONFIG.model_dump(mode="json")
-    for section_key in ("wandb", "distributed"):
-        section = d.get(section_key)
-        if isinstance(section, dict):
-            for secret in ("api_key", "password"):
-                if section.get(secret):
-                    section[secret] = "<redacted>"
-    logger.info(
-        "Resolved TMRL configuration (schema_version={}):\n{}",
-        CONFIG_VERSION,
-        yaml.safe_dump(d, sort_keys=False, default_flow_style=False),
-    )
-
-
-_log_resolved_config()
-
-
 def merged_config_snapshot_redacted() -> dict[str, Any]:
     """Post-merge config dict (Hydra + local.yaml + env), secrets stripped for archiving."""
     out = copy.deepcopy(_RAW_CONFIG)
@@ -171,6 +152,28 @@ def merged_config_snapshot_redacted() -> dict[str, Any]:
     if isinstance(dist, dict) and dist.get("password"):
         dist["password"] = "<redacted>"
     return out
+
+
+def format_merged_config_yaml_readable(cfg: dict[str, Any]) -> str:
+    """YAML text with stable top-level section order and ``# --- name ---`` headers.
+
+    Matches :class:`~tmrl.config.schema.main.MainConfig` field order so the hierarchy is
+    easy to scan (schema → run → … → environment → …). Unknown top-level keys are appended
+    last, sorted.
+    """
+    order = list(MainConfig.model_fields.keys())
+    parts: list[str] = []
+    seen: set[str] = set()
+    for key in order:
+        if key not in cfg:
+            continue
+        seen.add(key)
+        block = yaml.safe_dump({key: cfg[key]}, sort_keys=False, default_flow_style=False)
+        parts.append(f"# --- {key} ---\n{block.rstrip()}")
+    for key in sorted(k for k in cfg if k not in seen):
+        block = yaml.safe_dump({key: cfg[key]}, sort_keys=False, default_flow_style=False)
+        parts.append(f"# --- {key} (not in MainConfig schema) ---\n{block.rstrip()}")
+    return "\n\n".join(parts) + "\n"
 
 
 def main_config_snapshot_redacted() -> dict[str, Any]:

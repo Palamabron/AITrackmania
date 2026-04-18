@@ -61,10 +61,9 @@ endif
 endif
 endif
 
-# On Windows, Make often runs recipes with cmd.exe even when SHELL is set to /bin/bash (WSL/Git/Cursor).
-# Always set UV_PROJECT_ENVIRONMENT via cmd /C so it works regardless of SHELL.
+# On Windows, Make normally uses cmd.exe to run recipe lines. Ctrl+C in cmd.exe triggers the
+# "Terminate batch job (Y/N)?" prompt. Override SHELL to PowerShell so cmd.exe is never involved.
 TMRL_WIN_ROOT := $(subst \,/,$(or $(WINDIR),$(SystemRoot)))
-TMRL_COMSPEC := $(subst \,/,$(or $(COMSPEC),cmd.exe))
 ifneq ($(TMRL_WIN_ROOT),)
 TMRL_PWSH_EXE := $(TMRL_WIN_ROOT)/System32/WindowsPowerShell/v1.0/powershell.exe
 else
@@ -72,11 +71,15 @@ TMRL_PWSH_EXE := powershell.exe
 endif
 TMRL_KILL_PS1 := $(subst \,/,$(dir $(abspath $(lastword $(MAKEFILE_LIST))))scripts/kill_tcp_port.ps1)
 
+ifneq ($(TMRL_IS_WINDOWS),)
+SHELL := $(TMRL_PWSH_EXE)
+.SHELLFLAGS := -NoProfile -ExecutionPolicy Bypass -Command
+endif
+
 # Free the port before starting the server. Leading '-' ignores errors (port already free, etc.).
 ifneq ($(TMRL_IS_WINDOWS),)
 kill-server:
-	@echo "Checking for zombie processes on port $(TMRL_SERVER_PORT)..."
-	-@"$(TMRL_PWSH_EXE)" -NoProfile -ExecutionPolicy Bypass -File "$(TMRL_KILL_PS1)" -Port $(TMRL_SERVER_PORT)
+	@Write-Host "Checking for zombie processes on port $(TMRL_SERVER_PORT)..."; & "$(TMRL_PWSH_EXE)" -NoProfile -ExecutionPolicy Bypass -File "$(TMRL_KILL_PS1)" -Port $(TMRL_SERVER_PORT)
 else
 kill-server:
 	@echo "Checking for zombie processes on port $(TMRL_SERVER_PORT)..."
@@ -85,25 +88,25 @@ endif
 
 ifneq ($(TMRL_IS_WINDOWS),)
 server: kill-server
-	@"$(TMRL_COMSPEC)" /C "set UV_PROJECT_ENVIRONMENT=$(strip $(TMRL_UV_ENV))&& uv run python -m tmrl --server"
+	@$$env:UV_PROJECT_ENVIRONMENT = '$(strip $(TMRL_UV_ENV))'; uv run python -m tmrl --server
 
 trainer:
-	@"$(TMRL_COMSPEC)" /C "set UV_PROJECT_ENVIRONMENT=$(strip $(TMRL_UV_ENV))&& uv run python -m tmrl --trainer"
+	@$$env:UV_PROJECT_ENVIRONMENT = '$(strip $(TMRL_UV_ENV))'; uv run python -m tmrl --explain-active-config; if ($$LASTEXITCODE -ne 0) { exit $$LASTEXITCODE }; uv run python -m tmrl --trainer
 
 worker:
-	@"$(TMRL_COMSPEC)" /C "set UV_PROJECT_ENVIRONMENT=$(strip $(TMRL_UV_ENV))&& uv run python -m tmrl --worker"
+	@$$env:UV_PROJECT_ENVIRONMENT = '$(strip $(TMRL_UV_ENV))'; uv run python -m tmrl --explain-active-config; if ($$LASTEXITCODE -ne 0) { exit $$LASTEXITCODE }; uv run python -m tmrl --worker
 
 record-episode:
-	@"$(TMRL_COMSPEC)" /C "set UV_PROJECT_ENVIRONMENT=$(strip $(TMRL_UV_ENV))&& uv run python -m tmrl --record-episode --record-episode-count $(if $(word 2,$(MAKECMDGOALS)),$(word 2,$(MAKECMDGOALS)),2)"
+	@$$env:UV_PROJECT_ENVIRONMENT = '$(strip $(TMRL_UV_ENV))'; uv run python -m tmrl --record-episode --record-episode-count $(if $(word 2,$(MAKECMDGOALS)),$(word 2,$(MAKECMDGOALS)),2)
 else
 server: kill-server
 	@UV_PROJECT_ENVIRONMENT=$(TMRL_UV_ENV) uv run python -m tmrl --server
 
 trainer:
-	@UV_PROJECT_ENVIRONMENT=$(TMRL_UV_ENV) uv run python -m tmrl --trainer
+	@export UV_PROJECT_ENVIRONMENT=$(TMRL_UV_ENV); uv run python -m tmrl --explain-active-config && uv run python -m tmrl --trainer
 
 worker:
-	@UV_PROJECT_ENVIRONMENT=$(TMRL_UV_ENV) uv run python -m tmrl --worker
+	@export UV_PROJECT_ENVIRONMENT=$(TMRL_UV_ENV); uv run python -m tmrl --explain-active-config && uv run python -m tmrl --worker
 
 record-episode:
 	@UV_PROJECT_ENVIRONMENT=$(TMRL_UV_ENV) uv run python -m tmrl --record-episode --record-episode-count $(if $(word 2,$(MAKECMDGOALS)),$(word 2,$(MAKECMDGOALS)),2)

@@ -117,7 +117,7 @@ uv run python -m tmrl --print-config
 uv run python -m tmrl --trainer
 ```
 
-`--print-config` prints the final redacted merged config so you can verify exactly what will run.
+`--print-config` prints the final redacted merged config (top-level keys in `MainConfig` order, with `# --- section ---` headers) so you can verify exactly what will run.
 
 `--explain-active-config` lists which `model.*` keys actually affect the current **algorithm + rtgym_interface** routing and which are ignored (helps avoid dead keys in `local.yaml`, e.g. IQN vs `residual_mlp_num_blocks_actor`).
 

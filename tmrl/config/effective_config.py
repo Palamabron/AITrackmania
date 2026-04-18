@@ -117,7 +117,9 @@ def _all_model_field_names(m: MainConfig) -> frozenset[str]:
     return frozenset(m.model.__class__.model_fields.keys())
 
 
-# IQN / SDSAC worker policy + IQNFeatureBackbone + IQNAgent (hidden/num_blocks only from model).
+# IQN / SDSAC worker policy: fields that reach IQNFeatureBackbone / IQNQNetwork for discrete LIDAR.
+# Keep aligned with ``_IQN_BACKBONE_KWARGS`` in
+# ``tmrl/custom/models/discrete_actions/iqn_discrete_q_network.py`` plus ``residual_mlp_*`` and ``type``.
 _LIDAR_DISCRETE_IQN: frozenset[str] = frozenset(
     {
         "type",
@@ -128,7 +130,6 @@ _LIDAR_DISCRETE_IQN: frozenset[str] = frozenset(
         "gnn_layers",
         "gnn_hidden",
         "use_simbav2",
-        "mlp_layernorm",
         "api_layernorm",
         "use_rnn",
         "rnn_hidden_size",
@@ -168,6 +169,10 @@ _LIDAR_PLAIN_MLP: frozenset[str] = frozenset({"type", "use_residual_mlp"})
 
 
 FIELD_IGNORE_HINTS: dict[str, str] = {
+    "mlp_layernorm": (
+        "Not passed to IQNFeatureBackbone (discrete IQN uses fixed LayerNorm in residual_mlp_backbone); "
+        "used by some continuous backbones."
+    ),
     "residual_mlp_num_blocks_actor": (
         "Used by SDSAC and continuous Sophy-style residuals, not by IQN "
         "(IQN has a single Q trunk: use model.residual_mlp_num_blocks only)."

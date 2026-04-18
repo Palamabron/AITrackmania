@@ -11,11 +11,11 @@ import time
 from dataclasses import dataclass
 
 import tyro
-import yaml
 from loguru import logger
 
 import tmrl.config as cfg
 import tmrl.config.config_objects as cfg_obj
+from tmrl.config.loader import format_merged_config_yaml_readable
 from tmrl.envs import GenericGymEnv
 from tmrl.networking import RolloutWorker, Server, Trainer
 from tmrl.tools.check_environment import (
@@ -235,7 +235,7 @@ def main(cli: TmrlCli) -> None:
             f"Set distributed.public_ip_server in Windows TmrlData\\config\\local.yaml: {ip}"
         )
     elif cli.print_config:
-        print(yaml.safe_dump(cfg.merged_config_snapshot_redacted(), sort_keys=False))
+        print(format_merged_config_yaml_readable(cfg.merged_config_snapshot_redacted()), end="")
     elif cli.explain_active_config:
         import tmrl.config.loader as _loader
         from tmrl.config.effective_config import explain_active_config_text
