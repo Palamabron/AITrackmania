@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Annotated
 
 from pydantic import BaseModel, ConfigDict, Field, PositiveInt, field_validator
@@ -55,6 +56,21 @@ class RunConfig(BaseModel):
         ...,
         description="Unique run id used for checkpoints, weights filenames, and wandb run id.",
     )
+
+    @field_validator("name")
+    @classmethod
+    def _safe_run_name(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("run.name must not be empty.")
+        if re.search(r'[/\\]|\.\.', v):
+            raise ValueError(
+                f"run.name={v!r} contains path separators or '..' which could cause "
+                "files to be written outside the expected directory. "
+                "Use a plain identifier (e.g. 'my_experiment_01')."
+            )
+        return v
+
     reset_training: bool = Field(
         default=False,
         description=(

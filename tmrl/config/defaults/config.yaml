@@ -1,9 +1,9 @@
 # @package _global_
 # TMRL Hydra entrypoint. Override groups, e.g.
-# `algorithm=sac model=vanilla_cnn_actor_critic`.
+# `algorithm=iqn model=mlp_actor_critic`.
 # Model presets are full model-oriented files only (no aliases).
-# Default IQN path: residual MLP (+ optional GNN track split in local.yaml). For the Sophy
-# residual CNN/TQC preset: TMRL_HYDRA_OVERRIDES=model=sophy_residual_actor_critic
+# Default: SAC + residual MLP on LIDAR. For the IQN path: algorithm=iqn. For the Sophy
+# residual CNN/TQC preset: TMRL_HYDRA_OVERRIDES='["model=sophy_residual_actor_critic"]'
 #
 # Hierarchy: each `name: preset` line pulls in `defaults/<group>/<preset>.yaml` (see README).
 # Values below are the root-only keys; most knobs live in those group files or local.yaml.
@@ -14,7 +14,7 @@ defaults:
   - memory: default
   - interface: default
   - model: residual_mlp_actor_critic
-  - algorithm: iqn
+  - algorithm: sac
   - environment: tm20
   - debugger: default
 

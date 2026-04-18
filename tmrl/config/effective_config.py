@@ -60,10 +60,16 @@ def _advanced(ctx: InterfaceContext) -> bool:
     return ctx.images_mobilenet_pipeline or ctx.images_r2d2_sequence_buffer
 
 
+_SUPPORTED_LIDAR_ALGORITHMS = frozenset({"SAC", "REDQSAC", "IQN", "SDSAC"})
+_SUPPORTED_ADVANCED_ALGORITHMS = frozenset({"TQC", "SAC", "IQN", "SDSAC"})
+
+
 def model_policy_route(m: MainConfig) -> str:
     """Stable route id mirroring ``config_objects._train_model_and_policy`` + final SAC branch.
 
     When you add a branch there, add a route name here and map it in ``ROUTE_ACTIVE_MODEL_FIELDS``.
+    Returns ``"unsupported"`` for algorithm+interface pairs that have no runtime branch
+    so that ``--explain-active-config`` can report the problem instead of crashing.
     """
     alg = m.algorithm.name
     arch = m.model
@@ -71,6 +77,8 @@ def model_policy_route(m: MainConfig) -> str:
     adv = _advanced(ctx)
 
     if ctx.use_lidar_observations:
+        if alg not in _SUPPORTED_LIDAR_ALGORITHMS:
+            return "unsupported"
         if alg in ("IQN", "SDSAC"):
             return "lidar_iqn" if alg == "IQN" else "lidar_sdsac"
         if (ctx.lidar_progress_includes_images or ctx.trackmap_includes_images) and alg == "SAC":
@@ -79,11 +87,11 @@ def model_policy_route(m: MainConfig) -> str:
             return "lidar_residual"
         if alg in ("SAC", "REDQSAC"):
             return "lidar_plain_mlp"
-        raise ValueError(
-            f"effective_config: unsupported LIDAR algorithm {alg!r} (expected SAC or REDQSAC here)."
-        )
+        return "unsupported"
 
     if adv:
+        if alg not in _SUPPORTED_ADVANCED_ALGORITHMS:
+            return "unsupported"
         if alg in ("IQN", "SDSAC"):
             return "adv_iqn" if alg == "IQN" else "adv_sdsac"
         if (
@@ -106,10 +114,7 @@ def model_policy_route(m: MainConfig) -> str:
         return "adv_sophy_images"
 
     if alg != "SAC":
-        raise ValueError(
-            f"effective_config: algorithm {alg!r} on vanilla image interface is unsupported "
-            "(expected SAC)."
-        )
+        return "unsupported"
     return "vanilla_gray" if ctx.img_grayscale else "vanilla_color"
 
 
@@ -251,14 +256,27 @@ def inactive_model_fields_report(m: MainConfig) -> list[tuple[str, Any, str]]:
 def explain_active_config_text(m: MainConfig) -> str:
     """Human-readable report for CLI."""
     route = model_policy_route(m)
-    active = sorted(active_model_field_names(m))
     lines = [
         f"policy_route: {route}",
         f"algorithm.name: {m.algorithm.name}",
         f"environment.rtgym_interface: {m.environment.rtgym_interface}",
-        "",
-        "Active model fields (this run):",
     ]
+    if route == "unsupported":
+        lines.append("")
+        lines.append(
+            "WARNING: this algorithm + interface combination has no runtime branch. "
+            "Training will fail at startup. Change algorithm.name or "
+            "environment.rtgym_interface to a supported pairing."
+        )
+        lines.append("")
+        lines.append("All model fields (no route matched):")
+        for k in sorted(_all_model_field_names(m)):
+            lines.append(f"  - {k}")
+        return "\n".join(lines) + "\n"
+
+    active = sorted(active_model_field_names(m))
+    lines.append("")
+    lines.append("Active model fields (this run):")
     lines.extend(f"  - {k}" for k in active)
     inactive = inactive_model_fields_report(m)
     if inactive:

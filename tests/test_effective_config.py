@@ -108,3 +108,91 @@ def test_main_config_snapshot_redacted_is_jsonish_tree():
     w = s.get("wandb")
     if isinstance(w, dict) and "api_key" in w and w["api_key"]:
         assert w["api_key"] == "<redacted>"
+
+
+# ---------------------------------------------------------------------------
+# Route alignment: every supported (algorithm, interface) pair must produce
+# a known route in model_policy_route and never "unsupported".
+# ---------------------------------------------------------------------------
+
+_LIDAR_IFACE = "LIDAR"
+_ADVANCED_IFACE = "TQCGRAB_IMAGES"
+_VANILLA_IFACE = "TM2020"
+
+_SUPPORTED_LIDAR = [("SAC", _LIDAR_IFACE), ("REDQSAC", _LIDAR_IFACE),
+                    ("IQN", _LIDAR_IFACE), ("SDSAC", _LIDAR_IFACE)]
+_SUPPORTED_ADVANCED = [("TQC", _ADVANCED_IFACE), ("SAC", _ADVANCED_IFACE),
+                       ("IQN", _ADVANCED_IFACE), ("SDSAC", _ADVANCED_IFACE)]
+_SUPPORTED_VANILLA = [("SAC", _VANILLA_IFACE)]
+
+_UNSUPPORTED = [
+    ("TQC", _LIDAR_IFACE),
+    ("REDQSAC", _ADVANCED_IFACE),
+    ("TQC", _VANILLA_IFACE),
+    ("IQN", _VANILLA_IFACE),
+    ("SDSAC", _VANILLA_IFACE),
+    ("REDQSAC", _VANILLA_IFACE),
+]
+
+
+@pytest.mark.parametrize("alg,iface", _SUPPORTED_LIDAR + _SUPPORTED_ADVANCED + _SUPPORTED_VANILLA)
+def test_route_is_known_for_supported_combos(alg, iface):
+    d = MAIN_CONFIG.model_dump()
+    d["algorithm"]["name"] = alg
+    d["environment"]["rtgym_interface"] = iface
+    m = MainConfig.model_validate(d)
+    route = model_policy_route(m)
+    assert route != "unsupported", f"{alg}+{iface} should be supported but got 'unsupported'"
+
+
+@pytest.mark.parametrize("alg,iface", _UNSUPPORTED)
+def test_route_is_unsupported_for_invalid_combos(alg, iface):
+    d = MAIN_CONFIG.model_dump()
+    d["algorithm"]["name"] = alg
+    d["environment"]["rtgym_interface"] = iface
+    m = MainConfig.model_validate(d)
+    route = model_policy_route(m)
+    assert route == "unsupported", f"{alg}+{iface} should be unsupported but got {route!r}"
+
+
+def test_explain_active_config_unsupported_does_not_crash():
+    from tmrl.config.effective_config import explain_active_config_text
+    d = MAIN_CONFIG.model_dump()
+    d["algorithm"]["name"] = "TQC"
+    d["environment"]["rtgym_interface"] = "LIDAR"
+    m = MainConfig.model_validate(d)
+    text = explain_active_config_text(m)
+    assert "unsupported" in text.lower()
+    assert "WARNING" in text
+
+
+# ---------------------------------------------------------------------------
+# run.name path-traversal validation
+# ---------------------------------------------------------------------------
+
+def test_run_name_rejects_path_separator():
+    d = MAIN_CONFIG.model_dump()
+    d["run"]["name"] = "../../etc/evil"
+    with pytest.raises(ValueError, match="path separators"):
+        MainConfig.model_validate(d)
+
+
+def test_run_name_rejects_forward_slash():
+    d = MAIN_CONFIG.model_dump()
+    d["run"]["name"] = "sub/dir"
+    with pytest.raises(ValueError, match="path separators"):
+        MainConfig.model_validate(d)
+
+
+def test_run_name_rejects_backslash():
+    d = MAIN_CONFIG.model_dump()
+    d["run"]["name"] = r"sub\dir"
+    with pytest.raises(ValueError, match="path separators"):
+        MainConfig.model_validate(d)
+
+
+def test_run_name_accepts_safe_identifier():
+    d = MAIN_CONFIG.model_dump()
+    d["run"]["name"] = "my_experiment-01"
+    m = MainConfig.model_validate(d)
+    assert m.run.name == "my_experiment-01"

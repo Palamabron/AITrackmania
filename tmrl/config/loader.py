@@ -54,6 +54,9 @@ def _compose_hydra_dict() -> dict[str, Any]:
     hydra_overrides_raw = os.environ.get(HYDRA_OVERRIDES_ENV, "").strip()
     hydra_overrides: list[str] = []
     if hydra_overrides_raw:
+        # Preferred: JSON array, e.g. '["model=mlp_actor_critic", "algorithm=sac"]'.
+        # Fallback: bare comma-separated string (will break if any override value
+        # itself contains a comma; use the JSON array form in that case).
         try:
             parsed = json.loads(hydra_overrides_raw)
         except json.JSONDecodeError:
@@ -63,6 +66,12 @@ def _compose_hydra_dict() -> dict[str, Any]:
                 raise TypeError(f"{HYDRA_OVERRIDES_ENV} JSON list must contain only strings")
             hydra_overrides = [item.strip() for item in parsed if item.strip()]
         else:
+            logger.warning(
+                "{} is not a JSON array; falling back to comma-split. "
+                "Prefer JSON array form to avoid ambiguity with values containing commas, "
+                'e.g. \'["model=mlp_actor_critic","algorithm=sac"]\'.',
+                HYDRA_OVERRIDES_ENV,
+            )
             hydra_overrides = [
                 item.strip() for item in hydra_overrides_raw.split(",") if item.strip()
             ]

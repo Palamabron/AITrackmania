@@ -97,6 +97,13 @@ def _validate_runtime_compatibility() -> None:
     vanilla_image_iface = not cfg.PRAGMA_LIDAR and not advanced_iface
     rtgym_iface = M.environment.rtgym_interface
 
+    if cfg.PRAGMA_LIDAR and ALG_NAME not in ("SAC", "REDQSAC", "IQN", "SDSAC"):
+        raise ValueError(
+            f"Unsupported combination: algorithm.name={ALG_NAME!r} "
+            f"with LIDAR interface {rtgym_iface!r}. "
+            "Supported LIDAR algorithms: SAC, REDQSAC, IQN, SDSAC."
+        )
+
     if vanilla_image_iface and ALG_NAME != "SAC":
         raise ValueError(
             f"Unsupported combination: algorithm.name={ALG_NAME!r} "
