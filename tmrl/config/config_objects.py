@@ -131,7 +131,7 @@ def _model_arch_kwargs() -> dict[str, Any]:
     arch = model_cfg
     _rnn_hidden = arch.rnn_hidden_size if arch.rnn_hidden_size > 0 else None
     return {
-        "seed": 42,
+        "seed": int(M.environment.seed),
         "split_track_observation": arch.split_track_observation,
         "track_encoder": arch.track_encoder,
         "use_rnn": arch.use_rnn,
@@ -250,7 +250,7 @@ def _train_model_and_policy() -> tuple[Any, Any]:
                 "rnn_sizes": list(arch.rnn_sizes),
                 "rnn_lens": list(arch.rnn_lens),
                 "api_mlp_sizes": list(arch.api_mlp_sizes),
-                "seed": 42,
+                "seed": int(M.environment.seed),
             }
             return (
                 partial(impala_ac_cls, **_impala_kw),
@@ -280,7 +280,7 @@ def _train_model_and_policy() -> tuple[Any, Any]:
             res_sophy_kw = {
                 "hidden_dim": arch.residual_mlp_hidden_dim,
                 "num_blocks": arch.residual_mlp_num_blocks,
-                "seed": 42,
+                "seed": int(M.environment.seed),
             }
             _actor_kw = {
                 **res_sophy_kw,
@@ -313,7 +313,7 @@ def _train_model_and_policy() -> tuple[Any, Any]:
             "rnn_sizes": list(arch.rnn_sizes),
             "rnn_lens": list(arch.rnn_lens),
             "api_mlp_sizes": list(arch.api_mlp_sizes),
-            "seed": 42,
+            "seed": int(M.environment.seed),
         }
         return (
             partial(sophy_ac_cls, **_sophy_kw),
@@ -593,8 +593,8 @@ def _build_agent() -> Any:
             debug_mode=M.debugger.debug_mode,
             mixed_precision=bool(alg.mixed_precision),
             mixed_precision_dtype=str(alg.mixed_precision_dtype),
+            seed=int(M.environment.seed),
         )
-    if ALG_NAME == "TQC":
         tqc_cls = ALGORITHMS.get("TQC")
         _wd = float(alg.weight_decay)
         sched = M.training.scheduler
@@ -642,6 +642,7 @@ def _build_agent() -> Any:
             scheduler_last_epoch=int(sched.last_epoch),
             mixed_precision=bool(alg.mixed_precision),
             mixed_precision_dtype=str(alg.mixed_precision_dtype),
+            seed=int(M.environment.seed),
         )
     if ALG_NAME == "REDQSAC":
         redq_cls = ALGORITHMS.get("REDQSAC")
@@ -654,6 +655,7 @@ def _build_agent() -> Any:
             weight_decay=float(alg.weight_decay),
             mixed_precision=bool(alg.mixed_precision),
             mixed_precision_dtype=str(alg.mixed_precision_dtype),
+            seed=int(M.environment.seed),
         )
     if ALG_NAME == "IQN":
         iqn_cls = ALGORITHMS.get("IQN")
@@ -710,6 +712,7 @@ def _build_agent() -> Any:
             r2d2_burn_in=int(_iqn_arch_kw["r2d2_burn_in"]),
             gnn_hidden=int(_iqn_arch_kw["gnn_hidden"]),
             gnn_layers=int(_iqn_arch_kw["gnn_layers"]),
+            seed=int(M.environment.seed),
         )
     if ALG_NAME == "SDSAC":
         sdsac_cls = ALGORITHMS.get("SDSAC")
@@ -744,6 +747,7 @@ def _build_agent() -> Any:
             r2d2_sequence_length=int(alg.r2d2_sequence_length),
             mixed_precision=bool(alg.mixed_precision),
             mixed_precision_dtype=str(alg.mixed_precision_dtype),
+            seed=int(M.environment.seed),
         )
     raise ValueError(f"Unknown algorithm: {ALG_NAME}")
 

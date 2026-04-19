@@ -6,11 +6,13 @@ import numpy as np
 import torch
 
 
-def set_seed(seed: int = 42) -> None:
+def set_seed(seed: int) -> None:
     """Set random seeds for reproducibility.
 
     Args:
-        seed: Random seed for NumPy and PyTorch.
+        seed: Random seed for NumPy and PyTorch.  Must be supplied explicitly;
+            use ``MAIN_CONFIG.environment.seed`` (or equivalent) at the call site
+            so seeding is driven by the validated config rather than a hard-coded default.
     """
     np.random.seed(seed)
     torch.manual_seed(seed)

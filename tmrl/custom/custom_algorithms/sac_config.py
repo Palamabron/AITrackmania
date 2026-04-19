@@ -79,6 +79,9 @@ class SpinupSacAgentConfig(TrainingAgent):
     scheduler_eta_min: float
     scheduler_last_epoch: int
 
+    # --- Required: reproducibility ---
+    seed: int
+
     # --- Structural defaults ---
     device: str | None = None
     target_entropy: float | None = None
@@ -86,7 +89,7 @@ class SpinupSacAgentConfig(TrainingAgent):
     model_nograd = cached_property(lambda self: no_grad(copy_shared(self.model)))
 
     def __post_init__(self):
-        set_seed()
+        set_seed(self.seed)
         if self.n_steps == 1:
             self.n_steps = 0
         observation_space, action_space = self.observation_space, self.action_space

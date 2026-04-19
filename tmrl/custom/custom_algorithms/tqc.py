@@ -116,6 +116,9 @@ class TQCAgent(TrainingAgent):
     mixed_precision: bool
     mixed_precision_dtype: str
 
+    # --- Required: reproducibility ---
+    seed: int
+
     # --- Structural defaults (None = auto-detect / optional) ---
     device: str | None = None
     target_entropy: float | None = None
@@ -126,7 +129,7 @@ class TQCAgent(TrainingAgent):
 
     def __post_init__(self) -> None:
         """Build model, target, optimizers, and entropy coefficient (if learned)."""
-        set_seed()
+        set_seed(self.seed)
         if self.n_steps == 1:
             self.n_steps = 0
         observation_space, action_space = self.observation_space, self.action_space

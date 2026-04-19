@@ -227,13 +227,16 @@ class SDSACAgent(TrainingAgent):
     mixed_precision: bool
     mixed_precision_dtype: str
 
+    # --- Required: reproducibility ---
+    seed: int
+
     # --- Structural defaults (None = auto-detect / optional) ---
     device: str | None = None
 
     model_nograd = cached_property(lambda self: no_grad(copy_shared(self.model)))
 
     def __post_init__(self) -> None:
-        set_seed()
+        set_seed(self.seed)
         device = self.device or ("cuda" if torch.cuda.is_available() else "cpu")
 
         self.model = DiscreteSACNetwork(

@@ -10,7 +10,7 @@ import torch
 from loguru import logger
 from torch.optim import SGD, Adam, AdamW
 
-from tmrl.custom.custom_algorithms._common import amp_setup, autocast_context
+from tmrl.custom.custom_algorithms._common import amp_setup, autocast_context, set_seed
 from tmrl.custom.utils.nn import copy_shared, no_grad
 from tmrl.registry import ALGORITHMS
 from tmrl.training import TrainingAgent
@@ -44,6 +44,7 @@ class SpinupSacAgent(TrainingAgent):
     optimizer_critic: str
     mixed_precision: bool
     mixed_precision_dtype: str
+    seed: int
     device: str | None = None
     target_entropy: float | None = None
     betas_actor: tuple[float, ...] | None = None
@@ -56,6 +57,7 @@ class SpinupSacAgent(TrainingAgent):
 
     def __post_init__(self) -> None:
         """Build model, target, optimizers, and entropy coefficient (if learned)."""
+        set_seed(self.seed)
         observation_space, action_space = self.observation_space, self.action_space
         device = self.device or ("cuda" if torch.cuda.is_available() else "cpu")
         model = self.model_cls(observation_space, action_space)
