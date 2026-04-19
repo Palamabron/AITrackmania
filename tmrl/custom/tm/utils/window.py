@@ -55,7 +55,13 @@ if platform.system() == "Windows":
             win32gui.ReleaseDC(hwnd, hdc)
             return img
 
-        def move_and_resize(self, x=1, y=0, w=256, h=128):
+        def move_and_resize(self, x=1, y=0, w=None, h=None):
+            from tmrl.config.constants import WINDOW_HEIGHT, WINDOW_WIDTH
+
+            if w is None:
+                w = WINDOW_WIDTH
+            if h is None:
+                h = WINDOW_HEIGHT
             x += self.x_origin_offset
             y += self.y_origin_offset
             w += self.w_diff
@@ -198,7 +204,13 @@ elif platform.system() == "Linux":
                 logger.error("failed to capture screenshot")
                 raise e
 
-        def move_and_resize(self, x=0, y=0, w=256, h=128):
+        def move_and_resize(self, x=0, y=0, w=None, h=None):
+            from tmrl.config.constants import WINDOW_HEIGHT, WINDOW_WIDTH
+
+            if w is None:
+                w = WINDOW_WIDTH
+            if h is None:
+                h = WINDOW_HEIGHT
             logger.debug(f"prepare {self.window_name} to {w}x{h} @ {x}, {y}")
 
             try:
