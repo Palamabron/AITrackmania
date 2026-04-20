@@ -1,0 +1,204 @@
+"""Shared TrackMania 2020 rtgym interface mechanics and OpenPlanet client hook."""
+
+from __future__ import annotations
+
+import platform
+import time
+from abc import ABC
+from collections import deque
+
+import numpy as np
+from loguru import logger
+from rtgym import RealTimeGymInterface
+
+import tmrl.config as cfg
+from tmrl.custom.tm.utils.auto_drift import compute_drift_steer, is_auto_drift_action
+from tmrl.custom.tm.utils.compute_reward import RewardFunction
+from tmrl.custom.tm.utils.control_gamepad import (
+    control_gamepad,
+    gamepad_close_finish_pop_up_tm20,
+    gamepad_reset,
+)
+from tmrl.custom.tm.utils.control_keyboard import apply_control, keyres
+from tmrl.custom.tm.utils.control_mouse import mouse_close_finish_pop_up_tm20
+from tmrl.custom.tm.utils.discrete_control import (
+    BRAKE_TAP_DURATION_S,
+    build_yosh_action_table,
+    discrete_index_to_control,
+    is_brake_tap,
+)
+from tmrl.custom.tm.utils.tools import TM2020OpenPlanetClient, save_ghost
+from tmrl.custom.tm.utils.window import WindowInterface
+
+
+class TrackMania2020InterfaceBase(RealTimeGymInterface, ABC):
+    """Control, window init, reward wiring, image ring buffer, and OpenPlanet client creation."""
+
+    def _build_openplanet_client(self) -> TM2020OpenPlanetClient:
+        """Override for alternate GrabData layouts (e.g. TQC 20-float)."""
+        return TM2020OpenPlanetClient()
+
+    def _push_img(self, img: np.ndarray) -> None:
+        if self._img_buf is None or self._img_buf.shape[1:] != img.shape:
+            self._img_buf = np.zeros((self.img_hist_len, *img.shape), dtype=img.dtype)
+            self._img_hist_count = 0
+            self._img_hist_cursor = 0
+        assert self._img_buf is not None
+        self._img_buf[self._img_hist_cursor] = img
+        self._img_hist_cursor = (self._img_hist_cursor + 1) % self.img_hist_len
+        if self._img_hist_count < self.img_hist_len:
+            self._img_hist_count += 1
+
+    def _get_img_hist_array(self) -> np.ndarray:
+        if self._img_buf is None or self._img_hist_count == 0:
+            return np.zeros((self.img_hist_len, 1, 1), dtype=np.uint8)
+        if self._img_hist_count < self.img_hist_len:
+            res = np.repeat(self._img_buf[:1], self.img_hist_len, axis=0)
+            res[-self._img_hist_count :] = self._img_buf[: self._img_hist_count]
+            return res
+        if self._img_hist_cursor == 0:
+            return self._img_buf.copy()
+        idx = (
+            np.arange(self.img_hist_len, dtype=np.int64) + self._img_hist_cursor
+        ) % self.img_hist_len
+        return self._img_buf[idx]
+
+    def initialize_common(self):
+        """Initializes the window interface, reward function, and game client."""
+        if self.gamepad:
+            try:
+                import vgamepad as vg
+
+                self.j = vg.VX360Gamepad()
+                self.j.register_notification(callback_function=self.crash_callback)
+                logger.info("Virtual gamepad (Xbox 360) initialized for control.")
+            except OSError as e:
+                if "libevdev" in str(e) or "libevdev" in str(e.__cause__ or ""):
+                    raise RuntimeError(
+                        "Virtual gamepad (vgamepad) requires libevdev on Linux. "
+                        "Worker likely in WSL while TrackMania runs on Windows."
+                    ) from e
+                raise
+            except Exception as e:
+                err_msg = str(e).lower()
+                if platform.system() == "Windows" and (
+                    "vigem" in err_msg or "driver" in err_msg or "device" in err_msg
+                ):
+                    raise RuntimeError(
+                        "Virtual gamepad failed on Windows. Install ViGEmBus driver."
+                    ) from e
+                raise
+        else:
+            logger.info("Using keyboard for control (VIRTUAL_GAMEPAD=false).")
+        self.window_interface = WindowInterface("Trackmania")
+        self.window_interface.move_and_resize()
+        self.last_time = time.time()
+        self.img_hist = deque(maxlen=self.img_hist_len)
+        self.img = None
+        self._img_buf = None
+        self._img_hist_count = 0
+        self._img_hist_cursor = 0
+        self.reward_function = RewardFunction(
+            reward_data_path=cfg.REWARD_PATH,
+            nb_obs_forward=cfg.REWARD_CONFIG.get("CHECK_FORWARD", 500),
+            nb_obs_backward=cfg.REWARD_CONFIG.get("CHECK_BACKWARD", 10),
+            min_nb_steps_before_failure=self.min_nb_steps_before_failure,
+            max_dist_from_traj=cfg.REWARD_CONFIG.get("MAX_STRAY", 50.0),
+            crash_penalty=self.crash_penalty,
+            constant_penalty=self.constant_penalty,
+        )
+        if self.client is None:
+            self.client = self._build_openplanet_client()
+        self.is_crashed = False
+        self.crash_cooldown = 0
+        self.crash_curr = self.crash_cooldown
+
+    def crash_callback(self, client, target, large_motor, small_motor, led_number, user_data):
+        self.is_crashed = large_motor > 100 and self.crash_cooldown <= 0
+        if self.is_crashed:
+            logger.debug("crashed: True (episode will terminate)")
+            self.crash_cooldown = 10
+
+    def send_control(self, control):
+        if self.record_human:
+            return
+        if control is not None and self.discrete_action_table is not None:
+            idx = int(np.asarray(control).flat[0])
+            control = discrete_index_to_control(idx, self.discrete_action_table)
+        if control is not None and is_auto_drift_action(control):
+            drift_steer = compute_drift_steer(self._last_speed_kmh)
+            control = control.copy()
+            control[2] = drift_steer
+        if self.gamepad:
+            if control is not None:
+                if self.j is None:
+                    logger.error("Virtual gamepad is None; cannot send control.")
+                    return
+                c = np.asarray(control, dtype=np.float32).ravel()
+                control = c
+                if not self._send_control_logged:
+                    self._send_control_logged = True
+                    gas = float(control[0]) if len(control) > 0 else 0
+                    brake = float(control[1]) if len(control) > 1 else 0
+                    steer = float(control[2]) if len(control) > 2 else 0
+                    logger.info(
+                        f"First send_control: gas={gas:.2f} brake={brake:.2f} "
+                        f"steer={steer:.2f} (virtual gamepad)"
+                    )
+                if is_brake_tap(control):
+                    tap_ctrl = control.copy()
+                    tap_ctrl[1] = 1.0
+                    control_gamepad(self.j, tap_ctrl)
+                    time.sleep(BRAKE_TAP_DURATION_S)
+                    tap_ctrl[1] = 0.0
+                    control_gamepad(self.j, tap_ctrl)
+                else:
+                    control_gamepad(self.j, control)
+        else:
+            if control is not None:
+                actions = []
+                if control[0] > 0:
+                    actions.append("f")
+                if control[1] > 0:
+                    actions.append("b")
+                if control[2] > 0.5:
+                    actions.append("r")
+                elif control[2] < -0.5:
+                    actions.append("l")
+                apply_control(actions)
+
+    def reset_race(self):
+        if self.gamepad:
+            gamepad_reset(self.j)
+        else:
+            keyres()
+
+    def reset_common(self):
+        if not self.initialized:
+            self.initialize()
+        if self.record_human:
+            self.record_human = False
+            self.send_control(np.array([0.0, 0.0, 0.0], dtype=np.float32))
+            self.record_human = True
+        else:
+            self.send_control(self.get_default_action())
+        self.reset_race()
+        time_sleep = (
+            max(0, cfg.SLEEP_TIME_AT_RESET - 0.1) if self.gamepad else cfg.SLEEP_TIME_AT_RESET
+        )
+        time.sleep(time_sleep)
+
+    def close_finish_pop_up_tm20(self):
+        if self.gamepad:
+            gamepad_close_finish_pop_up_tm20(self.j)
+        else:
+            mouse_close_finish_pop_up_tm20(small_window=self.small_window)
+
+    def wait(self):
+        self.send_control(self.get_default_action())
+        if self.save_replays:
+            save_ghost()
+            time.sleep(1.0)
+        self.reset_race()
+        time.sleep(0.5)
+        self.close_finish_pop_up_tm20()

@@ -19,12 +19,36 @@ class TM2020InterfaceTQC(TM2020InterfaceIMPALASophy):
     and processes the 20-float data packets into observations for the RL agent.
     """
 
-    def initialize_common(self):
-        """
-        Initializes the common components of the interface, including the game client.
-        """
-        self.client = TM2020OpenPlanetClient(port=9000, nb_floats=TQC_GRAB_NB_FLOATS)
-        super().initialize_common()
+    def __init__(self, include_camera_images: bool = False, **kwargs):
+        super().__init__(**kwargs)
+        self.include_camera_images = include_camera_images
+
+    def _build_openplanet_client(self):
+        return TM2020OpenPlanetClient(port=9000, nb_floats=TQC_GRAB_NB_FLOATS)
+
+    def get_observation_space(self):
+        base_spaces = super().get_observation_space()
+        if not self.include_camera_images:
+            return base_spaces
+        spaces_list = list(base_spaces.spaces)
+        h, w = cfg.IMG_HEIGHT, cfg.IMG_WIDTH
+        if cfg.GRAYSCALE:
+            img_space = spaces.Box(
+                low=0.0, high=255.0, shape=(cfg.IMG_HIST_LEN, h, w), dtype=np.float32
+            )
+        else:
+            img_space = spaces.Box(
+                low=0.0, high=255.0, shape=(cfg.IMG_HIST_LEN, h, w, 3), dtype=np.float32
+            )
+        spaces_list.append(img_space)
+        return spaces.Tuple(tuple(spaces_list))
+
+    def _capture_and_process_image_tqc(self):
+        assert self.window_interface is not None
+        img = self.window_interface.screenshot()[:, :, :3]
+        img = cv2.resize(img, (cfg.IMG_WIDTH, cfg.IMG_HEIGHT))
+        img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if cfg.GRAYSCALE else img[:, :, ::-1]
+        return img.astype(np.float32)
 
     def get_obs_rew_terminated_info(self):
         """
@@ -176,6 +200,11 @@ class TM2020InterfaceTQC(TM2020InterfaceIMPALASophy):
             terminated = False
 
         reward = np.float32(rew)
+        if self.include_camera_images:
+            img = self._capture_and_process_image_tqc()
+            self._push_img(img)
+            total_obs = list(total_obs)
+            total_obs.append(self._get_img_hist_array())
         return total_obs, reward, terminated, info
 
     def reset(self, seed=None, options=None):
@@ -272,44 +301,17 @@ class TM2020InterfaceTQC(TM2020InterfaceIMPALASophy):
 
         self.reward_function.reset()
         info = {"reward_sum": 0.0}
+        if self.include_camera_images:
+            img = self._capture_and_process_image_tqc()
+            for _ in range(self.img_hist_len):
+                self._push_img(img)
+            total_obs = list(total_obs)
+            total_obs.append(self._get_img_hist_array())
         return total_obs, info
 
 
 class TM2020InterfaceTQCWithImages(TM2020InterfaceTQC):
-    def get_observation_space(self):
-        base_spaces = super().get_observation_space()
-        spaces_list = list(base_spaces.spaces)
-        h, w = cfg.IMG_HEIGHT, cfg.IMG_WIDTH
-        if cfg.GRAYSCALE:
-            img_space = spaces.Box(
-                low=0.0, high=255.0, shape=(cfg.IMG_HIST_LEN, h, w), dtype=np.float32
-            )
-        else:
-            img_space = spaces.Box(
-                low=0.0, high=255.0, shape=(cfg.IMG_HIST_LEN, h, w, 3), dtype=np.float32
-            )
-        spaces_list.append(img_space)
-        return spaces.Tuple(tuple(spaces_list))
+    """TQC telemetry plus camera frames; equivalent to TM2020InterfaceTQC(include_camera_images=True)."""
 
-    def _capture_and_process_image(self):
-        img = self.window_interface.screenshot()[:, :, :3]
-        img = cv2.resize(img, (cfg.IMG_WIDTH, cfg.IMG_HEIGHT))
-        img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if cfg.GRAYSCALE else img[:, :, ::-1]
-        return img.astype(np.float32)
-
-    def get_obs_rew_terminated_info(self):
-        total_obs, reward, terminated, info = super().get_obs_rew_terminated_info()
-        img = self._capture_and_process_image()
-        self._push_img(img)
-        imgs = self._get_img_hist_array()
-        total_obs.append(imgs)
-        return total_obs, reward, terminated, info
-
-    def reset(self, seed=None, options=None):
-        total_obs, info = super().reset(seed=seed, options=options)
-        img = self._capture_and_process_image()
-        for _ in range(self.img_hist_len):
-            self._push_img(img)
-        imgs = self._get_img_hist_array()
-        total_obs.append(imgs)
-        return total_obs, info
+    def __init__(self, **kwargs):
+        super().__init__(include_camera_images=True, **kwargs)
