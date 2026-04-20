@@ -20,7 +20,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from tmrl.actor import TorchActorModule
-from tmrl.registry import MODELS
 from tmrl.custom.models.hybrid_input.sophy import (
     _build_track_conv1d_branch,
     _build_track_gnn_branch,
@@ -31,6 +30,7 @@ from tmrl.custom.models.shared.neural_network_blocks import (
     residual_mlp_backbone,
     simba_v2_backbone,
 )
+from tmrl.registry import MODELS
 
 
 class CosineEmbedding(nn.Module):
@@ -64,18 +64,20 @@ class CosineEmbedding(nn.Module):
         return F.relu(self.linear(cos_features))
 
 
-_IQN_BACKBONE_KWARGS = frozenset({
-    "split_track_observation",
-    "track_encoder",
-    "use_rnn",
-    "rnn_hidden_size",
-    "api_layernorm",
-    "use_simbav2",
-    "r2d2_sequence_length",
-    "r2d2_burn_in",
-    "gnn_hidden",
-    "gnn_layers",
-})
+_IQN_BACKBONE_KWARGS = frozenset(
+    {
+        "split_track_observation",
+        "track_encoder",
+        "use_rnn",
+        "rnn_hidden_size",
+        "api_layernorm",
+        "use_simbav2",
+        "r2d2_sequence_length",
+        "r2d2_burn_in",
+        "gnn_hidden",
+        "gnn_layers",
+    }
+)
 
 
 class IQNFeatureBackbone(nn.Module):

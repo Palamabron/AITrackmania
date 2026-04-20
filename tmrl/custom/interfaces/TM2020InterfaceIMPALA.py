@@ -139,7 +139,8 @@ class TM2020InterfaceIMPALA(TM2020Interface):
         obs must be a list of numpy arrays
         """
         data, img = self.grab_data_and_img()
-        assert self.reward_function is not None and self.img_hist is not None
+        assert self.reward_function is not None
+        assert self.img_hist is not None
         # print(f"data: {data}")
         cur_cp = int(data[0])
         cur_lap = int(data[1])
@@ -240,7 +241,8 @@ class TM2020InterfaceIMPALA(TM2020Interface):
         # else:
         self.reset_common()
         data, img = self.grab_data_and_img()
-        assert self.reward_function is not None and self.img_hist is not None
+        assert self.reward_function is not None
+        assert self.img_hist is not None
 
         self.cur_lap = 0
         self.cur_checkpoint = 0

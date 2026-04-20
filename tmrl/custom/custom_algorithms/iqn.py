@@ -547,9 +547,7 @@ class IQNAgent(TrainingAgent):
             current_for_loss = _signed_value_rescale(current_for_loss, self.value_rescaling_eps)
             target_for_loss = _signed_value_rescale(target_for_loss, self.value_rescaling_eps)
 
-        loss = _quantile_huber_loss(
-            current_for_loss, target_for_loss, tau, kappa=self.huber_kappa
-        )
+        loss = _quantile_huber_loss(current_for_loss, target_for_loss, tau, kappa=self.huber_kappa)
 
         self.optimizer.zero_grad()
         if self.use_mixed_precision:
@@ -598,9 +596,7 @@ class IQNAgent(TrainingAgent):
         if self.log_target_stats:
             with torch.no_grad():
                 td_abs = (target.mean(dim=1) - current_q.mean(dim=1)).abs()
-                td_p95 = (
-                    torch.quantile(td_abs, 0.95) if td_abs.numel() > 1 else td_abs.max()
-                )
+                td_p95 = torch.quantile(td_abs, 0.95) if td_abs.numel() > 1 else td_abs.max()
                 ret["q/target_mean"] = _tensor_to_scalar(target.mean())
                 ret["q/target_max"] = _tensor_to_scalar(target.max())
                 ret["debug/td_abs_mean"] = _tensor_to_scalar(td_abs.mean())

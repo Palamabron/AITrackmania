@@ -14,7 +14,8 @@ class TM2020InterfaceLidarProgress(TM2020InterfaceLidar):
         """
         self.reset_common()
         img, speed, _data = self.grab_lidar_speed_and_data()
-        assert self.img_hist is not None and self.reward_function is not None
+        assert self.img_hist is not None
+        assert self.reward_function is not None
         for _ in range(self.img_hist_len):
             self.img_hist.append(img)
         imgs = np.array(list(self.img_hist), dtype="float32")
@@ -29,7 +30,9 @@ class TM2020InterfaceLidarProgress(TM2020InterfaceLidar):
         obs must be a list of numpy arrays
         """
         img, speed, data = self.grab_lidar_speed_and_data()
-        assert self.client is not None and self.img_hist is not None and self.reward_function is not None
+        assert self.client is not None
+        assert self.img_hist is not None
+        assert self.reward_function is not None
         _, (_xi, _yi, _zi), _eoti = openplanet_grab_indices(self.client.nb_floats)
         rew, terminated, _failure_counter = self.reward_function.compute_reward(
             pos=np.array([data[_xi], data[_yi], data[_zi]])

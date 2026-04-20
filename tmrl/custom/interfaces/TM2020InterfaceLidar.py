@@ -23,7 +23,9 @@ class TM2020InterfaceLidar(TM2020Interface):
         self.lidar = None
 
     def grab_lidar_speed_and_data(self):
-        assert self.window_interface is not None and self.client is not None and self.lidar is not None
+        assert self.window_interface is not None
+        assert self.client is not None
+        assert self.lidar is not None
         img = self.window_interface.screenshot()[:, :, :3]
         data = self.client.retrieve_data()
         _si, _, _ = openplanet_grab_indices(self.client.nb_floats)
@@ -44,7 +46,8 @@ class TM2020InterfaceLidar(TM2020Interface):
         """
         self.reset_common()
         img, speed, _data = self.grab_lidar_speed_and_data()
-        assert self.img_hist is not None and self.reward_function is not None
+        assert self.img_hist is not None
+        assert self.reward_function is not None
         for _ in range(self.img_hist_len):
             self.img_hist.append(img)
         imgs = np.array(list(self.img_hist), dtype="float32")
@@ -58,7 +61,9 @@ class TM2020InterfaceLidar(TM2020Interface):
         obs must be a list of numpy arrays
         """
         img, speed, data = self.grab_lidar_speed_and_data()
-        assert self.client is not None and self.img_hist is not None and self.reward_function is not None
+        assert self.client is not None
+        assert self.img_hist is not None
+        assert self.reward_function is not None
         _, (_xi, _yi, _zi), _eoti = openplanet_grab_indices(self.client.nb_floats)
         rew, terminated, _failure_counter = self.reward_function.compute_reward(
             pos=np.array([data[_xi], data[_yi], data[_zi]])

@@ -71,6 +71,7 @@ class SpinupSacAgentConfig(TrainingAgent):
     wandb_gradients: bool
     wandb_debug: bool
     weight_clipping_enabled: bool
+    clip_weights_value: float
 
     # --- Required: scheduler ---
     scheduler_name: str
@@ -228,8 +229,8 @@ class SpinupSacAgentConfig(TrainingAgent):
         self.model.q1.requires_grad_(False)
         self.model.q2.requires_grad_(False)
         if self.weight_clipping_enabled:
-            clip_model_weights(self.model.q1)
-            clip_model_weights(self.model.q2)
+            clip_model_weights(self.model.q1, self.clip_weights_value)
+            clip_model_weights(self.model.q2, self.clip_weights_value)
         with autocast_ctx():
             q1_pi = self.model.q1(o, pi)[:truncated_batch_size]
             q2_pi = self.model.q2(o, pi)[:truncated_batch_size]
@@ -249,7 +250,7 @@ class SpinupSacAgentConfig(TrainingAgent):
             self.actor_scheduler.step(epoch + batch_index / iters)
             self.critic_scheduler.step(epoch + batch_index / iters)
         if self.weight_clipping_enabled:
-            clip_model_weights(self.model.actor)
+            clip_model_weights(self.model.actor, self.clip_weights_value)
         self.model.q1.requires_grad_(True)
         self.model.q2.requires_grad_(True)
         polyak_update(self.model, self.model_target, self.polyak)

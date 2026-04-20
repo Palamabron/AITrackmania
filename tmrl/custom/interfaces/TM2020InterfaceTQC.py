@@ -30,9 +30,7 @@ class TM2020InterfaceTQC(TM2020InterfaceIMPALASophy):
         super().__init__(**kwargs)
         self.obs_speed_scale = obs_speed_scale
         self.obs_track_scale = obs_track_scale
-        self.min_steps_end_of_track = max(
-            _DEFAULT_MIN_STEPS_END_OF_TRACK, min_steps_end_of_track
-        )
+        self.min_steps_end_of_track = max(_DEFAULT_MIN_STEPS_END_OF_TRACK, min_steps_end_of_track)
         self.min_episode_length_guaranteed = min_episode_length_guaranteed
 
     def initialize_common(self):
@@ -282,7 +280,11 @@ class TM2020InterfaceTQCWithImages(TM2020InterfaceTQC):
     def get_observation_space(self):
         base_spaces = super().get_observation_space()
         spaces_list = list(base_spaces.spaces)
-        w, h = self.resize_to if self.resize_to is not None else (self.window_width, self.window_height)
+        w, h = (
+            self.resize_to
+            if self.resize_to is not None
+            else (self.window_width, self.window_height)
+        )
         if self.grayscale:
             img_space = spaces.Box(
                 low=0.0, high=255.0, shape=(self.img_hist_len, h, w), dtype=np.float32
@@ -297,7 +299,11 @@ class TM2020InterfaceTQCWithImages(TM2020InterfaceTQC):
     def _capture_and_process_image(self):
         assert self.window_interface is not None
         img = self.window_interface.screenshot()[:, :, :3]
-        w, h = self.resize_to if self.resize_to is not None else (self.window_width, self.window_height)
+        w, h = (
+            self.resize_to
+            if self.resize_to is not None
+            else (self.window_width, self.window_height)
+        )
         img = cv2.resize(img, (w, h))
         img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if self.grayscale else img[:, :, ::-1]
         return img.astype(np.float32)

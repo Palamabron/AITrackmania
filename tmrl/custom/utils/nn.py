@@ -1,6 +1,7 @@
 # standard library imports
+from collections.abc import MutableMapping
 from copy import deepcopy
-from typing import Any, MutableMapping, cast
+from typing import Any, cast
 
 # third-party imports
 import numpy as np
@@ -163,7 +164,7 @@ class TanhNormal(Distribution):
         Calculates the log probability of a given value.
         """
         if hasattr(x, "pre_tanh_value"):
-            pre_tanh_value = cast(torch.Tensor, getattr(x, "pre_tanh_value"))
+            pre_tanh_value = cast(torch.Tensor, x.pre_tanh_value)
         else:
             pre_tanh_value = (torch.log(1 + x + self.epsilon) - torch.log(1 - x + self.epsilon)) / 2
         assert x.dim() == 2, "x must be 2D"
@@ -178,7 +179,7 @@ class TanhNormal(Distribution):
             sample_shape = torch.Size()
         z = self.normal.sample(sample_shape)
         out = torch.tanh(z)
-        setattr(out, "pre_tanh_value", z)
+        out.pre_tanh_value = z
         return out
 
     def rsample(self, sample_shape=None):
@@ -186,7 +187,7 @@ class TanhNormal(Distribution):
             sample_shape = torch.Size()
         z = self.normal.rsample(sample_shape)
         out = torch.tanh(z)
-        setattr(out, "pre_tanh_value", z)
+        out.pre_tanh_value = z
         return out
 
 

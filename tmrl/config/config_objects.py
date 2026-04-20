@@ -595,6 +595,7 @@ def _build_agent() -> Any:
             mixed_precision_dtype=str(alg.mixed_precision_dtype),
             seed=int(M.environment.seed),
         )
+    if ALG_NAME == "TQC":
         tqc_cls = ALGORITHMS.get("TQC")
         _wd = float(alg.weight_decay)
         sched = M.training.scheduler
@@ -619,6 +620,7 @@ def _build_agent() -> Any:
             grad_clip_actor=float(alg.grad_clip_actor),
             grad_clip_critic=float(alg.grad_clip_critic),
             weight_clipping_enabled=bool(alg.clipping_weights),
+            clip_weights_value=float(alg.clip_weights_value),
             mean_penalty_coef=float(alg.mean_penalty_coef),
             bc_lambda=float(alg.bc_lambda),
             bc_lambda_start=float(alg.bc_lambda_start),

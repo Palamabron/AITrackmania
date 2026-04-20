@@ -17,10 +17,10 @@ from torch.distributions import Normal
 from torchrl.modules import NoisyLinear
 
 from tmrl.actor import TorchActorModule
-from tmrl.registry import MODELS
 from tmrl.custom.models.shared.model_constants import LOG_STD_MAX, LOG_STD_MIN
 from tmrl.custom.models.shared.neural_network_blocks import residual_mlp_backbone, simba_v2_backbone
 from tmrl.custom.utils.nn import GSDEModule
+from tmrl.registry import MODELS
 
 
 def mlp(sizes, dim_obs, activation=nn.ReLU):
@@ -487,7 +487,9 @@ class _TrackGNN(nn.Module):
         return cast(torch.Tensor, out.mean(dim=1))
 
 
-def _build_track_gnn_branch(dim_track: int, hidden_dim: int, gnn_hidden: int = 64, gnn_layers: int = 3) -> nn.Module:
+def _build_track_gnn_branch(
+    dim_track: int, hidden_dim: int, gnn_hidden: int = 64, gnn_layers: int = 3
+) -> nn.Module:
     assert dim_track >= 3, "track dim must be at least 3"
     assert dim_track % 3 == 0, "track dim must be 6*N (3 channels)"
     num_nodes = dim_track // 3
@@ -505,7 +507,9 @@ def _build_track_gnn_branch(dim_track: int, hidden_dim: int, gnn_hidden: int = 6
     )
 
 
-def _make_backbone(input_dim: int, hidden_dim: int, num_blocks: int, use_simbav2: bool = False) -> nn.Module:
+def _make_backbone(
+    input_dim: int, hidden_dim: int, num_blocks: int, use_simbav2: bool = False
+) -> nn.Module:
     """Build residual MLP or SimbaV2 backbone depending on config."""
     if use_simbav2:
         return simba_v2_backbone(input_dim, hidden_dim, num_blocks)
@@ -591,7 +595,9 @@ class SquashedActorSophyResidual(TorchActorModule):
             if track_encoder == "spline_mlp":
                 self.track_conv = _build_track_spline_mlp_branch(dim_track, hidden_dim)
             elif track_encoder == "gnn":
-                self.track_conv = _build_track_gnn_branch(dim_track, hidden_dim, gnn_hidden=gnn_hidden, gnn_layers=gnn_layers)
+                self.track_conv = _build_track_gnn_branch(
+                    dim_track, hidden_dim, gnn_hidden=gnn_hidden, gnn_layers=gnn_layers
+                )
             else:
                 self.track_conv = _build_track_conv1d_branch(dim_track, hidden_dim)
             self.physics_proj = nn.Sequential(
@@ -607,7 +613,9 @@ class SquashedActorSophyResidual(TorchActorModule):
             else:
                 backbone_input_dim = joint_dim
             self.layernorm_joint = nn.LayerNorm(backbone_input_dim)
-            self.backbone = _make_backbone(backbone_input_dim, hidden_dim, num_blocks, use_simbav2=use_simbav2)
+            self.backbone = _make_backbone(
+                backbone_input_dim, hidden_dim, num_blocks, use_simbav2=use_simbav2
+            )
             self.layernorm_api = None
         else:
             self.layernorm_api = nn.LayerNorm(dim_obs) if api_layernorm else None
@@ -935,7 +943,9 @@ class QRCNNSophyResidual(nn.Module):
             if track_encoder == "spline_mlp":
                 self.track_conv = _build_track_spline_mlp_branch(dim_track, hidden_dim)
             elif track_encoder == "gnn":
-                self.track_conv = _build_track_gnn_branch(dim_track, hidden_dim, gnn_hidden=gnn_hidden, gnn_layers=gnn_layers)
+                self.track_conv = _build_track_gnn_branch(
+                    dim_track, hidden_dim, gnn_hidden=gnn_hidden, gnn_layers=gnn_layers
+                )
             else:
                 self.track_conv = _build_track_conv1d_branch(dim_track, hidden_dim)
             self.physics_proj = nn.Sequential(
@@ -951,7 +961,9 @@ class QRCNNSophyResidual(nn.Module):
             else:
                 backbone_input_dim = joint_dim
             self.layernorm_joint = nn.LayerNorm(backbone_input_dim)
-            self.backbone = _make_backbone(backbone_input_dim, hidden_dim, num_blocks, use_simbav2=use_simbav2)
+            self.backbone = _make_backbone(
+                backbone_input_dim, hidden_dim, num_blocks, use_simbav2=use_simbav2
+            )
             self.layernorm_api = None
         else:
             self.layernorm_api = nn.LayerNorm(dim_obs) if api_layernorm else None

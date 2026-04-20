@@ -63,7 +63,7 @@ class RunConfig(BaseModel):
         v = v.strip()
         if not v:
             raise ValueError("run.name must not be empty.")
-        if re.search(r'[/\\]|\.\.', v):
+        if re.search(r"[/\\]|\.\.", v):
             raise ValueError(
                 f"run.name={v!r} contains path separators or '..' which could cause "
                 "files to be written outside the expected directory. "

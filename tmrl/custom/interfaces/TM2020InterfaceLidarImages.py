@@ -42,7 +42,9 @@ class TM2020InterfaceLidarProgressImages(TM2020InterfaceLidarProgress):
 
     def grab_lidar_speed_data_and_image(self):
         """Screenshot once; compute LIDAR and return resized image for the model."""
-        assert self.window_interface is not None and self.client is not None and self.lidar is not None
+        assert self.window_interface is not None
+        assert self.client is not None
+        assert self.lidar is not None
         raw_img = self.window_interface.screenshot()[:, :, :3]
         data = self.client.retrieve_data()
         _si, _, _ = openplanet_grab_indices(self.client.nb_floats)
@@ -76,7 +78,8 @@ class TM2020InterfaceLidarProgressImages(TM2020InterfaceLidarProgress):
 
     def get_obs_rew_terminated_info(self):
         lidar, speed, data, img = self.grab_lidar_speed_data_and_image()
-        assert self.client is not None and self.reward_function is not None
+        assert self.client is not None
+        assert self.reward_function is not None
         assert self.img_hist is not None
         _, (_xi, _yi, _zi), _eoti = openplanet_grab_indices(self.client.nb_floats)
         rew, terminated, _failure_counter = self.reward_function.compute_reward(

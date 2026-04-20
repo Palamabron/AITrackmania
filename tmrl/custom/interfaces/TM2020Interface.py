@@ -140,9 +140,7 @@ class TM2020Interface(RealTimeGymInterface):
         self._wandb_config = wandb_config
         self.discrete_action_table: list[np.ndarray] | None = None
         if discrete_n_steer_bins > 0:
-            _, self.discrete_action_table = build_yosh_action_table(
-                n_steer=discrete_n_steer_bins
-            )
+            _, self.discrete_action_table = build_yosh_action_table(n_steer=discrete_n_steer_bins)
         self._send_control_logged = False
         self._img_buf: np.ndarray | None = None
         self._img_hist_count = 0
@@ -219,9 +217,7 @@ class TM2020Interface(RealTimeGymInterface):
         else:
             logger.info("Using keyboard for control (VIRTUAL_GAMEPAD=false).")
         self.window_interface = WindowInterface("Trackmania")
-        self.window_interface.move_and_resize(
-            w=self.window_width, h=self.window_height
-        )
+        self.window_interface.move_and_resize(w=self.window_width, h=self.window_height)
         self.last_time = time.time()
         self.img_hist = deque(maxlen=self.img_hist_len)
         self.img = None
@@ -335,7 +331,8 @@ class TM2020Interface(RealTimeGymInterface):
         Returns:
             tuple: (data, img)
         """
-        assert self.window_interface is not None and self.client is not None
+        assert self.window_interface is not None
+        assert self.client is not None
         img = self.window_interface.screenshot()[:, :, :3]  # BGR ordering
         if self.resize_to is not None:
             img = cv2.resize(img, self.resize_to)
@@ -365,9 +362,7 @@ class TM2020Interface(RealTimeGymInterface):
             self.send_control(self.get_default_action())
         self.reset_race()
         time_sleep = (
-            max(0, self.sleep_time_at_reset - 0.1)
-            if self.gamepad
-            else self.sleep_time_at_reset
+            max(0, self.sleep_time_at_reset - 0.1) if self.gamepad else self.sleep_time_at_reset
         )
         time.sleep(time_sleep)
 
@@ -417,7 +412,8 @@ class TM2020Interface(RealTimeGymInterface):
             tuple: (observation, reward, terminated, info)
         """
         data, img = self.grab_data_and_img()
-        assert self.client is not None and self.reward_function is not None
+        assert self.client is not None
+        assert self.reward_function is not None
         _si, (_xi, _yi, _zi), _eoti = openplanet_grab_indices(self.client.nb_floats)
         self._speed_arr[0] = data[_si]
         self._last_speed_kmh = float(data[_si])

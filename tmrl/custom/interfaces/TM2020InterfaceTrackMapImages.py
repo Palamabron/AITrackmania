@@ -107,7 +107,8 @@ class TM2020InterfaceTrackMapImages(TM2020InterfaceLidarProgress):
         return l_x, l_z, r_x, r_z
 
     def grab_speed_data_track_and_image(self):
-        assert self.window_interface is not None and self.client is not None
+        assert self.window_interface is not None
+        assert self.client is not None
         raw_img = self.window_interface.screenshot()[:, :, :3]
         data = self.client.retrieve_data()
         _si, (_xi, _yi, _zi), _ = openplanet_grab_indices(self.client.nb_floats)
@@ -147,7 +148,8 @@ class TM2020InterfaceTrackMapImages(TM2020InterfaceLidarProgress):
 
     def get_obs_rew_terminated_info(self):
         speed, data, track_information, img = self.grab_speed_data_track_and_image()
-        assert self.client is not None and self.reward_function is not None
+        assert self.client is not None
+        assert self.reward_function is not None
         _, (_xi, _yi, _zi), _eoti = openplanet_grab_indices(self.client.nb_floats)
         rew, terminated, _failure_counter = self.reward_function.compute_reward(
             pos=np.array([data[_xi], data[_yi], data[_zi]])

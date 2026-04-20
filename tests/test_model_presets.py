@@ -32,17 +32,7 @@ PRESETS = [
 DISCRETE_ONLY_PRESETS = {"vanilla_cnn_actor_critic", "vanilla_color_cnn_actor_critic"}
 
 ALL_ALGORITHMS = ["sac", "iqn", "redqsac", "tqc", "sdsac"]
-
-LIDAR_COMPATIBLE_ALGORITHMS = {"sac", "iqn", "redqsac", "sdsac"}
 DISCRETE_ALGORITHMS = {"iqn", "sdsac"}
-
-
-@pytest.mark.filterwarnings("ignore:IQN uses only:UserWarning")
-@pytest.mark.parametrize("preset", PRESETS)
-def test_model_preset_validates_main_config(preset: str):
-    raw = _compose_dict([f"model={preset}"])
-    main_cfg = MainConfig.model_validate(raw)
-    assert main_cfg.model is not None, f"model section missing for {preset}"
 
 
 @pytest.mark.filterwarnings("ignore:IQN uses only:UserWarning")
@@ -56,9 +46,7 @@ def test_algorithm_model_matrix_composes(algorithm: str, preset: str):
     """
     raw = _compose_dict([f"algorithm={algorithm}", f"model={preset}"])
 
-    should_reject_discrete = (
-        algorithm in DISCRETE_ALGORITHMS and preset in DISCRETE_ONLY_PRESETS
-    )
+    should_reject_discrete = algorithm in DISCRETE_ALGORITHMS and preset in DISCRETE_ONLY_PRESETS
 
     if should_reject_discrete:
         with pytest.raises(ValueError, match="discrete-action-capable"):

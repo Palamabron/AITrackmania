@@ -82,6 +82,7 @@ class TQCAgent(TrainingAgent):
     grad_clip_actor: float
     grad_clip_critic: float
     weight_clipping_enabled: bool
+    clip_weights_value: float
     mean_penalty_coef: float
 
     # --- Required: behavior cloning ---
@@ -713,9 +714,9 @@ class TQCAgent(TrainingAgent):
             self.actor_scheduler.step(epoch + batch_index / iters)
             self.critic_scheduler.step(epoch + batch_index / iters)
         if self.weight_clipping_enabled:
-            clip_model_weights(self.model.actor)
-            clip_model_weights(self.model.q1)
-            clip_model_weights(self.model.q2)
+            clip_model_weights(self.model.actor, self.clip_weights_value)
+            clip_model_weights(self.model.q1, self.clip_weights_value)
+            clip_model_weights(self.model.q2, self.clip_weights_value)
 
         self.model.q1.requires_grad_(True)
         self.model.q2.requires_grad_(True)
