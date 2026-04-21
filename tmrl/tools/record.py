@@ -36,7 +36,8 @@ def record_reward_dist(path_reward=PATH_REWARD, use_keyboard=False):
             data = client.retrieve_data(
                 sleep_if_empty=0.01
             )  # we need many points to build a smooth curve
-            terminated = bool(data[8])
+            finish_idx = 9 if len(data) >= 20 else 8
+            terminated = bool(data[finish_idx])
 
             early_stop = False if not use_keyboard else keyboard.is_pressed("q")
 
@@ -72,7 +73,8 @@ def record_reward_dist(path_reward=PATH_REWARD, use_keyboard=False):
                 logger.info("All done")
                 return
             else:
-                positions.append([data[2], data[3], data[4]])
+                pos_start = 3 if len(data) >= 20 else 2
+                positions.append([data[pos_start], data[pos_start + 1], data[pos_start + 2]])
         else:
             time.sleep(0.05)  # waiting for user to press E
 

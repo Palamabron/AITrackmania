@@ -12,8 +12,9 @@ This module reads config (which loads config.json) and selects:
   - DUMP/LOAD/UPDATER      : checkpoint helpers
 
 Selection logic:
-  - Observation type: PRAGMA_LIDAR (Lidar) vs image-based (Full, IMPALA, Sophy, TrackMap).
-  - Interface: chosen from RTGYM_INTERFACE (Lidar, LidarProgress, TrackMap, IMPALA, Sophy, Full).
+  - Observation type: PRAGMA_LIDAR (Lidar) vs image-based (Full, IMPALA, Sophy, Boundary).
+  - Interface: chosen from the RTGYM_INTERFACE user-config string (e.g. "LIDAR",
+    "LIDARPROGRESS", "TRACKMAP", "IMPALA", "SOPHY", "FULL", ...).
   - Memory: Lidar → MemoryTMLidar* ; IMPALA/Best → MemoryTMBest ;
   MTQC+images → MemoryR2D2 ; else MemoryTMFull.
   - Model: Lidar+RNN → RNNActorCritic ; Lidar → MLP or REDQ MLP ; MTQC → IMPALA/Sophy ;
@@ -36,15 +37,15 @@ from tmrl.custom.custom_algorithms import REDQSACAgent as REDQ_Agent
 from tmrl.custom.custom_algorithms import SpinupSacAgent as SAC_Agent
 from tmrl.custom.custom_algorithms import TQCAgent as TQC_Agent
 from tmrl.custom.custom_checkpoints import update_run_instance
-from tmrl.custom.interfaces.TM2020Interface import TM2020Interface
-from tmrl.custom.interfaces.TM2020InterfaceIMPALA import TM2020InterfaceIMPALA
-from tmrl.custom.interfaces.TM2020InterfaceLidar import TM2020InterfaceLidar
-from tmrl.custom.interfaces.TM2020InterfaceLidarImages import TM2020InterfaceLidarProgressImages
-from tmrl.custom.interfaces.TM2020InterfaceLidarProgress import TM2020InterfaceLidarProgress
-from tmrl.custom.interfaces.TM2020InterfaceSophy import TM2020InterfaceIMPALASophy
-from tmrl.custom.interfaces.TM2020InterfaceTQC import TM2020InterfaceTQC
-from tmrl.custom.interfaces.TM2020InterfaceTrackMap import TM2020InterfaceTrackMap
-from tmrl.custom.interfaces.TM2020InterfaceTrackMapImages import TM2020InterfaceTrackMapImages
+from tmrl.custom.interfaces import (
+    TM2020Interface,
+    TM2020InterfaceBoundary,
+    TM2020InterfaceBoundaryImages,
+    TM2020InterfaceLidar,
+    TM2020InterfaceLidarProgress,
+    TM2020InterfaceLidarProgressImages,
+    TM2020RLInterface,
+)
 from tmrl.custom.memories import (
     MemoryR2D2,
     MemoryR2D2woImages,
@@ -202,7 +203,7 @@ else:
 if cfg.PRAGMA_LIDAR:
     if cfg.PRAGMA_TRACKMAP_IMAGES:
         RTGYM_INTERFACE_CLASS = partial(
-            TM2020InterfaceTrackMapImages,
+            TM2020InterfaceBoundaryImages,
             img_hist_len=cfg.IMG_HIST_LEN,
             gamepad=cfg.PRAGMA_GAMEPAD,
             grayscale=cfg.GRAYSCALE,
@@ -224,7 +225,7 @@ if cfg.PRAGMA_LIDAR:
         )
     elif cfg.PRAGMA_TRACKMAP:
         RTGYM_INTERFACE_CLASS = partial(
-            TM2020InterfaceTrackMap,
+            TM2020InterfaceBoundary,
             img_hist_len=cfg.IMG_HIST_LEN,
             gamepad=cfg.PRAGMA_GAMEPAD,
         )
@@ -248,21 +249,16 @@ else:
         "lap_reward": cfg.LAP_REWARD,
         "min_nb_steps_before_failure": cfg.MIN_NB_STEPS_BEFORE_FAILURE,
     }
-    if cfg.PRAGMA_TQC_GRAB:
+    if cfg.PRAGMA_TQC_GRAB or _USE_CUSTOM_OR_BEST:
+        _include_cam = cfg.PRAGMA_TQC_GRAB_IMAGES if cfg.PRAGMA_TQC_GRAB else cfg.USE_IMAGES
+        _include_lidar = bool(cfg.REWARD_CONFIG.get("RL_INTERFACE_INCLUDE_LIDAR", False))
         RTGYM_INTERFACE_CLASS = partial(
-            TM2020InterfaceTQC, **_common_image_interface_kwargs, **_common_reward_kwargs
+            TM2020RLInterface,
+            **_common_image_interface_kwargs,
+            **_common_reward_kwargs,
+            include_camera_images=_include_cam,
+            include_lidar=_include_lidar,
         )
-    elif _USE_CUSTOM_OR_BEST:
-        if cfg.USE_IMAGES:
-            RTGYM_INTERFACE_CLASS = partial(
-                TM2020InterfaceIMPALA, **_common_image_interface_kwargs, **_common_reward_kwargs
-            )
-        else:
-            RTGYM_INTERFACE_CLASS = partial(
-                TM2020InterfaceIMPALASophy,
-                **_common_image_interface_kwargs,
-                **_common_reward_kwargs,
-            )
     else:
         RTGYM_INTERFACE_CLASS = partial(TM2020Interface, **_common_image_interface_kwargs)
 
@@ -279,12 +275,7 @@ if cfg.PRAGMA_LIDAR:
     else:
         INTERFACE_DISPLAY_NAME = "Lidar"
 else:
-    if cfg.PRAGMA_TQC_GRAB:
-        INTERFACE_DISPLAY_NAME = "TQCGrab"
-    elif _USE_CUSTOM_OR_BEST:
-        INTERFACE_DISPLAY_NAME = "IMPALA" if cfg.USE_IMAGES else "IMPALASophy"
-    else:
-        INTERFACE_DISPLAY_NAME = "Full"
+    INTERFACE_DISPLAY_NAME = "TM2020RL" if cfg.PRAGMA_TQC_GRAB or _USE_CUSTOM_OR_BEST else "Full"
 
 # RtGym config dict: default config + our interface + ENV RTGYM_CONFIG overrides
 CONFIG_DICT = rtgym.DEFAULT_CONFIG_DICT.copy()

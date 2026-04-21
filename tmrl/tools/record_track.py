@@ -12,11 +12,8 @@ from scipy.interpolate import CubicSpline
 from scipy.ndimage import gaussian_filter1d
 
 import tmrl.config as cfg
+from tmrl.custom.interfaces.telemetry_indices import tmrl_grabdata_payload_nb_floats
 from tmrl.custom.tm.utils.tools import TM2020OpenPlanetClient
-
-# Must match TQC_GrabData plugin (20 floats). Default 19 misaligns the byte stream
-# after the first frame and corrupts all subsequent data.
-TQC_GRAB_NB_FLOATS = 20
 
 MIN_POSITIONS_FOR_TRACK = 50
 MIN_TRACK_LENGTH_M = (
@@ -30,6 +27,14 @@ def _track_length_m(positions):
     pts = np.asarray(positions)
     diffs = np.linalg.norm(np.diff(pts, axis=0), axis=1)
     return float(np.sum(diffs))
+
+
+def _position_xyz(data: tuple[float, ...]) -> list[float]:
+    if len(data) >= 30:
+        return [data[4], data[5], data[6]]
+    if len(data) >= 20:
+        return [data[3], data[4], data[5]]
+    return [data[2], data[3], data[4]]
 
 
 def _filter_origin_points(positions: np.ndarray) -> np.ndarray:
@@ -53,7 +58,9 @@ def _filter_origin_points(positions: np.ndarray) -> np.ndarray:
 
 def record_track(path_track=cfg.TRACK_PATH_LEFT):
     positions = []
-    client = TM2020OpenPlanetClient(port=9000, nb_floats=TQC_GRAB_NB_FLOATS)
+    client = TM2020OpenPlanetClient(
+        port=9000, nb_floats=tmrl_grabdata_payload_nb_floats(cfg.REWARD_CONFIG)
+    )
     path = path_track
 
     is_recording = False
@@ -108,7 +115,7 @@ def record_track(path_track=cfg.TRACK_PATH_LEFT):
                 logger.info("All done")
                 return
             else:
-                positions.append([data[3], data[4], data[5]])
+                positions.append(_position_xyz(data))
         else:
             time.sleep(0.05)  # waiting for user to press E
 

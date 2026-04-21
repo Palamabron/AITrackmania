@@ -7,18 +7,20 @@ from rtgym.envs.real_time_env import DEFAULT_CONFIG_DICT
 import tmrl.config as cfg
 
 # local imports
-from tmrl.custom.interfaces.TM2020Interface import TM2020Interface
-from tmrl.custom.interfaces.TM2020InterfaceLidar import TM2020InterfaceLidar
-from tmrl.custom.interfaces.TM2020InterfaceTrackMap import TM2020InterfaceTrackMap
+from tmrl.custom.interfaces import (
+    TM2020Interface,
+    TM2020InterfaceBoundary,
+    TM2020InterfaceLidar,
+)
 from tmrl.custom.tm.utils.tools import Lidar
 from tmrl.custom.tm.utils.window import WindowInterface
 
 
-def check_env_tm20_trackmap():
+def check_env_tm20_boundary():
     window_interface = WindowInterface("Trackmania")
     lidar = Lidar(window_interface.screenshot())
     env_config = DEFAULT_CONFIG_DICT.copy()
-    env_config["interface"] = TM2020InterfaceTrackMap
+    env_config["interface"] = TM2020InterfaceBoundary
     env_config["wait_on_done"] = True
     env_config["interface_kwargs"] = {
         "img_hist_len": 1,
@@ -126,4 +128,4 @@ def check_env_tm20full():
 if __name__ == "__main__":
     # check_env_tm20lidar()
     # check_env_tm20full()
-    check_env_tm20_trackmap()
+    check_env_tm20_boundary()

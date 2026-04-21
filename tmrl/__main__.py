@@ -18,7 +18,7 @@ import tmrl.config.config_objects as cfg_obj
 from tmrl.envs import GenericGymEnv
 from tmrl.networking import RolloutWorker, Server, Trainer
 from tmrl.tools.check_environment import (
-    check_env_tm20_trackmap,
+    check_env_tm20_boundary,
     check_env_tm20full,
     check_env_tm20lidar,
 )
@@ -91,7 +91,7 @@ class TmrlCli:
     """Validate import only, without writing dataset."""
 
     check_env: bool = False
-    """Verify environment (Lidar/Full/TrackMap) works."""
+    """Verify environment (Lidar/Full/Boundary) works."""
 
     wandb: bool = True
     """Enable Weights & Biases logging on trainer (default True; use --no-wandb to disable)."""
@@ -191,7 +191,7 @@ def main(cli: TmrlCli) -> None:
     elif cli.check_env:
         if cfg.PRAGMA_LIDAR:
             if cfg.PRAGMA_TRACKMAP:
-                check_env_tm20_trackmap()
+                check_env_tm20_boundary()
             else:
                 check_env_tm20lidar()
         else:

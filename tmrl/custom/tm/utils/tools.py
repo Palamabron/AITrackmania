@@ -147,9 +147,8 @@ class TM2020OpenPlanetClient:
         self._last_retrieve_position_patched = False
         self._last_retrieve_invalid = False
         if data is not None:
-            # Determine position indices from struct size:
-            # TQC=20 floats uses [3,4,5], older formats use [2,3,4].
-            pos_start_idx = 3 if self.nb_floats >= 20 else 2
+            # Position layout by struct size (TMRL_GrabData 33-float: indices 4-6).
+            pos_start_idx = 4 if self.nb_floats >= 33 else 3 if self.nb_floats >= 20 else 2
             pos_x, pos_y, pos_z = (
                 data[pos_start_idx],
                 data[pos_start_idx + 1],
@@ -170,9 +169,13 @@ class TM2020OpenPlanetClient:
                 # Update last known good position
                 self._last_good_pos = (pos_x, pos_y, pos_z)
 
-            # Sanity check: speed (index 2 in TQC format) should be in a plausible range.
-            # Corrupted frames (e.g. all zeros or garbage) can otherwise enter the replay buffer.
-            speed_idx = 2
+            # Sanity check: speed in m/s (33-float at index 16; legacy TQC at 2).
+            if self.nb_floats >= 33:
+                speed_idx = 16
+            elif self.nb_floats >= 20:
+                speed_idx = 2
+            else:
+                speed_idx = 0
             if speed_idx < len(data):
                 try:
                     speed_val = float(data[speed_idx])

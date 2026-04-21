@@ -23,7 +23,6 @@ from tmrl.custom.tm.utils.control_keyboard import apply_control, keyres
 from tmrl.custom.tm.utils.control_mouse import mouse_close_finish_pop_up_tm20
 from tmrl.custom.tm.utils.discrete_control import (
     BRAKE_TAP_DURATION_S,
-    build_yosh_action_table,
     discrete_index_to_control,
     is_brake_tap,
 )
@@ -34,6 +33,13 @@ from tmrl.custom.tm.utils.window import WindowInterface
 class TrackMania2020InterfaceBase(RealTimeGymInterface, ABC):
     """Control, window init, reward wiring, image ring buffer, and OpenPlanet client creation."""
 
+    # Image ring-buffer state. Initialized in ``initialize_common`` but declared here so
+    # mypy can bind ``_img_buf`` at the point of use in ``_push_img`` /
+    # ``_get_img_hist_array`` (the base class never writes to it in ``__init__``).
+    _img_buf: np.ndarray | None = None
+    _img_hist_count: int = 0
+    _img_hist_cursor: int = 0
+
     def _build_openplanet_client(self) -> TM2020OpenPlanetClient:
         """Override for alternate GrabData layouts (e.g. TQC 20-float)."""
         return TM2020OpenPlanetClient()
@@ -43,25 +49,26 @@ class TrackMania2020InterfaceBase(RealTimeGymInterface, ABC):
             self._img_buf = np.zeros((self.img_hist_len, *img.shape), dtype=img.dtype)
             self._img_hist_count = 0
             self._img_hist_cursor = 0
-        assert self._img_buf is not None
-        self._img_buf[self._img_hist_cursor] = img
+        buf = self._img_buf
+        buf[self._img_hist_cursor] = img
         self._img_hist_cursor = (self._img_hist_cursor + 1) % self.img_hist_len
         if self._img_hist_count < self.img_hist_len:
             self._img_hist_count += 1
 
     def _get_img_hist_array(self) -> np.ndarray:
-        if self._img_buf is None or self._img_hist_count == 0:
+        buf = self._img_buf
+        if buf is None or self._img_hist_count == 0:
             return np.zeros((self.img_hist_len, 1, 1), dtype=np.uint8)
         if self._img_hist_count < self.img_hist_len:
-            res = np.repeat(self._img_buf[:1], self.img_hist_len, axis=0)
-            res[-self._img_hist_count :] = self._img_buf[: self._img_hist_count]
+            res: np.ndarray = np.repeat(buf[:1], self.img_hist_len, axis=0)
+            res[-self._img_hist_count :] = buf[: self._img_hist_count]
             return res
         if self._img_hist_cursor == 0:
-            return self._img_buf.copy()
+            return buf.copy()
         idx = (
             np.arange(self.img_hist_len, dtype=np.int64) + self._img_hist_cursor
         ) % self.img_hist_len
-        return self._img_buf[idx]
+        return np.asarray(buf[idx])
 
     def initialize_common(self):
         """Initializes the window interface, reward function, and game client."""

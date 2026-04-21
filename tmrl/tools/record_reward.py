@@ -12,10 +12,8 @@ from scipy.interpolate import CubicSpline
 from scipy.ndimage import gaussian_filter1d
 
 import tmrl.config as cfg
+from tmrl.custom.interfaces.telemetry_indices import tmrl_grabdata_payload_nb_floats
 from tmrl.custom.tm.utils.tools import TM2020OpenPlanetClient
-
-# Must match TQC_GrabData plugin (20 floats). Default 19 would misalign and corrupt trajectory.
-TQC_GRAB_NB_FLOATS = 20
 
 PATH_REWARD = cfg.REWARD_PATH
 DATASET_PATH = cfg.DATASET_PATH
@@ -24,9 +22,30 @@ DATASET_PATH = cfg.DATASET_PATH
 MIN_POSITIONS_FOR_RECORDING = 50
 
 
+def _is_lap_finished(data: tuple[float, ...]) -> bool:
+    """Return finish flag for both legacy (19f) and TQC (20f) payloads.
+
+    Layouts:
+    - 19-float legacy: finish flag at index 8
+    - 20-float TQC:    finish flag at index 9 (index 8 is braking)
+    """
+    finish_idx = 2 if len(data) >= 30 else 9 if len(data) >= 20 else 8
+    return bool(data[finish_idx])
+
+
+def _position_xyz(data: tuple[float, ...]) -> list[float]:
+    if len(data) >= 30:
+        return [data[4], data[5], data[6]]
+    if len(data) >= 20:
+        return [data[3], data[4], data[5]]
+    return [data[2], data[3], data[4]]
+
+
 def record_reward_dist(path_reward=PATH_REWARD, use_keyboard=False):
     positions = []
-    client = TM2020OpenPlanetClient(port=9000, nb_floats=TQC_GRAB_NB_FLOATS)
+    client = TM2020OpenPlanetClient(
+        port=9000, nb_floats=tmrl_grabdata_payload_nb_floats(cfg.REWARD_CONFIG)
+    )
     # When using keyboard, save to current directory so you can find the file easily.
     if use_keyboard:
         path = os.path.abspath(os.path.join(os.getcwd(), f"reward_{cfg.MAP_NAME}.pkl"))
@@ -65,7 +84,7 @@ def record_reward_dist(path_reward=PATH_REWARD, use_keyboard=False):
             data = client.retrieve_data(
                 sleep_if_empty=0.01
             )  # we need many points to build a smooth curve
-            terminated = bool(data[8])
+            terminated = _is_lap_finished(data)
             early_stop = use_keyboard and stop_requested
             # Keyboard mode: stop on Enter only; ignore "lap finished" to allow full lap.
             should_stop = early_stop or (terminated and not use_keyboard)
@@ -134,7 +153,7 @@ def record_reward_dist(path_reward=PATH_REWARD, use_keyboard=False):
                     )
                 return
             else:
-                positions.append([data[3], data[4], data[5]])
+                positions.append(_position_xyz(data))
 
 
 def space_points(points):
