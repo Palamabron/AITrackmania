@@ -1,8 +1,7 @@
 # standard library imports
-import contextlib
 import os
 import pickle
-import threading
+import time
 
 # third-party imports
 import numpy as np
@@ -13,6 +12,7 @@ from scipy.ndimage import gaussian_filter1d
 
 import tmrl.config as cfg
 from tmrl.custom.interfaces.telemetry_indices import tmrl_grabdata_payload_nb_floats
+from tmrl.custom.tm.utils.control_keyboard import keyres
 from tmrl.custom.tm.utils.tools import TM2020OpenPlanetClient
 
 PATH_REWARD = cfg.REWARD_PATH
@@ -41,42 +41,20 @@ def _position_xyz(data: tuple[float, ...]) -> list[float]:
     return [data[2], data[3], data[4]]
 
 
-def record_reward_dist(path_reward=PATH_REWARD, use_keyboard=False):
+def _reset_env_before_recording() -> None:
+    logger.info("Resetting environment before reward recording.")
+    keyres()
+    time.sleep(max(0.0, float(cfg.SLEEP_TIME_AT_RESET)))
+
+
+def record_reward_dist(path_reward=PATH_REWARD):
     positions = []
     client = TM2020OpenPlanetClient(
         port=9000, nb_floats=tmrl_grabdata_payload_nb_floats(cfg.REWARD_CONFIG)
     )
-    # When using keyboard, save to current directory so you can find the file easily.
-    if use_keyboard:
-        path = os.path.abspath(os.path.join(os.getcwd(), f"reward_{cfg.MAP_NAME}.pkl"))
-        logger.info(f"Reward file will be saved to: {path}")
-    else:
-        path = path_reward
-
-    stop_requested = False
-    last_too_few_logged = -1  # throttle "too few positions" warning
-
-    if use_keyboard:
-        # Terminal-based start/stop so the game keeps full keyboard (e.g. A/D for steering).
-        logger.info("Press Enter in this terminal to start recording.")
-        with contextlib.suppress(EOFError):
-            input()
-        logger.info("start recording")
-        logger.info(
-            "Recording. Drive in the game (steer with A/D or gamepad). "
-            "When done, switch back to this terminal and press Enter to stop."
-        )
-
-        def wait_for_stop():
-            try:
-                input()
-                nonlocal stop_requested
-                stop_requested = True
-            except EOFError:
-                pass
-
-        stop_thread = threading.Thread(target=wait_for_stop, daemon=True)
-        stop_thread.start()
+    _reset_env_before_recording()
+    path = path_reward
+    recording_announced = False
 
     is_recording = True
     while True:
@@ -85,26 +63,15 @@ def record_reward_dist(path_reward=PATH_REWARD, use_keyboard=False):
                 sleep_if_empty=0.01
             )  # we need many points to build a smooth curve
             terminated = _is_lap_finished(data)
-            early_stop = use_keyboard and stop_requested
-            # Keyboard mode: stop on Enter only; ignore "lap finished" to allow full lap.
-            should_stop = early_stop or (terminated and not use_keyboard)
+            should_stop = terminated
             if should_stop:
                 if len(positions) < MIN_POSITIONS_FOR_RECORDING:
-                    if early_stop:
-                        # Ignore spurious/buffered Enter; keep recording until we have enough.
-                        stop_requested = False
-                    # Ignore "lap finished" when we have almost no data (game often sends at start).
-                    if use_keyboard and len(positions) == 0:
-                        logger.debug(
-                            "Ignoring lap-finished signal with 0 positions; keep recording."
-                        )
-                    elif use_keyboard and len(positions) != last_too_few_logged:
-                        last_too_few_logged = len(positions)
-                        logger.warning(
-                            f"Too few positions ({len(positions)}). "
-                            f"Need at least {MIN_POSITIONS_FOR_RECORDING}. "
-                            "Drive along the track, then press Enter here to stop."
-                        )
+                    msg = (
+                        "Ignoring early lap-finished signal with too few positions "
+                        f"({len(positions)}). "
+                        f"Need at least {MIN_POSITIONS_FOR_RECORDING}; keep driving."
+                    )
+                    logger.warning(msg)
                     continue
                 logger.info("Computing reward function checkpoints from captured positions...")
                 logger.info(f"Initial number of captured positions: {len(positions)}")
@@ -147,13 +114,20 @@ def record_reward_dist(path_reward=PATH_REWARD, use_keyboard=False):
                 with open(path, "wb") as f:
                     pickle.dump(spaced_points, f)
                 logger.info(f"Saved reward trajectory to: {abs_path}")
-                if use_keyboard:
-                    logger.info(
-                        f"Move to TmrlData if needed, e.g.: {os.path.normpath(cfg.REWARD_PATH)}"
-                    )
                 return
             else:
                 positions.append(_position_xyz(data))
+                if not recording_announced:
+                    recording_announced = True
+                    logger.info("Recording started")
+                    logger.info(
+                        "Recording reward trajectory: telemetry received and "
+                        "samples are being collected."
+                    )
+                elif len(positions) % 1000 == 0:
+                    logger.info(
+                        f"Recording in progress: collected {len(positions)} position samples."
+                    )
 
 
 def space_points(points):

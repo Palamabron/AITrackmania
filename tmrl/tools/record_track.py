@@ -1,11 +1,9 @@
 # standard library imports
 import os
 import pickle
-import time
 from typing import cast
 
 # third-party imports
-import keyboard
 import numpy as np
 from loguru import logger
 from scipy.interpolate import CubicSpline
@@ -37,6 +35,11 @@ def _position_xyz(data: tuple[float, ...]) -> list[float]:
     return [data[2], data[3], data[4]]
 
 
+def _is_lap_finished(data: tuple[float, ...]) -> bool:
+    finish_idx = 2 if len(data) >= 30 else 9 if len(data) >= 20 else 8
+    return bool(data[finish_idx])
+
+
 def _filter_origin_points(positions: np.ndarray) -> np.ndarray:
     """
     Remove only [0,0,0] glitch points (norm < 1.0).
@@ -63,61 +66,61 @@ def record_track(path_track=cfg.TRACK_PATH_LEFT):
     )
     path = path_track
 
-    is_recording = False
+    recording_announced = False
     while True:
-        if keyboard.is_pressed("e"):
-            logger.info("start recording")
-            is_recording = True
-        if is_recording:
-            data = client.retrieve_data(
-                sleep_if_empty=0.01
-            )  # we need many points to build a smooth curve
+        data = client.retrieve_data(sleep_if_empty=0.01)
+        terminated = _is_lap_finished(data)
+        if terminated:
             length_m = _track_length_m(positions)
-            # Stop only when user presses Q (ignore game 'terminated')
-            if keyboard.is_pressed("q"):
-                if len(positions) < MIN_POSITIONS_FOR_TRACK:
-                    logger.warning(
-                        f"Too few positions ({len(positions)}). Drive the full track, "
-                        f"then press Q. Need at least {MIN_POSITIONS_FOR_TRACK}."
-                    )
-                    continue
-                if length_m < MIN_TRACK_LENGTH_M:
-                    logger.warning(
-                        f"Track too short ({length_m:.0f} m). "
-                        f"Drive at least {MIN_TRACK_LENGTH_M:.0f} m, then press Q."
-                    )
-                    continue
-                logger.info("Computing reward function checkpoints from captured positions...")
-                logger.info(f"Initial number of captured positions: {len(positions)}")
-                positions = np.array(positions)
-
-                positions = _filter_origin_points(positions)
-
-                length_after = _track_length_m(positions)
-                logger.info(
-                    f"After filtering: {len(positions)} positions, path length {length_after:.0f} m"
+            if len(positions) < MIN_POSITIONS_FOR_TRACK:
+                msg = (
+                    "Ignoring early lap-finished signal with too few positions "
+                    f"({len(positions)}). "
+                    f"Need at least {MIN_POSITIONS_FOR_TRACK}; keep driving."
                 )
-
-                # We no longer need the old `line` + `while` loop.
-                # `space_points` now does exact arc-length resampling on filtered,
-                # chronologically ordered points.
-                spaced_points = space_points(positions)
-                smoothed_points = smooth_points(spaced_points)
-
-                logger.info(
-                    f"Final number of checkpoints of recorded track: {len(smoothed_points)}"
+                logger.warning(msg)
+                continue
+            if length_m < MIN_TRACK_LENGTH_M:
+                logger.warning(
+                    f"Ignoring lap-finished signal because track is too short ({length_m:.0f} m). "
+                    f"Need at least {MIN_TRACK_LENGTH_M:.0f} m; keep driving."
                 )
-                if len(smoothed_points) < 2:
-                    logger.error("Not enough distinct points. Drive the full track, then press Q.")
-                    continue
-                with open(path, "wb") as f:
-                    pickle.dump(smoothed_points, f)
-                logger.info("All done")
-                return
-            else:
-                positions.append(_position_xyz(data))
-        else:
-            time.sleep(0.05)  # waiting for user to press E
+                continue
+            logger.info("Computing track checkpoints from captured positions...")
+            logger.info(f"Initial number of captured positions: {len(positions)}")
+            positions = np.array(positions)
+
+            positions = _filter_origin_points(positions)
+
+            length_after = _track_length_m(positions)
+            logger.info(
+                f"After filtering: {len(positions)} positions, path length {length_after:.0f} m"
+            )
+
+            # We no longer need the old `line` + `while` loop.
+            # `space_points` now does exact arc-length resampling on filtered,
+            # chronologically ordered points.
+            spaced_points = space_points(positions)
+            smoothed_points = smooth_points(spaced_points)
+
+            logger.info(f"Final number of checkpoints of recorded track: {len(smoothed_points)}")
+            if len(smoothed_points) < 2:
+                logger.error(
+                    "Not enough distinct points. Drive the full track and finish lap again."
+                )
+                continue
+            with open(path, "wb") as f:
+                pickle.dump(smoothed_points, f)
+            logger.info("All done")
+            return
+
+        positions.append(_position_xyz(data))
+        if not recording_announced:
+            recording_announced = True
+            logger.info("Recording started")
+            logger.info("Recording track boundary trajectory from telemetry.")
+        elif len(positions) % 1000 == 0:
+            logger.info(f"Recording in progress: collected {len(positions)} position samples.")
 
 
 # Dense spacing (m) for track boundaries so geometry is preserved (arcs, 180° turns).
@@ -258,7 +261,8 @@ if __name__ == "__main__":
         logger.debug(f" reward not found at path:{cfg.REWARD_PATH}")
     which_track = input("Choose which track do you want to record [left/right] [l/r]: ").lower()
     assert which_track in ("l", "r", "right", "left"), "Input must be left, right, l or r"
-    print('Press "e" if you are ready do record track')
+    print("Recording starts automatically when telemetry arrives.")
+    print("Complete the lap; recording ends automatically on lap finish.")
     if which_track in ("l", "left"):
         record_track(path_track=cfg.TRACK_PATH_LEFT)
     elif which_track in ("r", "right"):

@@ -60,9 +60,6 @@ class TmrlCli:
     record_reward: bool = False
     """Record a reward function in TrackMania 2020."""
 
-    use_keyboard: bool = False
-    """Use keyboard (instead of gamepad) when recording reward."""
-
     record_episode: bool = False
     """Record an episode into the replay buffer."""
 
@@ -187,7 +184,7 @@ def main(cli: TmrlCli) -> None:
         else:
             trainer.run()
     elif cli.record_reward:
-        record_reward_dist(path_reward=cfg.REWARD_PATH, use_keyboard=cli.use_keyboard)
+        record_reward_dist(path_reward=cfg.REWARD_PATH)
     elif cli.check_env:
         if cfg.PRAGMA_LIDAR:
             if cfg.PRAGMA_TRACKMAP:

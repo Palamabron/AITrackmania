@@ -1,6 +1,5 @@
 # standard library imports
 import pickle
-import time
 
 # third-party imports
 import numpy as np
@@ -13,35 +12,20 @@ PATH_REWARD = cfg.REWARD_PATH
 DATASET_PATH = cfg.DATASET_PATH
 
 
-def record_reward_dist(path_reward=PATH_REWARD, use_keyboard=False):
-    if use_keyboard:
-        import keyboard
-
+def record_reward_dist(path_reward=PATH_REWARD):
     positions = []
     client = TM2020OpenPlanetClient()
     path = path_reward
 
-    is_recording = False
+    is_recording = True
     while True:
-        if not is_recording:
-            if not use_keyboard:
-                logger.info("start recording")
-                is_recording = True
-            else:
-                if keyboard.is_pressed("e"):
-                    logger.info("start recording")
-                    is_recording = True
-
         if is_recording:
             data = client.retrieve_data(
                 sleep_if_empty=0.01
             )  # we need many points to build a smooth curve
             finish_idx = 9 if len(data) >= 20 else 8
             terminated = bool(data[finish_idx])
-
-            early_stop = False if not use_keyboard else keyboard.is_pressed("q")
-
-            if early_stop or terminated:
+            if terminated:
                 logger.info("Computing reward function checkpoints from captured positions...")
                 logger.info(f"Initial number of captured positions: {len(positions)}")
                 positions = np.array(positions)
@@ -75,8 +59,6 @@ def record_reward_dist(path_reward=PATH_REWARD, use_keyboard=False):
             else:
                 pos_start = 3 if len(data) >= 20 else 2
                 positions.append([data[pos_start], data[pos_start + 1], data[pos_start + 2]])
-        else:
-            time.sleep(0.05)  # waiting for user to press E
 
 
 def line(pt1, pt2, dist):
