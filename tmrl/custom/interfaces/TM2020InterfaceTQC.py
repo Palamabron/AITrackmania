@@ -3,6 +3,7 @@ import numpy as np
 from gymnasium import spaces
 
 import tmrl.config as cfg
+from tmrl.custom.tm.telemetry import Telemetry
 from tmrl.custom.interfaces.TM2020InterfaceSophy import TM2020InterfaceIMPALASophy
 from tmrl.custom.tm.utils.tools import TM2020OpenPlanetClient
 
@@ -33,38 +34,48 @@ class TM2020InterfaceTQC(TM2020InterfaceIMPALASophy):
             tuple: A tuple containing (observation, reward, terminated, info).
         """
         data = self.grab_data()
-        self.is_crashed = bool(data[18])
-        cur_cp = int(data[0])
-        cur_lap = int(data[1])
+        telemetry = Telemetry(*data)
 
-        speed_kmh = data[2] * 3.6
+        cur_cp = telemetry.cp
+        cur_lap = telemetry.lap
+        speed_kmh = self.get_speed_in_kmph(telemetry.speed)
         speed = np.array([speed_kmh / cfg.OBS_SPEED_SCALE], dtype="float32")
-        pos = np.array([data[3], data[4], data[5]], dtype="float32")
-        input_steer = np.array([data[6]], dtype="float32")
-        input_gas_pedal = np.array([data[7]], dtype="float32")
-        input_brake = np.array([data[8]], dtype="float32")
-        end_of_track = bool(data[9])
-        acceleration = np.array([data[10]], dtype="float32")
-        jerk = np.array([data[11]], dtype="float32")
-        aim_yaw = np.array([data[12]], dtype="float32")
-        aim_pitch = np.array([data[13]], dtype="float32")
-        steer_angle = np.array(data[14:16], dtype="float32")
-        slip_coef = np.array(data[16:18], dtype="float32")
-        gear = np.array([data[19] / 5.0], dtype="float32")
+        pos = np.array([telemetry.pos_x, telemetry.pos_y, telemetry.pos_z], dtype="float32")
+        input_steer = np.array([telemetry.input_steer], dtype = "float32")
+        input_gas_pedal = np.array([telemetry.input_gas], dtype="float32")
+        input_brake = np.array([telemetry.input_brake], dtype="float32")
+        end_of_track = bool(telemetry.is_finished)
+        acceleration = np.array([telemetry.acceleration], dtype="float32")
+        jerk = np.array([telemetry.jerk], dtype="float32")
+        aim_yaw = np.array([telemetry.aim_yaw], dtype="float32")
+        aim_pitch = np.array([telemetry.aim_pitch], dtype="float32")
+        steer_angle = np.array([telemetry.fl_steer_angle, telemetry.fr_steer_angle], dtype="float32")
+        slip_coef = np.array([telemetry.fl_slip_coef, telemetry.fr_slip_coef], dtype="float32")
+        gear = np.array([telemetry.gear / 5.0], dtype="float32")
 
-        rew, terminated, failure_counter, reward_sum = self.reward_function.compute_reward(
+        self._sync_crash_state()
+
+        if not self.is_crashed and self.crash_cooldown == 0:
+            self.crash_fallback(speed_kmh, telemetry.jerk)
+        self._last_speed_kmh = speed_kmh
+
+
+        self.reward = self.reward_function.compute_reward(
             pos=pos,
             crashed=self.is_crashed,
             speed=speed_kmh,
             next_cp=self.cur_checkpoint < cur_cp,
             next_lap=self.cur_lap < cur_lap,
             end_of_track=end_of_track,
-            input_brake=float(data[8]),
-            aim_yaw=float(data[12]),
-            input_steer=float(data[6]),
-            gear=float(data[19]),
+            input_brake=telemetry.input_brake,
+            aim_yaw=telemetry.aim_yaw,
+            input_steer=telemetry.input_steer,
+            gear=float(telemetry.gear),
             slip_angle_deg=None,
         )
+        rew, terminated, failure_counter, reward_sum = self.reward
+
+        self.cooldown_control()
         self._dbg_last_step = {
             "terminated": bool(terminated),
             "end_of_track": bool(end_of_track),
@@ -116,9 +127,6 @@ class TM2020InterfaceTQC(TM2020InterfaceIMPALASophy):
         if cfg.OBS_TRACK_SCALE != 1.0:
             track_list = [x / cfg.OBS_TRACK_SCALE for x in track_list]
         track_info = [np.array(track_list, dtype="float32")]
-
-        if not self.is_crashed:
-            self.crash_cooldown -= 1
 
         race_progress = np.array([race_progress], dtype="float32")
         max_count = max(
@@ -194,19 +202,22 @@ class TM2020InterfaceTQC(TM2020InterfaceIMPALASophy):
         self.cur_lap = 0
         self.cur_checkpoint = 0
 
-        speed_kmh = data[2] * 3.6
+
+        telemetry = Telemetry(*data)
+
+        speed_kmh = self.get_speed_in_kmph(telemetry.speed)
         speed = np.array([speed_kmh / cfg.OBS_SPEED_SCALE], dtype="float32")
-        pos = np.array([data[3], data[4], data[5]], dtype="float32")
-        input_steer = np.array([data[6]], dtype="float32")
-        input_gas_pedal = np.array([data[7]], dtype="float32")
-        input_brake = np.array([data[8]], dtype="float32")
-        acceleration = np.array([data[10]], dtype="float32")
-        jerk = np.array([data[11]], dtype="float32")
-        aim_yaw = np.array([data[12]], dtype="float32")
-        aim_pitch = np.array([data[13]], dtype="float32")
-        steer_angle = np.array(data[14:16], dtype="float32")
-        slip_coef = np.array(data[16:18], dtype="float32")
-        gear = np.array([data[19] / 5.0], dtype="float32")
+        pos = np.array([telemetry.pos_x, telemetry.pos_y, telemetry.pos_z], dtype="float32")
+        input_steer = np.array([telemetry.input_steer], dtype="float32")
+        input_gas_pedal = np.array([telemetry.input_gas], dtype="float32")
+        input_brake = np.array([telemetry.input_brake], dtype="float32")
+        acceleration = np.array([telemetry.acceleration], dtype="float32")
+        jerk = np.array([telemetry.jerk], dtype="float32")
+        aim_yaw = np.array([telemetry.aim_yaw], dtype="float32")
+        aim_pitch = np.array([telemetry.aim_pitch], dtype="float32")
+        steer_angle = np.array([telemetry.fl_steer_angle, telemetry.fr_steer_angle], dtype="float32")
+        slip_coef = np.array([telemetry.fl_slip_coef, telemetry.fr_slip_coef], dtype="float32")
+        gear = np.array([telemetry.gear / 5.0], dtype="float32")
 
         failure_counter = np.array([0.0], dtype="float32")
         race_progress = np.array([0.0], dtype="float32")
@@ -253,6 +264,7 @@ class TM2020InterfaceTQC(TM2020InterfaceIMPALASophy):
             slip_coef,
             failure_counter,
         ]
+
         if curvature_list is not None:
             curv = np.clip(np.array(curvature_list, dtype="float32") * 10.0, -1.0, 1.0)
             observation.append(curv)

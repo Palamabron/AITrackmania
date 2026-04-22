@@ -137,11 +137,10 @@ class TM2020InterfaceIMPALA(TM2020Interface):
         obs must be a list of numpy arrays
         """
         data, img = self.grab_data_and_img()
-        # print(f"data: {data}")
         cur_cp = int(data[0])
         cur_lap = int(data[1])
 
-        speed = np.array([data[2]], dtype="float32")
+        speed_kmh = data[2] * 3.6
 
         pos = np.array([data[3], data[4], data[5]], dtype="float32")
 
@@ -161,10 +160,14 @@ class TM2020InterfaceIMPALA(TM2020Interface):
 
         gear = np.array([data[18]], dtype="float32")
 
+        if not self.is_crashed:
+            self.crash_fallback(speed_kmh)
+        self._last_speed_kmh = speed_kmh
+
         rew, terminated, failure_counter, reward_sum = self.reward_function.compute_reward(
             pos=pos,  # position x,y,z
             crashed=bool(self.is_crashed),
-            speed=speed[0],
+            speed=speed_kmh,
             next_cp=self.cur_checkpoint < cur_cp,
             next_lap=self.cur_lap < cur_lap,
         )
@@ -198,7 +201,7 @@ class TM2020InterfaceIMPALA(TM2020Interface):
             info["position_patched"] = True
 
         observation = [
-            speed,
+            speed_kmh,
             acceleration,
             jerk,
             race_progress,

@@ -244,20 +244,23 @@ class TM2020InterfaceIMPALASophy(TM2020Interface):
         Returns:
             tuple: A tuple containing (observation, reward, terminated, info).
         """
+        # TODO: refactor to grab all data explicitly like TQC interface
         data = self.grab_data()
+        speed_kmh = data[2] * 3.6
         cur_cp = int(data[_IDX_CHECKPOINT])
         cur_lap = int(data[_IDX_LAP])
         end_of_track = bool(data[_IDX_END_OF_TRACK])
 
-        self.is_crashed = bool(data[_IDX_CRASHED])
-        self._last_speed_kmh = float(data[_IDX_SPEED] * 3.6)
+        if not self.is_crashed:
+            self.crash_fallback(speed_kmh)
+        self._last_speed_kmh = speed_kmh
 
         d = self._parse_data(data)
 
         rew, terminated, failure_counter, reward_sum = self.reward_function.compute_reward(
             pos=d["pos"],
             crashed=bool(self.is_crashed),
-            speed=d["speed"][0],
+            speed=speed_kmh,
             next_cp=self.cur_checkpoint < cur_cp,
             next_lap=self.cur_lap < cur_lap,
             end_of_track=end_of_track,
