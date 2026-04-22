@@ -48,6 +48,25 @@ def print_ip():
     print_with_timestamp(f"public IP: {public_ip}, local IP: {local_ip}")
 
 
+_WORKER_SEND_CHUNK_DEFAULT = 512
+_WORKER_SEND_CHUNK_MAX = 65536
+
+
+def _parse_worker_send_chunk_size(raw: str | None) -> int:
+    """Parse ``TMRL_WORKER_SEND_CHUNK_SIZE`` safely (fallback to default, clamp to sane range)."""
+    if raw is None or not str(raw).strip():
+        return _WORKER_SEND_CHUNK_DEFAULT
+    try:
+        value = int(str(raw).strip())
+    except (TypeError, ValueError):
+        logger.warning(
+            f"Invalid TMRL_WORKER_SEND_CHUNK_SIZE={raw!r}; "
+            f"falling back to default {_WORKER_SEND_CHUNK_DEFAULT}."
+        )
+        return _WORKER_SEND_CHUNK_DEFAULT
+    return max(1, min(value, _WORKER_SEND_CHUNK_MAX))
+
+
 def _start_relay_windows_tcp(
     port: int,
     password: str,
@@ -836,8 +855,8 @@ class RolloutWorker:
 
         self.start_time = time.time()
         self.server_ip = server_ip if server_ip is not None else "127.0.0.1"
-        self._worker_send_chunk_size = max(
-            1, int(os.environ.get("TMRL_WORKER_SEND_CHUNK_SIZE", "512"))
+        self._worker_send_chunk_size = _parse_worker_send_chunk_size(
+            os.environ.get("TMRL_WORKER_SEND_CHUNK_SIZE")
         )
 
         print_with_timestamp(f"server IP: {self.server_ip}")

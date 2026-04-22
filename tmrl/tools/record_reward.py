@@ -11,7 +11,11 @@ from scipy.interpolate import CubicSpline
 from scipy.ndimage import gaussian_filter1d
 
 import tmrl.config as cfg
-from tmrl.custom.interfaces.telemetry_indices import tmrl_grabdata_payload_nb_floats
+from tmrl.custom.interfaces.telemetry_indices import (
+    TMRL_GRABDATA_FLOAT_COUNT,
+    TmrlDataPlugin,
+    tmrl_grabdata_payload_nb_floats,
+)
 from tmrl.custom.tm.utils.control_keyboard import keyres
 from tmrl.custom.tm.utils.tools import TM2020OpenPlanetClient
 
@@ -23,19 +27,25 @@ MIN_POSITIONS_FOR_RECORDING = 50
 
 
 def _is_lap_finished(data: tuple[float, ...]) -> bool:
-    """Return finish flag for both legacy (19f) and TQC (20f) payloads.
+    """Return finish flag for legacy (19f), TQC (20f) and TMRL_GrabData (33f) payloads.
 
     Layouts:
-    - 19-float legacy: finish flag at index 8
-    - 20-float TQC:    finish flag at index 9 (index 8 is braking)
+    - 19-float legacy:           finish flag at index 8
+    - 20-float TQC:              finish flag at index 9 (index 8 is braking)
+    - 33-float TMRL_GrabData:    finish flag at ``TmrlDataPlugin.FINISH_UI_ACTIVE`` (2)
     """
-    finish_idx = 2 if len(data) >= 30 else 9 if len(data) >= 20 else 8
+    if len(data) >= TMRL_GRABDATA_FLOAT_COUNT:
+        finish_idx = int(TmrlDataPlugin.FINISH_UI_ACTIVE)
+    else:
+        finish_idx = 9 if len(data) >= 20 else 8
     return bool(data[finish_idx])
 
 
 def _position_xyz(data: tuple[float, ...]) -> list[float]:
-    if len(data) >= 30:
-        return [data[4], data[5], data[6]]
+    """Return [x, y, z] for legacy (19f), TQC (20f) and TMRL_GrabData (33f) payloads."""
+    if len(data) >= TMRL_GRABDATA_FLOAT_COUNT:
+        px = int(TmrlDataPlugin.POS_X)
+        return [data[px], data[px + 1], data[px + 2]]
     if len(data) >= 20:
         return [data[3], data[4], data[5]]
     return [data[2], data[3], data[4]]

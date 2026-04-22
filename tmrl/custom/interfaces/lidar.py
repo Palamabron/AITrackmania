@@ -84,7 +84,7 @@ class TM2020InterfaceLidar(TM2020Interface):
         w, h = self._lidar_rgb_resize
         img = cv2.resize(raw_img, (w, h), interpolation=cv2.INTER_AREA)
         if self._lidar_rgb_grayscale:
-            img = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+            img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
             img = np.expand_dims(img, axis=-1)
         img = img.astype(np.float32) / 255.0
         img = np.expand_dims(img, axis=0) if img.ndim == 2 else np.transpose(img, (2, 0, 1))

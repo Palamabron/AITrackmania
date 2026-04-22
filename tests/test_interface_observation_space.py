@@ -8,6 +8,7 @@ kwargs, broken inheritance and stale re-exports from ``tmrl.custom.interfaces``.
 
 from __future__ import annotations
 
+import inspect
 import os
 from collections.abc import Callable
 from pathlib import Path
@@ -59,9 +60,14 @@ def test_package_all_re_exports_are_resolvable() -> None:
 
 
 def test_base_class_is_abstract() -> None:
-    assert TrackMania2020InterfaceBase.__abstractmethods__ == frozenset() or (
-        TrackMania2020InterfaceBase.__abstractmethods__ is not None
+    assert inspect.isabstract(TrackMania2020InterfaceBase), (
+        "TrackMania2020InterfaceBase must be abstract (has @abstractmethod hooks)"
     )
+    assert TrackMania2020InterfaceBase.__abstractmethods__, (
+        "TrackMania2020InterfaceBase must declare at least one @abstractmethod"
+    )
+    with pytest.raises(TypeError):
+        TrackMania2020InterfaceBase()  # type: ignore[abstract]
     # Concrete subclasses must all derive from the base.
     concrete = [
         TM2020Interface,

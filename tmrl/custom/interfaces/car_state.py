@@ -26,8 +26,8 @@ from tmrl.custom.interfaces.telemetry_indices import (
     yaw_pitch_from_dir_xyz,
 )
 from tmrl.custom.interfaces.vision import TM2020Interface
+from tmrl.custom.tm.utils.control_mouse import mouse_save_replay_tm20 as _util_save_replay
 from tmrl.custom.tm.utils.tools import Lidar, TM2020OpenPlanetClient
-from tmrl.custom.utils.control_mouse import mouse_save_replay_tm20 as _util_save_replay
 
 _DEFAULT_MIN_STEPS_END_OF_TRACK = 50
 

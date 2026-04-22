@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import platform
 import time
-from abc import ABC
+from abc import ABC, abstractmethod
 from collections import deque
 
 import numpy as np
@@ -39,6 +39,18 @@ class TrackMania2020InterfaceBase(RealTimeGymInterface, ABC):
     _img_buf: np.ndarray | None = None
     _img_hist_count: int = 0
     _img_hist_cursor: int = 0
+
+    @abstractmethod
+    def reset(self, seed=None, options=None):  # pragma: no cover - abstract
+        """Return ``(observation, info)`` and bring the interface to a step-ready state."""
+
+    @abstractmethod
+    def get_obs_rew_terminated_info(self):  # pragma: no cover - abstract
+        """Return ``(observation, reward, terminated, info)`` for the current frame."""
+
+    @abstractmethod
+    def get_observation_space(self):  # pragma: no cover - abstract
+        """Return the ``gymnasium.spaces.Tuple`` describing this interface's observation."""
 
     def _build_openplanet_client(self) -> TM2020OpenPlanetClient:
         """Override for alternate GrabData layouts (e.g. TQC 20-float)."""

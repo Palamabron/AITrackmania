@@ -25,7 +25,7 @@ import tmrl.config as cfg
 from tmrl.config.paths import BOUNDARY_CSV_LEFT, BOUNDARY_CSV_RIGHT
 from tmrl.custom.interfaces.lidar import TM2020InterfaceLidar, TM2020InterfaceLidarProgress
 from tmrl.custom.interfaces.telemetry_indices import TmrlDataPlugin, yaw_pitch_from_dir_xyz
-from tmrl.custom.utils.control_mouse import mouse_save_replay_tm20
+from tmrl.custom.tm.utils.control_mouse import mouse_save_replay_tm20
 
 
 def _boundary_ahead(
@@ -353,7 +353,7 @@ class TM2020InterfaceBoundaryImages(TM2020InterfaceLidarProgress):
         w, h = self.resize_to
         img = cv2.resize(raw_img, (w, h), interpolation=cv2.INTER_AREA)
         if self.grayscale:
-            img = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+            img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
             img = np.expand_dims(img, axis=-1)
         img = img.astype(np.float32) / 255.0
         img = np.expand_dims(img, axis=0) if img.ndim == 2 else np.transpose(img, (2, 0, 1))

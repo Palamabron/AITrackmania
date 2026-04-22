@@ -6,15 +6,36 @@ import numpy as np
 from loguru import logger
 
 import tmrl.config as cfg
+from tmrl.custom.interfaces.telemetry_indices import (
+    TMRL_GRABDATA_FLOAT_COUNT,
+    TmrlDataPlugin,
+    tmrl_grabdata_payload_nb_floats,
+)
 from tmrl.custom.tm.utils.tools import TM2020OpenPlanetClient
 
 PATH_REWARD = cfg.REWARD_PATH
 DATASET_PATH = cfg.DATASET_PATH
 
 
+def _finish_idx(data: tuple[float, ...]) -> int:
+    """Return the finish-flag index for legacy (19f), TQC (20f) and TMRL_GrabData (33f)."""
+    if len(data) >= TMRL_GRABDATA_FLOAT_COUNT:
+        return int(TmrlDataPlugin.FINISH_UI_ACTIVE)
+    return 9 if len(data) >= 20 else 8
+
+
+def _position_start_idx(data: tuple[float, ...]) -> int:
+    """Return the first position index (POS_X) for all supported telemetry layouts."""
+    if len(data) >= TMRL_GRABDATA_FLOAT_COUNT:
+        return int(TmrlDataPlugin.POS_X)
+    return 3 if len(data) >= 20 else 2
+
+
 def record_reward_dist(path_reward=PATH_REWARD):
     positions = []
-    client = TM2020OpenPlanetClient()
+    client = TM2020OpenPlanetClient(
+        nb_floats=tmrl_grabdata_payload_nb_floats(cfg.REWARD_CONFIG)
+    )
     path = path_reward
 
     is_recording = True
@@ -23,8 +44,7 @@ def record_reward_dist(path_reward=PATH_REWARD):
             data = client.retrieve_data(
                 sleep_if_empty=0.01
             )  # we need many points to build a smooth curve
-            finish_idx = 9 if len(data) >= 20 else 8
-            terminated = bool(data[finish_idx])
+            terminated = bool(data[_finish_idx(data)])
             if terminated:
                 logger.info("Computing reward function checkpoints from captured positions...")
                 logger.info(f"Initial number of captured positions: {len(positions)}")
@@ -57,7 +77,7 @@ def record_reward_dist(path_reward=PATH_REWARD):
                 logger.info("All done")
                 return
             else:
-                pos_start = 3 if len(data) >= 20 else 2
+                pos_start = _position_start_idx(data)
                 positions.append([data[pos_start], data[pos_start + 1], data[pos_start + 2]])
 
 
