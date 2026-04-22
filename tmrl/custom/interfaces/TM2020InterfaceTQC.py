@@ -56,7 +56,7 @@ class TM2020InterfaceTQC(TM2020InterfaceIMPALASophy):
         self._sync_crash_state()
 
         if not self.is_crashed and self.crash_cooldown == 0:
-            self.crash_fallback(speed_kmh, jerk)
+            self.crash_fallback(speed_kmh, telemetry.jerk)
         self._last_speed_kmh = speed_kmh
 
 
@@ -249,7 +249,7 @@ class TM2020InterfaceTQC(TM2020InterfaceIMPALASophy):
             track_list = [x / cfg.OBS_TRACK_SCALE for x in track_list]
         track_info = [np.array(track_list, dtype="float32")]
 
-        self.counter_ = [
+        observation = [
             speed,
             acceleration,
             jerk,
@@ -264,7 +264,7 @@ class TM2020InterfaceTQC(TM2020InterfaceIMPALASophy):
             slip_coef,
             failure_counter,
         ]
-        observation = self.counter_
+
         if curvature_list is not None:
             curv = np.clip(np.array(curvature_list, dtype="float32") * 10.0, -1.0, 1.0)
             observation.append(curv)

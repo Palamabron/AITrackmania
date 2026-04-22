@@ -13,8 +13,8 @@ instead of raw tuple indexing.
 from typing import NamedTuple
 
 class Telemetry(NamedTuple):
-    cp: float
-    lap: float
+    cp: int
+    lap: int
     speed: float
     pos_x: float
     pos_y: float

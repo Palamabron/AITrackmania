@@ -234,7 +234,7 @@ class TM2020Interface(RealTimeGymInterface):
 
         Args:
             current_speed (float): The current speed of the agent in km/h.
-            jerk (float, optional): The rate of change of acceleration. Used to distinguish
+            jerk (float): The rate of change of acceleration. Used to distinguish
                 smooth deceleration from sudden impacts. Defaults to 0.0.
 
         Mutates:
