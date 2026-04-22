@@ -139,8 +139,8 @@ class TM2020RLInterface(TM2020Interface):
                 spaces.Box(low=0.0, high=np.inf, shape=(self.img_hist_len, 19), dtype=np.float32)
             )
         if self.include_camera_images:
-            h, w = cfg.IMG_HEIGHT, cfg.IMG_WIDTH
-            if cfg.GRAYSCALE:
+            w, h = self._lidar_rgb_resize
+            if self._lidar_rgb_grayscale:
                 spaces_list.append(
                     spaces.Box(
                         low=0.0, high=255.0, shape=(self.img_hist_len, h, w), dtype=np.float32
@@ -157,11 +157,14 @@ class TM2020RLInterface(TM2020Interface):
     def grab_data(self):
         return self.client.retrieve_data()
 
-    def _capture_and_process_image_tqc(self):
+    def _capture_and_process_image(self, raw_bgr: np.ndarray | None = None):
         assert self.window_interface is not None
-        img = self.window_interface.screenshot()[:, :, :3]
-        img = cv2.resize(img, (cfg.IMG_WIDTH, cfg.IMG_HEIGHT))
-        img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if cfg.GRAYSCALE else img[:, :, ::-1]
+        img = raw_bgr if raw_bgr is not None else self.window_interface.screenshot()[:, :, :3]
+        w, h = self._lidar_rgb_resize
+        img = cv2.resize(img, (w, h))
+        img = (
+            cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if self._lidar_rgb_grayscale else img[:, :, ::-1]
+        )
         return img.astype(np.float32)
 
     def _track_observation(self, pos, yaw):
@@ -356,7 +359,7 @@ class TM2020RLInterface(TM2020Interface):
 
         if self.include_camera_images:
             assert raw_bgr is not None
-            img = self._capture_and_process_image_tqc()
+            img = self._capture_and_process_image(raw_bgr=raw_bgr)
             self._push_img(img)
             total_obs.append(self._get_img_hist_array())
         return total_obs, np.float32(rew), terminated, info
@@ -449,7 +452,7 @@ class TM2020RLInterface(TM2020Interface):
             total_obs.append(np.array(self._lidar_hist, dtype=np.float32))
 
         if self.include_camera_images:
-            img = self._capture_and_process_image_tqc()
+            img = self._capture_and_process_image(raw_bgr=raw_bgr)
             for _ in range(self.img_hist_len):
                 self._push_img(img)
             total_obs.append(self._get_img_hist_array())

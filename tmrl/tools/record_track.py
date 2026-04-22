@@ -16,11 +16,9 @@ from tmrl.custom.interfaces.telemetry_indices import (
 from tmrl.custom.tm.utils.tools import TM2020OpenPlanetClient
 
 MIN_POSITIONS_FOR_TRACK = 50
+# Minimum distance (metres) driven before a lap-finish signal is accepted.
+# Prevents saving "start line only" traces when the finish flag fires shortly after reset.
 MIN_TRACK_LENGTH_M = 100.0
-"""Minimum distance (metres) driven before a lap-finish signal is accepted.
-
-Prevents saving "start line only" traces when the finish flag fires shortly after reset.
-"""
 
 
 def _track_length_m(positions):
@@ -130,13 +128,11 @@ def record_track(path_track=cfg.TRACK_PATH_LEFT):
             logger.info(f"Recording in progress: collected {len(positions)} position samples.")
 
 
+# Arc-length spacing (metres) for resampled track boundaries.
+# Dense enough to preserve arcs and 180-degree turns. The previous implementation
+# keyed the sample count off ``len(reward_file)``, which under-sampled curves
+# into sharp corners.
 TRACK_BOUNDARY_SPACING_M = 0.25
-"""Arc-length spacing (metres) for resampled track boundaries.
-
-Dense enough to preserve arcs and 180° turns. The previous implementation keyed
-the sample count off ``len(reward_file)``, which under-sampled curves into
-sharp corners.
-"""
 
 
 def space_points(points, spacing_m=TRACK_BOUNDARY_SPACING_M):

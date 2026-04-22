@@ -20,8 +20,8 @@ from tmrl.custom.tm.utils.tools import TM2020OpenPlanetClient
 PATH_REWARD = cfg.REWARD_PATH
 DATASET_PATH = cfg.DATASET_PATH
 
+# Minimum samples before a trajectory can be built; CubicSpline needs enough knots.
 MIN_POSITIONS_FOR_RECORDING = 50
-"""Minimum samples before a trajectory can be built; CubicSpline needs enough knots."""
 
 
 def _is_lap_finished(data: tuple[float, ...]) -> bool:

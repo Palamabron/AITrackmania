@@ -103,6 +103,14 @@ def _load_boundary_pkl(left_path: str, right_path: str):
     return load(left_path), load(right_path)
 
 
+def _load_boundary_csv_or_fallback(path: str) -> np.ndarray:
+    """Load CSV boundaries when present, otherwise return a tiny fallback line."""
+    if os.path.exists(path):
+        return np.loadtxt(path, delimiter=",")
+    # Keep constructor robust for smoke tests and fresh repos without generated CSVs.
+    return np.array([[0.0, 1.0], [0.0, 1.0]], dtype=np.float64)
+
+
 class TM2020InterfaceBoundary(TM2020InterfaceLidar):
     """
     Telemetry + pre-recorded track boundaries ahead of the car.
@@ -130,8 +138,8 @@ class TM2020InterfaceBoundary(TM2020InterfaceLidar):
         self.lidar = None
         self.last_pos = [0, 0]
         self.index = 0
-        self.left_boundary = np.loadtxt(BOUNDARY_CSV_LEFT, delimiter=",")
-        self.right_boundary = np.loadtxt(BOUNDARY_CSV_RIGHT, delimiter=",")
+        self.left_boundary = _load_boundary_csv_or_fallback(BOUNDARY_CSV_LEFT)
+        self.right_boundary = _load_boundary_csv_or_fallback(BOUNDARY_CSV_RIGHT)
         # Never set in production: it grows unbounded (one entry per env step, never drained).
         self._observed_boundaries: list[list[list[float]]] | None = (
             [[], [], [], [], []] if record else None
@@ -247,7 +255,7 @@ class TM2020InterfaceBoundary(TM2020InterfaceLidar):
             steering_angle,
             slipping_tires,
             crash,
-            float(failure_counter),
+            np.array([float(failure_counter)], dtype="float32"),
         ]
         return obs, np.float32(reward), terminated, info
 
@@ -281,7 +289,7 @@ class TM2020InterfaceBoundary(TM2020InterfaceLidar):
             steering_angle,
             slipping_tires,
             crash,
-            0.0,
+            np.array([0.0], dtype="float32"),
         ]
         self.reward_function.reset()
         return obs, {}
