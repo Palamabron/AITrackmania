@@ -132,10 +132,7 @@ class TM2020InterfaceBoundary(TM2020InterfaceLidar):
         self.index = 0
         self.left_boundary = np.loadtxt(BOUNDARY_CSV_LEFT, delimiter=",")
         self.right_boundary = np.loadtxt(BOUNDARY_CSV_RIGHT, delimiter=",")
-        # Episode-long buffer of sliced boundary segments and car positions for offline
-        # debug / replay rendering. Gated behind ``record`` because each step appends a
-        # new entry and the list is never drained: leaving it on in production would
-        # leak memory proportional to episode length.
+        # Never set in production: it grows unbounded (one entry per env step, never drained).
         self._observed_boundaries: list[list[list[float]]] | None = (
             [[], [], [], [], []] if record else None
         )
@@ -218,7 +215,6 @@ class TM2020InterfaceBoundary(TM2020InterfaceLidar):
         end_of_track = bool(data[TmrlDataPlugin.FINISH_UI_ACTIVE])
         info = {"end_of_track": end_of_track}
 
-        # Crash penalty is constant and applied in addition to the reward_function output.
         crash_penalty = -10
         reward = 0
         if bool(self.is_crashed):

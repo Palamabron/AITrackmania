@@ -1,12 +1,9 @@
-# third-party imports
 import cv2
 import gymnasium
 from loguru import logger
 from rtgym.envs.real_time_env import DEFAULT_CONFIG_DICT
 
 import tmrl.config as cfg
-
-# local imports
 from tmrl.custom.interfaces import (
     TM2020Interface,
     TM2020InterfaceBoundary,
@@ -28,8 +25,6 @@ def check_env_tm20_boundary():
         "min_nb_steps_before_failure": (20 * 60),
         "record": False,
     }
-    # env_config["time_step_duration"] = 0.5  # nominal duration of your time-step
-    # env_config["start_obs_capture"] = 0.4
     env = gymnasium.make("real-time-gym-v1", config=env_config)
     _, _ = env.reset()
     rounds = 1200
@@ -49,8 +44,9 @@ def check_env_tm20_boundary():
 
 def check_env_tm20lidar():
     window_interface = WindowInterface("Trackmania")
+    # Required on Linux: X11 needs an explicit move/resize before screen-capture works.
     if cfg.SYSTEM != "Windows":
-        window_interface.move_and_resize()  # needed on Linux
+        window_interface.move_and_resize()
     lidar = Lidar(window_interface.screenshot())
     env_config = DEFAULT_CONFIG_DICT.copy()
     env_config["interface"] = TM2020InterfaceLidar
@@ -72,8 +68,12 @@ def check_env_tm20lidar():
 
 
 def show_imgs(imgs, scale=cfg.IMG_SCALE_CHECK_ENV):
+    """Stack an image history vertically and display it at ``scale`` via OpenCV.
+
+    Accepts either grayscale stacks ``(N, H, W)`` or colour stacks ``(N, H, W, C)``.
+    """
     imshape = imgs.shape
-    if len(imshape) == 3:  # grayscale
+    if len(imshape) == 3:
         nb, h, w = imshape
         concat = imgs.reshape((nb * h, w))
         width = int(concat.shape[1] * scale)
@@ -82,7 +82,7 @@ def show_imgs(imgs, scale=cfg.IMG_SCALE_CHECK_ENV):
             "Environment", cv2.resize(concat, (width, height), interpolation=cv2.INTER_NEAREST)
         )
         cv2.waitKey(1)
-    elif len(imshape) == 4:  # color
+    elif len(imshape) == 4:
         nb, h, w, c = imshape
         concat = imgs.reshape((nb * h, w, c))
         width = int(concat.shape[1] * scale)
@@ -126,6 +126,4 @@ def check_env_tm20full():
 
 
 if __name__ == "__main__":
-    # check_env_tm20lidar()
-    # check_env_tm20full()
     check_env_tm20_boundary()

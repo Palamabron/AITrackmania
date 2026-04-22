@@ -1,7 +1,5 @@
-# standard library imports
 import pickle
 
-# third-party imports
 import numpy as np
 from loguru import logger
 
@@ -41,9 +39,7 @@ def record_reward_dist(path_reward=PATH_REWARD):
     is_recording = True
     while True:
         if is_recording:
-            data = client.retrieve_data(
-                sleep_if_empty=0.01
-            )  # we need many points to build a smooth curve
+            data = client.retrieve_data(sleep_if_empty=0.01)
             terminated = bool(data[_finish_idx(data)])
             if terminated:
                 logger.info("Computing reward function checkpoints from captured positions...")
@@ -58,14 +54,14 @@ def record_reward_dist(path_reward=PATH_REWARD):
                 while j < len(positions):
                     pt2 = positions[j]
                     pt, dst = line(pt1, pt2, move_by)
-                    if pt is not None:  # a point was created
-                        final_positions.append(pt)  # add the point to the list
+                    if pt is not None:
+                        final_positions.append(pt)
                         move_by = dist_between_points
                         pt1 = pt
-                    else:  # we passed pt2 without creating a new point
+                    else:
                         pt1 = pt2
                         j += 1
-                        move_by = dst  # remaining distance
+                        move_by = dst
 
                 final_positions = np.array(final_positions)
                 logger.info(
@@ -82,23 +78,20 @@ def record_reward_dist(path_reward=PATH_REWARD):
 
 
 def line(pt1, pt2, dist):
-    """
-    Creates a point between pt1 and pt2, at distance dist from pt1.
+    """Step along the segment ``pt1 -> pt2`` by ``dist`` metres.
 
-    If dist is too large, returns None and the remaining distance (> 0.0).
-    Else, returns the point and 0.0 as remaining distance.
+    Returns:
+        ``(pt, 0.0)`` when a new point was produced, or ``(None, remaining)``
+        when the segment was shorter than ``dist`` and ``remaining`` metres
+        still need to be walked on the next segment.
     """
     vec = pt2 - pt1
     norm = np.linalg.norm(vec)
     if norm < dist:
-        return (
-            None,
-            dist - norm,
-        )  # we couldn't create a new point but we moved by a distance of norm
-    else:
-        vec_unit = vec / norm
-        pt = pt1 + vec_unit * dist
-        return pt, 0.0
+        return None, dist - norm
+    vec_unit = vec / norm
+    pt = pt1 + vec_unit * dist
+    return pt, 0.0
 
 
 if __name__ == "__main__":
