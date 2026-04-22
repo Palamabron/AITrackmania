@@ -10,6 +10,7 @@ from collections import deque
 
 import cv2
 import numpy as np
+import threading
 from gymnasium import spaces
 from loguru import logger
 from rtgym import RealTimeGymInterface
@@ -113,8 +114,9 @@ class TM2020Interface(RealTimeGymInterface):
             min_nb_steps_before_failure if min_nb_steps_before_failure is not None else 70
         )
         self.min_nb_steps_before_failure = cfg.REWARD_CONFIG.get("MIN_STEPS", _default_min_steps)
+        self._crash_lock = threading.Lock()
+        self._async_rumble_event = False
         self.crash_cooldown = 0
-        self.crash_curr = 0
         _alg_cfg = cfg.TMRL_CONFIG.get("ALG", {})
         self.discrete_action_table: list[np.ndarray] | None = None
         if _alg_cfg.get("ALGORITHM") in ("IQN", "SDSAC"):
@@ -215,24 +217,25 @@ class TM2020Interface(RealTimeGymInterface):
             self.client = TM2020OpenPlanetClient()
         self.is_crashed = False
         self.crash_cooldown = 0
-        self.crash_curr = self.crash_cooldown
 
     def crash_callback(self, client, target, large_motor, small_motor, led_number, user_data):
         """Callback for detecting crashes via gamepad vibration."""
-        self.is_crashed = large_motor > 100 and self.crash_cooldown <= 0
-        if self.is_crashed:
-            self.crash_cooldown = 10
+        if large_motor > 100:
+            with self._crash_lock:
+                self._async_rumble_event = True
 
-    def crash_fallback(self, current_speed):
+    def crash_fallback(self, current_speed, jerk):
         """
         Kinematic fallback for collision detection in case of gamepad rumble malfunction.
 
         Calculates the velocity drop between the previous and current frame. If the
         deceleration exceeds a dynamic threshold (flat base drop + relative speed drop),
-        the environment is flagged as crashed.
+        and is accompanied by a sharp negative jerk, the environment is flagged as crashed.
 
         Args:
             current_speed (float): The current speed of the agent in km/h.
+            jerk (float, optional): The rate of change of acceleration. Used to distinguish
+                smooth deceleration from sudden impacts. Defaults to 0.0.
 
         Mutates:
             self.is_crashed (bool): Set to True if a kinematic collision is detected.
@@ -245,9 +248,63 @@ class TM2020Interface(RealTimeGymInterface):
         speed_factor = 0.20
         dynamic_threshold = base_drop + (last_speed * speed_factor)
 
-        if delta_v > dynamic_threshold:
+        if delta_v > dynamic_threshold and jerk <= -1.45:
             self.is_crashed = True
             self.crash_cooldown = 10
+
+    def _sync_crash_state(self):
+        """
+        Synchronizes the asynchronous crash event state with the main environment step.
+
+        Safely consumes the latching flag set by the background gamepad telemetry thread.
+        By acquiring a brief thread lock, it reads and clears the hardware rumble event
+        to prevent race conditions. If an impact was detected and the agent is not currently
+        in a cooldown period, the main crash state is updated.
+
+        Mutates:
+            self._async_rumble_event (bool): Cleared to False after being read.
+            self.is_crashed (bool): Set to True if an asynchronous crash event was triggered.
+            self.crash_cooldown (int): Set to 10 to debounce subsequent collisions.
+        """
+        with self._crash_lock:
+            rumble_triggered = self._async_rumble_event
+            self._async_rumble_event = False
+
+        if rumble_triggered and self.crash_cooldown == 0:
+            self.is_crashed = True
+            self.crash_cooldown = 10
+
+    def cooldown_control(self):
+        """
+        Manages the post-crash state at the end of an environment step.
+
+        This function ensures that the crash signal acts as a single-frame impulse
+        by unconditionally resetting the crash flag. It also handles the decrement
+        of the grace period (cooldown) following a collision.
+
+        Mutates:
+            self.is_crashed (bool): Unconditionally resets to False for the next frame.
+            self.crash_cooldown (int): Decrements by 1 if currently greater than 0.
+        """
+        self.is_crashed = False
+        if self.crash_cooldown > 0:
+            self.crash_cooldown -= 1
+
+    def get_speed_in_kmph(self, speed):
+        """
+        Converts the vehicle's speed from meters per second to kilometers per hour.
+
+        This function applies a standard 3.6 multiplier to the raw telemetry speed,
+        translating it into a standardized metric unit suitable for observation
+        scaling, reward shaping, or human-readable logging.
+
+        Args:
+            speed (float): The raw speed value expressed in meters per second (m/s).
+
+        Returns:
+            float: The calculated speed expressed in kilometers per hour (km/h).
+        """
+        return speed * 3.6
 
     def initialize(self):
         """Calls initialize_common and sets the interface as initialized."""
@@ -351,6 +408,9 @@ class TM2020Interface(RealTimeGymInterface):
         self.reset_race()
         self.is_crashed = False
         self.crash_cooldown = 0
+        self._last_speed_kmh = 0
+        with self._crash_lock:
+            self._async_rumble_event = False
         time_sleep = (
             max(0, cfg.SLEEP_TIME_AT_RESET - 0.1) if self.gamepad else cfg.SLEEP_TIME_AT_RESET
         )
