@@ -30,7 +30,7 @@ def tmrl_grabdata_payload_nb_floats(reward_config: dict) -> int:
 
 
 _TmrlDataPluginBase = namedtuple(
-    "TmrlDataPlugin",
+    "_TmrlDataPluginBase",
     [
         # 1. Race stats (4)
         "CHECKPOINTS_PASSED",
