@@ -19,7 +19,7 @@ def _simulate_retrieve_data_validation(data_tuple, nb_floats=20, last_good_pos=N
     new_last_good_pos = last_good_pos
 
     if data is not None:
-        pos_start_idx = 3 if nb_floats >= 20 else 2
+        pos_start_idx = 4 if nb_floats >= 33 else 3 if nb_floats >= 20 else 2
         pos_x, pos_y, pos_z = (
             data[pos_start_idx],
             data[pos_start_idx + 1],
@@ -37,7 +37,12 @@ def _simulate_retrieve_data_validation(data_tuple, nb_floats=20, last_good_pos=N
         else:
             new_last_good_pos = (pos_x, pos_y, pos_z)
 
-        speed_idx = 2
+        if nb_floats >= 33:
+            speed_idx = 16
+        elif nb_floats >= 20:
+            speed_idx = 2
+        else:
+            speed_idx = 0
         if speed_idx < len(data):
             try:
                 speed_val = float(data[speed_idx])
@@ -103,4 +108,23 @@ class TestTelemetrySpeedSanity:
         data[3], data[4], data[5] = 10.0, 20.0, 30.0
         data = tuple(data)
         _, _, invalid, _ = _simulate_retrieve_data_validation(data, nb_floats=20)
+        assert not invalid
+
+    def test_33_float_position_patch_indices(self):
+        data = [0.0] * 33
+        last_good = (10.0, 20.0, 30.0)
+        patched, was_patched, _, _ = _simulate_retrieve_data_validation(
+            data, nb_floats=33, last_good_pos=last_good
+        )
+        assert was_patched
+        assert patched[4] == 10.0
+        assert patched[5] == 20.0
+        assert patched[6] == 30.0
+
+    def test_33_float_speed_sanity_mps(self):
+        data = [0.0] * 33
+        data[4], data[5], data[6] = 100.0, 0.0, 200.0
+        data[16] = 80.0
+        data = tuple(data)
+        _, _, invalid, _ = _simulate_retrieve_data_validation(data, nb_floats=33)
         assert not invalid

@@ -27,12 +27,13 @@ WEIGHTS_FOLDER = TMRL_FOLDER / "weights"
 CONFIG_FOLDER = TMRL_FOLDER / "config"
 PATH_DATA = TMRL_FOLDER
 
-# Output/created files: tracks (e.g. CSV for TrackMap), debug plots (project or TMRL_OUTPUT_FILES)
+# Output/created files: tracks (CSVs for the Boundary interface), debug plots
+# (project or TMRL_OUTPUT_FILES)
 OUTPUT_FILES_FOLDER = Path(_OUTPUT_FILES_ROOT)
 TRACKS_FOLDER = OUTPUT_FILES_FOLDER / "tracks"
 DEBUG_FOLDER = OUTPUT_FILES_FOLDER / "debug"
-TRACKMAP_CSV_LEFT = str(TRACKS_FOLDER / "tmrl-test" / "track_left.csv")
-TRACKMAP_CSV_RIGHT = str(TRACKS_FOLDER / "tmrl-test" / "track_right.csv")
+BOUNDARY_CSV_LEFT = str(TRACKS_FOLDER / "tmrl-test" / "track_left.csv")
+BOUNDARY_CSV_RIGHT = str(TRACKS_FOLDER / "tmrl-test" / "track_right.csv")
 
 # Model paths
 RUN_NAME = TMRL_CONFIG["RUN_NAME"]

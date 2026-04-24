@@ -83,9 +83,6 @@ class RewardConfig(BaseModel):
     BOUNDARY_PENALTY_WEIGHT: float = Field(
         default=4.0, description="Weight for penalty when near track boundary."
     )
-    BOUNDARY_CRASH_PENALTY: float = Field(
-        default=10.0, description="Penalty when leaving track (crash)."
-    )
     REWARD_CLIP_FLOOR: float = Field(default=10.0, description="Floor value when clipping reward.")
     TIME_BONUS_SCALE: float = Field(default=0.0, description="Scale for time-based bonus.")
     CONDITIONAL_PENALTY_WHEN_BRAKING: bool = Field(

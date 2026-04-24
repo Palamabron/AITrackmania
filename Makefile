@@ -23,19 +23,19 @@ install-dev:
 
 kill-server:
 	@echo "Checking for zombie processes on port 55555..."
-	@for /f "tokens=5" %%a in ('netstat -aon ^| findstr :55555') do taskkill /F /PID %%a 2>nul || exit 0
+	-@powershell.exe -NoProfile -Command "try { $$pids = Get-NetTCPConnection -LocalPort 55555 -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique; foreach ($$pid in $$pids) { Stop-Process -Id $$pid -Force -ErrorAction SilentlyContinue } } catch {}; exit 0"
 
 server: kill-server
-	@set "UV_PROJECT_ENVIRONMENT=.venv-windows" && uv run python -m tmrl --server
+	@powershell.exe -NoProfile -Command "$$env:UV_PROJECT_ENVIRONMENT='.venv-windows'; uv run python -m tmrl --server"
 
 trainer:
-	@set "UV_PROJECT_ENVIRONMENT=.venv-windows" && uv run python -m tmrl --trainer
+	@powershell.exe -NoProfile -Command "$$env:UV_PROJECT_ENVIRONMENT='.venv-windows'; uv run python -m tmrl --trainer"
 
 worker:
-	@set "UV_PROJECT_ENVIRONMENT=.venv-windows" && uv run python -m tmrl --worker
+	@powershell.exe -NoProfile -Command "$$env:UV_PROJECT_ENVIRONMENT='.venv-windows'; uv run python -m tmrl --worker"
 
 record-episode:
-	@set "UV_PROJECT_ENVIRONMENT=.venv-windows" && uv run python -m tmrl --record-episode --record-episode-count $(if $(word 2,$(MAKECMDGOALS)),$(word 2,$(MAKECMDGOALS)),2)
+	@powershell.exe -NoProfile -Command "$$env:UV_PROJECT_ENVIRONMENT='.venv-windows'; uv run python -m tmrl --record-episode --record-episode-count $(if $(word 2,$(MAKECMDGOALS)),$(word 2,$(MAKECMDGOALS)),2)"
 
 # Allow syntax like: make record-episode 5
 %:

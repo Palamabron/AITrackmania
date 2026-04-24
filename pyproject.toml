@@ -133,9 +133,15 @@ select = [
     "PT",   # flake8-pytest-style (test files)
 ]
 ignore = [
-    "N999",  # allow PascalCase module names (e.g. TM2020Interface.py)
+    "N999",  # allow PascalCase module names (e.g. tmrl/custom/models/Sophy.py)
     "N812",  # allow F for torch.nn.functional (PyTorch convention)
 ]
+
+[tool.ruff.lint.isort]
+# The repo root contains a local ``wandb/`` directory of run outputs, which isort
+# otherwise misclassifies as a first-party package and shuffles every ``import
+# wandb`` into the local-imports group.
+known-third-party = ["wandb"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

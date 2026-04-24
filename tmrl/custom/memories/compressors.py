@@ -12,6 +12,27 @@ import numpy as np
 LIDAR_RECENT_WINDOW = 19
 
 
+def _compress_last_obs_image_to_uint8(obs):
+    """Compress image tensor in the last obs slot to uint8 when present."""
+    if not isinstance(obs, (tuple, list)) or len(obs) == 0:
+        return obs
+    last = obs[-1]
+    arr = np.asarray(last)
+    if arr.ndim < 2:
+        return obs
+    if arr.dtype == np.uint8:
+        img_u8 = arr
+    else:
+        # Some interfaces produce float32 in [0, 1], others [0, 255].
+        max_val = float(np.max(arr)) if arr.size > 0 else 0.0
+        if max_val <= 1.5:
+            arr = arr * 255.0
+        img_u8 = np.clip(arr, 0.0, 255.0).astype(np.uint8)
+    obs_mod = list(obs)
+    obs_mod[-1] = img_u8
+    return tuple(obs_mod)
+
+
 def get_local_buffer_sample_lidar(prev_act, obs, rew, terminated, truncated, info):
     """Compress for LIDAR interface: keep only speed and most recent LIDAR."""
     obs_mod = (obs[0], obs[1][-LIDAR_RECENT_WINDOW:])
@@ -26,12 +47,14 @@ def get_local_buffer_sample_lidar_progress(prev_act, obs, rew, terminated, trunc
 
 def get_local_buffer_sample_lidar_progress_images(prev_act, obs, rew, terminated, truncated, info):
     """Compress for LIDAR+images interface: cast reward to float32."""
-    return prev_act, obs, np.float32(rew), terminated, truncated, info
+    obs_mod = _compress_last_obs_image_to_uint8(obs)
+    return prev_act, obs_mod, np.float32(rew), terminated, truncated, info
 
 
 def get_local_buffer_sample_mobilenet(prev_act, obs, rew, terminated, truncated, info):
     """Compress for MobileNet interface: cast reward to float32."""
-    return prev_act, obs, np.float32(rew), terminated, truncated, info
+    obs_mod = _compress_last_obs_image_to_uint8(obs)
+    return prev_act, obs_mod, np.float32(rew), terminated, truncated, info
 
 
 def get_local_buffer_sample_tm20_imgs(prev_act, obs, rew, terminated, truncated, info):
