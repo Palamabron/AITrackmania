@@ -165,3 +165,8 @@ check_untyped_defs = true
 [[tool.mypy.overrides]]
 module = ["tlspyo.*", "rtgym.*"]
 ignore_missing_imports = true
+
+# Vendored pywin32 postinstall; Windows-only registry APIs are absent from Unix stubs.
+[[tool.mypy.overrides]]
+module = "tmrl.tools.init_package.init_pywin32"
+ignore_errors = true

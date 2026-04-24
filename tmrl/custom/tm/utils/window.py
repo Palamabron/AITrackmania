@@ -172,7 +172,7 @@ elif platform.system() == "Linux":
             self.x_offset = linux_x_offset
             self.y_offset = linux_y_offset
 
-            self.process = None
+            self.process: subprocess.Popen[bytes] | None = None
 
         def __del__(self):
             pass
@@ -186,16 +186,22 @@ elif platform.system() == "Linux":
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                 )
+            assert self.process.stdin is not None
             self.process.stdin.write(c.encode())
             self.process.stdin.flush()
 
         def screenshot(self):
             try:
-                monitor = {
-                    "top": self.x + self.x_offset,
-                    "left": self.y + self.y_offset,
-                    "width": self.w,
-                    "height": self.h,
+                x, y, w, h = self.x, self.y, self.w, self.h
+                assert x is not None
+                assert y is not None
+                assert w is not None
+                assert h is not None
+                monitor: dict[str, int] = {
+                    "top": int(x + self.x_offset),
+                    "left": int(y + self.y_offset),
+                    "width": int(w),
+                    "height": int(h),
                 }
                 img = np.array(self.sct.grab(monitor))
                 return img

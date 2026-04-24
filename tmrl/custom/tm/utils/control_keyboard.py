@@ -75,7 +75,7 @@ if platform.system() == "Windows":
         ii_ = InputI()
         ii_.ki = KeyBdInput(0, hex_key_code, 0x0008, 0, ctypes.pointer(extra))
         x = Input(ctypes.c_ulong(1), ii_)
-        ctypes.windll.user32.SendInput(1, ctypes.pointer(x), ctypes.sizeof(x))
+        ctypes.windll.user32.SendInput(1, ctypes.pointer(x), ctypes.sizeof(x))  # type: ignore[attr-defined]
 
     def release_key(hex_key_code):
         """
@@ -88,7 +88,7 @@ if platform.system() == "Windows":
         ii_ = InputI()
         ii_.ki = KeyBdInput(0, hex_key_code, 0x0008 | 0x0002, 0, ctypes.pointer(extra))
         x = Input(ctypes.c_ulong(1), ii_)
-        ctypes.windll.user32.SendInput(1, ctypes.pointer(x), ctypes.sizeof(x))
+        ctypes.windll.user32.SendInput(1, ctypes.pointer(x), ctypes.sizeof(x))  # type: ignore[attr-defined]
 
     def apply_control(action, window_id=None):  # move_fast
         """
@@ -162,6 +162,7 @@ elif platform.system() == "Linux":
         if process is None or process.poll() is not None:
             logger.debug("(re-)create process")
             process = subprocess.Popen("/bin/bash", stdin=subprocess.PIPE)
+        assert process.stdin is not None
         process.stdin.write(c.encode())
         process.stdin.flush()
 

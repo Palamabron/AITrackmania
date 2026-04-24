@@ -39,7 +39,7 @@ The config system is designed around three principles:
 | Composition | `defaults/config.yaml` + groups | Select baseline sections (`algorithm`, `model`, `environment`, ...) | raw Hydra dict |
 | Merge | `loader.py` | Apply override precedence (`TMRL_HYDRA_OVERRIDES`, `local.yaml`, env secrets, `TMRL_CONFIG_OVERRIDES`) | merged dict |
 | Validation | `schema/*.py`, `MainConfig` | Validate shape/ranges/cross-field constraints | `MAIN_CONFIG` |
-| Derived constants | `constants.py` | Compute convenience flags/aliases/derived values (`PRAGMA_*`, `POINTS_NUMBER`, etc.) | flat module constants |
+| Derived constants | `constants.py` | Compute convenience flags and derived values (`USE_*`, `POINTS_NUMBER`, etc.) | flat module constants |
 | Runtime selection | `config_objects.py` | Choose interface, memory, policy/model, agent, trainer partials | runtime object partials |
 
 ## Environment setup (`uv`)
@@ -82,7 +82,7 @@ flowchart TD
 The runtime path intentionally separates **what config says** from **how objects are built**:
 
 1. `MAIN_CONFIG` is the typed, authoritative tree.
-2. `constants.py` derives runtime booleans (`PRAGMA_LIDAR`, `USE_IMAGES_MOBILENET_PIPELINE`,
+2. `constants.py` derives runtime booleans (`USE_LIDAR_OBSERVATIONS`, `USE_IMAGES_MOBILENET_PIPELINE`,
    `USE_OBS_WORLD_TELEMETRY_LAYOUT`, etc.) and
    convenience values used throughout the codebase.
 3. `config_objects.py` maps those flags plus `algorithm/model` settings to concrete classes:

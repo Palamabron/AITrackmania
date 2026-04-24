@@ -464,12 +464,12 @@ class IQNAgent(TrainingAgent):
         # Replay may hold continuous [gas, brake, steer] (e.g. player runs); map to discrete.
         if a.dim() >= 2 and a.shape[-1] == 3:
             from tmrl.custom.tm.utils.discrete_control import (
-                build_yosh_action_table,
+                build_brake_tap_action_table,
                 continuous_control_to_discrete_indices_batch,
             )
 
             n_steer = int(self.iqn_n_steer_bins)
-            _, table = build_yosh_action_table(n_steer=n_steer)
+            _, table = build_brake_tap_action_table(n_steer=n_steer)
             idx = continuous_control_to_discrete_indices_batch(a.cpu().numpy(), table)
             a = torch.from_numpy(idx).to(device=a.device, dtype=torch.long)
         actions = a.long().squeeze(-1)

@@ -64,17 +64,17 @@ def _is_discrete_action(action) -> bool:
 
 
 def _hflip_discrete_action(action_idx, n_steer: int | None = None):
-    """Mirror the steering component inside a Yosh-style discrete action index.
+    """Mirror the steering component inside a composite discrete action index.
 
     Index layout: steer_idx * (n_gas * n_brake) + gas_idx * n_brake + brake_idx.
     Mirroring steering: new_steer = n_steer - 1 - steer_idx (symmetric about 0).
 
     Args:
         action_idx: Scalar integer action index.
-        n_steer: Number of steer bins for Yosh discrete control. If omitted,
+        n_steer: Number of steer bins for composite discrete control. If omitted,
             uses bins configured via ``configure_discrete_steer_bins``.
     """
-    from tmrl.custom.tm.utils.discrete_control import YOSH_N_BRAKE, YOSH_N_GAS
+    from tmrl.custom.tm.utils.discrete_control import BRAKE_TAP_TABLE_N_BRAKE, BRAKE_TAP_TABLE_N_GAS
 
     n_steer = _DISCRETE_STEER_BINS if n_steer is None else int(n_steer)
     if n_steer is None:
@@ -83,7 +83,7 @@ def _hflip_discrete_action(action_idx, n_steer: int | None = None):
             "Set discrete_n_steer_bins in memory construction."
         )
     idx = int(action_idx)
-    gas_brake = YOSH_N_GAS * YOSH_N_BRAKE
+    gas_brake = BRAKE_TAP_TABLE_N_GAS * BRAKE_TAP_TABLE_N_BRAKE
     steer_idx = idx // gas_brake
     remainder = idx % gas_brake
     return np.int64((n_steer - 1 - steer_idx) * gas_brake + remainder)

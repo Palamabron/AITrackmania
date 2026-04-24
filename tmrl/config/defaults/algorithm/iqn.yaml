@@ -24,6 +24,8 @@ algorithm:
   iqn_num_quantiles_train: 64
   iqn_num_quantiles_target: 64
   iqn_num_quantiles_eval: 32
+  iqn_n_steer_bins: 13
+  iqn_n_actions: 78
   iqn_n_cos: 64
   iqn_dueling: true
   iqn_double_dqn: true

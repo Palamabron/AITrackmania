@@ -303,10 +303,7 @@ class Server:
             f"TMRL server listening on port {port} (trainers + workers). "
             "Leave this process running."
         )
-        try:
-            config_path = str(cfg.CONFIG_FILE_PATH)
-        except AttributeError:
-            config_path = "(config path not available)"
+        config_path = str(cfg.LOCAL_OVERRIDE_PATH)
         print_with_timestamp(
             f"Config: {config_path} (ensure server, trainer, worker use this same config)."
         )

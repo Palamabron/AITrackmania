@@ -465,6 +465,19 @@ class AlgorithmConfig(BaseModel):
             if betas is not None and len(betas) != 2:
                 raise ValueError(f"{beta_name} must contain exactly two floats when provided")
 
+        from tmrl.custom.tm.utils.discrete_control import (
+            BRAKE_TAP_TABLE_N_BRAKE,
+            BRAKE_TAP_TABLE_N_GAS,
+        )
+
+        expected = self.iqn_n_steer_bins * BRAKE_TAP_TABLE_N_GAS * BRAKE_TAP_TABLE_N_BRAKE
+        if self.iqn_n_actions != expected:
+            raise ValueError(
+                f"iqn_n_actions ({self.iqn_n_actions}) must equal "
+                f"iqn_n_steer_bins * {BRAKE_TAP_TABLE_N_GAS} * {BRAKE_TAP_TABLE_N_BRAKE} "
+                f"= {expected}"
+            )
+
         try:
             alg = AlgorithmName(self.name)
         except ValueError:

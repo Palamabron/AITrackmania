@@ -35,8 +35,6 @@ CUDA_INFERENCE = M.compute.cuda_inference
 USE_VIRTUAL_GAMEPAD = M.compute.virtual_gamepad
 # Runtime recurrent path is still gated by this global switch.
 USE_RNN = False
-PRAGMA_RNN = USE_RNN
-PRAGMA_GAMEPAD = USE_VIRTUAL_GAMEPAD
 
 # --- Distributed ---
 LOCALHOST_WORKER = M.distributed.localhost_worker
@@ -164,14 +162,8 @@ USE_IMAGES_WITH_WORLD_TELEMETRY_STACK = "TQCGRAB_IMAGES" in RTGYM_INTERFACE
 # R2D2 replay layout: MTQC suffix or any world-telemetry interface id above.
 USE_IMAGES_R2D2_SEQUENCE_BUFFER = RTGYM_INTERFACE.endswith("MTQC") or USE_OBS_WORLD_TELEMETRY_LAYOUT
 
-PRAGMA_LIDAR = USE_LIDAR_OBSERVATIONS
-PRAGMA_PROGRESS = USE_LIDAR_PROGRESS
-PRAGMA_LIDAR_PROGRESS_IMAGES = USE_LIDAR_PROGRESS_IMAGES
-PRAGMA_TRACKMAP = USE_TRACKMAP
-PRAGMA_TRACKMAP_IMAGES = USE_TRACKMAP_IMAGES
 if USE_LIDAR_PROGRESS or USE_TRACKMAP or USE_LIDAR_PROGRESS_IMAGES or USE_TRACKMAP_IMAGES:
     USE_LIDAR_OBSERVATIONS = True
-    PRAGMA_LIDAR = True
 
 SEED = E.seed
 MIN_NB_ZERO_REW_BEFORE_FAILURE = E.min_zero_reward_steps_before_failure
@@ -254,7 +246,7 @@ logger.info(
     _n_reward_pts,
 )
 
-if PRAGMA_LIDAR:
+if USE_LIDAR_OBSERVATIONS:
     _track_missing: list[str] = []
     if not os.path.isfile(TRACK_PATH_LEFT):
         _track_missing.append(f"left ({TRACK_PATH_LEFT})")

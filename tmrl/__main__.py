@@ -193,8 +193,8 @@ def main(cli: TmrlCli) -> None:
     elif cli.record_reward:
         record_reward_dist(path_reward=cfg.REWARD_PATH)
     elif cli.check_env:
-        if cfg.PRAGMA_LIDAR:
-            if cfg.PRAGMA_TRACKMAP:
+        if cfg.USE_LIDAR_OBSERVATIONS:
+            if cfg.USE_TRACKMAP:
                 check_env_tm20_boundary()
             else:
                 check_env_tm20lidar()

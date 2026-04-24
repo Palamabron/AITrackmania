@@ -4,7 +4,15 @@ from __future__ import annotations
 
 from typing import Annotated, Any
 
-from pydantic import BaseModel, ConfigDict, Field, PositiveInt
+from pydantic import BaseModel, ConfigDict, Field, PositiveInt, model_validator
+
+_REMOVED_REWARD_FIELDS = frozenset(
+    {
+        "barrier_touch_penalty",
+        "barrier_touch_radius",
+        "barrier_touch_min_speed_kmh",
+    }
+)
 
 
 class RtGymInterfaceKwargs(BaseModel):
@@ -71,6 +79,19 @@ class RewardConfig(BaseModel):
     """Dense and sparse rewards, progress checks, and episode cutoffs used by compute_reward."""
 
     model_config = ConfigDict(extra="allow")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_removed_reward_fields(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            removed = sorted(_REMOVED_REWARD_FIELDS.intersection(data))
+            if removed:
+                names = ", ".join(removed)
+                raise ValueError(
+                    f"Removed reward config field(s): {names}. "
+                    "Barrier-touch reward shaping is no longer implemented."
+                )
+        return data
 
     min_seconds_before_failure: float = Field(
         default=0.0,
@@ -248,20 +269,6 @@ class RewardConfig(BaseModel):
         default=0.0,
         ge=0.0,
         description="Explicit bonus weight for dot(velocity, track_tangent).",
-    )
-    barrier_touch_penalty: float = Field(
-        default=0.0,
-        ge=0.0,
-        description="Penalty per step when within barrier_touch_radius at sufficient speed.",
-    )
-    barrier_touch_radius: Annotated[float, Field(gt=0.0)] = Field(
-        default=0.25,
-        description="Distance (m) to wall geometry that counts as a barrier touch.",
-    )
-    barrier_touch_min_speed_kmh: float = Field(
-        default=5.0,
-        ge=0.0,
-        description="Ignore barrier touches below this ground speed (km/h).",
     )
     speed_safe_deviation_ratio: float = Field(
         default=0.15,

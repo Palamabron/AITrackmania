@@ -129,7 +129,7 @@ class SpinupSacAgent(TrainingAgent):
         """Perform one SAC training step on the given batch.
 
         Args:
-            batch: Tuple (obs, actions, rewards, next_obs, dones, info).
+            batch: Tuple (obs, actions, rewards, next_obs, dones, ...).
             epoch: Current epoch (unused, for API compat with training loop).
             batch_index: Current batch index (unused).
             iters: Total iterations (unused).
@@ -138,7 +138,7 @@ class SpinupSacAgent(TrainingAgent):
             Dict with losses/actor, losses/critic, and optionally loss_entropy_coef,
             entropy_coef and debug metrics when debug_mode is True.
         """
-        obs, actions, rewards, next_obs, dones, _ = batch
+        obs, actions, rewards, next_obs, dones = batch[:5]
 
         def autocast_ctx():
             return autocast_context(self.use_mixed_precision, self.amp_dtype)

@@ -1,5 +1,6 @@
 # standard library imports
 from collections.abc import Mapping, Sequence
+from typing import Any, cast
 
 # third-party imports
 import gymnasium
@@ -15,7 +16,7 @@ class AffineObservationWrapper(gymnasium.ObservationWrapper):
         self.observation_space = gymnasium.spaces.Box(
             self.observation(env.observation_space.low),
             self.observation(env.observation_space.high),
-            dtype=env.observation_space.dtype,
+            dtype=cast(Any, env.observation_space.dtype),
         )
 
     def observation(self, observation):
@@ -74,10 +75,12 @@ def deepmap(f, m):
     for cls in f:
         if isinstance(m, cls):
             return f[cls](m)
-    if isinstance(m, Sequence):
-        return type(m)(deepmap(f, x) for x in m)
-    elif isinstance(m, Mapping):
-        return type(m)((k, deepmap(f, m[k])) for k in m)
+    if isinstance(m, Sequence) and not isinstance(m, (str, bytes, bytearray)):
+        ctor: Any = type(m)
+        return ctor(deepmap(f, x) for x in m)
+    if isinstance(m, Mapping):
+        ctor_map: Any = type(m)
+        return ctor_map((k, deepmap(f, m[k])) for k in m)
     else:
         raise AttributeError(f"m is a {type(m)}, not a Sequence nor a Mapping: {m}")
 

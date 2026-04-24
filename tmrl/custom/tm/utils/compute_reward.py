@@ -21,7 +21,10 @@ from tmrl.config.spacing_lookahead import points_number_from_spacing_config
 OFF_TRACK_PROGRESS_ZERO_MULTIPLIER = 2.0
 SPEED_REWARD_MIN_KMH = 5.0
 TIME_STEP_SECONDS = 0.05
-_BARRIER_SEARCH_WINDOW = 15
+DUMMY_TRAJECTORY_THRESHOLD = 2
+MIN_ROAD_HALF_WIDTH_M = 0.5
+DEFAULT_ROAD_HALF_WIDTH_M = 12.0
+DT_MILLISECOND_THRESHOLD = 1.0
 
 
 def _resample_polyline_by_arc_length(points: np.ndarray, num_points: int) -> np.ndarray:
@@ -117,7 +120,7 @@ class RewardFunction:
             )
         with open(reward_data_path, "rb") as f:
             self.data = pickle.load(f)
-        self._dummy_trajectory = len(self.data) <= 2
+        self._dummy_trajectory = len(self.data) <= DUMMY_TRAJECTORY_THRESHOLD
 
         self.datalen = len(self.data)
 
@@ -159,7 +162,7 @@ class RewardFunction:
             self._right_xz = self.right_track[:, [0, 2]].astype(np.float64).copy()
             self._road_center_xz = (self._left_xz + self._right_xz) / 2.0
             self._road_half_widths = np.linalg.norm(self._left_xz - self._right_xz, axis=1) / 2.0
-            self._road_half_widths = np.maximum(self._road_half_widths, 0.5)
+            self._road_half_widths = np.maximum(self._road_half_widths, MIN_ROAD_HALF_WIDTH_M)
             _hw = self._road_half_widths
             logger.info(
                 "Track boundaries loaded: {} points, road half-width "
@@ -173,7 +176,7 @@ class RewardFunction:
             self._left_xz = np.zeros((2, 2), dtype=np.float64)
             self._right_xz = np.zeros((2, 2), dtype=np.float64)
             self._road_center_xz = np.zeros((2, 2), dtype=np.float64)
-            self._road_half_widths = np.ones(2, dtype=np.float64) * 12.0
+            self._road_half_widths = np.ones(2, dtype=np.float64) * DEFAULT_ROAD_HALF_WIDTH_M
 
         self.cur_idx = 0
         self.prev_idx = 0
@@ -183,7 +186,7 @@ class RewardFunction:
         self.max_dist_from_traj = float(rc.get("max_stray", max_dist_from_traj))
 
         raw_dt = float(time_step_duration)
-        if raw_dt >= 1.0:
+        if raw_dt >= DT_MILLISECOND_THRESHOLD:
             self._time_step_duration = raw_dt / 1000.0
         else:
             self._time_step_duration = raw_dt
@@ -270,15 +273,12 @@ class RewardFunction:
         self._velocity_alignment_reward_weight = float(
             rc.get("velocity_alignment_reward_weight", 0.0)
         )
-        self._barrier_touch_penalty = float(rc.get("barrier_touch_penalty", 0.0))
-        self._barrier_touch_radius = float(rc.get("barrier_touch_radius", 0.25))
-        self._barrier_touch_min_speed_kmh = float(rc.get("barrier_touch_min_speed_kmh", 5.0))
-
         self._drift_weight_start = float(
             rc.get("drift_reward_weight_start", self._drift_reward_weight)
         )
         self._drift_weight_end = float(rc.get("drift_reward_weight_end", 0.0))
         self._drift_anneal_steps = int(rc.get("drift_anneal_steps", 0))
+        self._rear_slip_activation = float(rc.get("REAR_SLIP_ACTIVATION", 0.5))
         self._global_env_steps: int = 0
 
         self._term_reason: str | None = None
@@ -305,8 +305,12 @@ class RewardFunction:
             self._point_spacing_m = 0.0
             self._points_number = None
 
-        self._debug_reward = bool(rc.get("debug_reward_components", rc.get("DEBUG_REWARD_COMPONENTS", False)))
-        self._debug_log_interval = int(rc.get("debug_log_interval", rc.get("DEBUG_LOG_INTERVAL", 100)))
+        self._debug_reward = bool(
+            rc.get("debug_reward_components", rc.get("DEBUG_REWARD_COMPONENTS", False))
+        )
+        self._debug_log_interval = int(
+            rc.get("debug_log_interval", rc.get("DEBUG_LOG_INTERVAL", 100))
+        )
         self._reset_debug_accumulators()
 
         if self._use_wandb:
@@ -382,7 +386,9 @@ class RewardFunction:
             a flat list of relative coordinates.
         """
         max_idx = min(len(self.data), len(self.left_track), len(self.right_track)) - 1
-        if getattr(self, "_point_spacing_m", 0) > 0 and getattr(self, "_points_number", 0) > 0:
+        if (getattr(self, "_point_spacing_m", 0) or 0) > 0 and (
+            getattr(self, "_points_number", 0) or 0
+        ) > 0:
             next_indices = []
             cur_idx = self.cur_idx
             cur_dist = self._cumulative_dist[min(cur_idx, self.datalen - 1)]
@@ -465,9 +471,7 @@ class RewardFunction:
         self._dbg_speeds_kmh = []
         self._dbg_speed_rewards = []
         self._dbg_progress_rewards = []
-        self._dbg_barrier_penalties = []
         self._dbg_crash_steps = 0
-        self._dbg_barrier_touch_steps = 0
         self._dbg_end_of_track_awarded = False
 
     def _log_episode_debug_summary(self):
@@ -485,10 +489,6 @@ class RewardFunction:
             float(np.sum(self._dbg_progress_rewards)) if self._dbg_progress_rewards else 0.0
         )
         speed_sum = float(np.sum(self._dbg_speed_rewards)) if self._dbg_speed_rewards else 0.0
-        barrier_sum = (
-            float(np.sum(self._dbg_barrier_penalties)) if self._dbg_barrier_penalties else 0.0
-        )
-        bt = getattr(self, "_dbg_barrier_touch_steps", 0)
 
         const_sum = -self._constant_penalty * steps
         eot = (
@@ -499,13 +499,16 @@ class RewardFunction:
             f"  progress: {progress_sum:+.1f}  |  speed: {speed_sum:+.1f}  |"
             f"  constant: {const_sum:+.1f}"
         )
-        approx = progress_sum + speed_sum + barrier_sum + const_sum + eot
-        logger.info(
-            f"  barrier: {barrier_sum:+.1f}"
-            f" ({bt}/{steps} steps, {100 * bt / max(1, steps):.1f}%)"
-            f"  |  end_of_track: {eot:+.1f}"
-            f"  |  approx_total: {approx:+.1f}"
-        )
+        approx = progress_sum + speed_sum + const_sum + eot
+        logger.info(f"  end_of_track: {eot:+.1f}  |  approx_total: {approx:+.1f}")
+
+    def _current_drift_weight(self) -> float:
+        if self._drift_anneal_steps > 0:
+            frac = min(1.0, self._global_env_steps / self._drift_anneal_steps)
+            return self._drift_weight_start + frac * (
+                self._drift_weight_end - self._drift_weight_start
+            )
+        return self._drift_reward_weight
 
     def compute_reward(
         self,
@@ -666,25 +669,12 @@ class RewardFunction:
             ws = np.asarray(wheel_slips, dtype=np.float64).reshape(-1)
             if ws.size >= 4:
                 rear_slip_avg = 0.5 * (abs(float(ws[2])) + abs(float(ws[3])))
-                if self._drift_anneal_steps > 0:
-                    frac = min(1.0, self._global_env_steps / self._drift_anneal_steps)
-                    drift_w = self._drift_weight_start + frac * (
-                        self._drift_weight_end - self._drift_weight_start
-                    )
-                else:
-                    drift_w = self._drift_reward_weight
-                slip_activation = float(cfg.REWARD_CONFIG.get("REAR_SLIP_ACTIVATION", 0.5))
-                if drift_w > 0 and rear_slip_avg > slip_activation:
+                drift_w = self._current_drift_weight()
+                if drift_w > 0 and rear_slip_avg > self._rear_slip_activation:
                     reward += drift_w * min(1.0, rear_slip_avg)
         elif _effective_slip is not None and _speed_kmh >= self._drift_threshold_kmh:
             _effective_slip = abs(float(_effective_slip))
-            if self._drift_anneal_steps > 0:
-                frac = min(1.0, self._global_env_steps / self._drift_anneal_steps)
-                drift_w = self._drift_weight_start + frac * (
-                    self._drift_weight_end - self._drift_weight_start
-                )
-            else:
-                drift_w = self._drift_reward_weight
+            drift_w = self._current_drift_weight()
             if drift_w > 0:
                 opt = self._drift_optimal_angle_deg
                 sigma = max(1e-3, self._drift_sigma_deg)
@@ -724,7 +714,6 @@ class RewardFunction:
             self._dbg_speeds_kmh.append(_speed_kmh)
             self._dbg_progress_rewards.append(reward_progress)
             self._dbg_speed_rewards.append(_speed_reward_added)
-            self._dbg_barrier_penalties.append(0.0)
 
         reward = max(-self._reward_clip_floor, reward)
         reward = reward * self._reward_scale
@@ -787,9 +776,6 @@ class RewardFunction:
                 }
                 if term_reason is not None:
                     log_dict["run/term_reason"] = term_reason
-                bt = getattr(self, "_dbg_barrier_touch_steps", 0)
-                if bt > 0:
-                    log_dict["run/barrier_touch_pct"] = 100 * bt / max(1, self.step_counter)
                 wandb.log(log_dict)
 
     def compute_race_progress(self) -> float:

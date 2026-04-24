@@ -211,6 +211,51 @@ def test_lidar_progress_forces_its_flags() -> None:
     assert progress_images._include_camera_images is True
 
 
+def test_vision_iqn_discrete_action_space() -> None:
+    """IQN default: 13 steer bins x 2 gas x 3 brake = 78 discrete actions."""
+    iface = TM2020Interface(img_hist_len=1, discrete_n_steer_bins=13)
+    act_space = iface.get_action_space()
+    assert isinstance(act_space, spaces.Discrete)
+    assert act_space.n == 78
+
+
+def test_boundary_forwards_discrete_n_steer_bins_to_base() -> None:
+    """Registry wiring passes ``discrete_n_steer_bins`` in kwargs; boundary must forward."""
+    iface = TM2020InterfaceBoundary(img_hist_len=1, discrete_n_steer_bins=13)
+    assert iface.discrete_action_table is not None
+    assert len(iface.discrete_action_table) == 78
+
+
+def test_all_interface_registry_keys_exist() -> None:
+    """Every key returned by ``_determine_interface_name`` must be registered in INTERFACES."""
+    from tmrl.registry import INTERFACES
+
+    expected_keys = {
+        "vision",
+        "lidar",
+        "lidar_progress",
+        "lidar_progress_images",
+        "trackmap",
+        "trackmap_images",
+        "tqc",
+        "sophy",
+        "impala",
+    }
+    for key in expected_keys:
+        assert key in INTERFACES, f"interface key {key!r} missing from INTERFACES registry"
+
+
+def test_iqn_n_actions_matches_steer_bins() -> None:
+    """Pydantic schema must reject mismatched iqn_n_actions / iqn_n_steer_bins."""
+    from tmrl.config.schema.algorithm import AlgorithmConfig
+
+    ok = AlgorithmConfig(name="IQN", iqn_n_steer_bins=13, iqn_n_actions=78)
+    assert ok.iqn_n_actions == 78
+
+    with pytest.raises(ValueError, match="iqn_n_actions"):
+        AlgorithmConfig(name="IQN", iqn_n_steer_bins=13, iqn_n_actions=100)
+
+
 def test_config_objects_has_no_stale_interface_names() -> None:
     """After renaming ``TM2020InterfaceTrackMap`` -> ``TM2020InterfaceBoundary`` and
     its ``Images`` sibling, the dispatch logic in ``config_objects`` must not reference

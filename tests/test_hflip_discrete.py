@@ -11,8 +11,8 @@ from tmrl.custom.memories.utils import _set_discrete_steer_bins, configure_discr
 
 
 @pytest.fixture(autouse=True)
-def _configure_yosh_steer_bins():
-    """Hflip helpers require an explicit steer-bin count; configure Yosh's 13 bins."""
+def _configure_discrete_steer_bins_fixture():
+    """Hflip helpers require an explicit steer-bin count; configure 13 steer bins."""
     configure_discrete_steer_bins(13)
     yield
     _set_discrete_steer_bins(None)

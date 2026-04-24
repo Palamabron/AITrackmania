@@ -218,8 +218,8 @@ class Lidar:
         list_ax_x = []
         list_ax_y = []
         for angle in range(90, 280, 10):
-            axis_x = []
-            axis_y = []
+            axis_x: list[int] = []
+            axis_y: list[int] = []
             x = self.road_point[0]
             y = self.road_point[1]
             dx = math.cos(math.radians(angle))

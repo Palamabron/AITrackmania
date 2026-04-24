@@ -5,6 +5,7 @@ from __future__ import annotations
 import warnings
 
 import pytest
+from pydantic import ValidationError
 from tmrl.config.effective_config import (
     active_model_field_names,
     build_interface_context,
@@ -116,6 +117,21 @@ def test_main_config_snapshot_redacted_is_jsonish_tree():
     w = s.get("wandb")
     if isinstance(w, dict) and "api_key" in w and w["api_key"]:
         assert w["api_key"] == "<redacted>"
+
+
+@pytest.mark.parametrize(
+    "field_name",
+    [
+        "barrier_touch_penalty",
+        "barrier_touch_radius",
+        "barrier_touch_min_speed_kmh",
+    ],
+)
+def test_removed_barrier_touch_reward_fields_are_rejected(field_name: str):
+    d = MAIN_CONFIG.model_dump()
+    d["environment"]["reward"][field_name] = 1.0
+    with pytest.raises(ValidationError, match="Removed reward config field"):
+        MainConfig.model_validate(d)
 
 
 _LIDAR_IFACE = "LIDAR"

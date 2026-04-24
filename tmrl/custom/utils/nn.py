@@ -179,7 +179,7 @@ class TanhNormal(Distribution):
             sample_shape = torch.Size()
         z = self.normal.sample(sample_shape)
         out = torch.tanh(z)
-        out.pre_tanh_value = z
+        out.pre_tanh_value = z  # type: ignore[attr-defined]
         return out
 
     def rsample(self, sample_shape=None):
@@ -187,7 +187,7 @@ class TanhNormal(Distribution):
             sample_shape = torch.Size()
         z = self.normal.rsample(sample_shape)
         out = torch.tanh(z)
-        out.pre_tanh_value = z
+        out.pre_tanh_value = z  # type: ignore[attr-defined]
         return out
 
 

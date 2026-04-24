@@ -1,7 +1,7 @@
 """TMRL configuration: Hydra YAML under ``tmrl/config/defaults`` plus optional user overrides.
 
 Overrides are merged from ``~/TmrlData/config/local.yaml`` on top of package defaults.
-``schema_version`` must satisfy ``tmrl.config.loader.MINIMUM_CONFIG_VERSION``.
+``schema_version`` must satisfy ``tmrl.config.loader.MINIMUM_SCHEMA_VERSION``.
 Environment variables ``WANDB_API_KEY`` / ``WANDB_KEY`` and ``TMRL_PASSWORD`` override
 W&B API key and distributed password when set. ``TMRL_HYDRA_OVERRIDES`` is applied at
 Hydra compose-time, then ``TMRL_CONFIG_OVERRIDES`` (JSON object) is deep-merged after
@@ -106,7 +106,6 @@ from tmrl.config.constants import (  # noqa: F401
     OBS_TRACK_SCALE,
     OBSERVATION_BOUNDS_CHECK,
     OSCILLATION_PERIOD,
-    # Additional aliases for backward compatibility
     OUTPUT_DROPOUT,
     PASSWORD,
     PER_TD_ALPHA,
@@ -123,13 +122,6 @@ from tmrl.config.constants import (  # noqa: F401
     POINTS_NUMBER,
     POLYAK,
     PORT,
-    PRAGMA_GAMEPAD,
-    PRAGMA_LIDAR,
-    PRAGMA_LIDAR_PROGRESS_IMAGES,
-    PRAGMA_PROGRESS,
-    PRAGMA_RNN,
-    PRAGMA_TRACKMAP,
-    PRAGMA_TRACKMAP_IMAGES,
     PRINT_BYTESIZES,
     PROFILE_TRAINER,
     PUBLIC_IP_SERVER,
@@ -212,13 +204,11 @@ from tmrl.config.constants import (  # noqa: F401
 )
 from tmrl.config.enums import AlgorithmName
 from tmrl.config.loader import (
-    CONFIG_COMPATIBILITY_ERROR_MESSAGE,
-    CONFIG_FILE_PATH,
     CONFIG_VERSION,
     DEBUGGER,
     DEBUGGER_CONFIG,
+    LOCAL_OVERRIDE_PATH,
     MAIN_CONFIG,
-    MINIMUM_CONFIG_VERSION,
     RTGYM_VERSION,
     SYSTEM,
     TMRL_FOLDER,
@@ -279,8 +269,6 @@ __all__ = [
     "CHECKPOINT_REWARD",
     "CNN_FILTERS",
     "CNN_OUTPUT_SIZE",
-    "CONFIG_COMPATIBILITY_ERROR_MESSAGE",
-    "CONFIG_FILE_PATH",
     "CONFIG_FOLDER",
     "CONFIG_VERSION",
     "CONSTANT_PENALTY",
@@ -337,6 +325,7 @@ __all__ = [
     "LINUX_Y_OFFSET",
     "LOCALHOST_TRAINER",
     "LOCALHOST_WORKER",
+    "LOCAL_OVERRIDE_PATH",
     "LOCAL_PORT_SERVER",
     "LOCAL_PORT_TRAINER",
     "LOCAL_PORT_WORKER",
@@ -351,7 +340,6 @@ __all__ = [
     "MAX_SPEED_KMH",
     "MAX_TRAINING_STEPS_PER_ENVIRONMENT_STEP",
     "MEMORY_SIZE",
-    "MINIMUM_CONFIG_VERSION",
     "MIXED_PRECISION",
     "MIXED_PRECISION_DTYPE",
     "MLP_LAYERNORM",
@@ -386,13 +374,6 @@ __all__ = [
     "POINTS_NUMBER",
     "POLYAK",
     "PORT",
-    "PRAGMA_GAMEPAD",
-    "PRAGMA_LIDAR",
-    "PRAGMA_LIDAR_PROGRESS_IMAGES",
-    "PRAGMA_PROGRESS",
-    "PRAGMA_RNN",
-    "PRAGMA_TRACKMAP",
-    "PRAGMA_TRACKMAP_IMAGES",
     "PRINT_BYTESIZES",
     "PROFILE_TRAINER",
     "PUBLIC_IP_SERVER",

@@ -30,7 +30,7 @@ def _position_start_idx(data: tuple[float, ...]) -> int:
 
 
 def record_reward_dist(path_reward=PATH_REWARD):
-    positions = []
+    positions: list[list[float]] = []
     client = TM2020OpenPlanetClient(nb_floats=tmrl_grabdata_payload_nb_floats(cfg.REWARD_CONFIG))
     path = path_reward
 

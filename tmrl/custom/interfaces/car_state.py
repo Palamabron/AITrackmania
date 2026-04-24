@@ -19,18 +19,22 @@ from gymnasium import spaces
 from loguru import logger
 
 import tmrl.config as cfg
+from tmrl.custom.interfaces.base import MPS_TO_KMPH
 from tmrl.custom.interfaces.telemetry_indices import (
     TMRL_GRABDATA_FLOAT_COUNT,
     TmrlDataPlugin,
     tmrl_grabdata_payload_nb_floats,
     yaw_pitch_from_dir_xyz,
 )
-from tmrl.custom.interfaces.vision import TM2020Interface
+from tmrl.custom.interfaces.vision import OPENPLANET_PORT, TM2020Interface
 from tmrl.custom.tm.utils.control_mouse import mouse_save_replay_tm20 as _util_save_replay
 from tmrl.custom.tm.utils.tools import Lidar, TM2020OpenPlanetClient
 from tmrl.registry import INTERFACES
 
 _DEFAULT_MIN_STEPS_END_OF_TRACK = 50
+GEAR_NORMALIZER = 5.0
+CURVATURE_SCALE = 10.0
+LIDAR_RAY_COUNT = 19
 
 
 @INTERFACES.register("tqc")
@@ -114,7 +118,7 @@ class TM2020RLInterface(TM2020Interface):
 
     def _build_openplanet_client(self):
         return TM2020OpenPlanetClient(
-            port=9000, nb_floats=tmrl_grabdata_payload_nb_floats(cfg.REWARD_CONFIG)
+            port=OPENPLANET_PORT, nb_floats=tmrl_grabdata_payload_nb_floats(cfg.REWARD_CONFIG)
         )
 
     def initialize(self):
@@ -138,7 +142,12 @@ class TM2020RLInterface(TM2020Interface):
         spaces_list = list(base_spaces.spaces)
         if self.include_lidar:
             spaces_list.append(
-                spaces.Box(low=0.0, high=np.inf, shape=(self.img_hist_len, 19), dtype=np.float32)
+                spaces.Box(
+                    low=0.0,
+                    high=np.inf,
+                    shape=(self.img_hist_len, LIDAR_RAY_COUNT),
+                    dtype=np.float32,
+                )
             )
         if self.include_camera_images:
             w, h = self._lidar_rgb_resize
@@ -157,6 +166,7 @@ class TM2020RLInterface(TM2020Interface):
         return spaces.Tuple(tuple(spaces_list))
 
     def grab_data(self):
+        assert self.client is not None
         return self.client.retrieve_data()
 
     def _capture_and_process_image(self, raw_bgr: np.ndarray | None = None):
@@ -170,11 +180,12 @@ class TM2020RLInterface(TM2020Interface):
         return img.astype(np.float32)
 
     def _track_observation(self, pos, yaw):
+        assert self.reward_function is not None
         track_result = self.reward_function.get_track_info(pos, self.points_number)
         left_track = track_result[0]
         center_track = track_result[1]
         right_track = track_result[2]
-        curvature_list = track_result[3] if len(track_result) == 4 else None
+        curvature_list = track_result[3] if len(track_result) >= 4 else None
 
         if bool(cfg.REWARD_CONFIG.get("TRACK_LOCAL_FRAME", False)):
             cos_y, sin_y = np.cos(yaw), np.sin(yaw)
@@ -194,7 +205,7 @@ class TM2020RLInterface(TM2020Interface):
         track_list = left_track + center_track + right_track
         if cfg.OBS_TRACK_SCALE != 1.0:
             track_list = [x / cfg.OBS_TRACK_SCALE for x in track_list]
-        return np.array(track_list, dtype="float32"), curvature_list
+        return np.array(track_list, dtype=np.float32), curvature_list
 
     def _append_lidar_obs(self, total_obs: list, raw_bgr: np.ndarray | None = None) -> None:
         assert self.lidar is not None
@@ -207,6 +218,7 @@ class TM2020RLInterface(TM2020Interface):
         total_obs.append(lidars)
 
     def get_obs_rew_terminated_info(self):
+        assert self.reward_function is not None
         data = self.grab_data()
         if len(data) < TMRL_GRABDATA_FLOAT_COUNT:
             raise ValueError(
@@ -218,26 +230,26 @@ class TM2020RLInterface(TM2020Interface):
         cur_lap = int(data[TmrlDataPlugin.CURRENT_LAP])
         end_of_track = bool(data[TmrlDataPlugin.FINISH_UI_ACTIVE])
 
-        speed_kmh = float(data[TmrlDataPlugin.SPEED_MPS]) * 3.6
-        speed = np.array([speed_kmh / cfg.OBS_SPEED_SCALE], dtype="float32")
+        speed_kmh = float(data[TmrlDataPlugin.SPEED_MPS]) * MPS_TO_KMPH
+        speed = np.array([speed_kmh / cfg.OBS_SPEED_SCALE], dtype=np.float32)
         pos = np.array(
             [data[TmrlDataPlugin.POS_X], data[TmrlDataPlugin.POS_Y], data[TmrlDataPlugin.POS_Z]],
-            dtype="float32",
+            dtype=np.float32,
         )
         velocity_xyz = np.array(
             [data[TmrlDataPlugin.VEL_X], data[TmrlDataPlugin.VEL_Y], data[TmrlDataPlugin.VEL_Z]],
-            dtype="float32",
+            dtype=np.float32,
         )
         dir_xyz = np.array(
             [data[TmrlDataPlugin.DIR_X], data[TmrlDataPlugin.DIR_Y], data[TmrlDataPlugin.DIR_Z]],
-            dtype="float32",
+            dtype=np.float32,
         )
         yaw_val, pitch_val = yaw_pitch_from_dir_xyz(dir_xyz)
-        aim_yaw = np.array([yaw_val], dtype="float32")
-        aim_pitch = np.array([pitch_val], dtype="float32")
-        input_steer = np.array([data[TmrlDataPlugin.INPUT_STEER]], dtype="float32")
-        input_gas_pedal = np.array([data[TmrlDataPlugin.INPUT_GAS]], dtype="float32")
-        input_brake = np.array([data[TmrlDataPlugin.INPUT_BRAKE]], dtype="float32")
+        aim_yaw = np.array([yaw_val], dtype=np.float32)
+        aim_pitch = np.array([pitch_val], dtype=np.float32)
+        input_steer = np.array([data[TmrlDataPlugin.INPUT_STEER]], dtype=np.float32)
+        input_gas_pedal = np.array([data[TmrlDataPlugin.INPUT_GAS]], dtype=np.float32)
+        input_brake = np.array([data[TmrlDataPlugin.INPUT_BRAKE]], dtype=np.float32)
 
         acceleration_val = speed_kmh - self._prev_speed_for_kinematics
         jerk_val = acceleration_val - self._prev_acc_for_kinematics
@@ -246,14 +258,14 @@ class TM2020RLInterface(TM2020Interface):
         self._sync_crash_state()
         self.crash_fallback(current_speed=speed_kmh, jerk=jerk_val)
         crashed_this_step = bool(self.is_crashed)
-        acceleration = np.array([acceleration_val], dtype="float32")
-        jerk = np.array([jerk_val], dtype="float32")
+        acceleration = np.array([acceleration_val], dtype=np.float32)
+        jerk = np.array([jerk_val], dtype=np.float32)
 
-        steer_angle = np.array([0.0, 0.0], dtype="float32")
+        steer_angle = np.array([0.0, 0.0], dtype=np.float32)
         slip_coef = np.array(
-            [data[TmrlDataPlugin.SLIP_FL], data[TmrlDataPlugin.SLIP_FR]], dtype="float32"
+            [data[TmrlDataPlugin.SLIP_FL], data[TmrlDataPlugin.SLIP_FR]], dtype=np.float32
         )
-        gear = np.array([data[TmrlDataPlugin.ENGINE_GEAR] / 5.0], dtype="float32")
+        gear = np.array([data[TmrlDataPlugin.ENGINE_GEAR] / GEAR_NORMALIZER], dtype=np.float32)
         wheel_slips = [
             float(data[TmrlDataPlugin.SLIP_FL]),
             float(data[TmrlDataPlugin.SLIP_FR]),
@@ -294,16 +306,17 @@ class TM2020RLInterface(TM2020Interface):
             "step_counter": int(getattr(self.reward_function, "step_counter", -1)),
         }
 
-        race_progress = self.reward_function.compute_race_progress()
+        race_progress_scalar = self.reward_function.compute_race_progress()
 
         self._steps_since_reset = getattr(self, "_steps_since_reset", 0) + 1
         min_steps_before_finish = max(
             _DEFAULT_MIN_STEPS_END_OF_TRACK,
-            cfg.REWARD_CONFIG.get("MIN_STEPS", _DEFAULT_MIN_STEPS_END_OF_TRACK),
+            int(cfg.REWARD_CONFIG.get("MIN_STEPS", _DEFAULT_MIN_STEPS_END_OF_TRACK)),
         )
+        fc_for_norm = float(failure_counter)
         if end_of_track and self._steps_since_reset >= min_steps_before_finish:
             terminated = True
-            failure_counter = 0.0
+            fc_for_norm = 0.0
             if self.save_replays:
                 _util_save_replay(True)
 
@@ -313,9 +326,9 @@ class TM2020RLInterface(TM2020Interface):
 
         self.cooldown_control()
 
-        race_progress = np.array([race_progress], dtype="float32")
-        max_count = max(1.0, getattr(self.reward_function, "_max_no_progress_steps", 200.0))
-        failure_counter = np.array([float(failure_counter) / max_count], dtype="float32")
+        race_progress_arr = np.array([race_progress_scalar], dtype=np.float32)
+        max_count = max(1.0, float(getattr(self.reward_function, "_max_no_progress_steps", 200.0)))
+        failure_counter_arr = np.array([fc_for_norm / max_count], dtype=np.float32)
         info = {
             "reward_sum": reward_sum,
             "end_of_track": bool(end_of_track),
@@ -332,7 +345,7 @@ class TM2020RLInterface(TM2020Interface):
             speed,
             acceleration,
             jerk,
-            race_progress,
+            race_progress_arr,
             input_steer,
             input_gas_pedal,
             input_brake,
@@ -341,10 +354,10 @@ class TM2020RLInterface(TM2020Interface):
             aim_pitch,
             steer_angle,
             slip_coef,
-            failure_counter,
+            failure_counter_arr,
         ]
         if curvature_list is not None:
-            curv = np.clip(np.array(curvature_list, dtype="float32") * 10.0, -1.0, 1.0)
+            curv = np.clip(np.array(curvature_list, dtype=np.float32) * CURVATURE_SCALE, -1.0, 1.0)
             observation.append(curv)
         total_obs = [track_info_arr, *observation]
 
@@ -354,13 +367,14 @@ class TM2020RLInterface(TM2020Interface):
         min_guaranteed = int(cfg.REWARD_CONFIG.get("MIN_EPISODE_LENGTH_GUARANTEED", 100))
         min_length = max(
             min_guaranteed,
-            2 * cfg.REWARD_CONFIG.get("MIN_STEPS", _DEFAULT_MIN_STEPS_END_OF_TRACK),
+            2 * int(cfg.REWARD_CONFIG.get("MIN_STEPS", _DEFAULT_MIN_STEPS_END_OF_TRACK)),
         )
         if self._steps_since_reset < min_length:
             terminated = False
 
         raw_bgr = None
         if self.include_lidar or self.include_camera_images:
+            assert self.window_interface is not None
             raw_bgr = self.window_interface.screenshot()[:, :, :3]
 
         if self.include_lidar:
@@ -374,13 +388,15 @@ class TM2020RLInterface(TM2020Interface):
         return total_obs, np.float32(rew), terminated, info
 
     def reset(self, seed=None, options=None):
+        rf = getattr(self, "reward_function", None)
         if (
-            getattr(self, "reward_function", None) is not None
-            and getattr(self.reward_function, "step_counter", 0) > 0
-            and not getattr(self.reward_function, "_logged_run_this_episode", False)
+            rf is not None
+            and getattr(rf, "step_counter", 0) > 0
+            and not getattr(rf, "_logged_run_this_episode", False)
         ):
-            self.reward_function.log_model_run(terminated=True, end_of_track=False)
+            rf.log_model_run(terminated=True, end_of_track=False)
         self.reset_common()
+        assert self.reward_function is not None
         self._steps_since_reset = 0
         data = self.grab_data()
         if len(data) < TMRL_GRABDATA_FLOAT_COUNT:
@@ -392,35 +408,35 @@ class TM2020RLInterface(TM2020Interface):
         self.cur_lap = 0
         self.cur_checkpoint = 0
 
-        speed_kmh = float(data[TmrlDataPlugin.SPEED_MPS]) * 3.6
-        speed = np.array([speed_kmh / cfg.OBS_SPEED_SCALE], dtype="float32")
+        speed_kmh = float(data[TmrlDataPlugin.SPEED_MPS]) * MPS_TO_KMPH
+        speed = np.array([speed_kmh / cfg.OBS_SPEED_SCALE], dtype=np.float32)
         pos = np.array(
             [data[TmrlDataPlugin.POS_X], data[TmrlDataPlugin.POS_Y], data[TmrlDataPlugin.POS_Z]],
-            dtype="float32",
+            dtype=np.float32,
         )
-        input_steer = np.array([data[TmrlDataPlugin.INPUT_STEER]], dtype="float32")
-        input_gas_pedal = np.array([data[TmrlDataPlugin.INPUT_GAS]], dtype="float32")
-        input_brake = np.array([data[TmrlDataPlugin.INPUT_BRAKE]], dtype="float32")
-        acceleration = np.array([0.0], dtype="float32")
-        jerk = np.array([0.0], dtype="float32")
+        input_steer = np.array([data[TmrlDataPlugin.INPUT_STEER]], dtype=np.float32)
+        input_gas_pedal = np.array([data[TmrlDataPlugin.INPUT_GAS]], dtype=np.float32)
+        input_brake = np.array([data[TmrlDataPlugin.INPUT_BRAKE]], dtype=np.float32)
+        acceleration = np.array([0.0], dtype=np.float32)
+        jerk = np.array([0.0], dtype=np.float32)
         dir_xyz = np.array(
             [data[TmrlDataPlugin.DIR_X], data[TmrlDataPlugin.DIR_Y], data[TmrlDataPlugin.DIR_Z]],
-            dtype="float32",
+            dtype=np.float32,
         )
         yaw_val, pitch_val = yaw_pitch_from_dir_xyz(dir_xyz)
-        aim_yaw = np.array([yaw_val], dtype="float32")
-        aim_pitch = np.array([pitch_val], dtype="float32")
-        steer_angle = np.array([0.0, 0.0], dtype="float32")
+        aim_yaw = np.array([yaw_val], dtype=np.float32)
+        aim_pitch = np.array([pitch_val], dtype=np.float32)
+        steer_angle = np.array([0.0, 0.0], dtype=np.float32)
         slip_coef = np.array(
-            [data[TmrlDataPlugin.SLIP_FL], data[TmrlDataPlugin.SLIP_FR]], dtype="float32"
+            [data[TmrlDataPlugin.SLIP_FL], data[TmrlDataPlugin.SLIP_FR]], dtype=np.float32
         )
-        gear = np.array([data[TmrlDataPlugin.ENGINE_GEAR] / 5.0], dtype="float32")
+        gear = np.array([data[TmrlDataPlugin.ENGINE_GEAR] / GEAR_NORMALIZER], dtype=np.float32)
         track_yaw = yaw_val
         self._prev_speed_for_kinematics = speed_kmh
         self._prev_acc_for_kinematics = 0.0
 
-        failure_counter = np.array([0.0], dtype="float32")
-        race_progress = np.array([0.0], dtype="float32")
+        failure_counter = np.array([0.0], dtype=np.float32)
+        race_progress = np.array([0.0], dtype=np.float32)
 
         track_info_arr, curvature_list = self._track_observation(pos, track_yaw)
 
@@ -440,7 +456,7 @@ class TM2020RLInterface(TM2020Interface):
             failure_counter,
         ]
         if curvature_list is not None:
-            curv = np.clip(np.array(curvature_list, dtype="float32") * 10.0, -1.0, 1.0)
+            curv = np.clip(np.array(curvature_list, dtype=np.float32) * CURVATURE_SCALE, -1.0, 1.0)
             observation.append(curv)
         total_obs = [track_info_arr, *observation]
 
@@ -449,10 +465,12 @@ class TM2020RLInterface(TM2020Interface):
 
         raw_bgr = None
         if self.include_lidar or self.include_camera_images:
+            assert self.window_interface is not None
             raw_bgr = self.window_interface.screenshot()[:, :, :3]
 
         if self.include_lidar:
             assert self.lidar is not None
+            assert self.window_interface is not None
             img0 = raw_bgr if raw_bgr is not None else self.window_interface.screenshot()[:, :, :3]
             z = self.lidar.lidar_20(img=img0, show=False)
             self._lidar_hist = [

@@ -7,7 +7,7 @@ and pass that to the existing control_gamepad(), so vibrations on guardrail hit 
 
 Supports two presets:
   - Legacy (30 actions): 5 steer x 3 gas x 2 brake
-  - Yosh-style (78 actions): 13 steer x 2 gas x 3 brake (off / full / 0.01s tap)
+  - Composite (78 actions): 13 steer x 2 gas x 3 brake (off / full / 0.01s tap)
 """
 
 import numpy as np
@@ -17,13 +17,14 @@ DEFAULT_N_STEER = 5
 DEFAULT_N_GAS = 3
 DEFAULT_N_BRAKE = 2
 
-# Yosh-style bins: 13 steer x 2 gas x 3 brake = 78 actions
-YOSH_N_STEER = 13
-YOSH_N_GAS = 2
-YOSH_N_BRAKE = 3
+# Default composite layout: 13 steer x 2 gas x 3 brake = 78 actions
+BRAKE_TAP_TABLE_N_STEER = 13
+BRAKE_TAP_TABLE_N_GAS = 2
+BRAKE_TAP_TABLE_N_BRAKE = 3
 
 BRAKE_TAP_SENTINEL = -1.0
 BRAKE_TAP_DURATION_S = 0.01
+BRAKE_TAP_MATCH_PENALTY = 2.0
 
 
 def build_discrete_to_continuous(
@@ -42,22 +43,24 @@ def build_discrete_to_continuous(
         table: list of length n_actions; table[i] is np.array([gas, brake, steer]).
     """
     n_actions = n_steer * n_gas * n_brake
+    steer_values = np.linspace(-1.0, 1.0, n_steer)
+    gas_values = np.linspace(0.0, 1.0, n_gas) if n_gas > 1 else np.array([1.0])
+    brake_values = np.linspace(0.0, 1.0, n_brake) if n_brake > 1 else np.array([0.0])
     table = []
     for si in range(n_steer):
-        steer = np.linspace(-1.0, 1.0, n_steer)[si]
         for gi in range(n_gas):
-            gas = np.linspace(0.0, 1.0, n_gas)[gi] if n_gas > 1 else 1.0
             for bi in range(n_brake):
-                brake = np.linspace(0.0, 1.0, n_brake)[bi] if n_brake > 1 else 0.0
-                table.append(np.array([gas, brake, steer], dtype=np.float32))
+                table.append(
+                    np.array([gas_values[gi], brake_values[bi], steer_values[si]], dtype=np.float32)
+                )
     return n_actions, table
 
 
-def build_yosh_action_table(
-    n_steer: int = YOSH_N_STEER,
-    n_gas: int = YOSH_N_GAS,
+def build_brake_tap_action_table(
+    n_steer: int = BRAKE_TAP_TABLE_N_STEER,
+    n_gas: int = BRAKE_TAP_TABLE_N_GAS,
 ) -> tuple[int, list[np.ndarray]]:
-    """Build Yosh-style 78-action table: n_steer x n_gas x 3 brake modes.
+    """Build composite discrete table: n_steer x n_gas x 3 brake modes.
 
     Brake modes:
       0 = no brake (0.0)
@@ -71,15 +74,15 @@ def build_yosh_action_table(
         table: list[np.array([gas, brake, steer])].
     """
     brake_values = np.array([0.0, 1.0, BRAKE_TAP_SENTINEL], dtype=np.float32)
+    steer_values = np.linspace(-1.0, 1.0, n_steer, dtype=np.float32)
     n_brake = len(brake_values)
     n_actions = n_steer * n_gas * n_brake
     table: list[np.ndarray] = []
     for si in range(n_steer):
-        steer = np.linspace(-1.0, 1.0, n_steer, dtype=np.float32)[si]
         for gi in range(n_gas):
-            gas = float(gi)  # 0.0 or 1.0 for binary accel
+            gas = float(gi)
             for bi in range(n_brake):
-                table.append(np.array([gas, brake_values[bi], steer], dtype=np.float32))
+                table.append(np.array([gas, brake_values[bi], steer_values[si]], dtype=np.float32))
     return n_actions, table
 
 
@@ -127,7 +130,7 @@ def continuous_control_to_discrete_index(
         tg, tb, ts = float(t[0]), float(t[1]), float(t[2])
         # Brake: continuous [0,1] vs table 0, 1, or BRAKE_TAP_SENTINEL
         # Tap sentinel: never match from continuous; use large distance
-        b_d2 = 2.0 if tb == BRAKE_TAP_SENTINEL else (brake - tb) ** 2
+        b_d2 = BRAKE_TAP_MATCH_PENALTY if tb == BRAKE_TAP_SENTINEL else (brake - tb) ** 2
         d2 = (gas - tg) ** 2 + b_d2 + (steer - ts) ** 2
         if d2 < best_d2:
             best_d2 = d2

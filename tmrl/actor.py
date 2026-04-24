@@ -219,7 +219,7 @@ class TorchActorModule(ActorModule, torch.nn.Module, ABC):
         return action
 
     # noinspection PyMethodOverriding
-    def to(self, device):
+    def to(self, device):  # type: ignore[override]
         self.device = device
         return super().to(device=device)
 

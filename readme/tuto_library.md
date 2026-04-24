@@ -170,7 +170,7 @@ We use [Real-Time Gym](https://github.com/yannbouteiller/rtgym) (`rtgym`) to wra
 But you can use an environment of your choice, as long as it is registered as a Gymnasium environment.
 
 To build your own real-time environment (e.g., an environment for your own robot or video game), you can follow the [rtgym tutorial](https://github.com/yannbouteiller/rtgym#tutorial).
-If you need inspiration, you can find our `rtgym` interfaces for TrackMania in [tm_gym_interfaces.py](https://github.com/trackmania-rl/tmrl/blob/master/tmrl/custom/tm/tm_gym_interfaces.py).
+If you need inspiration, you can find our `rtgym` interfaces for TrackMania in [`tmrl/custom/interfaces`](https://github.com/trackmania-rl/tmrl/tree/master/tmrl/custom/interfaces).
 
 For the sake of the `tmrl` tutorial, we will be using the dummy RC drone environment from the `rtgym` tutorial:
 
@@ -1021,7 +1021,7 @@ This is because this default action will be applied right after `reset()` is cal
 If you are instead using a vanilla `Gymnasium` environment, `tmrl` will set this action to `None`, as you should ignore it anyway in non-real-time environments.
 Because this is an intricate effect specific to real-time environments, we will ignore it for now and come back to it at the very end of this tutorial.
 Just bear in mind that, if you want your pipeline to be 100% correct in real-time scenarios, you need to take special care for rebuilding transitions that happened after a `terminated` or `truncated` signal is set to `True`.
-This is done in the `tmrl` implementation of [TorchMemory for TrackMania](https://github.com/trackmania-rl/tmrl/blob/master/tmrl/custom/custom_memories.py)._
+This is done in the `tmrl` implementation of [TorchMemory for TrackMania](https://github.com/trackmania-rl/tmrl/tree/master/tmrl/custom/memories)._
 
 We now have our `memory_cls` argument:
 

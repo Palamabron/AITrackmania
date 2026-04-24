@@ -88,10 +88,10 @@ def _validate_runtime_compatibility() -> None:
     config-time error message instead of an opaque assertion deeper in model selection.
     """
     advanced_iface = cfg.USE_IMAGES_MOBILENET_PIPELINE or cfg.USE_IMAGES_R2D2_SEQUENCE_BUFFER
-    vanilla_image_iface = not cfg.PRAGMA_LIDAR and not advanced_iface
+    vanilla_image_iface = not cfg.USE_LIDAR_OBSERVATIONS and not advanced_iface
     rtgym_iface = M.environment.rtgym_interface
 
-    if cfg.PRAGMA_LIDAR and ALG_NAME not in ("SAC", "REDQSAC", "IQN", "SDSAC"):
+    if cfg.USE_LIDAR_OBSERVATIONS and ALG_NAME not in ("SAC", "REDQSAC", "IQN", "SDSAC"):
         raise ValueError(
             f"Unsupported combination: algorithm.name={ALG_NAME!r} "
             f"with LIDAR interface {rtgym_iface!r}. "
@@ -113,9 +113,9 @@ def _validate_runtime_compatibility() -> None:
             "Supported algorithms here: TQC, SAC, IQN, SDSAC."
         )
 
-    if cfg.PRAGMA_LIDAR and cfg.PRAGMA_RNN and ALG_NAME != "SAC":
+    if cfg.USE_LIDAR_OBSERVATIONS and cfg.USE_RNN and ALG_NAME != "SAC":
         raise ValueError(
-            f"Unsupported combination: PRAGMA_RNN=true with algorithm.name={ALG_NAME!r}. "
+            f"Unsupported combination: USE_RNN=true with algorithm.name={ALG_NAME!r}. "
             "RNN runtime path currently supports only SAC."
         )
 
@@ -162,7 +162,7 @@ def _train_model_and_policy() -> tuple[Any, Any]:
 
     dqn_actor_cls = MODELS.get("dqn_actor")
 
-    if cfg.PRAGMA_LIDAR:
+    if cfg.USE_LIDAR_OBSERVATIONS:
         if ALG_NAME in ("IQN", "SDSAC"):
             iqn_kw = {
                 "hidden_dim": arch.residual_mlp_hidden_dim,
@@ -176,7 +176,7 @@ def _train_model_and_policy() -> tuple[Any, Any]:
                 **_arch_kw,
             }
             return None, partial(dqn_actor_cls, **iqn_kw)
-        if (cfg.PRAGMA_LIDAR_PROGRESS_IMAGES or cfg.PRAGMA_TRACKMAP_IMAGES) and ALG_NAME == "SAC":
+        if (cfg.USE_LIDAR_PROGRESS_IMAGES or cfg.USE_TRACKMAP_IMAGES) and ALG_NAME == "SAC":
             lidar_images_kw = {
                 "image_index": 3,
                 "embed_dim": arch.frozen_effnet_embed_dim,
@@ -188,7 +188,7 @@ def _train_model_and_policy() -> tuple[Any, Any]:
                 partial(FrozenEffNetResidualActorCritic, **lidar_images_kw),
                 partial(SquashedGaussianFrozenEffNetResidualActor, **lidar_images_kw),
             )
-        if cfg.PRAGMA_RNN:
+        if cfg.USE_RNN:
             assert ALG_NAME == "SAC", f"{ALG_NAME} is not implemented here."
             return RNNActorCritic, SquashedGaussianRNNActor
         if arch.use_residual_mlp:
@@ -327,9 +327,9 @@ def _train_model_and_policy() -> tuple[Any, Any]:
             ),
         )
 
-    if cfg.PRAGMA_RNN:
+    if cfg.USE_RNN:
         raise ValueError(
-            f"Unsupported combination: PRAGMA_RNN=true with non-lidar interface {rtgym_iface!r}."
+            f"Unsupported combination: USE_RNN=true with non-lidar interface {rtgym_iface!r}."
         )
     if ALG_NAME != "SAC":
         raise ValueError(
@@ -347,15 +347,15 @@ TRAIN_MODEL, POLICY = _train_model_and_policy()
 
 
 def _determine_interface_name() -> str:
-    """Derive the interface registry key from legacy PRAGMA flags."""
-    if cfg.PRAGMA_LIDAR:
-        if cfg.PRAGMA_TRACKMAP_IMAGES:
+    """Derive the interface registry key from interface feature flags."""
+    if cfg.USE_LIDAR_OBSERVATIONS:
+        if cfg.USE_TRACKMAP_IMAGES:
             return "trackmap_images"
-        if cfg.PRAGMA_LIDAR_PROGRESS_IMAGES:
+        if cfg.USE_LIDAR_PROGRESS_IMAGES:
             return "lidar_progress_images"
-        if cfg.PRAGMA_PROGRESS:
+        if cfg.USE_LIDAR_PROGRESS:
             return "lidar_progress"
-        if cfg.PRAGMA_TRACKMAP:
+        if cfg.USE_TRACKMAP:
             return "trackmap"
         return "lidar"
     if cfg.USE_OBS_WORLD_TELEMETRY_LAYOUT:
@@ -375,11 +375,12 @@ def _rtgym_interface_partial() -> Any:
     env = M.environment
     _n_steer = int(alg.iqn_n_steer_bins) if ALG_NAME in ("IQN", "SDSAC") else 0
 
-    _rtgym_dt = float(env.rtgym.time_step_duration)
-
     common: dict[str, Any] = {
         "img_hist_len": cfg.IMG_HIST_LEN,
-        "gamepad": cfg.PRAGMA_GAMEPAD,
+        "gamepad": cfg.USE_VIRTUAL_GAMEPAD,
+        # IQN / SDSAC: composite discrete table on the interface so workers map indices → control
+        # (trainer already uses algorithm.iqn_n_steer_bins in IQNAgent / memory).
+        "discrete_n_steer_bins": _n_steer,
     }
 
     if name in ("trackmap_images", "lidar_progress_images"):
@@ -395,17 +396,8 @@ def _rtgym_interface_partial() -> Any:
         common["constant_penalty"] = float(env.constant_penalty)
         common["checkpoint_reward"] = float(env.checkpoint_reward)
         common["lap_reward"] = float(env.lap_reward)
-        common["points_number"] = int(cfg.POINTS_NUMBER)
-        _include_cam = cfg.USE_IMAGES
-        _include_lidar = bool(cfg.REWARD_CONFIG.get("RL_INTERFACE_INCLUDE_LIDAR", False))
-        common["include_camera_images"] = _include_cam
-        common["include_lidar"] = _include_lidar
-
-    if name == "tqc":
-        common["obs_speed_scale"] = float(cfg.OBS_SPEED_SCALE)
-        common["obs_track_scale"] = float(cfg.OBS_TRACK_SCALE)
-        common["min_steps_end_of_track"] = int(env.reward.min_steps)
-        common["min_episode_length_guaranteed"] = int(env.reward.min_episode_length_guaranteed)
+        common["include_camera_images"] = cfg.USE_IMAGES
+        common["include_lidar"] = bool(cfg.REWARD_CONFIG.get("RL_INTERFACE_INCLUDE_LIDAR", False))
 
     return partial(iface_cls, **common)
 
@@ -422,11 +414,7 @@ logger.info(
 )
 
 
-def _interface_display_name() -> str:
-    return INTERFACE_NAME
-
-
-INTERFACE_DISPLAY_NAME = _interface_display_name()
+INTERFACE_DISPLAY_NAME = INTERFACE_NAME
 
 CONFIG_DICT = rtgym.DEFAULT_CONFIG_DICT.copy()
 CONFIG_DICT["interface"] = RTGYM_INTERFACE_CLASS
@@ -436,10 +424,10 @@ for k, v in CONFIG_DICT_MODIFIERS.items():
 
 
 def _pick_sample_compressor() -> Any:
-    if cfg.PRAGMA_LIDAR:
-        if cfg.PRAGMA_LIDAR_PROGRESS_IMAGES or cfg.PRAGMA_TRACKMAP_IMAGES:
+    if cfg.USE_LIDAR_OBSERVATIONS:
+        if cfg.USE_LIDAR_PROGRESS_IMAGES or cfg.USE_TRACKMAP_IMAGES:
             return get_local_buffer_sample_lidar_progress_images
-        if cfg.PRAGMA_PROGRESS:
+        if cfg.USE_LIDAR_PROGRESS:
             return get_local_buffer_sample_lidar_progress
         return get_local_buffer_sample_lidar
     if _USE_NON_LIDAR_IMAGE_STACK:
@@ -451,10 +439,10 @@ SAMPLE_COMPRESSOR = _pick_sample_compressor()
 
 
 def _pick_obs_preprocessor() -> Any:
-    if cfg.PRAGMA_LIDAR:
-        if cfg.PRAGMA_LIDAR_PROGRESS_IMAGES or cfg.PRAGMA_TRACKMAP_IMAGES:
+    if cfg.USE_LIDAR_OBSERVATIONS:
+        if cfg.USE_LIDAR_PROGRESS_IMAGES or cfg.USE_TRACKMAP_IMAGES:
             return obs_preprocessor_lidar_progress_images_act_in_obs
-        if cfg.PRAGMA_PROGRESS:
+        if cfg.USE_LIDAR_PROGRESS:
             return obs_preprocessor_tm_lidar_progress_act_in_obs
         return obs_preprocessor_tm_lidar_act_in_obs
     if _USE_NON_LIDAR_IMAGE_STACK:
@@ -469,18 +457,18 @@ def _pick_obs_preprocessor() -> Any:
 OBS_PREPROCESSOR = _pick_obs_preprocessor()
 SAMPLE_PREPROCESSOR = None
 
-assert not cfg.PRAGMA_RNN, "RNNs not supported yet"
+assert not cfg.USE_RNN, "RNNs not supported yet"
 
 
 def _determine_memory_name() -> str:
-    """Map PRAGMA flags to a MEMORIES registry key."""
+    """Map interface feature flags to a MEMORIES registry key."""
     explicit = M.memory.memory_type
     if explicit != "auto":
         return explicit
-    if cfg.PRAGMA_LIDAR:
-        if cfg.PRAGMA_LIDAR_PROGRESS_IMAGES or cfg.PRAGMA_TRACKMAP_IMAGES:
+    if cfg.USE_LIDAR_OBSERVATIONS:
+        if cfg.USE_LIDAR_PROGRESS_IMAGES or cfg.USE_TRACKMAP_IMAGES:
             return "lidar_progress_images"
-        if cfg.PRAGMA_PROGRESS:
+        if cfg.USE_LIDAR_PROGRESS:
             return "lidar_progress"
         return "lidar"
     if cfg.USE_IMAGES_MOBILENET_PIPELINE:
