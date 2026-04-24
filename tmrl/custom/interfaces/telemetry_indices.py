@@ -29,47 +29,50 @@ def tmrl_grabdata_payload_nb_floats(reward_config: dict) -> int:
     )
 
 
-_TmrlDataPluginBase = namedtuple("TmrlDataPlugin", [
-    # 1. Race stats (4)
-    "CHECKPOINTS_PASSED",
-    "CURRENT_LAP",
-    "FINISH_UI_ACTIVE",
-    "CURRENT_RACE_TIME",
-    # 2. Transform (12): position, velocity, dir, up
-    "POS_X",
-    "POS_Y",
-    "POS_Z",
-    "VEL_X",
-    "VEL_Y",
-    "VEL_Z",
-    "DIR_X",
-    "DIR_Y",
-    "DIR_Z",
-    "UP_X",
-    "UP_Y",
-    "UP_Z",
-    # 3. Engine (3)
-    "SPEED_MPS",
-    "ENGINE_RPM",
-    "ENGINE_GEAR",
-    # 4. Wheels & surfaces (8)
-    "SLIP_FL",
-    "SLIP_FR",
-    "SLIP_RL",
-    "SLIP_RR",
-    "MAT_FL",
-    "MAT_FR",
-    "MAT_RL",
-    "MAT_RR",
-    # 5. RL-specific (3)
-    "WHEELS_SKIDDING_COUNT",
-    "FLYING_DURATION",
-    "ADHERENCE_COEF",
-    # 6. Inputs (3)
-    "INPUT_STEER",
-    "INPUT_GAS",
-    "INPUT_BRAKE",
-])
+_TmrlDataPluginBase = namedtuple(
+    "TmrlDataPlugin",
+    [
+        # 1. Race stats (4)
+        "CHECKPOINTS_PASSED",
+        "CURRENT_LAP",
+        "FINISH_UI_ACTIVE",
+        "CURRENT_RACE_TIME",
+        # 2. Transform (12): position, velocity, dir, up
+        "POS_X",
+        "POS_Y",
+        "POS_Z",
+        "VEL_X",
+        "VEL_Y",
+        "VEL_Z",
+        "DIR_X",
+        "DIR_Y",
+        "DIR_Z",
+        "UP_X",
+        "UP_Y",
+        "UP_Z",
+        # 3. Engine (3)
+        "SPEED_MPS",
+        "ENGINE_RPM",
+        "ENGINE_GEAR",
+        # 4. Wheels & surfaces (8)
+        "SLIP_FL",
+        "SLIP_FR",
+        "SLIP_RL",
+        "SLIP_RR",
+        "MAT_FL",
+        "MAT_FR",
+        "MAT_RL",
+        "MAT_RR",
+        # 5. RL-specific (3)
+        "WHEELS_SKIDDING_COUNT",
+        "FLYING_DURATION",
+        "ADHERENCE_COEF",
+        # 6. Inputs (3)
+        "INPUT_STEER",
+        "INPUT_GAS",
+        "INPUT_BRAKE",
+    ],
+)
 
 TmrlDataPlugin = _TmrlDataPluginBase(*range(TMRL_GRABDATA_FLOAT_COUNT))
 """Field indices for one frame from the OpenPlanet TMRL data plugin (``TMRL_GrabData``)."""

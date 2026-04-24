@@ -10,7 +10,9 @@ driver inputs (input_steer, input_gas, input_brake), vehicle dynamics
 Use this structured object to access telemetry fields securely by name
 instead of raw tuple indexing.
 """
+
 from typing import NamedTuple
+
 
 class Telemetry(NamedTuple):
     cp: int
