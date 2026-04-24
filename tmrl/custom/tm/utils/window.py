@@ -198,8 +198,8 @@ elif platform.system() == "Linux":
                 assert w is not None
                 assert h is not None
                 monitor: dict[str, int] = {
-                    "top": int(x + self.x_offset),
-                    "left": int(y + self.y_offset),
+                    "top": int(y + self.y_offset),
+                    "left": int(x + self.x_offset),
                     "width": int(w),
                     "height": int(h),
                 }
