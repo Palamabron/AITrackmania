@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import platform
+import threading
 import time
 from abc import ABC, abstractmethod
 from collections import deque
@@ -84,6 +85,8 @@ class TrackMania2020InterfaceBase(RealTimeGymInterface, ABC):
 
     def initialize_common(self):
         """Initializes the window interface, reward function, and game client."""
+        self._crash_lock = threading.Lock()
+        self._async_rumble_event = False
         if self.gamepad:
             try:
                 import vgamepad as vg
@@ -130,13 +133,56 @@ class TrackMania2020InterfaceBase(RealTimeGymInterface, ABC):
             self.client = self._build_openplanet_client()
         self.is_crashed = False
         self.crash_cooldown = 0
-        self.crash_curr = self.crash_cooldown
+        self._last_speed_kmh = 0.0
 
     def crash_callback(self, client, target, large_motor, small_motor, led_number, user_data):
-        self.is_crashed = large_motor > 100 and self.crash_cooldown <= 0
-        if self.is_crashed:
-            logger.debug("crashed: True (episode will terminate)")
+        """Callback for detecting crashes via gamepad vibration (thread-safe)."""
+        if large_motor > 100:
+            with self._crash_lock:
+                self._async_rumble_event = True
+
+    def crash_fallback(self, current_speed, jerk):
+        """Kinematic fallback for collision detection in case of gamepad rumble malfunction.
+
+        Compares the velocity drop between the previous and current frame against a
+        dynamic threshold (flat base drop + relative speed drop). A sharp negative jerk
+        is required to distinguish sudden impacts from smooth deceleration.
+        """
+        last_speed = getattr(self, "_last_speed_kmh", current_speed)
+        delta_v = last_speed - current_speed
+
+        base_drop = 20.0
+        speed_factor = 0.20
+        dynamic_threshold = base_drop + (last_speed * speed_factor)
+
+        if delta_v > dynamic_threshold and jerk <= -1.45:
+            self.is_crashed = True
             self.crash_cooldown = 10
+
+    def _sync_crash_state(self):
+        """Consume the latching flag set by the background gamepad telemetry thread.
+
+        Acquires the crash lock, reads and clears the hardware rumble event,
+        then updates the main crash state if not in cooldown.
+        """
+        with self._crash_lock:
+            rumble_triggered = self._async_rumble_event
+            self._async_rumble_event = False
+
+        if rumble_triggered and self.crash_cooldown == 0:
+            self.is_crashed = True
+            self.crash_cooldown = 10
+
+    def cooldown_control(self):
+        """Reset the single-frame crash impulse and tick the cooldown counter."""
+        self.is_crashed = False
+        if self.crash_cooldown > 0:
+            self.crash_cooldown -= 1
+
+    @staticmethod
+    def get_speed_in_kmph(speed):
+        """Convert speed from m/s to km/h."""
+        return speed * 3.6
 
     def send_control(self, control):
         if self.record_human:
@@ -202,6 +248,11 @@ class TrackMania2020InterfaceBase(RealTimeGymInterface, ABC):
         else:
             self.send_control(self.get_default_action())
         self.reset_race()
+        self.is_crashed = False
+        self.crash_cooldown = 0
+        self._last_speed_kmh = 0.0
+        with self._crash_lock:
+            self._async_rumble_event = False
         time_sleep = (
             max(0, cfg.SLEEP_TIME_AT_RESET - 0.1) if self.gamepad else cfg.SLEEP_TIME_AT_RESET
         )

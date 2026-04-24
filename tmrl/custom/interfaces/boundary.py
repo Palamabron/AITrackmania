@@ -145,6 +145,7 @@ class TM2020InterfaceBoundary(TM2020InterfaceLidar):
             [[], [], [], [], []] if record else None
         )
         self._bd_prev_speed_kmh: float = 0.0
+        self._bd_prev_acc_kmh: float = 0.0
 
     def get_observation_space(self):
         speed = spaces.Box(low=0.0, high=1000.0, shape=(1,))
@@ -206,8 +207,14 @@ class TM2020InterfaceBoundary(TM2020InterfaceLidar):
         speed = np.array([speed_kmh], dtype="float32")
         gear = np.array([data[TmrlDataPlugin.ENGINE_GEAR]], dtype="float32")
         rpm = np.array([data[TmrlDataPlugin.ENGINE_RPM]], dtype="float32")
-        acceleration = np.array([speed_kmh - self._bd_prev_speed_kmh], dtype="float32")
+        acc_val = speed_kmh - self._bd_prev_speed_kmh
+        jerk_val = acc_val - self._bd_prev_acc_kmh
+        acceleration = np.array([acc_val], dtype="float32")
         self._bd_prev_speed_kmh = speed_kmh
+        self._bd_prev_acc_kmh = acc_val
+        self._sync_crash_state()
+        self.crash_fallback(current_speed=speed_kmh, jerk=jerk_val)
+        crashed_this_step = bool(self.is_crashed)
         steering_angle = np.array([data[TmrlDataPlugin.INPUT_STEER]], dtype="float32")
         slipping_tires = np.array(
             [
@@ -220,13 +227,16 @@ class TM2020InterfaceBoundary(TM2020InterfaceLidar):
         )
         crash = np.array([float(self.is_crashed)], dtype="float32")
 
+        crash_penalty = -float(self.crash_penalty)
         end_of_track = bool(data[TmrlDataPlugin.FINISH_UI_ACTIVE])
-        info = {"end_of_track": end_of_track}
-
-        crash_penalty = -10
+        info = {
+            "end_of_track": end_of_track,
+            "crashed": crashed_this_step,
+            "crash_penalty": float(self.crash_penalty),
+        }
         reward = 0
         if bool(self.is_crashed):
-            reward += crash_penalty
+            reward -= abs(crash_penalty)
 
         if end_of_track:
             reward += self.finish_reward
@@ -257,12 +267,14 @@ class TM2020InterfaceBoundary(TM2020InterfaceLidar):
             crash,
             np.array([float(failure_counter)], dtype="float32"),
         ]
+        self.cooldown_control()
         return obs, np.float32(reward), terminated, info
 
     def reset(self, seed=None, options=None):
         self.reset_common()
         data = self.grab_data()
         self._bd_prev_speed_kmh = 0.0
+        self._bd_prev_acc_kmh = 0.0
         track_information = np.full((60,), 0, dtype="float32")
         speed_kmh = float(data[TmrlDataPlugin.SPEED_MPS]) * 3.6
         speed = np.array([speed_kmh], dtype="float32")

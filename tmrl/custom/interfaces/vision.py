@@ -8,7 +8,6 @@ inherits from.
 
 import cv2
 import numpy as np
-import threading
 from gymnasium import spaces
 
 import tmrl.config as cfg
@@ -87,8 +86,6 @@ class TM2020Interface(TrackMania2020InterfaceBase):
             min_nb_steps_before_failure if min_nb_steps_before_failure is not None else 70
         )
         self.min_nb_steps_before_failure = cfg.REWARD_CONFIG.get("MIN_STEPS", _default_min_steps)
-        self._crash_lock = threading.Lock()
-        self._async_rumble_event = False
         self.crash_cooldown = 0
         _alg_cfg = cfg.TMRL_CONFIG.get("ALG", {})
         self.discrete_action_table: list[np.ndarray] | None = None

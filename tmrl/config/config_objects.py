@@ -243,7 +243,7 @@ else:
         "resize_to": (cfg.IMG_WIDTH, cfg.IMG_HEIGHT),
     }
     _common_reward_kwargs = {
-        "crash_penalty": cfg.CRASH_PENALTY,
+        "crash_penalty": float(cfg.REWARD_CONFIG.get("CRASH_PENALTY", cfg.CRASH_PENALTY)),
         "constant_penalty": cfg.CONSTANT_PENALTY,
         "checkpoint_reward": cfg.CHECKPOINT_REWARD,
         "lap_reward": cfg.LAP_REWARD,

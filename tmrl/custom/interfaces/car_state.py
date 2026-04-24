@@ -241,6 +241,9 @@ class TM2020RLInterface(TM2020Interface):
         jerk_val = acceleration_val - self._prev_acc_for_kinematics
         self._prev_speed_for_kinematics = speed_kmh
         self._prev_acc_for_kinematics = acceleration_val
+        self._sync_crash_state()
+        self.crash_fallback(current_speed=speed_kmh, jerk=jerk_val)
+        crashed_this_step = bool(self.is_crashed)
         acceleration = np.array([acceleration_val], dtype="float32")
         jerk = np.array([jerk_val], dtype="float32")
 
@@ -306,13 +309,17 @@ class TM2020RLInterface(TM2020Interface):
 
         track_info_arr, curvature_list = self._track_observation(pos, track_yaw)
 
-        if not self.is_crashed:
-            self.crash_cooldown -= 1
+        self.cooldown_control()
 
         race_progress = np.array([race_progress], dtype="float32")
         max_count = max(1.0, getattr(self.reward_function, "_max_no_progress_steps", 200.0))
         failure_counter = np.array([float(failure_counter) / max_count], dtype="float32")
-        info = {"reward_sum": reward_sum, "end_of_track": bool(end_of_track)}
+        info = {
+            "reward_sum": reward_sum,
+            "end_of_track": bool(end_of_track),
+            "crashed": crashed_this_step,
+            "crash_penalty": float(self.crash_penalty),
+        }
         if getattr(self.client, "_last_retrieve_invalid", False):
             terminated = True
             info["telemetry_invalid"] = True

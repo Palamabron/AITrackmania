@@ -6,7 +6,7 @@ Use :class:`TmrlDataPlugin` to index the ``float`` tuple from
 
 from __future__ import annotations
 
-from enum import IntEnum
+from collections import namedtuple
 
 TMRL_GRABDATA_FLOAT_COUNT = 33
 """Default number of ``float`` values per TMRL_GrabData frame (current plugin layout)."""
@@ -29,48 +29,50 @@ def tmrl_grabdata_payload_nb_floats(reward_config: dict) -> int:
     )
 
 
-class TmrlDataPlugin(IntEnum):
-    """Field indices for one frame from the OpenPlanet TMRL data plugin (``TMRL_GrabData``)."""
-
+_TmrlDataPluginBase = namedtuple("TmrlDataPlugin", [
     # 1. Race stats (4)
-    CHECKPOINTS_PASSED = 0
-    CURRENT_LAP = 1
-    FINISH_UI_ACTIVE = 2
-    CURRENT_RACE_TIME = 3
+    "CHECKPOINTS_PASSED",
+    "CURRENT_LAP",
+    "FINISH_UI_ACTIVE",
+    "CURRENT_RACE_TIME",
     # 2. Transform (12): position, velocity, dir, up
-    POS_X = 4
-    POS_Y = 5
-    POS_Z = 6
-    VEL_X = 7
-    VEL_Y = 8
-    VEL_Z = 9
-    DIR_X = 10
-    DIR_Y = 11
-    DIR_Z = 12
-    UP_X = 13
-    UP_Y = 14
-    UP_Z = 15
+    "POS_X",
+    "POS_Y",
+    "POS_Z",
+    "VEL_X",
+    "VEL_Y",
+    "VEL_Z",
+    "DIR_X",
+    "DIR_Y",
+    "DIR_Z",
+    "UP_X",
+    "UP_Y",
+    "UP_Z",
     # 3. Engine (3)
-    SPEED_MPS = 16
-    ENGINE_RPM = 17
-    ENGINE_GEAR = 18
+    "SPEED_MPS",
+    "ENGINE_RPM",
+    "ENGINE_GEAR",
     # 4. Wheels & surfaces (8)
-    SLIP_FL = 19
-    SLIP_FR = 20
-    SLIP_RL = 21
-    SLIP_RR = 22
-    MAT_FL = 23
-    MAT_FR = 24
-    MAT_RL = 25
-    MAT_RR = 26
+    "SLIP_FL",
+    "SLIP_FR",
+    "SLIP_RL",
+    "SLIP_RR",
+    "MAT_FL",
+    "MAT_FR",
+    "MAT_RL",
+    "MAT_RR",
     # 5. RL-specific (3)
-    WHEELS_SKIDDING_COUNT = 27
-    FLYING_DURATION = 28
-    ADHERENCE_COEF = 29
+    "WHEELS_SKIDDING_COUNT",
+    "FLYING_DURATION",
+    "ADHERENCE_COEF",
     # 6. Inputs (3)
-    INPUT_STEER = 30
-    INPUT_GAS = 31
-    INPUT_BRAKE = 32
+    "INPUT_STEER",
+    "INPUT_GAS",
+    "INPUT_BRAKE",
+])
+
+TmrlDataPlugin = _TmrlDataPluginBase(*range(TMRL_GRABDATA_FLOAT_COUNT))
+"""Field indices for one frame from the OpenPlanet TMRL data plugin (``TMRL_GrabData``)."""
 
 
 def yaw_pitch_from_dir_xyz(dir_xyz) -> tuple[float, float]:
