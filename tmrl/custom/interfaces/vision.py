@@ -135,7 +135,18 @@ class TM2020Interface(TrackMania2020InterfaceBase):
         reward, terminated, _failure_counter, _ = self.reward_function.compute_reward(
             pos=np.array(
                 [data[TmrlDataPlugin.POS_X], data[TmrlDataPlugin.POS_Y], data[TmrlDataPlugin.POS_Z]]
-            )
+            ),
+            velocity_xyz=(
+                float(data[TmrlDataPlugin.VEL_X]),
+                float(data[TmrlDataPlugin.VEL_Y]),
+                float(data[TmrlDataPlugin.VEL_Z]),
+            ),
+            dir_xyz=(
+                float(data[TmrlDataPlugin.DIR_X]),
+                float(data[TmrlDataPlugin.DIR_Y]),
+                float(data[TmrlDataPlugin.DIR_Z]),
+            ),
+            speed=self._last_speed_kmh,
         )
         self._push_img(img)
         imgs = self._get_img_hist_array()

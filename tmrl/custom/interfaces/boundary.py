@@ -34,15 +34,22 @@ def _boundary_ahead(
     car_position,
     look_ahead_distance: int,
     nearby_correction: int,
+    *,
+    combined_tree=None,
 ):
     """Slice the pre-recorded left/right boundaries to get the segments ahead of the car.
 
     ``left_boundary``/``right_boundary`` are (2, N) arrays of (x, z) points. Returns four
     1-D arrays of length ``look_ahead_distance``: left-x, left-z, right-x, right-z.
+
+    ``combined_tree``: optional pre-built :class:`scipy.spatial.KDTree` of all boundary
+    points (left first, then right).  Pass an instance-level cached tree to avoid
+    rebuilding it on every environment step.
     """
-    combined_points = left_boundary.T.tolist() + right_boundary.T.tolist()
-    tree = spatial.KDTree(combined_points)
-    (_, i) = tree.query(car_position)
+    if combined_tree is None:
+        combined_points = left_boundary.T.tolist() + right_boundary.T.tolist()
+        combined_tree = spatial.KDTree(combined_points)
+    (_, i) = combined_tree.query(car_position)
     if i < len(left_boundary.T):
         i_l_min = i
         j_min = max(i_l_min - nearby_correction, 0)
@@ -104,9 +111,18 @@ def _load_boundary_pkl(left_path: str, right_path: str):
 
 
 def _load_boundary_csv_or_fallback(path: str) -> np.ndarray:
-    """Load CSV boundaries when present, otherwise return a tiny fallback line."""
+    """Load CSV boundaries when present, otherwise return a tiny fallback line.
+
+    Normalizes the loaded array to shape ``(2, N)`` where row 0 is x-coordinates
+    and row 1 is z-coordinates.  Many CSV exporters write ``(N, 2)`` — this is
+    detected and transposed automatically.
+    """
     if os.path.exists(path):
-        return np.loadtxt(path, delimiter=",")
+        arr = np.loadtxt(path, delimiter=",")
+        # Normalize to (2, N): if array has shape (N, 2) with N > 2, transpose it.
+        if arr.ndim == 2 and arr.shape[1] == 2 and arr.shape[0] != 2:
+            arr = arr.T
+        return arr
     # Keep constructor robust for smoke tests and fresh repos without generated CSVs.
     return np.array([[0.0, 1.0], [0.0, 1.0]], dtype=np.float64)
 
@@ -140,6 +156,9 @@ class TM2020InterfaceBoundary(TM2020InterfaceLidar):
         self.index = 0
         self.left_boundary = _load_boundary_csv_or_fallback(BOUNDARY_CSV_LEFT)
         self.right_boundary = _load_boundary_csv_or_fallback(BOUNDARY_CSV_RIGHT)
+        # Pre-build combined KDTree for both boundaries; reused every env step.
+        _combined_pts = self.left_boundary.T.tolist() + self.right_boundary.T.tolist()
+        self._combined_boundary_tree = spatial.KDTree(_combined_pts)
         # Never set in production: it grows unbounded (one entry per env step, never drained).
         self._observed_boundaries: list[list[list[float]]] | None = (
             [[], [], [], [], []] if record else None
@@ -181,6 +200,7 @@ class TM2020InterfaceBoundary(TM2020InterfaceLidar):
             car_position,
             look_ahead_distance=15,
             nearby_correction=60,
+            combined_tree=self._combined_boundary_tree,
         )
         l_x, l_z, r_x, r_z = _to_car_frame(l_x, l_z, r_x, r_z, car_position, yaw)
         if self._observed_boundaries is not None:
@@ -252,7 +272,14 @@ class TM2020InterfaceBoundary(TM2020InterfaceLidar):
                         data[TmrlDataPlugin.POS_Y],
                         data[TmrlDataPlugin.POS_Z],
                     ]
-                )
+                ),
+                velocity_xyz=(
+                    float(data[TmrlDataPlugin.VEL_X]),
+                    float(data[TmrlDataPlugin.VEL_Y]),
+                    float(data[TmrlDataPlugin.VEL_Z]),
+                ),
+                dir_xyz=dir_xyz,
+                speed=speed_kmh,
             )[:3]
             reward += rew
 
@@ -340,6 +367,9 @@ class TM2020InterfaceBoundaryImages(TM2020InterfaceLidarProgress):
         )
         self.look_ahead_distance = 15
         self.nearby_correction = 60
+        # Pre-build combined KDTree for both boundaries; reused every env step.
+        _combined_pts = self.left_boundary.T.tolist() + self.right_boundary.T.tolist()
+        self._combined_boundary_tree = spatial.KDTree(_combined_pts)
 
     def _grab_speed_track_and_image(self):
         assert self.window_interface is not None
@@ -348,19 +378,19 @@ class TM2020InterfaceBoundaryImages(TM2020InterfaceLidarProgress):
         data = self.client.retrieve_data()
         speed = np.array([float(data[TmrlDataPlugin.SPEED_MPS]) * 3.6], dtype="float32")
         car_position = [data[TmrlDataPlugin.POS_X], data[TmrlDataPlugin.POS_Z]]
-        yaw, _p = yaw_pitch_from_dir_xyz(
-            (
-                float(data[TmrlDataPlugin.DIR_X]),
-                float(data[TmrlDataPlugin.DIR_Y]),
-                float(data[TmrlDataPlugin.DIR_Z]),
-            )
+        dir_xyz = (
+            float(data[TmrlDataPlugin.DIR_X]),
+            float(data[TmrlDataPlugin.DIR_Y]),
+            float(data[TmrlDataPlugin.DIR_Z]),
         )
+        yaw, _p = yaw_pitch_from_dir_xyz(dir_xyz)
         l_x, l_z, r_x, r_z = _boundary_ahead(
             self.left_boundary,
             self.right_boundary,
             car_position,
             self.look_ahead_distance,
             self.nearby_correction,
+            combined_tree=self._combined_boundary_tree,
         )
         l_x, l_z, r_x, r_z = _to_car_frame(l_x, l_z, r_x, r_z, car_position, yaw)
         track_information = np.array(
@@ -373,11 +403,11 @@ class TM2020InterfaceBoundaryImages(TM2020InterfaceLidarProgress):
             img = np.expand_dims(img, axis=-1)
         img = img.astype(np.float32) / 255.0
         img = np.expand_dims(img, axis=0) if img.ndim == 2 else np.transpose(img, (2, 0, 1))
-        return speed, data, track_information, img
+        return speed, data, dir_xyz, track_information, img
 
     def reset(self, seed=None, options=None):
         self.reset_common()
-        speed, _data, track_information, img = self._grab_speed_track_and_image()
+        speed, _data, _dir_xyz, track_information, img = self._grab_speed_track_and_image()
         self.image_hist = [img for _ in range(self.img_hist_len)]
         progress = np.array([0], dtype="float32")
         images = np.array(list(self.image_hist), dtype="float32")
@@ -385,11 +415,19 @@ class TM2020InterfaceBoundaryImages(TM2020InterfaceLidarProgress):
         return [speed, progress, track_information, images], {}
 
     def get_obs_rew_terminated_info(self):
-        speed, data, track_information, img = self._grab_speed_track_and_image()
+        speed, data, dir_xyz, track_information, img = self._grab_speed_track_and_image()
+        speed_kmh = float(speed[0])
         rew, terminated, _failure_counter = self.reward_function.compute_reward(
             pos=np.array(
                 [data[TmrlDataPlugin.POS_X], data[TmrlDataPlugin.POS_Y], data[TmrlDataPlugin.POS_Z]]
-            )
+            ),
+            velocity_xyz=(
+                float(data[TmrlDataPlugin.VEL_X]),
+                float(data[TmrlDataPlugin.VEL_Y]),
+                float(data[TmrlDataPlugin.VEL_Z]),
+            ),
+            dir_xyz=dir_xyz,
+            speed=speed_kmh,
         )[:3]
         progress = np.array(
             [self.reward_function.cur_idx / max(1, self.reward_function.datalen)],

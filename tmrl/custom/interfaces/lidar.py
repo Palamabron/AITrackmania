@@ -150,7 +150,18 @@ class TM2020InterfaceLidar(TM2020Interface):
         rew, terminated, _failure_counter = self.reward_function.compute_reward(
             pos=np.array(
                 [data[TmrlDataPlugin.POS_X], data[TmrlDataPlugin.POS_Y], data[TmrlDataPlugin.POS_Z]]
-            )
+            ),
+            velocity_xyz=(
+                float(data[TmrlDataPlugin.VEL_X]),
+                float(data[TmrlDataPlugin.VEL_Y]),
+                float(data[TmrlDataPlugin.VEL_Z]),
+            ),
+            dir_xyz=(
+                float(data[TmrlDataPlugin.DIR_X]),
+                float(data[TmrlDataPlugin.DIR_Y]),
+                float(data[TmrlDataPlugin.DIR_Z]),
+            ),
+            speed=float(data[TmrlDataPlugin.SPEED_MPS]) * 3.6,
         )[:3]
 
         self.img_hist.append(lidar)

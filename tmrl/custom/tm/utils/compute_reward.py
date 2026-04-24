@@ -200,6 +200,7 @@ class RewardFunction:
 
         self.step_counter = 0
         self.failure_counter = 0
+        self._prev_pos: np.ndarray | None = None
 
         self.average_distance = self.calculate_average_distance()
         self._cumulative_dist = np.zeros(max(1, self.datalen))
@@ -573,7 +574,17 @@ class RewardFunction:
         elif heading_xz is not None:
             car_dir = heading_xz
         else:
-            car_dir = np.array([0.0, 1.0], dtype=np.float64)
+            # Fall back to position-delta direction from previous step.
+            if self._prev_pos is not None:
+                delta = pos[[0, 2]] - self._prev_pos[[0, 2]]
+                delta_norm = np.linalg.norm(delta)
+                if delta_norm > 1e-6:
+                    car_dir = delta / delta_norm
+                else:
+                    car_dir = np.array([0.0, 1.0], dtype=np.float64)
+            else:
+                car_dir = np.array([0.0, 1.0], dtype=np.float64)
+        self._prev_pos = pos.copy()
 
         if heading_xz is not None and motion_xz is not None:
             cross = heading_xz[0] * motion_xz[1] - heading_xz[1] * motion_xz[0]
@@ -762,6 +773,7 @@ class RewardFunction:
         self.furthest_reached_idx = 0
         self.step_counter = 0
         self.failure_counter = 0
+        self._prev_pos = None
         self._last_progress_step = 0
         self._term_reason = None
         self.episode_reward = 0.0
