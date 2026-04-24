@@ -120,7 +120,8 @@ def _load_boundary_csv_or_fallback(path: str) -> np.ndarray:
     if os.path.exists(path):
         arr = np.loadtxt(path, delimiter=",")
         # Normalize to (2, N): if array has shape (N, 2) with N > 2, transpose it.
-        if arr.ndim == 2 and arr.shape[1] == 2 and arr.shape[0] != 2:
+        # For the ambiguous (2, 2) case we leave it unchanged (assumed already (2, N)).
+        if arr.ndim == 2 and arr.shape[1] == 2 and arr.shape[0] > 2:
             arr = arr.T
         return arr
     # Keep constructor robust for smoke tests and fresh repos without generated CSVs.

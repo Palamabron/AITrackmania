@@ -584,7 +584,7 @@ class RewardFunction:
                     car_dir = np.array([0.0, 1.0], dtype=np.float64)
             else:
                 car_dir = np.array([0.0, 1.0], dtype=np.float64)
-        self._prev_pos = pos.copy()
+        self._prev_pos = pos.copy()  # always track so next step can use position delta
 
         if heading_xz is not None and motion_xz is not None:
             cross = heading_xz[0] * motion_xz[1] - heading_xz[1] * motion_xz[0]
