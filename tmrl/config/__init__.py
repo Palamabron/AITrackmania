@@ -228,6 +228,8 @@ from tmrl.config.loader import (
     merged_config_snapshot_redacted,
 )
 from tmrl.config.paths import (
+    BOUNDARY_CSV_LEFT,
+    BOUNDARY_CSV_RIGHT,
     CHECKPOINT_PATH,
     CHECKPOINTS_FOLDER,
     CONFIG_FOLDER,
@@ -247,8 +249,6 @@ from tmrl.config.paths import (
     TRACK_FOLDER,
     TRACK_PATH_LEFT,
     TRACK_PATH_RIGHT,
-    TRACKMAP_CSV_LEFT,
-    TRACKMAP_CSV_RIGHT,
     TRACKS_FOLDER,
     WEIGHTS_FOLDER,
 )
@@ -268,6 +268,8 @@ __all__ = [
     "BACKUP_CLIP_RANGE",
     "BATCH_SIZE",
     "BINARY_BRAKE",
+    "BOUNDARY_CSV_LEFT",
+    "BOUNDARY_CSV_RIGHT",
     "BUFFERS_MAXLEN",
     "BUFFER_SIZE",
     # Paths
@@ -438,8 +440,6 @@ __all__ = [
     "TARGET_ENTROPY",
     "TMRL_FOLDER",
     "TOP_QUANTILES_TO_DROP",
-    "TRACKMAP_CSV_LEFT",
-    "TRACKMAP_CSV_RIGHT",
     "TRACKS_FOLDER",
     "TRACK_ENCODER",
     "TRACK_FOLDER",

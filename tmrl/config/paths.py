@@ -28,8 +28,8 @@ PATH_DATA = TMRL_FOLDER
 OUTPUT_FILES_FOLDER = Path(_OUTPUT_FILES_ROOT)
 TRACKS_FOLDER = OUTPUT_FILES_FOLDER / "tracks"
 DEBUG_FOLDER = OUTPUT_FILES_FOLDER / "debug"
-TRACKMAP_CSV_LEFT = str(TRACKS_FOLDER / "tmrl-test" / "track_left.csv")
-TRACKMAP_CSV_RIGHT = str(TRACKS_FOLDER / "tmrl-test" / "track_right.csv")
+BOUNDARY_CSV_LEFT = str(TRACKS_FOLDER / "tmrl-test" / "track_left.csv")
+BOUNDARY_CSV_RIGHT = str(TRACKS_FOLDER / "tmrl-test" / "track_right.csv")
 
 RUN_NAME = MAIN_CONFIG.run.name
 MODEL_PATH_WORKER = str(WEIGHTS_FOLDER / (RUN_NAME + ".tmod"))

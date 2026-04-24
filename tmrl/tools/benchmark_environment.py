@@ -9,7 +9,7 @@ from gymnasium import spaces
 from loguru import logger
 from rtgym.envs.real_time_env import DEFAULT_CONFIG_DICT
 
-from tmrl.custom.interfaces.TM2020InterfaceLidar import TM2020InterfaceLidar
+from tmrl.custom.interfaces import TM2020InterfaceLidar
 
 NB_STEPS = 1000
 ACT_COMPUTE_MIN = 0.0

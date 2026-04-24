@@ -1,7 +1,8 @@
 """Canonical TQC / Sophy tuple observation space from trainer config.
 
 Single place for Box shapes so replay alignment, env, and IQN stay consistent.
-Keep in sync with :meth:`TM2020InterfaceIMPALASophy.get_observation_space` fields.
+Keep in sync with
+:meth:`tmrl.custom.interfaces.car_state.TM2020RLInterface.get_observation_space` fields.
 """
 
 from __future__ import annotations

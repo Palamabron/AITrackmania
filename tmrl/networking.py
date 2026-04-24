@@ -48,6 +48,25 @@ def print_ip():
     print_with_timestamp(f"public IP: {public_ip}, local IP: {local_ip}")
 
 
+_WORKER_SEND_CHUNK_DEFAULT = 512
+_WORKER_SEND_CHUNK_MAX = 65536
+
+
+def _parse_worker_send_chunk_size(raw: str | None) -> int:
+    """Parse ``TMRL_WORKER_SEND_CHUNK_SIZE`` safely (fallback to default, clamp to sane range)."""
+    if raw is None or not str(raw).strip():
+        return _WORKER_SEND_CHUNK_DEFAULT
+    try:
+        value = int(str(raw).strip())
+    except (TypeError, ValueError):
+        logger.warning(
+            f"Invalid TMRL_WORKER_SEND_CHUNK_SIZE={raw!r}; "
+            f"falling back to default {_WORKER_SEND_CHUNK_DEFAULT}."
+        )
+        return _WORKER_SEND_CHUNK_DEFAULT
+    return max(1, min(value, _WORKER_SEND_CHUNK_MAX))
+
+
 def _start_relay_windows_tcp(
     port: int,
     password: str,
@@ -846,6 +865,9 @@ class RolloutWorker:
 
         self.start_time = time.time()
         self.server_ip = server_ip if server_ip is not None else "127.0.0.1"
+        self._worker_send_chunk_size = _parse_worker_send_chunk_size(
+            os.environ.get("TMRL_WORKER_SEND_CHUNK_SIZE")
+        )
 
         print_with_timestamp(f"server IP: {self.server_ip}")
 
@@ -953,6 +975,9 @@ class RolloutWorker:
 
         act = self.act(obs, test=test)
         new_obs, rew, terminated, truncated, info = self.env.step(act)
+        if isinstance(info, dict) and info.get("crashed", False):
+            penalty = float(info.get("crash_penalty", cfg.REWARD_CONFIG.get("CRASH_PENALTY", 0.0)))
+            logger.info("Car crashed: -{} reward", penalty)
 
         if self.obs_preprocessor is not None:
             new_obs = self.obs_preprocessor(new_obs)
@@ -1402,8 +1427,65 @@ class RolloutWorker:
         """
         Sends the buffered samples to the `Server`.
         """
-        self.__endpoint.produce(self.buffer, "trainers")
-        self.buffer.clear()
+        # Snapshot first, then clear local buffer to avoid races where async serializer
+        # sees a cleared Buffer object and trainer receives 0 samples.
+        payload = Buffer(maxlen=self.buffer.maxlen)
+        with self.buffer._guarded():
+            payload.memory = self.buffer.memory
+            payload.stat_train_return = self.buffer.stat_train_return
+            payload.stat_test_return = self.buffer.stat_test_return
+            payload.stat_train_steps = self.buffer.stat_train_steps
+            payload.stat_test_steps = self.buffer.stat_test_steps
+            payload.stat_test_finish_time = getattr(self.buffer, "stat_test_finish_time", 0.0)
+            payload.stat_test_finished_track = getattr(
+                self.buffer, "stat_test_finished_track", False
+            )
+            payload.stat_test_finished_count = getattr(self.buffer, "stat_test_finished_count", 0)
+            payload.stat_test_competition_eliminated = getattr(
+                self.buffer, "stat_test_competition_eliminated", False
+            )
+            payload.stat_test_competition_crashes = getattr(
+                self.buffer, "stat_test_competition_crashes", 0
+            )
+            self.buffer.clear()
+
+        t_send_start = time.perf_counter()
+        n_samples = len(payload.memory)
+        if n_samples == 0:
+            # Keep metric-only messages (e.g. deterministic test stats) behavior.
+            self.__endpoint.produce(payload, "trainers")
+            return
+
+        chunk_size = self._worker_send_chunk_size
+        if n_samples <= chunk_size:
+            self.__endpoint.produce(payload, "trainers")
+        else:
+            for start in range(0, n_samples, chunk_size):
+                end = min(start + chunk_size, n_samples)
+                chunk = Buffer(maxlen=self.buffer.maxlen)
+                chunk.memory = payload.memory[start:end]
+                # Keep episode-level stats only on the last chunk.
+                if end == n_samples:
+                    chunk.stat_train_return = payload.stat_train_return
+                    chunk.stat_test_return = payload.stat_test_return
+                    chunk.stat_train_steps = payload.stat_train_steps
+                    chunk.stat_test_steps = payload.stat_test_steps
+                    chunk.stat_test_finish_time = payload.stat_test_finish_time
+                    chunk.stat_test_finished_track = payload.stat_test_finished_track
+                    chunk.stat_test_finished_count = payload.stat_test_finished_count
+                    chunk.stat_test_competition_eliminated = (
+                        payload.stat_test_competition_eliminated
+                    )
+                    chunk.stat_test_competition_crashes = payload.stat_test_competition_crashes
+                self.__endpoint.produce(chunk, "trainers")
+
+        elapsed = time.perf_counter() - t_send_start
+        logger.info(
+            " Sent {} sample(s) to server in {:.3f}s (chunk_size={})",
+            n_samples,
+            elapsed,
+            chunk_size,
+        )
 
     def update_actor_weights(self, verbose=True, blocking=False):
         """

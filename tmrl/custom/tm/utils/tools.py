@@ -1,39 +1,33 @@
-# standard library imports
 import math
 import socket
 import struct
 import time
 from threading import Lock, Thread
 
-# third-party imports
 import cv2
 import numpy as np
 
-LIDAR_BLACK_THRESHOLD = [55, 55, 55]
-
-# OpenPlanet TQC_GrabData packet size (floats). Must match the plugin; 19 vs 20 misaligns
-# every frame and maps wrong fields (e.g. brake at index 8 read as end_of_track).
-TQC_GRAB_DATA_NB_FLOATS = 20
-
-
-def openplanet_grab_indices(nb_floats: int) -> tuple[int, tuple[int, int, int], int]:
-    """Return (speed_idx, (pos_x, pos_y, pos_z), end_of_track_idx) for GrabData layouts."""
-    if nb_floats >= 20:
-        # TQC 20-float: cp, lap, speed, pos x3, steer, gas, brake, end_of_track, …
-        return 2, (3, 4, 5), 9
-    # Legacy 19-float (older plugins)
-    return 0, (2, 3, 4), 8
+from tmrl.config import LIDAR_BLACK_THRESHOLD
 
 
 class TM2020OpenPlanetClient:
-    # Script attributes:
-    def __init__(
-        self,
-        host="127.0.0.1",
-        port=9000,
-        struct_str=None,
-        nb_floats=TQC_GRAB_DATA_NB_FLOATS,
-    ):
+    """Background socket client for the OpenPlanet TMRL_GrabData plugin.
+
+    Public state read by interfaces:
+
+    - ``_received_once`` — ``False`` until the first frame arrives; used to
+      switch from ``first_packet_timeout`` to the shorter steady-state timeout.
+    - ``_client_connected`` — ``True`` once ``socket.connect()`` succeeded
+      (the first frame may still be pending while the car is in a menu).
+    - ``_last_good_pos`` — most recent non-origin ``(x, y, z)``; used to patch
+      the ``[0, 0, 0]`` glitch frames the plugin occasionally emits.
+    - ``_last_retrieve_position_patched`` — position was patched in the frame
+      just returned by :meth:`retrieve_data`.
+    - ``_last_retrieve_invalid`` — sanity check failed on the frame just
+      returned; the interface should terminate the episode.
+    """
+
+    def __init__(self, host="127.0.0.1", port=9000, struct_str=None, nb_floats=19):
         if struct_str is None:
             struct_str = "<" + "f" * nb_floats
         self._struct_str = struct_str
@@ -45,28 +39,22 @@ class TM2020OpenPlanetClient:
         self._host = host
         self._port = port
 
-        # Threading attributes:
         self.__lock = Lock()
         self.__data = None
-        self._received_once = False  # used for longer first-packet timeout
-        self._last_good_pos = None  # Buffer to replace [0, 0, 0] glitches from the plugin
-        self._last_retrieve_position_patched = (
-            False  # True when position was patched (for interface)
-        )
-        self._last_retrieve_invalid = (
-            False  # True when sanity check failed (interface should terminate)
-        )
-        self._client_connected = (
-            False  # True when connect() succeeded (may still be waiting for first frame)
-        )
+        self._received_once = False
+        self._last_good_pos = None
+        self._last_retrieve_position_patched = False
+        self._last_retrieve_invalid = False
+        self._client_connected = False
         self.__t_client = Thread(target=self.__client_thread, args=(), kwargs={}, daemon=True)
         self.__t_client.start()
 
     def __client_thread(self):
-        """
-        Thread of the client.
-        Connects to the OpenPlanet plugin (retries until the plugin is listening),
-        then receives data until the connection is closed.
+        """Connect to the plugin (retry until listening) and receive frames forever.
+
+        Only the most recent complete frame is kept in ``self.__data`` — older
+        buffered frames are discarded so the interface always reads the freshest
+        telemetry even if its step rate lags the plugin's emit rate.
         """
         retry_interval = 2.0
         retry_count = 0
@@ -81,16 +69,16 @@ class TM2020OpenPlanetClient:
                         flush=True,
                     )
                     data_raw = b""
-                    while True:  # main loop
+                    while True:
                         while len(data_raw) < self._nb_bytes:
                             chunk = s.recv(1024)
                             if not chunk:
                                 self._client_connected = False
-                                break  # connection closed, reconnect
+                                break
                             data_raw += chunk
                         if len(data_raw) < self._nb_bytes:
                             self._client_connected = False
-                            break  # connection closed
+                            break
                         div = len(data_raw) // self._nb_bytes
                         data_used = data_raw[(div - 1) * self._nb_bytes : div * self._nb_bytes]
                         data_raw = data_raw[div * self._nb_bytes :]
@@ -161,23 +149,20 @@ class TM2020OpenPlanetClient:
                 )
                 time.sleep(sleep_if_empty)
 
-        # FIX GLITCHES: replace [0,0,0] position with the last known good position
         self._last_retrieve_position_patched = False
         self._last_retrieve_invalid = False
         if data is not None:
-            # Determine position indices from struct size:
-            # TQC=20 floats uses [3,4,5], older formats use [2,3,4].
-            pos_start_idx = 3 if self.nb_floats >= 20 else 2
+            # Position layout by struct size (TMRL_GrabData 33-float: indices 4-6).
+            pos_start_idx = 4 if self.nb_floats >= 33 else 3 if self.nb_floats >= 20 else 2
             pos_x, pos_y, pos_z = (
                 data[pos_start_idx],
                 data[pos_start_idx + 1],
                 data[pos_start_idx + 2],
             )
 
-            # If position is exactly at or very near origin, consider it a glitch
             if math.sqrt(pos_x**2 + pos_y**2 + pos_z**2) < 1.0:
+                # Plugin occasionally emits [0,0,0] glitch frames; replace with last good sample.
                 if self._last_good_pos is not None:
-                    # Create a new tuple with the patched position
                     data_list = list(data)
                     data_list[pos_start_idx] = self._last_good_pos[0]
                     data_list[pos_start_idx + 1] = self._last_good_pos[1]
@@ -185,12 +170,15 @@ class TM2020OpenPlanetClient:
                     data = tuple(data_list)
                     self._last_retrieve_position_patched = True
             else:
-                # Update last known good position
                 self._last_good_pos = (pos_x, pos_y, pos_z)
 
-            # Sanity check: speed (index 2 in TQC format) should be in a plausible range.
-            # Corrupted frames (e.g. all zeros or garbage) can otherwise enter the replay buffer.
-            speed_idx = 2
+            # Speed-in-m/s sanity check (33-float at index 16; legacy TQC 20-float at 2).
+            if self.nb_floats >= 33:
+                speed_idx = 16
+            elif self.nb_floats >= 20:
+                speed_idx = 2
+            else:
+                speed_idx = 0
             if speed_idx < len(data):
                 try:
                     speed_val = float(data[speed_idx])
@@ -202,28 +190,17 @@ class TM2020OpenPlanetClient:
 
 
 def save_ghost(host="127.0.0.1", port=10000):
-    """
-    Saves the current ghost
-
-    Args:
-        host (str): IP address of the ghost-saving server
-        port (int): Port of the ghost-saving server
-    """
+    """Trigger a ghost save by opening a TCP connection to the ghost-saving server."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.connect((host, port))
 
 
 def armin(tab):
-    """
-    Functionality: Finds the index of the first non-zero element in the input array tab.
-    Returns: The index of the first non-zero element if found;
-             otherwise, the index of the last element in the array.
-    """
+    """Return the index of the first non-zero element in ``tab`` (or ``len(tab) - 1``)."""
     nz = np.nonzero(tab)[0]
     if len(nz) != 0:
         return nz[0].item()
-    else:
-        return len(tab) - 1
+    return len(tab) - 1
 
 
 class Lidar:
@@ -232,11 +209,7 @@ class Lidar:
         self.black_threshold = LIDAR_BLACK_THRESHOLD
 
     def _set_axis_lidar(self, im):
-        """
-        Functionality:
-        Sets up the LiDAR axis based on the image passed.
-        Creates LiDAR axes for scanning, angles from 90 to 280 degrees.
-        """
+        """Precompute scan-line pixel coordinates for 19 rays (angles 90-280 deg, 10 deg step)."""
         h, w, _ = im.shape
         self.h = h
         self.w = w
@@ -268,13 +241,10 @@ class Lidar:
         self.list_axis_y = list_ax_y
 
     def lidar_20(self, img, show=False):
-        """
-        Functionality:
-        Calculates LiDAR distances given an image.
-        If the image dimensions differ from the previously set dimensions, updates the LiDAR axis.
-        Loops through the predefined LiDAR axes and calculates the distances.
-        Optionally displays LiDAR lines on the image if show is set to True.
-        Returns: An array of distances calculated by the LiDAR.
+        """Return the 19 ray distances (in pixels) hitting a black (< threshold) pixel.
+
+        Rebuilds the scan axes if ``img`` has a different shape than the last call.
+        When ``show`` is set, draws the rays on ``img`` and opens a debug window.
         """
         h, w, _ = img.shape
         if h != self.h or w != self.w:

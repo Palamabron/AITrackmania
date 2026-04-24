@@ -24,52 +24,6 @@ TIME_STEP_SECONDS = 0.05
 _BARRIER_SEARCH_WINDOW = 15
 
 
-def _point_to_segment_dist_2d(
-    px: float, pz: float, ax: float, az: float, bx: float, bz: float
-) -> float:
-    """Orthogonal distance from point (px,pz) to segment (ax,az)-(bx,bz) in the XZ plane."""
-    dx, dz = bx - ax, bz - az
-    len_sq = dx * dx + dz * dz
-    if len_sq < 1e-18:
-        return math.sqrt((px - ax) ** 2 + (pz - az) ** 2)
-    t = max(0.0, min(1.0, ((px - ax) * dx + (pz - az) * dz) / len_sq))
-    cx = ax + t * dx
-    cz = az + t * dz
-    return math.sqrt((px - cx) ** 2 + (pz - cz) ** 2)
-
-
-def _min_dist_to_polyline_xz(
-    px: float, pz: float, polyline_xz: np.ndarray, center_idx: int, window: int
-) -> float:
-    """Min orthogonal distance from (px,pz) to polyline segments near center_idx.
-
-    Args:
-        px, pz: Query point in XZ plane.
-        polyline_xz: Shape (N, 2) array of polyline vertices in XZ.
-        center_idx: Index around which to search.
-        window: Half-window size for the search.
-
-    Returns:
-        Minimum perpendicular distance to any segment in the window.
-    """
-    n = len(polyline_xz)
-    lo = max(0, center_idx - window)
-    hi = min(n - 1, center_idx + window)
-    best = float("inf")
-    for i in range(lo, hi):
-        d = _point_to_segment_dist_2d(
-            px,
-            pz,
-            polyline_xz[i, 0],
-            polyline_xz[i, 1],
-            polyline_xz[i + 1, 0],
-            polyline_xz[i + 1, 1],
-        )
-        if d < best:
-            best = d
-    return best
-
-
 def _resample_polyline_by_arc_length(points: np.ndarray, num_points: int) -> np.ndarray:
     """Resample a polyline to a fixed number of points uniformly by arc length.
 
@@ -285,6 +239,7 @@ class RewardFunction:
 
         self.step_counter = 0
         self.failure_counter = 0
+        self._prev_pos: np.ndarray | None = None
 
         self.average_distance = self.calculate_average_distance()
         self._cumulative_dist = np.zeros(max(1, self.datalen))
@@ -350,9 +305,8 @@ class RewardFunction:
             self._point_spacing_m = 0.0
             self._points_number = None
 
-        self._debug_reward = bool(rc.get("debug_reward_components", False))
-        self._debug_log_interval = int(rc.get("debug_log_interval", 100))
-        self.prev_pos: np.ndarray | None = None
+        self._debug_reward = bool(rc.get("debug_reward_components", rc.get("DEBUG_REWARD_COMPONENTS", False)))
+        self._debug_log_interval = int(rc.get("debug_log_interval", rc.get("DEBUG_LOG_INTERVAL", 100)))
         self._reset_debug_accumulators()
 
         if self._use_wandb:
@@ -496,8 +450,15 @@ class RewardFunction:
 
     def calculate_average_distance(self) -> float:
         """Mean segment length between consecutive trajectory points."""
+        if len(self.data) < 2:
+            return 0.0
         distances = np.linalg.norm(np.diff(self.data, axis=0), axis=1)
-        return float(np.mean(distances))
+        if distances.size == 0:
+            return 0.0
+        mean_dist = float(np.mean(distances))
+        if not np.isfinite(mean_dist):
+            return 0.0
+        return mean_dist
 
     def _reset_debug_accumulators(self):
         """Resets debug metric accumulators."""
@@ -549,6 +510,10 @@ class RewardFunction:
     def compute_reward(
         self,
         pos,
+        velocity_xyz: np.ndarray | list[float] | tuple[float, float, float] | None = None,
+        dir_xyz: np.ndarray | list[float] | tuple[float, float, float] | None = None,
+        surface_materials: list[int] | tuple[int, int, int, int] | np.ndarray | None = None,
+        wheel_slips: list[float] | tuple[float, float, float, float] | np.ndarray | None = None,
         crashed: bool = False,
         speed: float | None = None,
         next_cp: bool = False,
@@ -565,6 +530,10 @@ class RewardFunction:
 
         Args:
             pos: Current position.
+            velocity_xyz: World velocity vector (x, y, z) from telemetry if available.
+            dir_xyz: Forward direction vector (x, y, z) from telemetry if available.
+            surface_materials: Surface IDs under FL/FR/RL/RR wheels.
+            wheel_slips: Slip coefficients for FL/FR/RL/RR wheels.
             crashed (bool): Whether the agent crashed. Defaults to False.
             speed (float, optional): Current speed in km/h. Defaults to None.
             next_cp (bool): Whether a checkpoint was passed. Defaults to False.
@@ -612,26 +581,56 @@ class RewardFunction:
         self._global_env_steps += 1
 
         _speed_reward_added = 0.0
-        if self.prev_pos is None:
-            self.prev_pos = pos.copy()
-        pos_delta = pos - self.prev_pos
-        self.prev_pos = pos.copy()
-        pos_delta_xz = np.array([pos_delta[0], pos_delta[2]], dtype=np.float64)
-        motion_norm = np.linalg.norm(pos_delta_xz)
         _computed_slip_deg: float | None = None
-        if motion_norm > 1e-3:
-            car_dir = pos_delta_xz / motion_norm
-            if aim_yaw is not None:
-                heading = np.array(
-                    [math.sin(float(aim_yaw)), math.cos(float(aim_yaw))],
-                    dtype=np.float64,
-                )
-                cross = heading[0] * car_dir[1] - heading[1] * car_dir[0]
-                dot = float(np.dot(heading, car_dir))
-                _computed_slip_deg = abs(math.degrees(math.atan2(cross, dot)))
+
+        heading_xz: np.ndarray | None = None
+        if dir_xyz is not None:
+            d3 = np.asarray(dir_xyz, dtype=np.float64).reshape(3)
+            d_xz = np.array([d3[0], d3[2]], dtype=np.float64)
+            d_norm = np.linalg.norm(d_xz)
+            if d_norm > 1e-6:
+                heading_xz = d_xz / d_norm
+
+        motion_xz: np.ndarray | None = None
+        if velocity_xyz is not None:
+            v3 = np.asarray(velocity_xyz, dtype=np.float64).reshape(3)
+            v_xz = np.array([v3[0], v3[2]], dtype=np.float64)
+            v_norm = np.linalg.norm(v_xz)
+            if v_norm > 1e-6:
+                motion_xz = v_xz / v_norm
+
+        if heading_xz is None and aim_yaw is not None:
+            car_yaw = float(aim_yaw)
+            heading_xz = np.array([np.sin(car_yaw), np.cos(car_yaw)], dtype=np.float64)
+
+        if motion_xz is not None:
+            car_dir = motion_xz
+        elif heading_xz is not None:
+            car_dir = heading_xz
         else:
-            car_yaw = float(aim_yaw) if aim_yaw is not None else 0.0
-            car_dir = np.array([np.sin(car_yaw), np.cos(car_yaw)], dtype=np.float64)
+            # Fall back to position-delta direction from previous step.
+            if self._prev_pos is not None:
+                delta = pos[[0, 2]] - self._prev_pos[[0, 2]]
+                delta_norm = np.linalg.norm(delta)
+                if delta_norm > 1e-6:
+                    car_dir = delta / delta_norm
+                else:
+                    car_dir = np.array([0.0, 1.0], dtype=np.float64)
+            else:
+                car_dir = np.array([0.0, 1.0], dtype=np.float64)
+        self._prev_pos = pos.copy()  # always track so next step can use position delta
+
+        if heading_xz is not None and motion_xz is not None:
+            cross = heading_xz[0] * motion_xz[1] - heading_xz[1] * motion_xz[0]
+            dot = float(np.dot(heading_xz, motion_xz))
+            _computed_slip_deg = abs(math.degrees(math.atan2(cross, dot)))
+
+        is_airborne = False
+        if surface_materials is not None:
+            mats = np.asarray(surface_materials).reshape(-1)
+            if mats.size >= 4:
+                is_airborne = bool(np.all(mats[:4] == 0))
+
         next_idx = min(best_index + 1, self.datalen - 1)
         alignment_effective = 0.0
         if next_idx > best_index:
@@ -641,10 +640,13 @@ class RewardFunction:
             if norm > 0:
                 track_dir = track_vec_xz / norm
                 alignment = np.dot(track_dir, car_dir)
-                alignment_effective = max(
-                    getattr(self, "_speed_reward_alignment_floor", 0.0),
-                    max(0.0, alignment),
-                )
+                if is_airborne:
+                    alignment_effective = 1.0
+                else:
+                    alignment_effective = max(
+                        getattr(self, "_speed_reward_alignment_floor", 0.0),
+                        max(0.0, alignment),
+                    )
 
         reward = reward_progress
 
@@ -660,7 +662,21 @@ class RewardFunction:
                 reward += _speed_reward_added
 
         _effective_slip = slip_angle_deg if slip_angle_deg is not None else _computed_slip_deg
-        if _effective_slip is not None and _speed_kmh >= self._drift_threshold_kmh:
+        if wheel_slips is not None and _speed_kmh >= self._drift_threshold_kmh:
+            ws = np.asarray(wheel_slips, dtype=np.float64).reshape(-1)
+            if ws.size >= 4:
+                rear_slip_avg = 0.5 * (abs(float(ws[2])) + abs(float(ws[3])))
+                if self._drift_anneal_steps > 0:
+                    frac = min(1.0, self._global_env_steps / self._drift_anneal_steps)
+                    drift_w = self._drift_weight_start + frac * (
+                        self._drift_weight_end - self._drift_weight_start
+                    )
+                else:
+                    drift_w = self._drift_reward_weight
+                slip_activation = float(cfg.REWARD_CONFIG.get("REAR_SLIP_ACTIVATION", 0.5))
+                if drift_w > 0 and rear_slip_avg > slip_activation:
+                    reward += drift_w * min(1.0, rear_slip_avg)
+        elif _effective_slip is not None and _speed_kmh >= self._drift_threshold_kmh:
             _effective_slip = abs(float(_effective_slip))
             if self._drift_anneal_steps > 0:
                 frac = min(1.0, self._global_env_steps / self._drift_anneal_steps)
@@ -778,7 +794,9 @@ class RewardFunction:
 
     def compute_race_progress(self) -> float:
         """Current race progress as fraction of trajectory length (0.0 to 1.0)."""
-        return self.cur_idx / len(self.data)
+        if len(self.data) <= 1:
+            return 0.0
+        return min(1.0, max(0.0, self.cur_idx / (len(self.data) - 1)))
 
     def reset(self) -> None:
         """Reset reward state for a new episode."""
@@ -787,6 +805,7 @@ class RewardFunction:
         self.furthest_reached_idx = 0
         self.step_counter = 0
         self.failure_counter = 0
+        self._prev_pos = None
         self._last_progress_step = 0
         self._term_reason = None
         self.episode_reward = 0.0
@@ -794,6 +813,5 @@ class RewardFunction:
         self.lap_cur_cooldown = self._lap_cooldown_init
         self.furthest_race_progress = 0.0
         self._logged_run_this_episode = False
-        self.prev_pos = None
         if self._debug_reward:
             self._reset_debug_accumulators()

@@ -19,7 +19,7 @@ from tmrl.config.loader import format_merged_config_yaml_readable
 from tmrl.envs import GenericGymEnv
 from tmrl.networking import RolloutWorker, Server, Trainer
 from tmrl.tools.check_environment import (
-    check_env_tm20_trackmap,
+    check_env_tm20_boundary,
     check_env_tm20full,
     check_env_tm20lidar,
 )
@@ -61,9 +61,6 @@ class TmrlCli:
     record_reward: bool = False
     """Record a reward function in TrackMania 2020."""
 
-    use_keyboard: bool = False
-    """Use keyboard (instead of gamepad) when recording reward."""
-
     record_episode: bool = False
     """Record an episode into the replay buffer."""
 
@@ -92,7 +89,7 @@ class TmrlCli:
     """Validate import only, without writing dataset."""
 
     check_env: bool = False
-    """Verify environment (Lidar/Full/TrackMap) works."""
+    """Verify environment (Lidar/Full/Boundary) works."""
 
     wandb: bool = True
     """Enable Weights & Biases logging on trainer (default True; use --no-wandb to disable)."""
@@ -194,11 +191,11 @@ def main(cli: TmrlCli) -> None:
         else:
             trainer.run()
     elif cli.record_reward:
-        record_reward_dist(path_reward=cfg.REWARD_PATH, use_keyboard=cli.use_keyboard)
+        record_reward_dist(path_reward=cfg.REWARD_PATH)
     elif cli.check_env:
         if cfg.PRAGMA_LIDAR:
             if cfg.PRAGMA_TRACKMAP:
-                check_env_tm20_trackmap()
+                check_env_tm20_boundary()
             else:
                 check_env_tm20lidar()
         else:

@@ -17,16 +17,10 @@ import tmrl.custom.custom_algorithms.redq_sac
 import tmrl.custom.custom_algorithms.sac
 import tmrl.custom.custom_algorithms.sdsac
 import tmrl.custom.custom_algorithms.tqc
-import tmrl.custom.interfaces.TM2020Interface
-import tmrl.custom.interfaces.TM2020InterfaceIMPALA
-import tmrl.custom.interfaces.TM2020InterfaceIMPALAwoImages
-import tmrl.custom.interfaces.TM2020InterfaceLidar
-import tmrl.custom.interfaces.TM2020InterfaceLidarImages
-import tmrl.custom.interfaces.TM2020InterfaceLidarProgress
-import tmrl.custom.interfaces.TM2020InterfaceSophy
-import tmrl.custom.interfaces.TM2020InterfaceTQC
-import tmrl.custom.interfaces.TM2020InterfaceTrackMap
-import tmrl.custom.interfaces.TM2020InterfaceTrackMapImages
+import tmrl.custom.interfaces.boundary
+import tmrl.custom.interfaces.car_state
+import tmrl.custom.interfaces.lidar
+import tmrl.custom.interfaces.vision
 import tmrl.custom.memories.base
 import tmrl.custom.memories.r2d2
 import tmrl.custom.memories.tm_best
@@ -386,49 +380,26 @@ def _rtgym_interface_partial() -> Any:
     common: dict[str, Any] = {
         "img_hist_len": cfg.IMG_HIST_LEN,
         "gamepad": cfg.PRAGMA_GAMEPAD,
-        "reward_path": cfg_paths.REWARD_PATH,
-        "reward_check_forward": int(env.reward.check_forward),
-        "reward_check_backward": int(env.reward.check_backward),
-        "reward_max_stray": float(env.reward.max_stray),
-        "sleep_time_at_reset": float(env.sleep_time_at_reset),
-        "window_width": int(env.window_width),
-        "window_height": int(env.window_height),
-        "finish_reward": float(env.end_of_track_reward),
-        "discrete_n_steer_bins": _n_steer,
-        # Reward function params (passed through interface to RewardFunction)
-        "reward_config": env.reward.model_dump(),
-        "is_lidar": bool(cfg.PRAGMA_LIDAR),
-        "track_path_left": str(cfg_paths.TRACK_PATH_LEFT),
-        "track_path_right": str(cfg_paths.TRACK_PATH_RIGHT),
-        "time_step_duration": _rtgym_dt,
-        "points_distance": float(algorithm.points_distance),
-        "lap_cooldown": int(env.lap_cooldown),
-        "config_file_path": str(loader.CONFIG_FILE_PATH),
-        "use_wandb": bool(M.wandb.log_from_worker),
-        "wandb_project": str(M.wandb.project),
-        "wandb_entity": str(M.wandb.entity),
-        "wandb_run_id": str(M.run.name),
-        "wandb_api_key": str(M.wandb.api_key),
-        "wandb_config": loader.create_config(),
     }
 
     if name in ("trackmap_images", "lidar_progress_images"):
         common["grayscale"] = cfg.GRAYSCALE
         common["resize_to"] = (cfg.IMG_WIDTH, cfg.IMG_HEIGHT)
 
-    if name in ("impala", "impala_wo_images", "sophy", "tqc", "vision"):
+    if name in ("impala", "sophy", "tqc", "vision"):
         common["grayscale"] = cfg.GRAYSCALE
         common["resize_to"] = (cfg.IMG_WIDTH, cfg.IMG_HEIGHT)
 
-    if name in ("impala", "impala_wo_images", "sophy", "tqc"):
+    if name in ("impala", "sophy", "tqc"):
         common["crash_penalty"] = float(env.crash_penalty)
         common["constant_penalty"] = float(env.constant_penalty)
         common["checkpoint_reward"] = float(env.checkpoint_reward)
         common["lap_reward"] = float(env.lap_reward)
         common["points_number"] = int(cfg.POINTS_NUMBER)
-
-    if name in ("sophy", "tqc"):
-        common["track_local_frame"] = bool(env.reward.track_local_frame)
+        _include_cam = cfg.USE_IMAGES
+        _include_lidar = bool(cfg.REWARD_CONFIG.get("RL_INTERFACE_INCLUDE_LIDAR", False))
+        common["include_camera_images"] = _include_cam
+        common["include_lidar"] = _include_lidar
 
     if name == "tqc":
         common["obs_speed_scale"] = float(cfg.OBS_SPEED_SCALE)
