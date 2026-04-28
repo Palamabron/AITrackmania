@@ -123,6 +123,13 @@ class TM2020InterfaceLidar(TM2020Interface):
         return spaces.Tuple(tuple(boxes))
 
     def reset(self, seed=None, options=None):
+        rf = getattr(self, "reward_function", None)
+        if (
+            rf is not None
+            and getattr(rf, "step_counter", 0) > 0
+            and not getattr(rf, "_logged_run_this_episode", False)
+        ):
+            rf.log_model_run(terminated=True, end_of_track=False, truncated=True)
         self.reset_common()
         assert self.reward_function is not None
         if self._include_camera_images:
@@ -187,6 +194,8 @@ class TM2020InterfaceLidar(TM2020Interface):
         if end_of_track:
             rew += self.finish_reward
             terminated = True
+
+        self.reward_function.log_model_run(terminated=bool(terminated), end_of_track=end_of_track)
         return obs, np.float32(rew), terminated, info
 
 

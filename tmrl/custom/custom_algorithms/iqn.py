@@ -183,6 +183,20 @@ def _signed_value_rescale(x: torch.Tensor, eps: float) -> torch.Tensor:
     return torch.sign(x) * (torch.sqrt(abs_x + 1.0) - 1.0) + eps * x
 
 
+def _munchausen_bonus_from_q(
+    q_values: torch.Tensor,
+    actions: torch.Tensor,
+    tau: float,
+    clip_min: float,
+    clip_max: float,
+) -> torch.Tensor:
+    """Compute clipped Munchausen log-policy bonus for selected actions."""
+    logits = q_values / tau
+    log_policy = torch.log_softmax(logits, dim=-1)
+    log_pi_a = log_policy.gather(1, actions.view(-1, 1)).squeeze(1)
+    return log_pi_a.clamp(min=clip_min, max=clip_max)
+
+
 @ALGORITHMS.register("IQN")
 @dataclass(eq=False)
 class IQNAgent(TrainingAgent):
@@ -241,6 +255,14 @@ class IQNAgent(TrainingAgent):
     value_rescaling_eps: float
     soft_target_tau: float
     log_target_stats: bool
+    sort_quantiles: bool
+    monotonicity_regularization: bool
+    monotonicity_lambda: float
+    munchausen_enabled: bool
+    munchausen_alpha: float
+    munchausen_tau: float
+    munchausen_clip_min: float
+    munchausen_clip_max: float
 
     # EDER diversity filtering (0 = disabled)
     eder_oversample_ratio: int
@@ -276,6 +298,10 @@ class IQNAgent(TrainingAgent):
 
     def __post_init__(self) -> None:
         set_seed(self.seed)
+        if self.monotonicity_regularization and not self.sort_quantiles:
+            raise ValueError(
+                "IQN monotonicity_regularization requires sort_quantiles=True."
+            )
         device = self.device or ("cuda" if torch.cuda.is_available() else "cpu")
 
         self.model = IQNQNetwork(
@@ -316,7 +342,8 @@ class IQNAgent(TrainingAgent):
             "IQNAgent: n_actions={}, dueling={}, double={}, n_steps={}, gamma={:.3f}, "
             "eps mode={}, decay_steps={}, t0={}, tmult={}, decay={}, init_amp={}, "
             "floor_frac={}, floor_steps={}, huber_kappa={}, value_rescaling={}, "
-            "rescale_eps={}, soft_target_tau={}",
+            "rescale_eps={}, soft_target_tau={}, sort_quantiles={}, monotonicity={}, "
+            "monotonicity_lambda={}, munchausen={}",
             self.n_actions,
             self.dueling,
             self.double_dqn,
@@ -334,6 +361,10 @@ class IQNAgent(TrainingAgent):
             self.use_value_rescaling,
             self.value_rescaling_eps,
             self.soft_target_tau,
+            self.sort_quantiles,
+            self.monotonicity_regularization,
+            self.monotonicity_lambda,
+            self.munchausen_enabled,
         )
         _obs = self.observation_space
         _obs_dim = (
@@ -495,6 +526,18 @@ class IQNAgent(TrainingAgent):
         if reward_scale != 1.0 and reward_scale > 0:
             r = r / reward_scale
 
+        munchausen_bonus = torch.zeros(batch_size, device=device, dtype=torch.float32)
+        if self.munchausen_enabled:
+            with torch.no_grad():
+                q_curr = self.model.q_values(o, n_quantiles=self.n_quantiles_eval)
+                munchausen_bonus = _munchausen_bonus_from_q(
+                    q_values=q_curr,
+                    actions=actions,
+                    tau=float(self.munchausen_tau),
+                    clip_min=float(self.munchausen_clip_min),
+                    clip_max=float(self.munchausen_clip_max),
+                )
+
         if self.n_steps > 1:
             n_step_return, bootstrap_mask = _compute_n_step_return_and_bootstrap_mask(
                 r, d, self.gamma, self.n_steps
@@ -507,17 +550,24 @@ class IQNAgent(TrainingAgent):
             bootstrap_mask = 1.0 - d.squeeze(-1)
             gamma_n = self.gamma
 
+        if self.munchausen_enabled:
+            n_step_return = n_step_return + float(self.munchausen_alpha) * munchausen_bonus
+
         def autocast_ctx():
             return autocast_context(self.use_mixed_precision, self.amp_dtype)
 
         with autocast_ctx():
             tau = torch.rand(batch_size, self.n_quantiles_train, device=device)
+            if self.sort_quantiles:
+                tau, _ = torch.sort(tau, dim=1)
             current_quantiles, _ = self.model(o, tau=tau)
             action_idx = repeat(actions, "b -> b n 1", n=self.n_quantiles_train)
             current_q = current_quantiles.gather(2, action_idx).squeeze(2)
 
         with torch.no_grad():
             tau_prime = torch.rand(batch_size, self.n_quantiles_target, device=device)
+            if self.sort_quantiles:
+                tau_prime, _ = torch.sort(tau_prime, dim=1)
 
             with autocast_ctx():
                 if self.double_dqn:
@@ -547,7 +597,20 @@ class IQNAgent(TrainingAgent):
             current_for_loss = _signed_value_rescale(current_for_loss, self.value_rescaling_eps)
             target_for_loss = _signed_value_rescale(target_for_loss, self.value_rescaling_eps)
 
-        loss = _quantile_huber_loss(current_for_loss, target_for_loss, tau, kappa=self.huber_kappa)
+        loss_iqn = _quantile_huber_loss(current_for_loss, target_for_loss, tau, kappa=self.huber_kappa)
+        if self.n_quantiles_train > 1:
+            dq = current_q[:, 1:] - current_q[:, :-1]
+            crossing_magnitude = torch.relu(-dq).mean()
+            crossing_rate = (dq < 0).float().mean()
+        else:
+            crossing_magnitude = torch.zeros((), device=current_q.device, dtype=current_q.dtype)
+            crossing_rate = torch.zeros((), device=current_q.device, dtype=current_q.dtype)
+        monotonic_penalty = (
+            crossing_magnitude
+            if self.monotonicity_regularization and self.n_quantiles_train > 1
+            else torch.zeros((), device=current_q.device, dtype=current_q.dtype)
+        )
+        loss = loss_iqn + float(self.monotonicity_lambda) * monotonic_penalty
 
         self.optimizer.zero_grad()
         if self.use_mixed_precision:
@@ -583,12 +646,17 @@ class IQNAgent(TrainingAgent):
             for p in self.model_target.parameters():
                 p.requires_grad = False
 
-        iqn_loss_scalar = _tensor_to_scalar(loss)
+        iqn_loss_scalar = _tensor_to_scalar(loss_iqn)
         ret = {
             "loss/iqn_loss": iqn_loss_scalar,
+            "loss/total_loss": _tensor_to_scalar(loss),
+            "loss/monotonicity_penalty": _tensor_to_scalar(monotonic_penalty),
             "exploration/epsilon": eps,
             "q/mean_q": _tensor_to_scalar(current_q.mean()),
             "q/max_q": _tensor_to_scalar(current_q.max()),
+            "debug/quantile_crossing_rate": _tensor_to_scalar(crossing_rate),
+            "debug/quantile_crossing_magnitude": _tensor_to_scalar(crossing_magnitude),
+            "debug/munchausen_bonus_mean": _tensor_to_scalar(munchausen_bonus.mean()),
             "debug/grad_norm": grad_norm,
             "debug/grad_ema_norm": self._grad_stabilizer.ema_norm,
             "train/step": self._training_step,

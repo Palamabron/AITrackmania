@@ -394,7 +394,7 @@ class TM2020RLInterface(TM2020Interface):
             and getattr(rf, "step_counter", 0) > 0
             and not getattr(rf, "_logged_run_this_episode", False)
         ):
-            rf.log_model_run(terminated=True, end_of_track=False)
+            rf.log_model_run(terminated=True, end_of_track=False, truncated=True)
         self.reset_common()
         assert self.reward_function is not None
         self._steps_since_reset = 0

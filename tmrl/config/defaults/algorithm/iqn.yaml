@@ -30,5 +30,13 @@ algorithm:
   iqn_dueling: true
   iqn_double_dqn: true
   iqn_grad_clip: 10.0
+  iqn_sort_quantiles: false
+  iqn_monotonicity_regularization: false
+  iqn_monotonicity_lambda: 0.01
+  iqn_munchausen_enabled: false
+  iqn_munchausen_alpha: 0.9
+  iqn_munchausen_tau: 0.03
+  iqn_munchausen_clip_min: -1.0
+  iqn_munchausen_clip_max: 0.0
   quantiles_number: 25
   top_quantiles_to_drop: 3

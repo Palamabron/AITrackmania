@@ -131,6 +131,13 @@ class TM2020Interface(TrackMania2020InterfaceBase):
         self._last_speed_kmh = speed_kmh
 
     def reset(self, seed=None, options=None):
+        rf = getattr(self, "reward_function", None)
+        if (
+            rf is not None
+            and getattr(rf, "step_counter", 0) > 0
+            and not getattr(rf, "_logged_run_this_episode", False)
+        ):
+            rf.log_model_run(terminated=True, end_of_track=False, truncated=True)
         self.reset_common()
         assert self.reward_function is not None
         data, img = self.grab_data_and_img()
@@ -172,6 +179,8 @@ class TM2020Interface(TrackMania2020InterfaceBase):
             reward += self.finish_reward
             if self.save_replays:
                 mouse_save_replay_tm20(True)
+
+        self.reward_function.log_model_run(terminated=bool(terminated), end_of_track=end_of_track)
         reward_out = np.float32(reward)
         return observation, reward_out, terminated, info
 

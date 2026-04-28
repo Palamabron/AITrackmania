@@ -67,6 +67,71 @@ def _parse_worker_send_chunk_size(raw: str | None) -> int:
     return max(1, min(value, _WORKER_SEND_CHUNK_MAX))
 
 
+def _find_nested_reward_function(root: object, *, max_depth: int = 6) -> object | None:
+    """Best-effort lookup of a TMRL ``RewardFunction`` living under a Gymnasium env stack.
+
+    Real-time-gym stacks vary by version; this is intentionally defensive and bounded.
+    """
+    try:
+        from tmrl.custom.tm.utils.compute_reward import RewardFunction
+    except Exception:  # pragma: no cover - import guard for exotic installs
+        RewardFunction = ()  # type: ignore[assignment]
+
+    if RewardFunction and isinstance(root, RewardFunction):
+        return root
+
+    visited: set[int] = set()
+    queue: list[tuple[object, int]] = [(root, 0)]
+
+    def _enqueue(obj: object, depth: int) -> None:
+        if depth > max_depth:
+            return
+        oid = id(obj)
+        if oid in visited:
+            return
+        visited.add(oid)
+        queue.append((obj, depth))
+
+    while queue:
+        obj, depth = queue.pop(0)
+        if RewardFunction and isinstance(obj, RewardFunction):
+            return obj
+
+        rf = getattr(obj, "reward_function", None)
+        if RewardFunction and isinstance(rf, RewardFunction):
+            return rf
+
+        # Common gymnasium nesting
+        for attr in ("unwrapped", "env", "_env"):
+            child = getattr(obj, attr, None)
+            if child is not None and child is not obj:
+                _enqueue(child, depth + 1)
+
+        # Common rtgym naming (best effort)
+        for attr in ("interface", "real_time_interface", "rt_interface"):
+            child = getattr(obj, attr, None)
+            if child is not None and child is not obj:
+                _enqueue(child, depth + 1)
+
+    return None
+
+
+def _maybe_log_reward_on_rollout_truncation(env: object, info: object) -> None:
+    """Flush worker reward/W&B episode logs when rollout forces truncation."""
+    if not isinstance(info, dict) or not info.get("env_truncated"):
+        return
+    rf = _find_nested_reward_function(env)
+    if rf is None:
+        return
+    if getattr(rf, "_logged_run_this_episode", False):
+        return
+    end_of_track = bool(info.get("end_of_track", False))
+    try:
+        rf.log_model_run(terminated=False, end_of_track=end_of_track, truncated=True)
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("Worker reward logging on truncation failed: {}", exc)
+
+
 def _start_relay_windows_tcp(
     port: int,
     password: str,
@@ -981,6 +1046,10 @@ class RolloutWorker:
         if collect_samples:
             if last_step and not terminated:
                 truncated = True
+                if isinstance(info, dict):
+                    # Signal interfaces that implement RewardFunction logging (LIDAR/vision/etc.)
+                    # so worker-side wandb metrics flush on forced episode truncation.
+                    info["env_truncated"] = True
             if self.crc_debug:
                 self.debug_ts_cpt += 1
                 self.debug_ts_res_cpt += 1
@@ -993,6 +1062,8 @@ class RolloutWorker:
             else:
                 sample = act, new_obs, rew, terminated, truncated, info
             self.buffer.append_sample(sample)
+        if collect_samples and truncated:
+            _maybe_log_reward_on_rollout_truncation(self.env, info)
         return new_obs, rew, terminated, truncated, info
 
     def collect_train_episode(self, max_samples=None):

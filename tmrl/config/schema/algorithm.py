@@ -438,6 +438,47 @@ class AlgorithmConfig(BaseModel):
         default=True,
         description="Log IQN target/TD distribution diagnostics to wandb.",
     )
+    iqn_sort_quantiles: bool = Field(
+        default=False,
+        description=(
+            "Sort sampled IQN quantile fractions before forward pass for more stable "
+            "monotonic regularization and diagnostics."
+        ),
+    )
+    iqn_monotonicity_regularization: bool = Field(
+        default=False,
+        description=(
+            "Enable an auxiliary penalty that discourages quantile crossing "
+            "(q_{i+1} < q_i) in IQN outputs."
+        ),
+    )
+    iqn_monotonicity_lambda: Annotated[float, Field(ge=0.0)] = Field(
+        default=0.01,
+        description="Weight of the IQN quantile-crossing monotonicity regularization term.",
+    )
+    iqn_munchausen_enabled: bool = Field(
+        default=False,
+        description=(
+            "Enable Munchausen RL reward shaping in IQN targets "
+            "(adds clipped log-policy term to rewards)."
+        ),
+    )
+    iqn_munchausen_alpha: Annotated[float, Field(ge=0.0)] = Field(
+        default=0.9,
+        description="Munchausen reward-shaping coefficient alpha_m.",
+    )
+    iqn_munchausen_tau: Annotated[float, Field(gt=0.0)] = Field(
+        default=0.03,
+        description="Temperature tau used to build softmax policy for Munchausen term.",
+    )
+    iqn_munchausen_clip_min: float = Field(
+        default=-1.0,
+        description="Lower clipping bound for log-policy term in Munchausen shaping.",
+    )
+    iqn_munchausen_clip_max: float = Field(
+        default=0.0,
+        description="Upper clipping bound for log-policy term in Munchausen shaping.",
+    )
     iqn_epsilon_cosine_initial_amplitude: Annotated[float, Field(ge=0.0, le=1.0)] = Field(
         default=0.1,
         description="Starting relative amplitude for cosine-shaped epsilon schedules.",
@@ -469,6 +510,15 @@ class AlgorithmConfig(BaseModel):
             BRAKE_TAP_TABLE_N_BRAKE,
             BRAKE_TAP_TABLE_N_GAS,
         )
+
+        if self.iqn_munchausen_clip_min > self.iqn_munchausen_clip_max:
+            raise ValueError(
+                "iqn_munchausen_clip_min must be <= iqn_munchausen_clip_max"
+            )
+        if self.iqn_monotonicity_regularization and not self.iqn_sort_quantiles:
+            raise ValueError(
+                "iqn_monotonicity_regularization requires iqn_sort_quantiles=true"
+            )
 
         expected = self.iqn_n_steer_bins * BRAKE_TAP_TABLE_N_GAS * BRAKE_TAP_TABLE_N_BRAKE
         if self.iqn_n_actions != expected:

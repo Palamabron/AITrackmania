@@ -294,9 +294,18 @@ class TM2020InterfaceBoundary(TM2020InterfaceLidar):
             np.array([fc_scalar], dtype=np.float32),
         ]
         self.cooldown_control()
+        assert self.reward_function is not None
+        self.reward_function.log_model_run(terminated=bool(terminated), end_of_track=end_of_track)
         return obs, np.float32(reward), terminated, info
 
     def reset(self, seed=None, options=None):
+        rf = getattr(self, "reward_function", None)
+        if (
+            rf is not None
+            and getattr(rf, "step_counter", 0) > 0
+            and not getattr(rf, "_logged_run_this_episode", False)
+        ):
+            rf.log_model_run(terminated=True, end_of_track=False, truncated=True)
         self.reset_common()
         data = self.grab_data()
         self._bd_prev_speed_kmh = 0.0
@@ -404,6 +413,13 @@ class TM2020InterfaceBoundaryImages(TM2020InterfaceLidarProgress):
         return speed, data, track_information, img
 
     def reset(self, seed=None, options=None):
+        rf = getattr(self, "reward_function", None)
+        if (
+            rf is not None
+            and getattr(rf, "step_counter", 0) > 0
+            and not getattr(rf, "_logged_run_this_episode", False)
+        ):
+            rf.log_model_run(terminated=True, end_of_track=False, truncated=True)
         self.reset_common()
         speed, _data, track_information, img = self._grab_speed_track_and_image()
         self.image_hist = [img for _ in range(self.img_hist_len)]
@@ -445,6 +461,8 @@ class TM2020InterfaceBoundaryImages(TM2020InterfaceLidarProgress):
         if end_of_track:
             rew += self.finish_reward
             terminated = True
+
+        self.reward_function.log_model_run(terminated=bool(terminated), end_of_track=end_of_track)
         return obs, np.float32(rew), terminated, info
 
     def get_observation_space(self):
