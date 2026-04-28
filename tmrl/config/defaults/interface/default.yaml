@@ -2,7 +2,7 @@
 # Base interface parameters shared across all interface presets.
 interface:
   name: lidar_progress
-  _target_: tmrl.custom.interfaces.TM2020InterfaceLidarProgress.TM2020InterfaceLidarProgress
+  _target_: tmrl.custom.interfaces.lidar.TM2020InterfaceLidarProgress
   img_hist_len: 4
   gamepad: true
   grayscale: true

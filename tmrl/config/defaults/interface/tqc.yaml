@@ -5,7 +5,7 @@ defaults:
 
 interface:
   name: tqc
-  _target_: tmrl.custom.interfaces.TM2020InterfaceTQC.TM2020InterfaceTQC
+  _target_: tmrl.custom.interfaces.car_state.TM2020RLInterface
   img_hist_len: 1
   gamepad: false
   grayscale: false

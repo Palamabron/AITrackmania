@@ -137,7 +137,7 @@ class TM2020Interface(TrackMania2020InterfaceBase):
             and getattr(rf, "step_counter", 0) > 0
             and not getattr(rf, "_logged_run_this_episode", False)
         ):
-            rf.log_model_run(terminated=True, end_of_track=False, truncated=True)
+            rf.log_model_run(terminated=False, end_of_track=False, truncated=True)
         self.reset_common()
         assert self.reward_function is not None
         data, img = self.grab_data_and_img()

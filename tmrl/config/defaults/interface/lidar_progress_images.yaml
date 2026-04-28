@@ -5,7 +5,7 @@ defaults:
 
 interface:
   name: lidar_progress_images
-  _target_: tmrl.custom.interfaces.TM2020InterfaceLidarImages.TM2020InterfaceLidarProgressImages
+  _target_: tmrl.custom.interfaces.lidar.TM2020InterfaceLidarProgressImages
   img_hist_len: 4
   gamepad: false
   grayscale: true

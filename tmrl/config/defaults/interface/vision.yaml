@@ -5,4 +5,4 @@ defaults:
 
 interface:
   name: vision
-  _target_: tmrl.custom.interfaces.TM2020Interface.TM2020Interface
+  _target_: tmrl.custom.interfaces.vision.TM2020Interface
