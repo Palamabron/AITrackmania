@@ -10,10 +10,7 @@ algorithm:
   mixed_precision_dtype: bfloat16
   n_steps: 3
   gamma: 0.99
-  learn_entropy_coef: true
-  lr_actor: 5.0e-5
-  lr_critic: 5.0e-5
-  lr_entropy: 3.0e-5
+  # IQN-specific parameters (removed unused SAC parameters)
   iqn_lr: 1.0e-4
   iqn_epsilon_schedule_mode: linear
   iqn_epsilon_start: 1.0
@@ -40,9 +37,6 @@ algorithm:
   iqn_munchausen_clip_max: 0.0
   quantiles_number: 25
   top_quantiles_to_drop: 3
-  # Scale shaped rewards before Bellman backup so TD targets use backup_clip_range meaningfully
-  # (raw TM returns can be 10²–10³ per episode when normalize_scale=1).
-  reward_normalize_scale: 100.0
 
 # Stronger track-channel dynamic range for TQCGRAB* + local-frame geometry (GNN/Conv branch).
 # LIDAR interfaces ignore this field (different preprocessor).

@@ -97,8 +97,14 @@ Repository = "https://github.com/trackmania-rl/tmrl"
 index-strategy = "unsafe-best-match"
 
 [tool.uv.sources]
-torch = { index = "pytorch-cuda" }
-torchvision = { index = "pytorch-cuda" }
+torch = [
+    { index = "pytorch-cuda", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { index = "pypi", marker = "sys_platform == 'darwin'" },
+]
+torchvision = [
+    { index = "pytorch-cuda", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { index = "pypi", marker = "sys_platform == 'darwin'" },
+]
 # Force from PyPI; cu124 index only has cp314 wheels for markupsafe
 markupsafe = { index = "pypi" }
 

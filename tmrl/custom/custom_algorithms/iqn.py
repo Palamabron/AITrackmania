@@ -58,9 +58,25 @@ def epsilon_cosine_schedule(
 ) -> float:
     """Epsilon schedule for a given step (for plotting/debugging).
 
-    mode:
-      - "cosine": damped sinusoid (full wave per cycle, peak->trough->peak), no spikes.
-      - "ramp": original half-cosine (odwrócone ReLU): peak->trough per cycle, then floor.
+    Args:
+        step: Current training step.
+        epsilon_start: Initial epsilon value.
+        epsilon_end: Minimum epsilon floor value.
+        t0: Initial cycle length.
+        tmult: Cycle length multiplier (>1 for expanding cycles).
+        decay: Amplitude decay factor per cycle.
+        initial_amplitude: Initial oscillation amplitude.
+        floor_frac: Fraction of cycle spent at floor (0-1).
+        floor_steps: Explicit floor duration in steps (overrides floor_frac if >0).
+        mode: Schedule mode - "cosine" or "ramp".
+
+    Returns:
+        Epsilon value for the given step.
+
+    Note:
+        Mode options:
+        - "cosine": Damped sinusoid (full wave per cycle, peak->trough->peak).
+        - "ramp": Half-cosine (peak->trough per cycle, then floor).
     """
     import math
 
@@ -92,12 +108,9 @@ def epsilon_cosine_schedule(
         return min_eps
 
     if mode == "ramp":
-        # Half-cosine (peak -> trough); amplitude scales as
-        # (epsilon_start - epsilon_end) * decay**cycle
         current_amplitude = max(0.0, epsilon_start - min_eps) * (decay**cycle_num)
         angle = math.pi * (step_in_cycle / cosine_length)
     else:
-        # cosine: pełna sinusoida (peak->trough->peak), init_amplitude * decay^cycle
         current_amplitude = max(0.0, initial_amplitude) * (decay**cycle_num)
         phase = step_in_cycle / cosine_length
         angle = 2.0 * math.pi * phase
@@ -111,7 +124,17 @@ def epsilon_linear_schedule(
     epsilon_end: float = 0.005,
     decay_steps: float = 500000.0,
 ) -> float:
-    """Linear decay from epsilon_start to epsilon_end (floor) over decay_steps."""
+    """Linear decay from epsilon_start to epsilon_end (floor) over decay_steps.
+
+    Args:
+        step: Current training step.
+        epsilon_start: Initial epsilon value.
+        epsilon_end: Final epsilon value (floor).
+        decay_steps: Number of steps for full decay.
+
+    Returns:
+        Epsilon value for the given step.
+    """
     if step <= 0.0:
         return epsilon_start
     if step >= decay_steps:
@@ -126,7 +149,17 @@ def epsilon_cosine_anneal_schedule(
     epsilon_end: float = 0.005,
     decay_steps: float = 500000.0,
 ) -> float:
-    """Cosine annealing (single period) from epsilon_start to epsilon_end over decay_steps."""
+    """Cosine annealing (single period) from epsilon_start to epsilon_end over decay_steps.
+
+    Args:
+        step: Current training step.
+        epsilon_start: Initial epsilon value.
+        epsilon_end: Final epsilon value.
+        decay_steps: Number of steps for full annealing.
+
+    Returns:
+        Epsilon value for the given step.
+    """
     import math
 
     if step <= 0.0:
@@ -134,7 +167,6 @@ def epsilon_cosine_anneal_schedule(
     if step >= decay_steps:
         return epsilon_end
     frac = min(1.0, step / decay_steps)
-    # 1 + cos(pi * frac): 2 -> 0 as frac 0 -> 1
     return epsilon_end + 0.5 * (epsilon_start - epsilon_end) * (1.0 + math.cos(math.pi * frac))
 
 
@@ -143,6 +175,7 @@ def _quantile_huber_loss(
     target_quantiles: torch.Tensor,
     tau: torch.Tensor,
     kappa: float = 1.0,
+    is_weights: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """Quantile Huber loss for IQN.
 
@@ -151,6 +184,7 @@ def _quantile_huber_loss(
         target_quantiles:  (batch, N_tau_prime).
         tau: (batch, N_tau) quantile fractions for current.
         kappa: Huber threshold.
+        is_weights: (batch,) importance sampling weights for PER (optional).
 
     Returns:
         Scalar loss.
@@ -173,12 +207,25 @@ def _quantile_huber_loss(
 
     tau_expanded = rearrange(tau, "b n -> b n 1")
     weight = torch.abs(tau_expanded - (delta.detach() < 0).float())
-    loss = (weight * huber).sum(dim=-1).mean(dim=-1)
-    return loss.mean()
+    per_sample_loss = (weight * huber).sum(dim=-1).mean(dim=-1)
+
+    if is_weights is not None:
+        # IS weights are already normalized in training_offline.py, so apply directly
+        per_sample_loss = per_sample_loss * is_weights.squeeze()
+
+    return per_sample_loss.mean()
 
 
 def _signed_value_rescale(x: torch.Tensor, eps: float) -> torch.Tensor:
-    """Signed value transform used to tame large bootstrap targets."""
+    """Signed value transform used to tame large bootstrap targets.
+
+    Args:
+        x: Input tensor to rescale.
+        eps: Small epsilon for linear component.
+
+    Returns:
+        Rescaled tensor with compressed large values.
+    """
     abs_x = x.abs()
     return torch.sign(x) * (torch.sqrt(abs_x + 1.0) - 1.0) + eps * x
 
@@ -190,7 +237,18 @@ def _munchausen_bonus_from_q(
     clip_min: float,
     clip_max: float,
 ) -> torch.Tensor:
-    """Compute clipped Munchausen log-policy bonus for selected actions."""
+    """Compute clipped Munchausen log-policy bonus for selected actions.
+
+    Args:
+        q_values: Q-values for all actions (batch, n_actions).
+        actions: Selected actions (batch,).
+        tau: Temperature parameter for policy extraction.
+        clip_min: Minimum clip value for log-policy.
+        clip_max: Maximum clip value for log-policy.
+
+    Returns:
+        Clipped log-policy bonus for selected actions (batch,).
+    """
     logits = q_values / tau
     log_policy = torch.log_softmax(logits, dim=-1)
     log_pi_a = log_policy.gather(1, actions.view(-1, 1)).squeeze(1)
@@ -207,6 +265,20 @@ class IQNAgent(TrainingAgent):
 
     All hyperparameters are required constructor arguments — values must be
     supplied explicitly by the config pipeline (no hidden numeric defaults).
+
+    Critical Implementation Notes:
+        - **Value rescaling**: NEVER applied to quantiles during training (would distort
+          distributional relationships). Quantile regression must occur in original value space.
+        - **Munchausen bonus**: Added to immediate rewards BEFORE n-step return computation
+          (per Vieillard et al. 2020). Uses online network for current policy.
+        - **PER IS weights**: Expected to be pre-normalized by max(w) in the training loop
+          before being passed to this agent's train() method.
+        - **EDER filtering**: Applied before training in train() method. PER weights are
+          filtered to match EDER-selected samples to maintain consistency.
+        - **SimbaV2 projection**: Weights are projected BEFORE target update to ensure
+          target network receives valid projected weights.
+        - **NaN/Inf detection**: Loss is validated before backprop. If detected, update
+          is skipped and logged to prevent gradient corruption.
     """
 
     observation_space: Any
@@ -269,7 +341,6 @@ class IQNAgent(TrainingAgent):
 
     # Previously hidden globals — now explicit
     iqn_n_steer_bins: int
-    reward_normalize_scale: float
     backup_clip_range: float
 
     # Mixed precision
@@ -336,6 +407,7 @@ class IQNAgent(TrainingAgent):
         self._training_step = 0
         self._epsilon = self.epsilon_start
         self._grad_stabilizer = GradientStabilizer(ema_decay=0.995)
+        self._eder_skip_count = 0
         logger.info(
             "IQNAgent: n_actions={}, dueling={}, double={}, n_steps={}, gamma={:.3f}, "
             "eps mode={}, decay_steps={}, t0={}, tmult={}, decay={}, init_amp={}, "
@@ -376,9 +448,17 @@ class IQNAgent(TrainingAgent):
         )
 
     def _update_epsilon(self) -> float:
-        """Epsilon: cosine | ramp | cosine_anneal | linear.
+        """Update and return current epsilon value based on configured schedule.
 
-        cosine_anneal: single period with decay to floor. linear uses epsilon_end as floor.
+        Returns:
+            Current epsilon value for exploration.
+
+        Note:
+            Schedule modes:
+            - cosine: Damped oscillation with expanding cycles
+            - ramp: Half-cosine decay with expanding cycles
+            - cosine_anneal: Single-period cosine decay to floor
+            - linear: Linear decay to epsilon_end
         """
         min_eps = self.epsilon_end
         t = float(self._training_step)
@@ -425,9 +505,12 @@ class IQNAgent(TrainingAgent):
         return self._epsilon
 
     def get_actor(self) -> DQNActor:
-        """Return actor module with current Q-network weights + epsilon."""
+        """Return actor module with current Q-network weights + epsilon.
+
+        Returns:
+            DQNActor wrapper with synchronized weights and current epsilon.
+        """
         actor = self.model_nograd
-        # Build a DQNActor wrapper for the worker
         wrapper = DQNActor(
             self.observation_space,
             self.action_space,
@@ -469,12 +552,27 @@ class IQNAgent(TrainingAgent):
 
         Args:
             batch: Tuple of ``(obs, action, reward, next_obs, done, ...)``.
+                   May include PER importance weights in batch[6]['is_weight'].
             epoch: Current epoch (unused, for API compat).
             batch_index: Current batch index (unused).
             iters: Total iterations (unused).
 
         Returns:
             Dict of scalar metrics for logging.
+
+        Note:
+            Critical implementation details:
+            - EDER filtering: If enabled, filters batch for diversity before training.
+              PER importance weights are filtered to match EDER-selected samples.
+            - Munchausen RL: Bonus is added to immediate rewards BEFORE n-step computation,
+              as per Vieillard et al. 2020. Uses online network for current policy.
+            - Value rescaling: NOT applied to quantiles during training to preserve
+              distributional relationships. Quantile regression must occur in original
+              value space. Rescaling would distort quantile relationships.
+            - NaN/Inf detection: Validates loss before backprop to prevent gradient
+              corruption. Skips update if NaN/Inf detected.
+            - SimbaV2 projection: Weights are projected BEFORE target update to ensure
+              target receives valid projected weights.
         """
         from einops import rearrange, repeat
 
@@ -482,15 +580,78 @@ class IQNAgent(TrainingAgent):
         eps = self._update_epsilon()
 
         o, a, r, o2, d = batch[0], batch[1], batch[2], batch[3], batch[4]
+        # Convert batch to list for potential mutation (EDER + PER compatibility)
+        batch = list(batch)  # type: ignore[assignment]
+
+        device = self.device or "cpu"
+        batch_size = r.shape[0]
+
+        if self.eder_oversample_ratio >= 2:
+            from tmrl.custom.utils.eder import greedy_kdpp_filter
+
+            has_invalid = False
+            for obs_tensor in o:
+                if torch.isnan(obs_tensor).any() or torch.isinf(obs_tensor).any():
+                    has_invalid = True
+                    break
+
+            if has_invalid:
+                self._eder_skip_count += 1
+                if self._eder_skip_count % 10 == 1 and self._eder_skip_count > 1:
+                    logger.error(
+                        "EDER filtering skipped {} times due to NaN/Inf in observations. "
+                        "Investigate data pipeline or preprocessor for systematic issues.",
+                        self._eder_skip_count,
+                    )
+                else:
+                    logger.warning(
+                        "NaN/Inf detected in observations before EDER filtering, "
+                        "skipping EDER for this batch (skip count: {})",
+                        self._eder_skip_count,
+                    )
+            else:
+                with torch.no_grad():
+                    tau_dummy = torch.full((batch_size, 1), 0.5, device=o[0].device)
+                    backbone = getattr(self.model, "backbone", self.model)
+                    feat = backbone(o, tau_dummy).squeeze(1)
+
+                    if torch.isnan(feat).any() or torch.isinf(feat).any():
+                        self._eder_skip_count += 1
+                        if self._eder_skip_count % 10 == 1 and self._eder_skip_count > 1:
+                            logger.error(
+                                "EDER filtering skipped {} times due to NaN/Inf in features. "
+                                "Investigate backbone network or feature extraction.",
+                                self._eder_skip_count,
+                            )
+                        else:
+                            logger.warning(
+                                "NaN/Inf in EDER features, skipping EDER filtering for this batch "
+                                "(skip count: {})",
+                                self._eder_skip_count,
+                            )
+                    else:
+                        target_k = batch_size // self.eder_oversample_ratio
+                        keep = greedy_kdpp_filter(feat, target_k)
+                        o = tuple(t[keep] for t in o)
+                        o2 = tuple(t[keep] for t in o2)
+                        a = a[keep]
+                        r = r[keep]
+                        d = d[keep]
+                        batch_size = target_k
+
+                        if (
+                            len(batch) >= 7
+                            and isinstance(batch[6], dict)
+                            and "is_weight" in batch[6]
+                        ):
+                            batch[6]["is_weight"] = batch[6]["is_weight"][keep]
+
         o = self._sanitize_obs(o)
         o2 = self._sanitize_obs(o2)
         a = self._sanitize_tensor(a)
         r = self._sanitize_tensor(r)
         d = self._sanitize_tensor(d)
 
-        device = self.device or "cpu"
-        batch_size = r.shape[0]
-        # Replay may hold continuous [gas, brake, steer] (e.g. player runs); map to discrete.
         if a.dim() >= 2 and a.shape[-1] == 3:
             from tmrl.custom.tm.utils.discrete_control import (
                 build_brake_tap_action_table,
@@ -503,28 +664,6 @@ class IQNAgent(TrainingAgent):
             a = torch.from_numpy(idx).to(device=a.device, dtype=torch.long)
         actions = a.long().squeeze(-1)
 
-        if self.eder_oversample_ratio >= 2:
-            from tmrl.custom.utils.eder import greedy_kdpp_filter
-
-            with torch.no_grad():
-                tau_dummy = torch.full((batch_size, 1), 0.5, device=o[0].device)
-                backbone = getattr(self.model, "backbone", self.model)
-                feat = backbone(o, tau_dummy).squeeze(1)
-            target_k = batch_size // self.eder_oversample_ratio
-            keep = greedy_kdpp_filter(feat, target_k)
-            o = tuple(t[keep] for t in o)
-            o2 = tuple(t[keep] for t in o2)
-            a = a[keep]
-            r = r[keep]
-            d = d[keep]
-            actions = actions[keep]
-            batch_size = target_k
-
-        reward_scale = float(self.reward_normalize_scale)
-        if reward_scale != 1.0 and reward_scale > 0:
-            r = r / reward_scale
-
-        munchausen_bonus = torch.zeros(batch_size, device=device, dtype=torch.float32)
         if self.munchausen_enabled:
             with torch.no_grad():
                 q_curr = self.model.q_values(o, n_quantiles=self.n_quantiles_eval)
@@ -535,6 +674,9 @@ class IQNAgent(TrainingAgent):
                     clip_min=float(self.munchausen_clip_min),
                     clip_max=float(self.munchausen_clip_max),
                 )
+                r = r + float(self.munchausen_alpha) * munchausen_bonus.unsqueeze(-1)
+        else:
+            munchausen_bonus = torch.zeros(batch_size, device=device)
 
         if self.n_steps > 1:
             n_step_return, bootstrap_mask = _compute_n_step_return_and_bootstrap_mask(
@@ -547,9 +689,6 @@ class IQNAgent(TrainingAgent):
             n_step_return = r.squeeze(-1)
             bootstrap_mask = 1.0 - d.squeeze(-1)
             gamma_n = self.gamma
-
-        if self.munchausen_enabled:
-            n_step_return = n_step_return + float(self.munchausen_alpha) * munchausen_bonus
 
         def autocast_ctx():
             return autocast_context(self.use_mixed_precision, self.amp_dtype)
@@ -593,26 +732,69 @@ class IQNAgent(TrainingAgent):
 
         current_for_loss = current_q
         target_for_loss = target
-        if self.use_value_rescaling:
-            current_for_loss = _signed_value_rescale(current_for_loss, self.value_rescaling_eps)
-            target_for_loss = _signed_value_rescale(target_for_loss, self.value_rescaling_eps)
+
+        is_weights = None
+        if len(batch) >= 7 and isinstance(batch[6], dict):
+            is_weights = batch[6].get("is_weight", None)
+            if is_weights is not None:
+                if not isinstance(is_weights, torch.Tensor):
+                    is_weights = torch.as_tensor(is_weights, device=device, dtype=torch.float32)
+                else:
+                    is_weights = is_weights.to(device=device, dtype=torch.float32)
 
         loss_iqn = _quantile_huber_loss(
-            current_for_loss, target_for_loss, tau, kappa=self.huber_kappa
+            current_for_loss, target_for_loss, tau, kappa=self.huber_kappa, is_weights=is_weights
         )
+
+        if torch.isnan(loss_iqn).any() or torch.isinf(loss_iqn).any():
+            logger.error(
+                "NaN/Inf detected in IQN loss! current_q range=[{:.2f}, {:.2f}], "
+                "target range=[{:.2f}, {:.2f}], skipping update",
+                current_q.min().item(),
+                current_q.max().item(),
+                target.min().item(),
+                target.max().item(),
+            )
+            self.optimizer.zero_grad()
+            if self.use_mixed_precision:
+                self.grad_scaler.update()
+            return {
+                "loss/iqn_loss": 0.0,
+                "loss/total_loss": 0.0,
+                "exploration/epsilon": self._epsilon,
+                "debug/nan_detected": 1.0,
+            }
+
         if self.n_quantiles_train > 1:
             dq = current_q[:, 1:] - current_q[:, :-1]
-            crossing_magnitude = torch.relu(-dq).mean()
-            crossing_rate = (dq < 0).float().mean()
+            if self.monotonicity_regularization:
+                monotonic_penalty = torch.relu(-dq).mean()
+                crossing_magnitude = monotonic_penalty.detach()
+                crossing_rate = (dq.detach() < 0).float().mean()
+            else:
+                monotonic_penalty = torch.zeros((), device=current_q.device, dtype=current_q.dtype)
+                with torch.no_grad():
+                    crossing_magnitude = torch.relu(-dq).mean()
+                    crossing_rate = (dq < 0).float().mean()
         else:
+            monotonic_penalty = torch.zeros((), device=current_q.device, dtype=current_q.dtype)
             crossing_magnitude = torch.zeros((), device=current_q.device, dtype=current_q.dtype)
             crossing_rate = torch.zeros((), device=current_q.device, dtype=current_q.dtype)
-        monotonic_penalty = (
-            crossing_magnitude
-            if self.monotonicity_regularization and self.n_quantiles_train > 1
-            else torch.zeros((), device=current_q.device, dtype=current_q.dtype)
-        )
+
         loss = loss_iqn + float(self.monotonicity_lambda) * monotonic_penalty
+
+        if torch.isnan(loss).any() or torch.isinf(loss).any():
+            logger.error("NaN/Inf in total loss after monotonicity penalty, skipping update")
+            self.optimizer.zero_grad()
+            if self.use_mixed_precision:
+                self.grad_scaler.update()
+            return {
+                "loss/iqn_loss": _tensor_to_scalar(loss_iqn),
+                "loss/total_loss": 0.0,
+                "loss/monotonicity_penalty": _tensor_to_scalar(monotonic_penalty),
+                "exploration/epsilon": self._epsilon,
+                "debug/nan_detected": 1.0,
+            }
 
         self.optimizer.zero_grad()
         if self.use_mixed_precision:
@@ -647,6 +829,7 @@ class IQNAgent(TrainingAgent):
             self.model_target.load_state_dict(self.model.state_dict())
             for p in self.model_target.parameters():
                 p.requires_grad = False
+            logger.debug(" Hard target update at step {}", self._training_step)
 
         iqn_loss_scalar = _tensor_to_scalar(loss_iqn)
         ret = {
@@ -656,8 +839,15 @@ class IQNAgent(TrainingAgent):
             "exploration/epsilon": eps,
             "q/mean_q": _tensor_to_scalar(current_q.mean()),
             "q/max_q": _tensor_to_scalar(current_q.max()),
+            "q/min_q": _tensor_to_scalar(current_q.min()),
+            "q/std_q": _tensor_to_scalar(current_q.std()),
             "debug/quantile_crossing_rate": _tensor_to_scalar(crossing_rate),
             "debug/quantile_crossing_magnitude": _tensor_to_scalar(crossing_magnitude),
+            "debug/target_mean": _tensor_to_scalar(target.mean()),
+            "debug/target_max": _tensor_to_scalar(target.max()),
+            "debug/target_min": _tensor_to_scalar(target.min()),
+            "debug/reward_mean": _tensor_to_scalar(r.mean()),
+            "debug/reward_max": _tensor_to_scalar(r.max()),
             "debug/munchausen_bonus_mean": _tensor_to_scalar(munchausen_bonus.mean()),
             "debug/grad_norm": grad_norm,
             "debug/grad_ema_norm": self._grad_stabilizer.ema_norm,

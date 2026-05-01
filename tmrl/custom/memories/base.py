@@ -97,13 +97,20 @@ class GenericTorchMemory(TorchMemory):
         """Get a single transition from the memory."""
         field = GenericField
 
-        max_retries = self.__len__()
-        for _ in range(max_retries):
+        # Bounded retries to avoid excessive loops on large buffers
+        max_retries = min(100, max(10, self.__len__()))
+        for attempt in range(max_retries):
             if not self.data[field.DONE][item]:
                 break
             item = np.random.randint(0, self.__len__() - 1)
         else:
-            raise RuntimeError("All transitions in memory are terminal (done=True).")
+            # Provide detailed error message for debugging
+            done_count = sum(self.data[field.DONE])
+            raise RuntimeError(
+                f"Failed to sample non-terminal transition after {max_retries} attempts. "
+                f"Buffer has {done_count}/{self.__len__()} done=True transitions. "
+                f"This suggests a data quality issue or environment that always terminates immediately."
+            )
 
         idx_last = item
         idx_now = item + 1
@@ -123,7 +130,8 @@ class GenericTorchMemory(TorchMemory):
 class MemoryTM(TorchMemory):
     """Base class for TrackMania replay memories with temporal structure."""
 
-    #: Index into ``self.data`` for per-step ``info`` dicts (subclasses must set if demo mixing applies).
+    #: Index into ``self.data`` for per-step ``info`` dicts
+    #: (subclasses must set if demo mixing applies).
     info_field_index: int | None = None
 
     def __init__(
@@ -245,9 +253,7 @@ class MemoryTM(TorchMemory):
                 replace=len(demo_items) < need,
             )
             result[replace_positions] = replacements
-            demo_positions = [
-                pos for pos, idx in enumerate(result) if self._item_is_demo(int(idx))
-            ]
+            demo_positions = [pos for pos, idx in enumerate(result) if self._item_is_demo(int(idx))]
 
         if len(demo_positions) > max_demo and non_demo_items:
             excess = len(demo_positions) - max_demo

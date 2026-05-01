@@ -63,7 +63,7 @@ def make_tqcgrab_obs_preprocessor(track_coords_divisor: float):
     coordinates may saturate at ``±1``.
 
     Args:
-        track_coords_divisor: Positive scale (typically 40–100; legacy default ``100``).
+        track_coords_divisor: Positive scale (typically 40-100; legacy default ``100``).
     """
 
     divisor = float(track_coords_divisor)

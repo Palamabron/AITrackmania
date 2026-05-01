@@ -1,14 +1,14 @@
 .PHONY: fmt lint types check test tests install-dev server trainer worker record-episode
 
 fmt:
-	uv run ruff format .
-	uv run ruff check --fix .
+	.venv/bin/ruff format .
+	.venv/bin/ruff check --fix .
 
 lint:
-	uv run ruff check .
+	.venv/bin/ruff check .
 
 types:
-	uv run mypy tmrl
+	.venv/bin/mypy tmrl
 
 check: lint types
 

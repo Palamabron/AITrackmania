@@ -270,7 +270,7 @@ class SimbaV2Backbone(nn.Module):
     def project_weights(self):
         self.input_proj.project_weights()
         for block in self.blocks:
-            block.project_weights()
+            block.project_weights()  # type: ignore[operator]
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         shift = torch.full((*x.shape[:-1], 1), self.c_shift, device=x.device, dtype=x.dtype)

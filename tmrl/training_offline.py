@@ -213,6 +213,22 @@ def _concat_batches(batches: list[Any]) -> Any:
     Each batch has the same structure as from memory.sample(): (obs, actions, rewards,
     next_obs, dones, ...) where obs/next_obs may be tuples of tensors. Used when
     BATCHES_PER_STEP > 1 to run multiple R2D2 batches through the model in one step.
+
+    Examples of structure mismatch that trigger errors:
+        - Worker A has USE_IMAGES=True (obs tuple length 3), Worker B has False (length 2)
+        - Corrupted network packet caused truncated observation tuple
+        - Mixed worker configurations with different TRACK_CURVATURE_OBS settings
+
+    Args:
+        batches: List of batch tuples from memory.sample(), all must have identical structure
+
+    Returns:
+        Single batch with all samples concatenated along dim 0
+
+    Raises:
+        ValueError: When batch structures don't match across samples (different top-level length)
+        RuntimeError: When tuple lengths differ (avoids silent data corruption). This indicates
+            incompatible worker configurations or corrupted data in the replay buffer.
     """
     if len(batches) == 1:
         return batches[0]
@@ -441,6 +457,9 @@ class TrainingOffline:
             True if a new agent instance was created, False otherwise.
         """
         observation_space = None
+        rebuild_reason = None
+        old_dim = None
+        new_dim = None
         if self._observation_space_from_env is not None:
             env_dim = _observation_dim(self._observation_space_from_env)
             # If we have a batch and its obs dim differs from env, use batch so we can train
@@ -493,6 +512,8 @@ class TrainingOffline:
                         # After invalidating replay, reset updates too; otherwise
                         # ratio stays huge and trainer can wait indefinitely.
                         self.total_updates = 0
+                rebuild_reason = "initial_build_from_env"
+                new_dim = env_dim
                 logger.info(
                     " Building agent from env observation_space (dim={}) "
                     "so trainer matches worker.",
@@ -513,6 +534,9 @@ class TrainingOffline:
                     current_dim,
                 )
             observation_space = batch_obs_space
+            rebuild_reason = "batch_mismatch"
+            old_dim = current_dim
+            new_dim = batch_dim
             logger.info(
                 " Building agent from batch (observation dim={}).",
                 batch_dim,
@@ -531,6 +555,8 @@ class TrainingOffline:
                 one_obs = arr.squeeze()
             observation_space = _observation_space_from_sample(one_obs)
             dim = _observation_dim(observation_space)
+            rebuild_reason = "initial_build_from_memory"
+            new_dim = dim
             logger.info(
                 " Building agent from memory (observation dim={}).",
                 dim,
@@ -559,6 +585,28 @@ class TrainingOffline:
             action_space=self._action_space,
             device=device,
         )
+
+        # Log rebuild details
+        if rebuild_reason:
+            logger.info(
+                " Agent rebuilt: reason={}, old_dim={}, new_dim={}, source={}",
+                rebuild_reason,
+                old_dim if old_dim is not None else "N/A",
+                new_dim,
+                "batch" if batch is not None else "env/memory",
+            )
+
+        # Validate agent was created successfully
+        agent_obs_dim = _observation_dim(self.agent.observation_space)
+        expected_dim = _observation_dim(observation_space)
+        if agent_obs_dim != expected_dim:
+            logger.error(
+                " Agent rebuild validation FAILED: created agent has obs_dim={}, "
+                "expected {}. This indicates a bug in agent initialization.",
+                agent_obs_dim,
+                expected_dim,
+            )
+
         return True
 
     def update_buffer(self, interface):
@@ -722,9 +770,9 @@ class TrainingOffline:
             batches = [self.memory.sample() for _ in range(n_per_step)]
             batch = _concat_batches(batches)
 
-            # --- FIX: Importance Sampling Weight Normalization ---
-            # If the batch contains IS weights (from PER), we MUST normalize by max(w)
-            # to prevent gradient spikes as per the Architectural Review.
+            # Importance Sampling Weight Normalization for PER:
+            # Normalize by max(w) to prevent gradient spikes. This is critical for
+            # stable training when using Prioritized Experience Replay.
             if len(batch) >= 7 and isinstance(batch[6], dict):
                 info = batch[6]
                 if "is_weight" in info:

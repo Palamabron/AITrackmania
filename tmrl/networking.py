@@ -75,9 +75,9 @@ def _find_nested_reward_function(root: object, *, max_depth: int = 6) -> object 
     try:
         from tmrl.custom.tm.utils.compute_reward import RewardFunction
     except Exception:  # pragma: no cover - import guard for exotic installs
-        RewardFunction = ()  # type: ignore[assignment]
+        RewardFunction = ()  # type: ignore[assignment,misc]  # noqa: N806
 
-    if RewardFunction and isinstance(root, RewardFunction):
+    if RewardFunction and isinstance(root, RewardFunction):  # type: ignore[truthy-function]
         return root
 
     visited: set[int] = set()
@@ -94,11 +94,11 @@ def _find_nested_reward_function(root: object, *, max_depth: int = 6) -> object 
 
     while queue:
         obj, depth = queue.pop(0)
-        if RewardFunction and isinstance(obj, RewardFunction):
+        if RewardFunction and isinstance(obj, RewardFunction):  # type: ignore[truthy-function]
             return obj
 
         rf = getattr(obj, "reward_function", None)
-        if RewardFunction and isinstance(rf, RewardFunction):
+        if RewardFunction and isinstance(rf, RewardFunction):  # type: ignore[truthy-function]
             return rf
 
         # Common gymnasium nesting
@@ -112,6 +112,14 @@ def _find_nested_reward_function(root: object, *, max_depth: int = 6) -> object 
             child = getattr(obj, attr, None)
             if child is not None and child is not obj:
                 _enqueue(child, depth + 1)
+
+    # Warn if we traversed many objects without finding reward function
+    if len(visited) > 50:
+        logger.debug(
+            "Reward function lookup visited {} objects before returning None. "
+            "Check env wrapper stack for excessive nesting.",
+            len(visited),
+        )
 
     return None
 
@@ -127,7 +135,7 @@ def _maybe_log_reward_on_rollout_truncation(env: object, info: object) -> None:
         return
     end_of_track = bool(info.get("end_of_track", False))
     try:
-        rf.log_model_run(terminated=False, end_of_track=end_of_track, truncated=True)
+        rf.log_model_run(terminated=False, end_of_track=end_of_track, truncated=True)  # type: ignore[attr-defined]
     except Exception as exc:  # pragma: no cover - defensive
         logger.warning("Worker reward logging on truncation failed: {}", exc)
 
@@ -242,8 +250,14 @@ class Buffer:
         with self._guarded():
             lenmem = len(self.memory)
             if lenmem > self.maxlen:
-                print_with_timestamp("buffer overflow. Discarding old samples.")
-                self.memory = self.memory[(lenmem - self.maxlen) :]
+                dropped = lenmem - self.maxlen
+                logger.warning(
+                    "Buffer overflow: discarding {} oldest samples (kept {} / max {})",
+                    dropped,
+                    self.maxlen,
+                    self.maxlen,
+                )
+                self.memory = self.memory[dropped:]
 
     def append_sample(self, sample):
         """Append a sample ``(act, new_obs, rew, terminated, truncated, info)`` to the buffer."""

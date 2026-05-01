@@ -358,10 +358,9 @@ class RewardFunction:
                 )
                 return True
 
-            if not _init_worker_wandb(0):
-                # One retry with a unique id; keeps training usable even if id collides in W&B.
-                if not _init_worker_wandb(1):
-                    self._use_wandb = False
+            # One retry with a unique id; keeps training usable even if id collides in W&B.
+            if not _init_worker_wandb(0) and not _init_worker_wandb(1):
+                self._use_wandb = False
 
     def get_n_next_checkpoints_xy(
         self, position: list[float] | np.ndarray, number_of_next_points: int
