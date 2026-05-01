@@ -21,6 +21,8 @@ from tmrl.registry import MEMORIES
 class MemoryTMLidar(MemoryTM):
     """Replay memory for TrackMania with LIDAR observations."""
 
+    info_field_index = TMLidarField.INFOS
+
     def get_transition(self, item: int):
         """Get a single transition with proper episode boundary handling."""
         f = TMLidarField
@@ -128,6 +130,8 @@ class MemoryTMLidar(MemoryTM):
 @MEMORIES.register("lidar_progress")
 class MemoryTMLidarProgress(MemoryTM):
     """Replay memory for TrackMania with LIDAR and progress observations."""
+
+    info_field_index = TMLidarProgressField.INFOS
 
     def get_transition(self, item: int):
         """Get a single transition with proper episode boundary handling."""
@@ -247,6 +251,8 @@ class MemoryTMLidarProgress(MemoryTM):
 @MEMORIES.register("lidar_progress_images")
 class MemoryTMLidarProgressImages(MemoryTM):
     """Replay memory for (speed, progress, lidar, images) observations."""
+
+    info_field_index = TMLidarProgressImagesField.INFOS
 
     def get_transition(self, item: int):
         """Get a single transition."""

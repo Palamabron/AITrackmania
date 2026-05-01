@@ -56,12 +56,12 @@ from tmrl.custom.models import (
     VanillaColorCNNActorCritic,
 )
 from tmrl.custom.tm.tm_preprocessors import (
+    make_tqcgrab_obs_preprocessor,
     obs_preprocessor_lidar_progress_images_act_in_obs,
     obs_preprocessor_mobilenet_act_in_obs,
     obs_preprocessor_tm_act_in_obs,
     obs_preprocessor_tm_lidar_act_in_obs,
     obs_preprocessor_tm_lidar_progress_act_in_obs,
-    obs_preprocessor_tqcgrab_act_in_obs,
 )
 from tmrl.envs import GenericGymEnv
 from tmrl.registry import ALGORITHMS, INTERFACES, MEMORIES, MODELS
@@ -447,7 +447,7 @@ def _pick_obs_preprocessor() -> Any:
         return obs_preprocessor_tm_lidar_act_in_obs
     if _USE_NON_LIDAR_IMAGE_STACK:
         return (
-            obs_preprocessor_tqcgrab_act_in_obs
+            make_tqcgrab_obs_preprocessor(float(M.environment.tqcgrab_track_coords_divisor))
             if cfg.USE_OBS_WORLD_TELEMETRY_LAYOUT
             else obs_preprocessor_mobilenet_act_in_obs
         )
@@ -495,6 +495,19 @@ _memory_kwargs: dict[str, Any] = {
 }
 
 _is_r2d2_memory = _mem_name.startswith("r2d2")
+_supports_demo_fraction = _is_r2d2_memory or _mem_name in {
+    "lidar",
+    "lidar_progress",
+    "lidar_progress_images",
+    "full",
+    "best",
+    "tm_base",
+}
+if _supports_demo_fraction:
+    _memory_kwargs.update(
+        demo_min_batch_fraction=float(cfg.DEMO_MIN_BATCH_FRACTION),
+        demo_max_batch_fraction=float(cfg.DEMO_MAX_BATCH_FRACTION),
+    )
 if _is_r2d2_memory:
     _memory_kwargs.update(
         rewards_index=19 if cfg.USE_IMAGES else 18,
@@ -507,8 +520,6 @@ if _is_r2d2_memory:
         r2d2_sequence_length=int(cfg.R2D2_SEQUENCE_LENGTH),
         player_runs_per_alpha=float(cfg.PLAYER_RUNS_PER_ALPHA),
         fog_decay_temperature=float(cfg.FOG_DECAY_TEMPERATURE),
-        demo_min_batch_fraction=float(cfg.DEMO_MIN_BATCH_FRACTION),
-        demo_max_batch_fraction=float(cfg.DEMO_MAX_BATCH_FRACTION),
     )
 
 MEMORY = partial(MEM, **_memory_kwargs)

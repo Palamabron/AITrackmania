@@ -40,3 +40,11 @@ algorithm:
   iqn_munchausen_clip_max: 0.0
   quantiles_number: 25
   top_quantiles_to_drop: 3
+  # Scale shaped rewards before Bellman backup so TD targets use backup_clip_range meaningfully
+  # (raw TM returns can be 10²–10³ per episode when normalize_scale=1).
+  reward_normalize_scale: 100.0
+
+# Stronger track-channel dynamic range for TQCGRAB* + local-frame geometry (GNN/Conv branch).
+# LIDAR interfaces ignore this field (different preprocessor).
+environment:
+  tqcgrab_track_coords_divisor: 50.0

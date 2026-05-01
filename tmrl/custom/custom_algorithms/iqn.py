@@ -299,9 +299,7 @@ class IQNAgent(TrainingAgent):
     def __post_init__(self) -> None:
         set_seed(self.seed)
         if self.monotonicity_regularization and not self.sort_quantiles:
-            raise ValueError(
-                "IQN monotonicity_regularization requires sort_quantiles=True."
-            )
+            raise ValueError("IQN monotonicity_regularization requires sort_quantiles=True.")
         device = self.device or ("cuda" if torch.cuda.is_available() else "cpu")
 
         self.model = IQNQNetwork(
@@ -560,7 +558,9 @@ class IQNAgent(TrainingAgent):
             tau = torch.rand(batch_size, self.n_quantiles_train, device=device)
             if self.sort_quantiles:
                 tau, _ = torch.sort(tau, dim=1)
-            current_quantiles, _ = self.model(o, tau=tau)
+            current_quantiles, _, dueling_head_stats = self.model.forward_with_head_stats(
+                o, tau=tau
+            )
             action_idx = repeat(actions, "b -> b n 1", n=self.n_quantiles_train)
             current_q = current_quantiles.gather(2, action_idx).squeeze(2)
 
@@ -597,7 +597,9 @@ class IQNAgent(TrainingAgent):
             current_for_loss = _signed_value_rescale(current_for_loss, self.value_rescaling_eps)
             target_for_loss = _signed_value_rescale(target_for_loss, self.value_rescaling_eps)
 
-        loss_iqn = _quantile_huber_loss(current_for_loss, target_for_loss, tau, kappa=self.huber_kappa)
+        loss_iqn = _quantile_huber_loss(
+            current_for_loss, target_for_loss, tau, kappa=self.huber_kappa
+        )
         if self.n_quantiles_train > 1:
             dq = current_q[:, 1:] - current_q[:, :-1]
             crossing_magnitude = torch.relu(-dq).mean()
@@ -661,6 +663,24 @@ class IQNAgent(TrainingAgent):
             "debug/grad_ema_norm": self._grad_stabilizer.ema_norm,
             "train/step": self._training_step,
         }
+        if dueling_head_stats is not None:
+            value = dueling_head_stats["value"]
+            advantage = dueling_head_stats["advantage"]
+            centered_advantage = dueling_head_stats["centered_advantage"]
+            adv_span = advantage.max(dim=-1).values - advantage.min(dim=-1).values
+            ret.update(
+                {
+                    "debug/dueling_value_mean": _tensor_to_scalar(value.mean()),
+                    "debug/dueling_value_std": _tensor_to_scalar(value.std(unbiased=False)),
+                    "debug/dueling_adv_mean": _tensor_to_scalar(advantage.mean()),
+                    "debug/dueling_adv_abs_mean": _tensor_to_scalar(advantage.abs().mean()),
+                    "debug/dueling_adv_std": _tensor_to_scalar(advantage.std(unbiased=False)),
+                    "debug/dueling_centered_adv_abs_mean": _tensor_to_scalar(
+                        centered_advantage.abs().mean()
+                    ),
+                    "debug/dueling_adv_span_mean": _tensor_to_scalar(adv_span.mean()),
+                }
+            )
         if self.log_target_stats:
             with torch.no_grad():
                 td_abs = (target.mean(dim=1) - current_q.mean(dim=1)).abs()

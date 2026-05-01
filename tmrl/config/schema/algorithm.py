@@ -512,13 +512,9 @@ class AlgorithmConfig(BaseModel):
         )
 
         if self.iqn_munchausen_clip_min > self.iqn_munchausen_clip_max:
-            raise ValueError(
-                "iqn_munchausen_clip_min must be <= iqn_munchausen_clip_max"
-            )
+            raise ValueError("iqn_munchausen_clip_min must be <= iqn_munchausen_clip_max")
         if self.iqn_monotonicity_regularization and not self.iqn_sort_quantiles:
-            raise ValueError(
-                "iqn_monotonicity_regularization requires iqn_sort_quantiles=true"
-            )
+            raise ValueError("iqn_monotonicity_regularization requires iqn_sort_quantiles=true")
 
         expected = self.iqn_n_steer_bins * BRAKE_TAP_TABLE_N_GAS * BRAKE_TAP_TABLE_N_BRAKE
         if self.iqn_n_actions != expected:

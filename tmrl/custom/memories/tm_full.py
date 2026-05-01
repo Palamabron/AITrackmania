@@ -13,6 +13,8 @@ from tmrl.registry import MEMORIES
 class MemoryTMFull(MemoryTM):
     """Full-featured TrackMania replay memory with images."""
 
+    info_field_index = TMFullField.INFOS
+
     def get_transition(self, item: int):
         """Get a single transition with proper episode boundary handling."""
         f = TMFullField

@@ -112,11 +112,11 @@ class RewardConfig(BaseModel):
     min_progress_rate: float = Field(
         default=0.0,
         ge=0.0,
-        description="Minimum track progress per second averaged over slow_progress_window_seconds.",
+        description="Legacy/no-op: not used by the current RewardFunction.",
     )
     slow_progress_window_seconds: Annotated[float, Field(gt=0.0)] = Field(
         default=5.0,
-        description="Sliding window length for computing progress velocity.",
+        description="Legacy/no-op companion for min_progress_rate.",
     )
     debug_reward_components: bool = Field(
         default=False,
@@ -263,12 +263,12 @@ class RewardConfig(BaseModel):
         default=0.0,
         ge=0.0,
         le=1.0,
-        description="Velocity-tangent cosine must exceed this to accrue progress reward.",
+        description="Legacy/no-op: progress reward is not gated by velocity alignment.",
     )
     velocity_alignment_reward_weight: float = Field(
         default=0.0,
         ge=0.0,
-        description="Explicit bonus weight for dot(velocity, track_tangent).",
+        description="Legacy/no-op: no separate velocity-alignment reward is applied.",
     )
     speed_safe_deviation_ratio: float = Field(
         default=0.15,
@@ -308,10 +308,10 @@ class RewardConfig(BaseModel):
     cte_penalty_weight: float = Field(
         default=0.0,
         ge=0.0,
-        description="Cross-track error penalty gain.",
+        description="Legacy/no-op: no cross-track error penalty is applied.",
     )
     cte_penalty_exponent: Annotated[float, Field(gt=0.0)] = Field(
-        default=2.0, description="Exponent on normalized CTE."
+        default=2.0, description="Legacy/no-op companion for cte_penalty_weight."
     )
     proximity_reward_shaping: float = Field(
         default=0.0,
@@ -468,6 +468,15 @@ class EnvironmentConfig(BaseModel):
     )
     obs_track_scale: Annotated[float, Field(gt=0.0)] = Field(
         default=1.0, description="Multiplier on track geometry channels."
+    )
+    tqcgrab_track_coords_divisor: Annotated[float, Field(gt=0.0)] = Field(
+        default=100.0,
+        description=(
+            "For TQCGRAB* telemetry observations: preprocessor divides track tensor obs[0] by this "
+            "value (then clips to [-1, 1]). Lower values amplify small local-frame coordinates for "
+            "GNN/Conv encoders; use ~100 for very large world-frame extents. Preset algorithm=iqn "
+            "sets a lower default for typical local-track setups."
+        ),
     )
     reward: RewardConfig = Field(
         default_factory=RewardConfig,

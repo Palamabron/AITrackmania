@@ -271,6 +271,7 @@ class RewardFunction:
         self._reward_scale = float(rc.get("reward_scale", 1.0))
         self._end_of_track_reward = float(rc.get("end_of_track_reward", 10.0))
         self._track_curvature_obs = bool(rc.get("track_curvature_obs", False))
+        # Legacy/no-op fields are accepted for old configs but not applied below.
         self._progress_min_alignment = float(rc.get("progress_min_alignment", 0.0))
         self._velocity_alignment_reward_weight = float(
             rc.get("velocity_alignment_reward_weight", 0.0)
@@ -766,9 +767,7 @@ class RewardFunction:
 
         return reward, terminated, self.failure_counter, self.episode_reward
 
-    def log_model_run(
-        self, terminated: bool, end_of_track: bool, truncated: bool = False
-    ) -> None:
+    def log_model_run(self, terminated: bool, end_of_track: bool, truncated: bool = False) -> None:
         """Log episode outcome to console and optionally to Weights & Biases.
 
         Args:

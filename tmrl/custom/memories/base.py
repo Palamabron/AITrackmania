@@ -123,6 +123,9 @@ class GenericTorchMemory(TorchMemory):
 class MemoryTM(TorchMemory):
     """Base class for TrackMania replay memories with temporal structure."""
 
+    #: Index into ``self.data`` for per-step ``info`` dicts (subclasses must set if demo mixing applies).
+    info_field_index: int | None = None
+
     def __init__(
         self,
         memory_size: int | None = None,
@@ -135,6 +138,8 @@ class MemoryTM(TorchMemory):
         crc_debug: bool = False,
         device: str = "cpu",
         discrete_n_steer_bins: int = 0,
+        demo_min_batch_fraction: float = 0.0,
+        demo_max_batch_fraction: float = 1.0,
     ):
         configure_discrete_steer_bins(discrete_n_steer_bins)
         self.imgs_obs = imgs_obs
@@ -142,6 +147,11 @@ class MemoryTM(TorchMemory):
         self.min_samples = max(self.imgs_obs, self.act_buf_len)
         self.start_imgs_offset = max(0, self.min_samples - self.imgs_obs)
         self.start_acts_offset = max(0, self.min_samples - self.act_buf_len)
+        self.demo_min_batch_fraction = max(0.0, min(1.0, float(demo_min_batch_fraction)))
+        self.demo_max_batch_fraction = max(0.0, min(1.0, float(demo_max_batch_fraction)))
+        if self.demo_max_batch_fraction < self.demo_min_batch_fraction:
+            self.demo_max_batch_fraction = self.demo_min_batch_fraction
+        self.last_sample_demo_fraction = 0.0
         super().__init__(
             memory_size=memory_size,
             batch_size=batch_size,
@@ -162,6 +172,95 @@ class MemoryTM(TorchMemory):
             return 0
         res = len(self.data[0]) - self.min_samples - 1
         return max(0, res)
+
+    @staticmethod
+    def _is_demo_info_entry(info_entry: Any) -> bool:
+        if not isinstance(info_entry, dict):
+            return False
+        return bool(info_entry.get("is_demo", False))
+
+    def _info_field_index(self) -> int | None:
+        idx = self.info_field_index
+        if idx is None:
+            return None
+        idx = int(idx)
+        if len(self.data) == 0 or idx < 0 or idx >= len(self.data):
+            return None
+        return idx
+
+    def _item_is_demo(self, item: int) -> bool:
+        info_field_index = self._info_field_index()
+        if info_field_index is None:
+            return False
+        idx_now = item + self.min_samples
+        info_stream = self.data[info_field_index]
+        if idx_now < 0 or idx_now >= len(info_stream):
+            return False
+        return self._is_demo_info_entry(info_stream[idx_now])
+
+    def _set_last_sample_demo_fraction(self, indices) -> None:
+        if len(indices) == 0:
+            self.last_sample_demo_fraction = 0.0
+            return
+        demo_count = sum(1 for idx in indices if self._item_is_demo(int(idx)))
+        self.last_sample_demo_fraction = float(demo_count) / float(len(indices))
+
+    def sample_indices(self):
+        """Sample transitions, optionally enforcing demo floor/cap for TM memories."""
+        length = len(self)
+        if length <= 0:
+            self.last_sample_demo_fraction = 0.0
+            return ()
+
+        demo_min = self.demo_min_batch_fraction
+        demo_max = self.demo_max_batch_fraction
+        info_field_index = self._info_field_index()
+        if info_field_index is None or (demo_min <= 0.0 and demo_max >= 1.0):
+            result = np.random.randint(0, length, size=self.batch_size, dtype=np.int64)
+            self._set_last_sample_demo_fraction(result)
+            return result
+
+        batch_size = int(self.batch_size)
+        result = np.random.randint(0, length, size=batch_size, dtype=np.int64)
+        demo_positions = [pos for pos, idx in enumerate(result) if self._item_is_demo(int(idx))]
+        non_demo_positions = [
+            pos for pos, idx in enumerate(result) if not self._item_is_demo(int(idx))
+        ]
+        demo_items = [idx for idx in range(length) if self._item_is_demo(idx)]
+        non_demo_items = [idx for idx in range(length) if not self._item_is_demo(idx)]
+        if not demo_items or not non_demo_items:
+            self._set_last_sample_demo_fraction(result)
+            return result
+
+        min_demo = int(np.ceil(demo_min * batch_size))
+        max_demo = int(np.floor(demo_max * batch_size))
+        max_demo = max(min_demo, min(max_demo, batch_size))
+
+        if len(demo_positions) < min_demo and non_demo_positions:
+            need = min(min_demo - len(demo_positions), len(non_demo_positions))
+            replace_positions = np.random.choice(non_demo_positions, size=need, replace=False)
+            replacements = np.random.choice(
+                demo_items,
+                size=need,
+                replace=len(demo_items) < need,
+            )
+            result[replace_positions] = replacements
+            demo_positions = [
+                pos for pos, idx in enumerate(result) if self._item_is_demo(int(idx))
+            ]
+
+        if len(demo_positions) > max_demo and non_demo_items:
+            excess = len(demo_positions) - max_demo
+            replace_positions = np.random.choice(demo_positions, size=excess, replace=False)
+            replacements = np.random.choice(
+                non_demo_items,
+                size=excess,
+                replace=len(non_demo_items) < excess,
+            )
+            result[replace_positions] = replacements
+
+        self._set_last_sample_demo_fraction(result)
+        return result
 
     def get_transition(self, item: int):
         """Get a single transition - must be implemented by subclasses."""
