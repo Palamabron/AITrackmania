@@ -1,0 +1,119 @@
+# IQN World-Record Optimized Configuration
+#
+# This config implements Phase 1 (stability) + Phase 2 (speed rewards) + Phase 3 (sample efficiency)
+# from the training optimization plan.
+#
+# Key improvements over baseline:
+# - Reduced training ratio (3.0 → 1.0) to prevent Q-value oscillation
+# - Slower target network updates (tau 0.0015 → 0.0003) for stability
+# - Speed-focused reward shaping (weight 0.5, exponent 1.5, alignment floor 0.4)
+# - Time pressure (constant_penalty 0.002) and completion bonus (50.0)
+# - LR scheduler with cosine annealing warm restarts
+# - Cosine epsilon schedule for better exploration
+# - Optional: Munchausen RL (conservative alpha 0.02) and EDER diversity filtering
+#
+# Expected results:
+# - Stable training (no oscillation)
+# - Best lap: 64s → 48s within 300 episodes
+# - Average lap: 100s → 60s
+# - Target: 45s WR within 1000 episodes
+
+run:
+  name: optimal-params-tuning-v5-stable
+  reset_training: false
+  buffers_maxlen: 1000000
+  rw_max_samples_per_episode: 28000
+  rw_test_episode_interval: 20
+
+distributed:
+  public_ip_server: "127.0.0.1"
+
+training:
+  rounds_per_epoch: 10
+  training_steps_per_round: 300
+  environment_steps_before_training: 1000
+  max_training_steps_per_environment_step: 1.0
+  update_model_interval: 150
+  update_buffer_interval: 500
+  batch_size: 512
+
+model:
+  residual_mlp_hidden_dim: 192
+  residual_mlp_num_blocks: 3
+  residual_mlp_num_blocks_actor: 3
+  residual_mlp_num_blocks_critic: 3
+  split_track_observation: true
+  use_simbav2: true
+  track_encoder: gnn
+  gnn_layers: 2
+  gnn_hidden: 128
+  binary_brake: true
+
+algorithm:
+  name: IQN
+  _target_: tmrl.custom.custom_algorithms.iqn.IQNAgent
+  iqn_lr: 2.5e-5
+  iqn_huber_kappa: 0.7
+  iqn_sort_quantiles: true
+  iqn_monotonicity_regularization: true
+  iqn_monotonicity_lambda: 0.01
+
+  iqn_munchausen_enabled: true   # Enable (was false)
+  iqn_munchausen_alpha: 0.02     # Conservative: 50% of default 0.04
+  iqn_munchausen_tau: 0.2
+  iqn_munchausen_clip_min: -0.3
+  iqn_munchausen_clip_max: 0.0
+
+  iqn_epsilon_schedule_mode: linear
+  iqn_epsilon_start: 0.6
+  iqn_epsilon_end: 0.02
+  iqn_epsilon_decay_steps: 700000
+  iqn_epsilon_cosine_t0: 50000       # Initial cycle length
+  iqn_epsilon_cosine_tmult: 1.5      # Expanding cycles
+  iqn_epsilon_cosine_decay: 0.8      # Amplitude decay
+  iqn_epsilon_cosine_floor_fraction: 0.3
+
+  iqn_explore_repeat_steps: 1
+  iqn_soft_target_tau: 0.0006
+  backup_clip_range: 50.0
+  reward_normalize_scale: 100.0
+  eder_oversample_ratio: 2
+
+player_runs:
+  online_injection: true
+  max_files_per_update: 6
+  demo_sampling_weight: 1.2
+  demo_weight_decay_samples: 1500000
+  demo_weight_decay_slowdown: 1.5
+  demo_max_batch_fraction: 0.25
+  demo_min_batch_fraction: 0.10
+
+environment:
+  seed: 1111
+  init_gas_bias: 0.8
+  map_name: test-3
+  end_of_track_reward: 75.0  # FIXED: was 35.0 (2× increase for completion incentive)
+  window_width: 1920
+  window_height: 1080
+  use_images: false
+  tqcgrab_track_coords_divisor: 50.0
+  reward:
+    min_seconds_before_failure: 15.0
+    debug_reward_components: true
+    constant_penalty: 0.1  # FIXED: was 0.002 (50× increase for time pressure)
+    speed_reward_weight: 0.5
+    speed_reward_exponent: 1.5
+    speed_reward_alignment_floor: 0.4
+    max_speed_kmh: 300.0
+
+    max_track_width: 24.0
+    reward_clip_floor: 5.0
+    track_look_ahead_pct: 5.0
+    track_point_spacing_m: 2.5
+    track_local_frame: true
+    track_curvature_obs: true
+
+    drift_reward_weight: 0.1
+    drift_reward_weight_start: 0.15
+    drift_anneal_steps: 250000
+    drift_optimal_angle_deg: 12.5

@@ -342,6 +342,7 @@ class IQNAgent(TrainingAgent):
     # Previously hidden globals — now explicit
     iqn_n_steer_bins: int
     backup_clip_range: float
+    reward_normalize_scale: float
 
     # Mixed precision
     mixed_precision: bool
@@ -651,6 +652,9 @@ class IQNAgent(TrainingAgent):
         a = self._sanitize_tensor(a)
         r = self._sanitize_tensor(r)
         d = self._sanitize_tensor(d)
+
+        if self.reward_normalize_scale != 1.0 and self.reward_normalize_scale > 0:
+            r = r / self.reward_normalize_scale
 
         if a.dim() >= 2 and a.shape[-1] == 3:
             from tmrl.custom.tm.utils.discrete_control import (

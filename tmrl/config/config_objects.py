@@ -492,6 +492,7 @@ _memory_kwargs: dict[str, Any] = {
     "act_buf_len": cfg.ACT_BUF_LEN,
     "crc_debug": cfg.CRC_DEBUG,
     "discrete_n_steer_bins": int(algorithm.iqn_n_steer_bins) if ALG_NAME in ("IQN", "SDSAC") else 0,
+    "n_step_return": int(algorithm.n_steps) if algorithm.n_steps > 0 else 1,
 }
 
 _is_r2d2_memory = _mem_name.startswith("r2d2")
