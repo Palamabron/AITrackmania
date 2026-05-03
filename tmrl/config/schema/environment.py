@@ -180,7 +180,11 @@ class RewardConfig(BaseModel):
     crash_penalty: float = Field(
         default=2.0,
         ge=0.0,
-        description="Penalty applied when a crash or hard reset is triggered.",
+        description=(
+            "Penalty applied when a crash or hard reset is triggered (RewardFunction and "
+            "interface crash subtraction). Merged at load: non-zero environment.crash_penalty "
+            "overrides this value for the effective runtime scalar."
+        ),
     )
     reward_clip_floor: float = Field(
         default=10.0,
@@ -343,7 +347,9 @@ class EnvironmentConfig(BaseModel):
     rtgym_interface: str = Field(
         ...,
         description=(
-            "Case-insensitive interface token (e.g. LIDAR, TQCGRAB_IMAGES, MTQC). "
+            "Case-insensitive interface token "
+            "(e.g. TM20LIDAR, TM20TRACKMAP, TM20TRACKMAPIMAGES, TM20LIDARIMAGES, "
+            "TQCGRAB_IMAGES, MTQC). "
             "Selects observation layout and preprocessor pipeline."
         ),
     )
@@ -433,7 +439,12 @@ class EnvironmentConfig(BaseModel):
     )
     crash_penalty: float = Field(
         default=0.0,
-        description="Penalty scalar applied on crash events at env level.",
+        description=(
+            "Optional override for crash penalty magnitude. When non-zero, replaces "
+            "environment.reward.crash_penalty for the effective value (logged as "
+            "CRASH_PENALTY and written back into reward config at load). When zero "
+            "(default), use reward.crash_penalty only."
+        ),
     )
     crash_cooldown: int = Field(
         default=0,
@@ -486,6 +497,16 @@ class EnvironmentConfig(BaseModel):
         default_factory=RtGymConfig,
         description="Low-level stepping and buffering parameters forwarded to real-time-gym.",
     )
+
+    @model_validator(mode="after")
+    def _reject_legacy_screen_ray_rangefinder_tokens(self) -> EnvironmentConfig:
+        rt = str(self.rtgym_interface).upper()
+        if "LIDARPROGRESS" in rt:
+            raise ValueError(
+                "Legacy TM20*LIDAR*PROGRESS screen-ray rangefinder tokens were removed; "
+                "use TM20LIDAR / TM20TRACKMAP or a token with *LIDARIMAGES* / *TRACKMAPIMAGES*."
+            )
+        return self
 
     def rtgym_config_dict(self) -> dict[str, Any]:
         """Plain dict for mutating and passing into rtgym DEFAULT_CONFIG_DICT."""

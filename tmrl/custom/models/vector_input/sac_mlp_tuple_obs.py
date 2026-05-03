@@ -1,7 +1,7 @@
 """MLP policy and Q-networks for **tuple** observation spaces only (no Box fallback).
 
 Used by composite models (e.g. EffNet + MLP heads) that always receive tuple obs.
-The main SAC path for LIDAR uses ``sac_mlp_actor_critic`` (tuple or Box).
+The main SAC path for boundary lidar geometry uses ``sac_mlp_actor_critic`` (tuple or Box).
 """
 
 import numpy as np

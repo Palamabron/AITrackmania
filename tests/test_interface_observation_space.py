@@ -22,9 +22,6 @@ from tmrl.custom.interfaces import (
     TM2020Interface,
     TM2020InterfaceBoundary,
     TM2020InterfaceBoundaryImages,
-    TM2020InterfaceLidar,
-    TM2020InterfaceLidarProgress,
-    TM2020InterfaceLidarProgressImages,
     TM2020RLInterface,
     TrackMania2020InterfaceBase,
 )
@@ -79,9 +76,6 @@ def test_base_class_is_abstract() -> None:
         TM2020Interface,
         TM2020InterfaceBoundary,
         TM2020InterfaceBoundaryImages,
-        TM2020InterfaceLidar,
-        TM2020InterfaceLidarProgress,
-        TM2020InterfaceLidarProgressImages,
         TM2020RLInterface,
     ]
     for cls in concrete:
@@ -113,20 +107,6 @@ def _boundary_factory_requires_csv() -> bool:
     ("factory", "expected_min_arity"),
     [
         pytest.param(lambda: TM2020Interface(img_hist_len=2, **_SMALL_IMG_KW), 4, id="vision"),
-        pytest.param(lambda: TM2020InterfaceLidar(img_hist_len=2), 2, id="lidar-bare"),
-        pytest.param(
-            lambda: TM2020InterfaceLidar(
-                img_hist_len=2, include_progress=True, include_camera_images=True
-            ),
-            4,
-            id="lidar-progress+images",
-        ),
-        pytest.param(lambda: TM2020InterfaceLidarProgress(img_hist_len=2), 3, id="lidar-progress"),
-        pytest.param(
-            lambda: TM2020InterfaceLidarProgressImages(img_hist_len=2),
-            4,
-            id="lidar-progress-images",
-        ),
         pytest.param(
             lambda: TM2020InterfaceBoundaryImages(img_hist_len=2, **_SMALL_IMG_KW),
             4,
@@ -160,16 +140,6 @@ def test_boundary_observation_space_is_tuple_of_boxes() -> None:
             lambda: TM2020RLInterface(img_hist_len=1, include_camera_images=True),
             id="rl+camera",
         ),
-        pytest.param(
-            lambda: TM2020RLInterface(img_hist_len=1, include_lidar=True),
-            id="rl+lidar",
-        ),
-        pytest.param(
-            lambda: TM2020RLInterface(
-                img_hist_len=1, include_camera_images=True, include_lidar=True
-            ),
-            id="rl+camera+lidar",
-        ),
     ],
 )
 def test_car_state_family_observation_space(factory: Callable[[], Any]) -> None:
@@ -194,23 +164,6 @@ def test_boundary_observed_boundaries_gated_on_record() -> None:
     assert debug._observed_boundaries == [[], [], [], [], []]
 
 
-def test_lidar_progress_forces_its_flags() -> None:
-    """User kwargs for include_progress / include_camera_images must be ignored by the
-    progress-variant subclasses; otherwise the class silently produces an observation
-    space indistinguishable from its parent."""
-    progress_only = TM2020InterfaceLidarProgress(
-        img_hist_len=1, include_progress=False, include_camera_images=True
-    )
-    assert progress_only._include_progress is True
-    assert progress_only._include_camera_images is False
-
-    progress_images = TM2020InterfaceLidarProgressImages(
-        img_hist_len=1, include_progress=False, include_camera_images=False
-    )
-    assert progress_images._include_progress is True
-    assert progress_images._include_camera_images is True
-
-
 def test_vision_iqn_discrete_action_space() -> None:
     """IQN default: 13 steer bins x 2 gas x 3 brake = 78 discrete actions."""
     iface = TM2020Interface(img_hist_len=1, discrete_n_steer_bins=13)
@@ -233,10 +186,7 @@ def test_all_interface_registry_keys_exist() -> None:
     expected_keys = {
         "vision",
         "lidar",
-        "lidar_progress",
-        "lidar_progress_images",
-        "trackmap",
-        "trackmap_images",
+        "lidar_images",
         "tqc",
         "sophy",
         "impala",

@@ -151,7 +151,7 @@ class TrackMania2020InterfaceBase(RealTimeGymInterface, ABC):
             max_dist_from_traj=cfg.REWARD_CONFIG.get("MAX_STRAY", 50.0),
             crash_penalty=self.crash_penalty,
             constant_penalty=self.constant_penalty,
-            is_lidar=cfg.USE_LIDAR_OBSERVATIONS,
+            require_track_boundary_pickles=cfg.USE_LIDAR_IMAGES,
             track_path_left=cfg_paths.TRACK_PATH_LEFT,
             track_path_right=cfg_paths.TRACK_PATH_RIGHT,
             reward_config=cfg.REWARD_CONFIG,

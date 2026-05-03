@@ -57,6 +57,32 @@ def fog_recency_resample(
     return tuple(int(x) for x in resampled)
 
 
+def canonical_replay_action_vector(action, discrete_n_steer_bins: int) -> np.ndarray:
+    """Normalize a rollout action to ``(3,)`` float32 for replay *append* only.
+
+    Discrete indices (when ``discrete_n_steer_bins > 0``) are expanded via the
+    brake-tap table so stored rows share one layout; ``collate_torch`` can stack them.
+    """
+    a = np.asarray(action)
+    n_steer = int(discrete_n_steer_bins)
+    if n_steer > 0 and a.size == 1 and np.issubdtype(a.dtype, np.integer):
+        from tmrl.custom.tm.utils.discrete_control import (
+            build_brake_tap_action_table,
+            discrete_index_to_control,
+        )
+
+        _, table = build_brake_tap_action_table(n_steer=n_steer)
+        idx = int(np.asarray(a, dtype=np.int64).item())
+        return discrete_index_to_control(idx, table)
+    vec = np.asarray(action, dtype=np.float32).reshape(-1)
+    if vec.size != 3:
+        raise ValueError(
+            "Expected continuous TM action with 3 components [gas, brake, steer]; "
+            f"got shape {a.shape} dtype={a.dtype} (discrete_n_steer_bins={n_steer})."
+        )
+    return vec
+
+
 def _is_discrete_action(action) -> bool:
     """True when action is a scalar integer (DQN discrete index)."""
     arr = np.asarray(action)

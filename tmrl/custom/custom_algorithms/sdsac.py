@@ -215,9 +215,6 @@ class SDSACAgent(TrainingAgent):
     # --- Required: optimizer ---
     weight_decay: float
 
-    # --- Required: EDER (0 = disabled) ---
-    eder_oversample_ratio: int
-
     # --- Required: previously hidden globals ---
     reward_normalize_scale: float
     r2d2_burn_in: int
@@ -332,23 +329,6 @@ class SDSACAgent(TrainingAgent):
         reward_scale = float(self.reward_normalize_scale)
         if reward_scale != 1.0 and reward_scale > 0:
             r = r / reward_scale
-
-        # -- EDER diversity filtering --
-        if self.eder_oversample_ratio >= 2:
-            from tmrl.custom.utils.eder import greedy_kdpp_filter
-
-            with torch.no_grad():
-                tau_dummy = torch.full((batch_size, 1), 0.5, device=o[0].device)
-                feat = self.model.q1_backbone(o, tau_dummy).squeeze(1)
-            target_k = batch_size // self.eder_oversample_ratio
-            keep = greedy_kdpp_filter(feat, target_k)
-            o = tuple(t[keep] for t in o)
-            o2 = tuple(t[keep] for t in o2)
-            a = a[keep]
-            r = r[keep]
-            d = d[keep]
-            actions = actions[keep]
-            batch_size = target_k
 
         # -- Sequence-aware n-step returns --
         burn_in_len = int(self.r2d2_burn_in)

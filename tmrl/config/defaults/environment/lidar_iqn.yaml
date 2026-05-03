@@ -1,5 +1,5 @@
 # @package _global_
-# LIDAR environment for IQN / SDSAC: same as `tm20` except reward shaping (no forward-progress cutoff).
+# Boundary lidar preset for IQN / SDSAC: same as `tm20` except reward shaping.
 # Select with: environment=lidar_iqn
 defaults:
   - tm20

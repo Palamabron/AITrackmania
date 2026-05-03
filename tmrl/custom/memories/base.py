@@ -46,6 +46,7 @@ class GenericTorchMemory(TorchMemory):
         crc_debug: bool = False,
         device: str = "cpu",
         discrete_n_steer_bins: int = 0,
+        n_step_return: int = 1,
     ):
         configure_discrete_steer_bins(discrete_n_steer_bins)
         super().__init__(
@@ -56,6 +57,7 @@ class GenericTorchMemory(TorchMemory):
             sample_preprocessor=sample_preprocessor,
             crc_debug=crc_debug,
             device=device,
+            n_step_return=n_step_return,
         )
 
     def append_buffer(self, buffer: Any) -> None:
@@ -99,7 +101,7 @@ class GenericTorchMemory(TorchMemory):
 
         # Bounded retries to avoid excessive loops on large buffers
         max_retries = min(100, max(10, self.__len__()))
-        for attempt in range(max_retries):
+        for _attempt in range(max_retries):
             if not self.data[field.DONE][item]:
                 break
             item = np.random.randint(0, self.__len__() - 1)
@@ -109,7 +111,8 @@ class GenericTorchMemory(TorchMemory):
             raise RuntimeError(
                 f"Failed to sample non-terminal transition after {max_retries} attempts. "
                 f"Buffer has {done_count}/{self.__len__()} done=True transitions. "
-                f"This suggests a data quality issue or environment that always terminates immediately."
+                "This suggests a data quality issue or environment that always "
+                "terminates immediately."
             )
 
         idx_last = item
@@ -148,8 +151,10 @@ class MemoryTM(TorchMemory):
         discrete_n_steer_bins: int = 0,
         demo_min_batch_fraction: float = 0.0,
         demo_max_batch_fraction: float = 1.0,
+        n_step_return: int = 1,
     ):
         configure_discrete_steer_bins(discrete_n_steer_bins)
+        self.discrete_n_steer_bins = int(discrete_n_steer_bins)
         self.imgs_obs = imgs_obs
         self.act_buf_len = act_buf_len
         self.min_samples = max(self.imgs_obs, self.act_buf_len)
@@ -168,6 +173,7 @@ class MemoryTM(TorchMemory):
             sample_preprocessor=sample_preprocessor,
             crc_debug=crc_debug,
             device=device,
+            n_step_return=n_step_return,
         )
 
     def append_buffer(self, buffer):

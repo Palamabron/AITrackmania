@@ -1,5 +1,5 @@
 # @package _global_
-# TQC (car_state) interface: `default` (LidarProgress base) + `tm20_car_state_rl` + `name`.
+# TQC (car_state) interface: `default` + `tm20_car_state_rl` + `name`.
 defaults:
   - default
   - tm20_car_state_rl

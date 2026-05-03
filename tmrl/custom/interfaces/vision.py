@@ -2,8 +2,7 @@
 
 Exposes ``TM2020Interface``: observations are (speed, gear, rpm, image_history) where
 image history is a stack of game screenshots captured via ``WindowInterface``. This is
-the baseline class every other interface family (``lidar``, ``car_state``, ``boundary``)
-inherits from.
+the baseline class other interface families (``car_state``, ``boundary``) inherit from.
 """
 
 from __future__ import annotations
@@ -37,7 +36,7 @@ class TM2020Interface(TrackMania2020InterfaceBase):
 
     Handles image history, gamepad/keyboard control, and communication with the
     TrackMania game via OpenPlanet. Subclasses extend the observation space and
-    telemetry parsing for specific model families (LIDAR, boundary, unified RL, ...).
+    telemetry parsing for specific model families (boundary lidar, unified RL, ...).
     """
 
     def _build_openplanet_client(self):
@@ -87,9 +86,7 @@ class TM2020Interface(TrackMania2020InterfaceBase):
         )
         self.initialized = False
         self.crash_penalty = (
-            crash_penalty
-            if crash_penalty is not None
-            else cfg.REWARD_CONFIG.get("CRASH_PENALTY", 10.0)
+            float(crash_penalty) if crash_penalty is not None else float(cfg.CRASH_PENALTY)
         )
         _default_min_steps = (
             min_nb_steps_before_failure if min_nb_steps_before_failure is not None else 70

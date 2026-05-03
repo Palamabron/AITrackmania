@@ -64,7 +64,7 @@ class BaseModelConfig(BaseModel):
     )
     use_residual_mlp: bool = Field(
         default=False,
-        description="Use residual MLP backbones for lidar/vector policies (non-image).",
+        description="Use residual MLP backbones for boundary lidar / vector policies (non-image).",
     )
     residual_mlp_hidden_dim: PositiveInt = Field(
         default=256,
@@ -89,8 +89,8 @@ class BaseModelConfig(BaseModel):
         description=(
             "TQCGrab (or similar) with **no camera**: use SophyResidualActorCritic / "
             "SquashedActorSophyResidual (residual MLP trunk) instead of classic SophyActorCritic. "
-            "Ignored for LIDAR, IQN, and image-based pipelines — omit from local.yaml unless you "
-            "run that specific vector-TQC path."
+            "Ignored for boundary lidar geometry, IQN, and image-based pipelines — omit from "
+            "local.yaml unless you run that specific vector-TQC path."
         ),
     )
     split_track_observation: bool = Field(

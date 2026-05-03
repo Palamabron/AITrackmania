@@ -301,8 +301,8 @@ class Memory(ABC):
         length = len(self)
         if length <= 0:
             return ()
-        # When n_step_return > 1, ensure we can fetch n consecutive transitions for each sample.
-        # Sample from [0, length - n_step_return] so that indices [i, i+1, ..., i+n-1] are all valid.
+        # When n_step_return > 1, ensure we can fetch n consecutive transitions per sample.
+        # Sample from [0, length - n_step_return] so indices [i..i+n-1] are all valid.
         if self.n_step_return > 1:
             max_start_idx = length - self.n_step_return
             if max_start_idx <= 0:
@@ -395,6 +395,7 @@ class R2D2Memory(Memory, ABC):
         n_step_return: int = 1,
     ):
         configure_discrete_steer_bins(discrete_n_steer_bins)
+        self.discrete_n_steer_bins = int(discrete_n_steer_bins)
         super().__init__(
             memory_size=memory_size,
             batch_size=batch_size,

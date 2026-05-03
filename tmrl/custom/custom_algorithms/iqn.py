@@ -273,8 +273,6 @@ class IQNAgent(TrainingAgent):
           (per Vieillard et al. 2020). Uses online network for current policy.
         - **PER IS weights**: Expected to be pre-normalized by max(w) in the training loop
           before being passed to this agent's train() method.
-        - **EDER filtering**: Applied before training in train() method. PER weights are
-          filtered to match EDER-selected samples to maintain consistency.
         - **SimbaV2 projection**: Weights are projected BEFORE target update to ensure
           target network receives valid projected weights.
         - **NaN/Inf detection**: Loss is validated before backprop. If detected, update
@@ -335,9 +333,6 @@ class IQNAgent(TrainingAgent):
     munchausen_tau: float
     munchausen_clip_min: float
     munchausen_clip_max: float
-
-    # EDER diversity filtering (0 = disabled)
-    eder_oversample_ratio: int
 
     # Previously hidden globals — now explicit
     iqn_n_steer_bins: int
@@ -408,7 +403,6 @@ class IQNAgent(TrainingAgent):
         self._training_step = 0
         self._epsilon = self.epsilon_start
         self._grad_stabilizer = GradientStabilizer(ema_decay=0.995)
-        self._eder_skip_count = 0
         logger.info(
             "IQNAgent: n_actions={}, dueling={}, double={}, n_steps={}, gamma={:.3f}, "
             "eps mode={}, decay_steps={}, t0={}, tmult={}, decay={}, init_amp={}, "
@@ -563,8 +557,6 @@ class IQNAgent(TrainingAgent):
 
         Note:
             Critical implementation details:
-            - EDER filtering: If enabled, filters batch for diversity before training.
-              PER importance weights are filtered to match EDER-selected samples.
             - Munchausen RL: Bonus is added to immediate rewards BEFORE n-step computation,
               as per Vieillard et al. 2020. Uses online network for current policy.
             - Value rescaling: NOT applied to quantiles during training to preserve
@@ -581,71 +573,11 @@ class IQNAgent(TrainingAgent):
         eps = self._update_epsilon()
 
         o, a, r, o2, d = batch[0], batch[1], batch[2], batch[3], batch[4]
-        # Convert batch to list for potential mutation (EDER + PER compatibility)
+        # Convert batch to list for potential PER weight mutation
         batch = list(batch)  # type: ignore[assignment]
 
         device = self.device or "cpu"
         batch_size = r.shape[0]
-
-        if self.eder_oversample_ratio >= 2:
-            from tmrl.custom.utils.eder import greedy_kdpp_filter
-
-            has_invalid = False
-            for obs_tensor in o:
-                if torch.isnan(obs_tensor).any() or torch.isinf(obs_tensor).any():
-                    has_invalid = True
-                    break
-
-            if has_invalid:
-                self._eder_skip_count += 1
-                if self._eder_skip_count % 10 == 1 and self._eder_skip_count > 1:
-                    logger.error(
-                        "EDER filtering skipped {} times due to NaN/Inf in observations. "
-                        "Investigate data pipeline or preprocessor for systematic issues.",
-                        self._eder_skip_count,
-                    )
-                else:
-                    logger.warning(
-                        "NaN/Inf detected in observations before EDER filtering, "
-                        "skipping EDER for this batch (skip count: {})",
-                        self._eder_skip_count,
-                    )
-            else:
-                with torch.no_grad():
-                    tau_dummy = torch.full((batch_size, 1), 0.5, device=o[0].device)
-                    backbone = getattr(self.model, "backbone", self.model)
-                    feat = backbone(o, tau_dummy).squeeze(1)
-
-                    if torch.isnan(feat).any() or torch.isinf(feat).any():
-                        self._eder_skip_count += 1
-                        if self._eder_skip_count % 10 == 1 and self._eder_skip_count > 1:
-                            logger.error(
-                                "EDER filtering skipped {} times due to NaN/Inf in features. "
-                                "Investigate backbone network or feature extraction.",
-                                self._eder_skip_count,
-                            )
-                        else:
-                            logger.warning(
-                                "NaN/Inf in EDER features, skipping EDER filtering for this batch "
-                                "(skip count: {})",
-                                self._eder_skip_count,
-                            )
-                    else:
-                        target_k = batch_size // self.eder_oversample_ratio
-                        keep = greedy_kdpp_filter(feat, target_k)
-                        o = tuple(t[keep] for t in o)
-                        o2 = tuple(t[keep] for t in o2)
-                        a = a[keep]
-                        r = r[keep]
-                        d = d[keep]
-                        batch_size = target_k
-
-                        if (
-                            len(batch) >= 7
-                            and isinstance(batch[6], dict)
-                            and "is_weight" in batch[6]
-                        ):
-                            batch[6]["is_weight"] = batch[6]["is_weight"][keep]
 
         o = self._sanitize_obs(o)
         o2 = self._sanitize_obs(o2)
@@ -807,16 +739,29 @@ class IQNAgent(TrainingAgent):
         self.optimizer.zero_grad()
         if self.use_mixed_precision:
             self.grad_scaler.scale(loss).backward()
+            # Always unscale before grad norms / stabilizer / clip (even when grad_clip==0).
+            self.grad_scaler.unscale_(self.optimizer)
+            grad_norm_pre_clip = float(
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), float("inf"))
+            )
             if self.grad_clip > 0.0:
-                self.grad_scaler.unscale_(self.optimizer)
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), float(self.grad_clip))
+            grad_norm_post_clip = float(
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), float("inf"))
+            )
             grad_norm = self._grad_stabilizer.step(self.model.parameters())
             self.grad_scaler.step(self.optimizer)
             self.grad_scaler.update()
         else:
             loss.backward()
+            grad_norm_pre_clip = float(
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), float("inf"))
+            )
             if self.grad_clip > 0.0:
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), float(self.grad_clip))
+            grad_norm_post_clip = float(
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), float("inf"))
+            )
             grad_norm = self._grad_stabilizer.step(self.model.parameters())
             self.optimizer.step()
 
@@ -857,6 +802,8 @@ class IQNAgent(TrainingAgent):
             "debug/reward_mean": _tensor_to_scalar(r.mean()),
             "debug/reward_max": _tensor_to_scalar(r.max()),
             "debug/munchausen_bonus_mean": _tensor_to_scalar(munchausen_bonus.mean()),
+            "debug/grad_norm_pre_clip": grad_norm_pre_clip,
+            "debug/grad_norm_post_clip": grad_norm_post_clip,
             "debug/grad_norm": grad_norm,
             "debug/grad_ema_norm": self._grad_stabilizer.ema_norm,
             "train/step": self._training_step,

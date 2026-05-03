@@ -1,6 +1,6 @@
 """SAC actor-critic with a stacked GRU over observation sequences.
 
-Used for LIDAR + ``USE_RNN`` (continuous actions, SAC only in the current runtime).
+Used for vector observations + ``USE_RNN`` (continuous actions; SAC only in the current runtime).
 """
 
 import numpy as np

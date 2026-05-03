@@ -7,8 +7,6 @@ classes. Telemetry follows the OpenPlanet TMRL_GrabData wire layout described in
 Constructor flags (also driven from ``tmrl.config`` in ``config_objects``):
 
 - ``include_camera_images`` — append a resized game screenshot history (TQCGRAB-style).
-- ``include_lidar`` — append screen-derived LIDAR vectors after the telemetry tuple
-  (same 19-ray encoding as :class:`tmrl.custom.interfaces.lidar.TM2020InterfaceLidar`).
 """
 
 from __future__ import annotations
@@ -28,20 +26,19 @@ from tmrl.custom.interfaces.telemetry_indices import (
 )
 from tmrl.custom.interfaces.vision import OPENPLANET_PORT, TM2020Interface
 from tmrl.custom.tm.utils.control_mouse import mouse_save_replay_tm20 as _util_save_replay
-from tmrl.custom.tm.utils.tools import Lidar, TM2020OpenPlanetClient
+from tmrl.custom.tm.utils.tools import TM2020OpenPlanetClient
 from tmrl.registry import INTERFACES
 
 _DEFAULT_MIN_STEPS_END_OF_TRACK = 50
 GEAR_NORMALIZER = 5.0
 CURVATURE_SCALE = 10.0
-LIDAR_RAY_COUNT = 19
 
 
 @INTERFACES.register("tqc")
 class TM2020RLInterface(TM2020Interface):
     """
     Single RL interface: 33-float GrabData + interpolated track from the reward function,
-    optional camera history, optional LIDAR tail.
+    optional camera history.
     """
 
     def __init__(
@@ -61,7 +58,6 @@ class TM2020RLInterface(TM2020Interface):
         lap_reward=cfg.LAP_REWARD,
         record_human: bool = False,
         include_camera_images: bool = False,
-        include_lidar: bool = False,
         **kwargs,
     ):
         if save_replays is not None:
@@ -87,12 +83,9 @@ class TM2020RLInterface(TM2020Interface):
         self.checkpoint_reward = checkpoint_reward
         self.points_number = cfg.POINTS_NUMBER
         self.include_camera_images = include_camera_images
-        self.include_lidar = include_lidar
         self._prev_speed_for_kinematics: float = 0.0
         self._prev_acc_for_kinematics: float = 0.0
         self._steps_since_reset = 0
-        self.lidar: Lidar | None = None
-        self._lidar_hist: list[np.ndarray] = []
 
         _rf = self.reward_function
         if (
@@ -111,8 +104,8 @@ class TM2020RLInterface(TM2020Interface):
                 )
             self.points_number = n_rf
 
-        self._lidar_rgb_grayscale = grayscale
-        self._lidar_rgb_resize = (
+        self._camera_rgb_grayscale = grayscale
+        self._camera_rgb_resize = (
             resize_to if resize_to is not None else (cfg.IMG_WIDTH, cfg.IMG_HEIGHT)
         )
 
@@ -123,46 +116,27 @@ class TM2020RLInterface(TM2020Interface):
 
     def initialize(self):
         self.initialize_common()
-        self.small_window = not self.include_lidar
-        if self.include_lidar:
-            assert self.window_interface is not None
-            self.lidar = Lidar(self.window_interface.screenshot())
-            self._lidar_hist = []
-        else:
-            self.lidar = None
-            self._lidar_hist = []
+        self.small_window = True
         self.initialized = True
 
     def get_observation_space(self):
         from tmrl.custom.tm.tqc_observation_space import build_tqc_sophy_tuple_observation_space
 
         base_spaces = build_tqc_sophy_tuple_observation_space(self.points_number)
-        if not self.include_camera_images and not self.include_lidar:
+        if not self.include_camera_images:
             return base_spaces
         spaces_list = list(base_spaces.spaces)
-        if self.include_lidar:
+        w, h = self._camera_rgb_resize
+        if self._camera_rgb_grayscale:
+            spaces_list.append(
+                spaces.Box(low=0.0, high=255.0, shape=(self.img_hist_len, h, w), dtype=np.float32)
+            )
+        else:
             spaces_list.append(
                 spaces.Box(
-                    low=0.0,
-                    high=np.inf,
-                    shape=(self.img_hist_len, LIDAR_RAY_COUNT),
-                    dtype=np.float32,
+                    low=0.0, high=255.0, shape=(self.img_hist_len, h, w, 3), dtype=np.float32
                 )
             )
-        if self.include_camera_images:
-            w, h = self._lidar_rgb_resize
-            if self._lidar_rgb_grayscale:
-                spaces_list.append(
-                    spaces.Box(
-                        low=0.0, high=255.0, shape=(self.img_hist_len, h, w), dtype=np.float32
-                    )
-                )
-            else:
-                spaces_list.append(
-                    spaces.Box(
-                        low=0.0, high=255.0, shape=(self.img_hist_len, h, w, 3), dtype=np.float32
-                    )
-                )
         return spaces.Tuple(tuple(spaces_list))
 
     def grab_data(self):
@@ -172,10 +146,10 @@ class TM2020RLInterface(TM2020Interface):
     def _capture_and_process_image(self, raw_bgr: np.ndarray | None = None):
         assert self.window_interface is not None
         img = raw_bgr if raw_bgr is not None else self.window_interface.screenshot()[:, :, :3]
-        w, h = self._lidar_rgb_resize
+        w, h = self._camera_rgb_resize
         img = cv2.resize(img, (w, h))
         img = (
-            cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if self._lidar_rgb_grayscale else img[:, :, ::-1]
+            cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if self._camera_rgb_grayscale else img[:, :, ::-1]
         )
         return img.astype(np.float32)
 
@@ -206,16 +180,6 @@ class TM2020RLInterface(TM2020Interface):
         if cfg.OBS_TRACK_SCALE != 1.0:
             track_list = [x / cfg.OBS_TRACK_SCALE for x in track_list]
         return np.array(track_list, dtype=np.float32), curvature_list
-
-    def _append_lidar_obs(self, total_obs: list, raw_bgr: np.ndarray | None = None) -> None:
-        assert self.lidar is not None
-        assert self.window_interface is not None
-        img = raw_bgr if raw_bgr is not None else self.window_interface.screenshot()[:, :, :3]
-        lidar_vec = self.lidar.lidar_20(img=img, show=False)
-        self._lidar_hist.append(lidar_vec)
-        self._lidar_hist = self._lidar_hist[-self.img_hist_len :]
-        lidars = np.array(list(self._lidar_hist), dtype=np.float32)
-        total_obs.append(lidars)
 
     def get_obs_rew_terminated_info(self):
         assert self.reward_function is not None
@@ -373,15 +337,11 @@ class TM2020RLInterface(TM2020Interface):
             terminated = False
 
         raw_bgr = None
-        if self.include_lidar or self.include_camera_images:
+        if self.include_camera_images:
             assert self.window_interface is not None
             raw_bgr = self.window_interface.screenshot()[:, :, :3]
 
-        if self.include_lidar:
-            self._append_lidar_obs(total_obs, raw_bgr=raw_bgr)
-
         if self.include_camera_images:
-            assert raw_bgr is not None
             img = self._capture_and_process_image(raw_bgr=raw_bgr)
             self._push_img(img)
             total_obs.append(self._get_img_hist_array())
@@ -464,19 +424,9 @@ class TM2020RLInterface(TM2020Interface):
         info = {"reward_sum": 0.0}
 
         raw_bgr = None
-        if self.include_lidar or self.include_camera_images:
+        if self.include_camera_images:
             assert self.window_interface is not None
             raw_bgr = self.window_interface.screenshot()[:, :, :3]
-
-        if self.include_lidar:
-            assert self.lidar is not None
-            assert self.window_interface is not None
-            img0 = raw_bgr if raw_bgr is not None else self.window_interface.screenshot()[:, :, :3]
-            z = self.lidar.lidar_20(img=img0, show=False)
-            self._lidar_hist = [
-                np.asarray(z, dtype=np.float32).copy() for _ in range(self.img_hist_len)
-            ]
-            total_obs.append(np.array(self._lidar_hist, dtype=np.float32))
 
         if self.include_camera_images:
             img = self._capture_and_process_image(raw_bgr=raw_bgr)

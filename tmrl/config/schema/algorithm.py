@@ -87,7 +87,7 @@ class AlgorithmConfig(BaseModel):
         default=0.5,
         description=(
             "R2D2-style replay only (MTQC / TQCGRAB interfaces): temporal rewind augmentation "
-            "probability. Unused for LIDAR tuple memory."
+            "probability. Unused for boundary lidar tuple memory."
         ),
     )
     r2d2_num_sequences: int = Field(
@@ -95,7 +95,7 @@ class AlgorithmConfig(BaseModel):
         ge=0,
         description=(
             "R2D2-style replay only: parallel sequences per minibatch; 0 uses i.i.d. transitions. "
-            "Unused for LIDAR tuple memory."
+            "Unused for boundary lidar tuple memory."
         ),
     )
     r2d2_sequence_length: int = Field(
@@ -103,7 +103,7 @@ class AlgorithmConfig(BaseModel):
         ge=0,
         description=(
             "R2D2-style replay only: sequence length L for recurrent / stacked batches. "
-            "IQN GNN+Lidar uses this only if USE_RNN_MODEL and batch layout matches."
+            "IQN GNN + boundary lidar uses this only if USE_RNN_MODEL and batch layout matches."
         ),
     )
     r2d2_burn_in: int = Field(
@@ -111,7 +111,7 @@ class AlgorithmConfig(BaseModel):
         ge=0,
         description=(
             "R2D2-style replay / GRU path: burn-in prefix without full BPTT. "
-            "Unused for plain LIDAR MLP IQN."
+            "Unused for plain boundary lidar MLP IQN."
         ),
     )
     optimizer_actor: str = Field(
@@ -310,15 +310,7 @@ class AlgorithmConfig(BaseModel):
         description=(
             "FoG (forgetful observation gating) episode bias in R2D2-style memory sampling "
             "(tmrl.memory): >0 weights recent episodes; 0 disables. "
-            "No effect on LIDAR tuple replay."
-        ),
-    )
-    eder_oversample_ratio: int = Field(
-        default=0,
-        ge=0,
-        description=(
-            "IQN / SDSAC: batch diversity filter oversample ratio (>=2 enables EDER-style filter). "
-            "0 disables. Unused for SAC/TQC/REDQ."
+            "No effect on boundary lidar tuple replay."
         ),
     )
     sdsac_avg_q: bool = Field(

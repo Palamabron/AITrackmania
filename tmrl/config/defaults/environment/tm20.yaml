@@ -6,7 +6,8 @@ defaults:
 
 environment:
   seed: 0
-  rtgym_interface: LIDAR
+  # Pre-recorded left/right boundaries (CSV / boundary .pkl), not legacy screen-ray beams.
+  rtgym_interface: TM20LIDAR
   init_gas_bias: 0.0
   map_name: ""
   end_of_track_reward: 0.0
@@ -14,7 +15,7 @@ environment:
   window_height: 480
   img_width: 64
   img_height: 64
-  use_images: true
+  use_images: false
   img_grayscale: true
   sleep_time_at_reset: 1.5
   img_hist_len: 4

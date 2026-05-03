@@ -82,8 +82,8 @@ flowchart TD
 The runtime path intentionally separates **what config says** from **how objects are built**:
 
 1. `MAIN_CONFIG` is the typed, authoritative tree.
-2. `constants.py` derives runtime booleans (`USE_LIDAR_OBSERVATIONS`, `USE_IMAGES_MOBILENET_PIPELINE`,
-   `USE_OBS_WORLD_TELEMETRY_LAYOUT`, etc.) and
+2. `constants.py` derives runtime booleans (`USE_LIDAR`, `USE_LIDAR_IMAGES`,
+   `USE_IMAGES_MOBILENET_PIPELINE`, `USE_OBS_WORLD_TELEMETRY_LAYOUT`, etc.) and
    convenience values used throughout the codebase.
 3. `config_objects.py` maps those flags plus `algorithm/model` settings to concrete classes:
    - interface class,
@@ -121,9 +121,11 @@ uv run python -m tmrl --trainer
 
 `--explain-active-config` lists which `model.*` keys actually affect the current **algorithm + rtgym_interface** routing and which are ignored (helps avoid dead keys in `local.yaml`, e.g. IQN vs `residual_mlp_num_blocks_actor`).
 
-### IQN + LIDAR (discrete actions)
+### IQN + boundary lidar (discrete actions)
 
-IQN uses **`DQNActor`** on workers and **`IQNQNetwork`** in the trainer (implementation: `tmrl/custom/models/discrete_actions/iqn_discrete_q_network.py`). With **`environment.rtgym_interface: LIDAR`**, that stack is selected automatically (do not use the continuous Gaussian MLP actor). For an explicit Hydra group name, use **`environment=lidar_iqn`** (`defaults/environment/lidar_iqn.yaml`; same content as `tm20`). Copy `tmrl/config/examples/iqn_lidar.local.yaml` to `~/TmrlData/config/local.yaml` if you want a starting point.
+IQN uses **`DQNActor`** on workers and **`IQNQNetwork`** in the trainer (implementation: `tmrl/custom/models/discrete_actions/iqn_discrete_q_network.py`). With **`environment.rtgym_interface`** set to a **boundary lidar** token—typically **`TM20LIDAR`** (default in `environment/tm20.yaml`), or legacy **`TM20TRACKMAP`**, or fused **`TM20TRACKMAPIMAGES` / `TM20LIDARIMAGES`**—that discrete stack is selected automatically (do not use the continuous Gaussian MLP actor).
+
+Optional Hydra preset for IQN-friendly reward shaping on that layout: **`environment=lidar_iqn`** (`defaults/environment/lidar_iqn.yaml`; extends `tm20`). Copy into `~/TmrlData/config/local.yaml` or export `TMRL_HYDRA_OVERRIDES` as below.
 
 **TQCGrab / MTQC** interfaces still work with IQN (same `DQNActor`); use them when you need that observation layout, not because the algorithm is TQC.
 
@@ -196,8 +198,8 @@ Hydra preset **names** stay short (`model=mlp_actor_critic`, …). Source files 
 |------|---------------------|
 | `shared/base.py`, `shared/model_constants.py`, `shared/neural_network_blocks.py` | Shared utilities and NN blocks used across all families. |
 | `vector_input/sac_mlp_actor_critic.py` | Continuous SAC / REDQ MLP actor + twin Q (tuple or Box obs). |
-| `vector_input/sac_residual_mlp_actor_critic.py` | SAC / REDQ with residual MLP trunk (LIDAR vector path). |
-| `vector_input/sac_gru_actor_critic.py` | SAC with stacked GRU (`model=rnn_actor_critic`, LIDAR + recurrent path). |
+| `vector_input/sac_residual_mlp_actor_critic.py` | SAC / REDQ with residual MLP trunk (boundary lidar / vector tuple path). |
+| `vector_input/sac_gru_actor_critic.py` | SAC with stacked GRU (`model=rnn_actor_critic`, boundary lidar + recurrent path). |
 | `image_input/vanilla_cnn_sac.py`, `image_input/efficientnet.py`, `image_input/impala.py` | Image-first pipelines (vanilla CNN / EfficientNet / IMPALA-style). |
 | `hybrid_input/sophy.py`, `hybrid_input/gnn_effnet_sophy.py` | Hybrid track+telemetry(+image) families (Sophy and variants). |
 | `discrete_actions/iqn_discrete_q_network.py` | IQN / discrete Q (`DQNActor`, `IQNQNetwork`, cosine embedding, dueling). |

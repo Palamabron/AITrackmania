@@ -1052,7 +1052,7 @@ class RolloutWorker:
         act = self.act(obs, test=test)
         new_obs, rew, terminated, truncated, info = self.env.step(act)
         if isinstance(info, dict) and info.get("crashed", False):
-            penalty = float(info.get("crash_penalty", cfg.REWARD_CONFIG.get("CRASH_PENALTY", 0.0)))
+            penalty = float(info.get("crash_penalty", cfg.REWARD_CONFIG.get("crash_penalty", 0.0)))
             logger.info("Car crashed: -{} reward", penalty)
 
         if self.obs_preprocessor is not None:
@@ -1061,7 +1061,7 @@ class RolloutWorker:
             if last_step and not terminated:
                 truncated = True
                 if isinstance(info, dict):
-                    # Signal interfaces that implement RewardFunction logging (LIDAR/vision/etc.)
+                    # Interfaces that implement RewardFunction logging (boundary lidar / vision / …)
                     # so worker-side wandb metrics flush on forced episode truncation.
                     info["env_truncated"] = True
             if self.crc_debug:

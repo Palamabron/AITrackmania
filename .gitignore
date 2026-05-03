@@ -136,6 +136,9 @@ plotRewardPoints.py
 # Generated output
 output_files/
 
+# Local experiment reports (plots, exports)
+reports/
+
 # Cursor workspace artifacts
 .cursor/
 .cursor-scripts/

@@ -89,11 +89,11 @@ class RewardFunction:
         nb_obs_forward: int = 8,
         nb_obs_backward: int = 8,
         max_dist_from_traj: float = 23.5,
-        crash_penalty: float = 10.0,
+        crash_penalty: float = 2.0,
         constant_penalty: float = 0.0,
         *,
         # --- Track geometry ---
-        is_lidar: bool = False,
+        require_track_boundary_pickles: bool = False,
         track_path_left: str = "",
         track_path_right: str = "",
         # --- Reward tuning (from RewardConfig.model_dump()) ---
@@ -126,14 +126,15 @@ class RewardFunction:
 
         self.datalen = len(self.data)
 
-        if is_lidar:
+        if require_track_boundary_pickles:
             if not os.path.isfile(track_path_left):
                 raise FileNotFoundError(
-                    f"LIDAR requires left track boundary: missing {track_path_left}"
+                    f"Strict track boundaries require left track pickle: missing {track_path_left}"
                 )
             if not os.path.isfile(track_path_right):
                 raise FileNotFoundError(
-                    f"LIDAR requires right track boundary: missing {track_path_right}"
+                    "Strict track boundaries require right track pickle: missing "
+                    f"{track_path_right}"
                 )
             with open(track_path_left, "rb") as f:
                 self.left_track = np.asarray(pickle.load(f), dtype=np.float64)
@@ -266,7 +267,7 @@ class RewardFunction:
         self._drift_sigma_deg = float(rc.get("drift_sigma_deg", 8.0))
         self._drift_threshold_kmh = float(rc.get("drift_threshold_kmh", 80.0))
         self._max_track_width = float(rc.get("max_track_width", 35.0))
-        self.crash_penalty = float(rc.get("crash_penalty", 2.0))
+        self.crash_penalty = float(rc.get("crash_penalty", crash_penalty))
         self._reward_clip_floor = float(rc.get("reward_clip_floor", 5.0))
         self._reward_scale = float(rc.get("reward_scale", 1.0))
         self._end_of_track_reward = float(rc.get("end_of_track_reward", 10.0))

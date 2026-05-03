@@ -21,26 +21,26 @@ def obs_preprocessor_tm_act_in_obs(obs):
     return obs
 
 
-def obs_preprocessor_tm_lidar_act_in_obs(obs):
-    """
-    Preprocessor for the LIDAR environment, flattening LIDARs
-    """
-    obs = (obs[0], np.ndarray.flatten(obs[1]), *obs[2:])  # >= 1  action
-    return obs
+def obs_preprocessor_lidar_act_in_obs(obs):
+    """Boundary lidar obs: (track_60, speed, gear, rpm, accel, steer, slip x4, crash, fc)."""
+    return (
+        np.clip(obs[0].astype(np.float32) / 300.0, -1.0, 1.0),
+        np.clip(obs[1].astype(np.float32) / 1000.0, 0.0, 1.0),
+        np.clip(obs[2].astype(np.float32) / 6.0, 0.0, 1.0),
+        np.clip(obs[3].astype(np.float32) / 10000.0, 0.0, 1.0),
+        np.clip(obs[4].astype(np.float32) / 100.0, -1.0, 1.0),
+        np.clip(obs[5].astype(np.float32), -1.0, 1.0),
+        np.clip(obs[6].astype(np.float32), 0.0, 1.0),
+        obs[7].astype(np.float32),
+        np.clip(obs[8].astype(np.float32) / 15.0, 0.0, 1.0),
+        *obs[9:],
+    )
 
 
-def obs_preprocessor_tm_lidar_progress_act_in_obs(obs):
-    """
-    Preprocessor for the LIDAR environment, flattening LIDARs
-    """
-    obs = (obs[0], obs[1], np.ndarray.flatten(obs[2]), *obs[3:])  # >= 1  action
-    return obs
+def obs_preprocessor_lidar_images_act_in_obs(obs):
+    """Boundary lidar + camera: normalize speed/progress; keep track geometry and images as-is.
 
-
-def obs_preprocessor_lidar_progress_images_act_in_obs(obs):
-    """
-    Preprocessor for LIDAR + images: normalize speed/progress, keep lidar and images as-is.
-    Obs = (speed, progress, lidar, images). Images are already [0,1] from interface.
+    Obs = (speed, progress, track, images). Images are already [0, 1] from the interface.
     """
     speed = np.clip(obs[0] / 1000.0, 0.0, 1.0).astype(np.float32)
     progress = np.clip(obs[1], 0.0, 1.0).astype(np.float32)
@@ -112,5 +112,5 @@ def obs_preprocessor_tqcgrab_act_in_obs(obs):
 # be careful: consistency after this will NOT be checked by CRC
 
 
-def sample_preprocessor_tm_lidar_act_in_obs(last_obs, act, rew, new_obs, terminated, truncated):
+def sample_preprocessor_lidar_act_in_obs(last_obs, act, rew, new_obs, terminated, truncated):
     return last_obs, act, rew, new_obs, terminated, truncated

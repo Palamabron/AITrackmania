@@ -110,7 +110,7 @@ class ResidualMLPQFunction(nn.Module):
 
 
 class ResidualMLPActorCritic(nn.Module):
-    """Actor-critic with residual MLP (depth 4-8 blocks, width 256). For Lidar + SAC."""
+    """Residual MLP actor-critic (depth 4-8, width 256); boundary lidar geometry + SAC."""
 
     def __init__(
         self,

@@ -8,6 +8,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from tmrl.config.rtgym_boundary_iface import (
+    rtgym_discrete_boundary_lidar_family,
+    rtgym_discrete_boundary_lidar_images,
+)
 from tmrl.config.schema.environment import EnvironmentConfig
 from tmrl.config.schema.main import MainConfig
 
@@ -16,9 +20,8 @@ from tmrl.config.schema.main import MainConfig
 class InterfaceContext:
     """Subset of ``constants.py`` interface flags derived only from ``EnvironmentConfig``."""
 
-    use_lidar_observations: bool
-    lidar_progress_includes_images: bool
-    trackmap_includes_images: bool
+    lidar_geometry_interface: bool
+    lidar_includes_images: bool
     obs_includes_world_telemetry: bool
     images_mobilenet_pipeline: bool
     images_r2d2_sequence_buffer: bool
@@ -27,15 +30,10 @@ class InterfaceContext:
 
 
 def build_interface_context(env: EnvironmentConfig) -> InterfaceContext:
-    """Mirror ``tmrl.config.constants`` interface detection (no import of ``constants``)."""
+    """Mirror ``tmrl.config.constants`` boundary-lidar detection (no import of ``constants``)."""
     rt = str(env.rtgym_interface).upper()
-    use_lidar = rt.endswith("LIDAR")
-    lip = rt.endswith("LIDARPROGRESS")
-    lip_img = "LIDARPROGRESSIMAGES" in rt
-    utm = rt.endswith("TRACKMAP")
-    utmi = "TRACKMAPIMAGES" in rt
-    if lip or utm or lip_img or utmi:
-        use_lidar = True
+    lidar_images = rtgym_discrete_boundary_lidar_images(rt)
+    lidar_geom = rtgym_discrete_boundary_lidar_family(rt)
     images_mobilenet_pipeline = (
         rt.endswith("MOBILEV3")
         or rt.endswith("CUSTOM")
@@ -45,9 +43,8 @@ def build_interface_context(env: EnvironmentConfig) -> InterfaceContext:
     obs_world_telemetry = "TQCGRAB" in rt
     images_r2d2_sequence_buffer = rt.endswith("MTQC") or obs_world_telemetry
     return InterfaceContext(
-        use_lidar_observations=use_lidar,
-        lidar_progress_includes_images=lip_img,
-        trackmap_includes_images=utmi,
+        lidar_geometry_interface=lidar_geom,
+        lidar_includes_images=lidar_images,
         obs_includes_world_telemetry=obs_world_telemetry,
         images_mobilenet_pipeline=images_mobilenet_pipeline,
         images_r2d2_sequence_buffer=images_r2d2_sequence_buffer,
@@ -60,7 +57,7 @@ def _advanced(ctx: InterfaceContext) -> bool:
     return ctx.images_mobilenet_pipeline or ctx.images_r2d2_sequence_buffer
 
 
-_SUPPORTED_LIDAR_ALGORITHMS = frozenset({"SAC", "REDQSAC", "IQN", "SDSAC"})
+_SUPPORTED_LIDAR_GEOMETRY_ALGORITHMS = frozenset({"SAC", "REDQSAC", "IQN", "SDSAC"})
 _SUPPORTED_ADVANCED_ALGORITHMS = frozenset({"TQC", "SAC", "IQN", "SDSAC"})
 
 
@@ -76,12 +73,12 @@ def model_policy_route(m: MainConfig) -> str:
     ctx = build_interface_context(m.environment)
     adv = _advanced(ctx)
 
-    if ctx.use_lidar_observations:
-        if alg not in _SUPPORTED_LIDAR_ALGORITHMS:
+    if ctx.lidar_geometry_interface:
+        if alg not in _SUPPORTED_LIDAR_GEOMETRY_ALGORITHMS:
             return "unsupported"
         if alg in ("IQN", "SDSAC"):
             return "lidar_iqn" if alg == "IQN" else "lidar_sdsac"
-        if (ctx.lidar_progress_includes_images or ctx.trackmap_includes_images) and alg == "SAC":
+        if ctx.lidar_includes_images and alg == "SAC":
             return "lidar_sac_frozen_effnet"
         if arch.use_residual_mlp and alg in ("SAC", "REDQSAC"):
             return "lidar_residual"
@@ -122,7 +119,8 @@ def _all_model_field_names(m: MainConfig) -> frozenset[str]:
     return frozenset(m.model.__class__.model_fields.keys())
 
 
-# IQN / SDSAC worker policy: fields that reach IQNFeatureBackbone / IQNQNetwork for discrete LIDAR.
+# IQN / SDSAC worker policy: fields that reach IQNFeatureBackbone / IQNQNetwork for discrete
+# boundary lidar observations.
 # Keep aligned with ``_IQN_BACKBONE_KWARGS`` in
 # ``tmrl/custom/models/discrete_actions/iqn_discrete_q_network.py`` plus
 # ``residual_mlp_*`` and ``type``.
@@ -161,7 +159,7 @@ _FROZEN_LIDAR_SAC: frozenset[str] = frozenset(
     }
 )
 
-# Residual / plain MLP actor-critic on LIDAR: no track encoder in these modules.
+# Residual / plain MLP actor-critic on boundary lidar vectors: no track encoder in these modules.
 _LIDAR_RESIDUAL: frozenset[str] = frozenset(
     {
         "type",
@@ -189,14 +187,14 @@ FIELD_IGNORE_HINTS: dict[str, str] = {
     ),
     "use_sophy_residual_actor": (
         "Only the world-telemetry (no screen) + MTQC-style vector branch with use_images=false; "
-        "ignored on LIDAR and IQN."
+        "ignored on boundary lidar interfaces and IQN."
     ),
     "split_track_observation": (
-        "Ignored on LIDAR plain residual/MLP actors (tuple is flattened); "
+        "Ignored on boundary lidar plain residual/MLP actors (tuple is flattened); "
         "used by IQN/SDSAC discrete backbones and Sophy when enabled."
     ),
     "track_encoder": (
-        "Ignored when split_track_observation is false or on LIDAR plain residual/MLP."
+        "Ignored when split_track_observation is false or on boundary lidar plain residual/MLP."
     ),
     "gnn_layers": "Ignored when track_encoder is not gnn or track split is unused for this route.",
     "gnn_hidden": "Ignored when track_encoder is not gnn or track split is unused for this route.",

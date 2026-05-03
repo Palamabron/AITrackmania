@@ -1,4 +1,6 @@
-.PHONY: fmt lint types check test tests install-dev server trainer worker record-episode
+.PHONY: fmt lint types check test tests install-dev server trainer worker record-episode \
+	record-reward record-track-boundaries extend-boundaries build-centerline-reward \
+	interpolate-reward plot-boundaries plot-reward check-env explain-config import-player-runs
 
 fmt:
 	.venv/bin/ruff format .
@@ -23,6 +25,21 @@ install-dev:
 
 # Default TMRL server port (see tmrl/config/defaults/distributed/default.yaml).
 TMRL_SERVER_PORT ?= 55555
+
+# --- Track geometry (reward + boundaries; paths default from TmrlData config when empty) ---
+# Reward pickle for interpolate-reward (empty → tmrl.config.REWARD_PATH).
+REWARD_INPUT ?=
+# Arc-length upsampling factor for interpolate-reward (scripts/interpolate_reward_trajectory.py).
+INTERP_FACTOR ?= 10
+# Straight extension length (m) for extend-boundaries (tmrl/tools/record_track.py extend).
+EXTEND_METERS ?= 100
+# One or two boundary .pkl paths for extend-boundaries (space-separated).
+BOUNDARY_PKLS ?=
+# Extra CLI args for build-centerline-reward / plot scripts (e.g. --debug-plot, --html-out file.html).
+CENTERLINE_ARGS ?=
+PLOT_ARGS ?=
+# Comma-separated .pkl paths for import-player-runs (tmrl --import-player-runs).
+PLAYER_RUNS_PATHS ?=
 
 # OS autodetection: OS=Windows_NT, COMSPEC, or uname for Git Bash/MSYS/WSL/Linux.
 # Do not run `uname` in $(shell) on Windows: Make may use cmd.exe, where `2>/dev/null ||` fails and prints "path not found".
@@ -98,6 +115,37 @@ worker:
 
 record-episode:
 	@$$env:UV_PROJECT_ENVIRONMENT = '$(strip $(TMRL_UV_ENV))'; uv run python -m tmrl --record-episode --record-episode-count $(if $(word 2,$(MAKECMDGOALS)),$(word 2,$(MAKECMDGOALS)),2)
+
+record-reward:
+	@$$env:UV_PROJECT_ENVIRONMENT = '$(strip $(TMRL_UV_ENV))'; uv run python -m tmrl --record-reward
+
+# Interactive: choose left/right boundary; spline interpolation runs on lap finish (see tmrl/tools/record_track.py).
+record-track-boundaries:
+	@$$env:UV_PROJECT_ENVIRONMENT = '$(strip $(TMRL_UV_ENV))'; uv run python tmrl/tools/record_track.py
+
+extend-boundaries:
+	@if ('$(strip $(BOUNDARY_PKLS))' -eq '') { Write-Error 'Set BOUNDARY_PKLS to one or more track_*_boundary.pkl paths (space-separated). For parallel L/R use exactly two.'; exit 1 }; $$env:UV_PROJECT_ENVIRONMENT = '$(strip $(TMRL_UV_ENV))'; uv run python tmrl/tools/record_track.py extend $(BOUNDARY_PKLS) --meters $(EXTEND_METERS)
+
+build-centerline-reward:
+	@$$env:UV_PROJECT_ENVIRONMENT = '$(strip $(TMRL_UV_ENV))'; uv run python scripts/build_centerline_reward.py $(CENTERLINE_ARGS)
+
+interpolate-reward:
+	@$$env:UV_PROJECT_ENVIRONMENT = '$(strip $(TMRL_UV_ENV))'; $$in = '$(REWARD_INPUT)'; if ($$in -eq '') { $$in = (uv run python -c "import tmrl.config as c; print(c.REWARD_PATH)") }; uv run python scripts/interpolate_reward_trajectory.py --input $$in --factor $(INTERP_FACTOR)
+
+plot-boundaries:
+	@$$env:UV_PROJECT_ENVIRONMENT = '$(strip $(TMRL_UV_ENV))'; uv run python scripts/plotTrackPoints.py $(PLOT_ARGS)
+
+plot-reward:
+	@$$env:UV_PROJECT_ENVIRONMENT = '$(strip $(TMRL_UV_ENV))'; uv run python scripts/plotRewardPoints.py $(PLOT_ARGS)
+
+check-env:
+	@$$env:UV_PROJECT_ENVIRONMENT = '$(strip $(TMRL_UV_ENV))'; uv run python -m tmrl --check-env
+
+explain-config:
+	@$$env:UV_PROJECT_ENVIRONMENT = '$(strip $(TMRL_UV_ENV))'; uv run python -m tmrl --explain-active-config
+
+import-player-runs:
+	@if ('$(strip $(PLAYER_RUNS_PATHS))' -eq '') { Write-Error 'Set PLAYER_RUNS_PATHS to a comma-separated list of player-run .pkl files'; exit 1 }; $$env:UV_PROJECT_ENVIRONMENT = '$(strip $(TMRL_UV_ENV))'; uv run python -m tmrl --import-player-runs --player-runs-paths $(PLAYER_RUNS_PATHS)
 else
 server: kill-server
 	@UV_PROJECT_ENVIRONMENT=$(TMRL_UV_ENV) uv run python -m tmrl --server
@@ -110,6 +158,40 @@ worker:
 
 record-episode:
 	@UV_PROJECT_ENVIRONMENT=$(TMRL_UV_ENV) uv run python -m tmrl --record-episode --record-episode-count $(if $(word 2,$(MAKECMDGOALS)),$(word 2,$(MAKECMDGOALS)),2)
+
+record-reward:
+	@UV_PROJECT_ENVIRONMENT=$(TMRL_UV_ENV) uv run python -m tmrl --record-reward
+
+record-track-boundaries:
+	@UV_PROJECT_ENVIRONMENT=$(TMRL_UV_ENV) uv run python tmrl/tools/record_track.py
+
+extend-boundaries:
+	@test -n "$(strip $(BOUNDARY_PKLS))" || (echo "Set BOUNDARY_PKLS to one or more track_*_boundary.pkl paths (space-separated). For parallel L/R use exactly two." >&2; exit 1)
+	@UV_PROJECT_ENVIRONMENT=$(TMRL_UV_ENV) uv run python tmrl/tools/record_track.py extend $(BOUNDARY_PKLS) --meters $(EXTEND_METERS)
+
+build-centerline-reward:
+	@UV_PROJECT_ENVIRONMENT=$(TMRL_UV_ENV) uv run python scripts/build_centerline_reward.py $(CENTERLINE_ARGS)
+
+interpolate-reward:
+	@in="$(REWARD_INPUT)"; \
+	if [ -z "$$in" ]; then in=$$(UV_PROJECT_ENVIRONMENT=$(TMRL_UV_ENV) uv run python -c "import tmrl.config as c; print(c.REWARD_PATH)"); fi; \
+	UV_PROJECT_ENVIRONMENT=$(TMRL_UV_ENV) uv run python scripts/interpolate_reward_trajectory.py --input "$$in" --factor $(INTERP_FACTOR)
+
+plot-boundaries:
+	@UV_PROJECT_ENVIRONMENT=$(TMRL_UV_ENV) uv run python scripts/plotTrackPoints.py $(PLOT_ARGS)
+
+plot-reward:
+	@UV_PROJECT_ENVIRONMENT=$(TMRL_UV_ENV) uv run python scripts/plotRewardPoints.py $(PLOT_ARGS)
+
+check-env:
+	@UV_PROJECT_ENVIRONMENT=$(TMRL_UV_ENV) uv run python -m tmrl --check-env
+
+explain-config:
+	@UV_PROJECT_ENVIRONMENT=$(TMRL_UV_ENV) uv run python -m tmrl --explain-active-config
+
+import-player-runs:
+	@test -n "$(strip $(PLAYER_RUNS_PATHS))" || (echo "Set PLAYER_RUNS_PATHS to a comma-separated list of player-run .pkl files" >&2; exit 1)
+	@UV_PROJECT_ENVIRONMENT=$(TMRL_UV_ENV) uv run python -m tmrl --import-player-runs --player-runs-paths $(PLAYER_RUNS_PATHS)
 endif
 
 # Allow syntax like: make record-episode 5

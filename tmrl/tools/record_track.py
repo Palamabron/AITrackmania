@@ -1,5 +1,7 @@
+import argparse
 import os
 import pickle
+import sys
 from typing import cast
 
 import numpy as np
@@ -7,7 +9,6 @@ from loguru import logger
 from scipy.interpolate import CubicSpline
 from scipy.ndimage import gaussian_filter1d
 
-import tmrl.config as cfg
 from tmrl.custom.interfaces.telemetry_indices import (
     TMRL_GRABDATA_FLOAT_COUNT,
     TmrlDataPlugin,
@@ -67,7 +68,11 @@ def _filter_origin_points(positions: np.ndarray) -> np.ndarray:
     return filtered
 
 
-def record_track(path_track=cfg.TRACK_PATH_LEFT):
+def record_track(path_track: str | None = None) -> None:
+    import tmrl.config as cfg
+
+    if path_track is None:
+        path_track = cfg.TRACK_PATH_LEFT
     positions: list[list[float]] = []
     client = TM2020OpenPlanetClient(
         port=9000, nb_floats=tmrl_grabdata_payload_nb_floats(cfg.REWARD_CONFIG)
@@ -134,6 +139,83 @@ def record_track(path_track=cfg.TRACK_PATH_LEFT):
 # keyed the sample count off ``len(reward_file)``, which under-sampled curves
 # into sharp corners.
 TRACK_BOUNDARY_SPACING_M = 0.25
+# After smoothing, append this many metres along the end tangent (straight runway / pit exit).
+TRACK_STRAIGHT_EXTENSION_M = 100.0
+
+
+def extend_polyline_straight_forward(
+    points: np.ndarray,
+    extra_m: float = TRACK_STRAIGHT_EXTENSION_M,
+    spacing_m: float = TRACK_BOUNDARY_SPACING_M,
+) -> np.ndarray:
+    """Append colinear samples along the last segment direction for ``extra_m`` metres.
+
+    Uses the unit vector from the second-to-last to the last point. New samples are
+    spaced by ``spacing_m`` (same as ``space_points``) so downstream code stays consistent.
+
+    For left+right boundaries, prefer :func:`extend_two_boundaries_parallel` so both
+    extensions share one forward direction.
+    """
+    pts = np.asarray(points, dtype=np.float64)
+    if len(pts) < 2 or extra_m <= 0:
+        return pts
+    tang = pts[-1] - pts[-2]
+    norm = float(np.linalg.norm(tang))
+    if norm < 1e-9:
+        return pts
+    u = tang / norm
+    n_new = max(1, round(extra_m / spacing_m))
+    step = extra_m / n_new
+    extra_rows = pts[-1] + u * (step * np.arange(1, n_new + 1, dtype=np.float64)[:, np.newaxis])
+    return np.vstack([pts, extra_rows])
+
+
+def _shared_forward_unit(left: np.ndarray, right: np.ndarray) -> np.ndarray:
+    """Unit vector along the track from the last centerline segment (mid of L/R)."""
+    left_pts = np.asarray(left, dtype=np.float64)
+    right_pts = np.asarray(right, dtype=np.float64)
+    if len(left_pts) < 2 or len(right_pts) < 2:
+        raise ValueError("left and right boundaries need at least 2 points each")
+    c0 = 0.5 * (left_pts[-2] + right_pts[-2])
+    c1 = 0.5 * (left_pts[-1] + right_pts[-1])
+    v = c1 - c0
+    n = float(np.linalg.norm(v))
+    if n >= 1e-9:
+        return np.asarray(v / n, dtype=np.float64)
+    tl = left_pts[-1] - left_pts[-2]
+    tr = right_pts[-1] - right_pts[-2]
+    v = tl + tr
+    n = float(np.linalg.norm(v))
+    if n >= 1e-9:
+        return np.asarray(v / n, dtype=np.float64)
+    tl_n = float(np.linalg.norm(tl))
+    if tl_n >= 1e-9:
+        return np.asarray(tl / tl_n, dtype=np.float64)
+    return np.array([1.0, 0.0, 0.0], dtype=np.float64)
+
+
+def extend_two_boundaries_parallel(
+    left: np.ndarray,
+    right: np.ndarray,
+    extra_m: float = TRACK_STRAIGHT_EXTENSION_M,
+    spacing_m: float = TRACK_BOUNDARY_SPACING_M,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Append the same straight direction to both sides so the extensions are parallel.
+
+    Forward ``u`` comes from the last segment of the centerline
+    ``(left + right) / 2``, then both polylines step by the same offsets along ``u``.
+    """
+    left_pts = np.asarray(left, dtype=np.float64)
+    right_pts = np.asarray(right, dtype=np.float64)
+    if extra_m <= 0:
+        return left_pts, right_pts
+    u = _shared_forward_unit(left_pts, right_pts)
+    n_new = max(1, round(extra_m / spacing_m))
+    step = extra_m / n_new
+    t = step * np.arange(1, n_new + 1, dtype=np.float64)[:, np.newaxis]
+    left_ext = np.vstack([left_pts, left_pts[-1] + u * t])
+    right_ext = np.vstack([right_pts, right_pts[-1] + u * t])
+    return left_ext, right_ext
 
 
 def space_points(points, spacing_m=TRACK_BOUNDARY_SPACING_M):
@@ -225,7 +307,87 @@ def line(pt1, pt2, dist):
     return pt, 0.0
 
 
+def _cli_extend_pkls(paths: list[str], extra_m: float) -> None:
+    """Load boundary ``.pkl`` files, append straight extension, overwrite.
+
+    With **exactly two** paths, uses one shared forward vector from the last
+    centerline segment so left and right extensions are parallel. Otherwise each
+    file is extended along its own end tangent.
+    """
+    if len(paths) == 2:
+        p0, p1 = paths[0], paths[1]
+        for p in (p0, p1):
+            if not os.path.isfile(p):
+                raise FileNotFoundError(p)
+        with open(p0, "rb") as f:
+            raw0 = pickle.load(f)
+        with open(p1, "rb") as f:
+            raw1 = pickle.load(f)
+        a0 = np.asarray(raw0, dtype=np.float64)
+        a1 = np.asarray(raw1, dtype=np.float64)
+        ext0, ext1 = extend_two_boundaries_parallel(a0, a1, extra_m=extra_m)
+        for path, pts, raw in ((p0, ext0, a0), (p1, ext1, a1)):
+            with open(path, "wb") as f:
+                pickle.dump(pts, f)
+            logger.info(
+                "Extended {} by {:.1f} m (parallel with pair) ({} -> {} points)",
+                path,
+                extra_m,
+                len(raw),
+                len(pts),
+            )
+        return
+
+    for path in paths:
+        if not os.path.isfile(path):
+            raise FileNotFoundError(path)
+        with open(path, "rb") as f:
+            raw = pickle.load(f)
+        pts = extend_polyline_straight_forward(np.asarray(raw, dtype=np.float64), extra_m=extra_m)
+        with open(path, "wb") as f:
+            pickle.dump(pts, f)
+        logger.info(
+            "Extended {} by {:.1f} m straight ({} -> {} points)",
+            path,
+            extra_m,
+            len(np.asarray(raw)),
+            len(pts),
+        )
+
+
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(
+        description="Record track boundary from TM2020 telemetry, or extend existing .pkl files.",
+    )
+    sub = parser.add_subparsers(dest="command", required=False)
+
+    p_ext = sub.add_parser(
+        "extend",
+        help=(
+            f"Append a straight segment (default {TRACK_STRAIGHT_EXTENSION_M:.0f} m) in place. "
+            "Pass **two** paths (left+right) to use one shared direction so both extensions "
+            "stay parallel."
+        ),
+    )
+    p_ext.add_argument(
+        "pkl",
+        nargs="+",
+        help="One or more track_*_boundary.pkl paths; use exactly two for parallel L/R extension.",
+    )
+    p_ext.add_argument(
+        "--meters",
+        type=float,
+        default=TRACK_STRAIGHT_EXTENSION_M,
+        help=f"Length of straight extension in metres (default: {TRACK_STRAIGHT_EXTENSION_M}).",
+    )
+
+    args = parser.parse_args()
+    if args.command == "extend":
+        _cli_extend_pkls(args.pkl, extra_m=args.meters)
+        sys.exit(0)
+
+    import tmrl.config as cfg
+
     if not os.path.exists(cfg.REWARD_PATH):
         logger.debug(f" reward not found at path:{cfg.REWARD_PATH}")
     which_track = input("Choose which track do you want to record [left/right] [l/r]: ").lower()

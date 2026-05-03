@@ -9,7 +9,7 @@ from gymnasium import spaces
 from loguru import logger
 from rtgym.envs.real_time_env import DEFAULT_CONFIG_DICT
 
-from tmrl.custom.interfaces import TM2020InterfaceLidar
+from tmrl.custom.interfaces import TM2020InterfaceBoundary
 
 NB_STEPS = 1000
 ACT_COMPUTE_MIN = 0.0
@@ -20,7 +20,7 @@ def benchmark():
     action_space = spaces.Box(low=-1.0, high=1.0, shape=(3,))
 
     env_config = DEFAULT_CONFIG_DICT.copy()
-    env_config["interface"] = TM2020InterfaceLidar
+    env_config["interface"] = TM2020InterfaceBoundary
     env_config["benchmark"] = True
     env_config["running_average_factor"] = 0.05
     env_config["wait_on_done"] = True

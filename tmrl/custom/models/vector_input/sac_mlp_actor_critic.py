@@ -1,6 +1,6 @@
 """Continuous SAC / REDQ actor-critic with plain MLP trunks.
 
-Supports **tuple or single Box** observation spaces (LIDAR vector path).
+Supports **tuple or single Box** observation spaces (boundary lidar / vector tuple path).
 """
 
 import numpy as np
