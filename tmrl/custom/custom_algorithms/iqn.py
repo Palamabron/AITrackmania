@@ -653,9 +653,6 @@ class IQNAgent(TrainingAgent):
         r = self._sanitize_tensor(r)
         d = self._sanitize_tensor(d)
 
-        if self.reward_normalize_scale != 1.0 and self.reward_normalize_scale > 0:
-            r = r / self.reward_normalize_scale
-
         if a.dim() >= 2 and a.shape[-1] == 3:
             from tmrl.custom.tm.utils.discrete_control import (
                 build_brake_tap_action_table,
@@ -682,6 +679,9 @@ class IQNAgent(TrainingAgent):
         else:
             munchausen_bonus = torch.zeros(batch_size, device=device)
 
+        if self.reward_normalize_scale != 1.0 and self.reward_normalize_scale > 0:
+            r = r * self.reward_normalize_scale
+
         if self.n_steps > 1:
             n_step_return, bootstrap_mask = _compute_n_step_return_and_bootstrap_mask(
                 r, d, self.gamma, self.n_steps
@@ -706,6 +706,8 @@ class IQNAgent(TrainingAgent):
             )
             action_idx = repeat(actions, "b -> b n 1", n=self.n_quantiles_train)
             current_q = current_quantiles.gather(2, action_idx).squeeze(2)
+            if self.sort_quantiles:
+                current_q, _ = torch.sort(current_q, dim=1)
 
         with torch.no_grad():
             tau_prime = torch.rand(batch_size, self.n_quantiles_target, device=device)
@@ -725,6 +727,8 @@ class IQNAgent(TrainingAgent):
                 target_quantiles, _ = self.model_target(o2, tau=tau_prime)
             next_action_idx = repeat(next_actions, "b -> b n 1", n=self.n_quantiles_target)
             next_q = target_quantiles.gather(2, next_action_idx).squeeze(2)
+            if self.sort_quantiles:
+                next_q, _ = torch.sort(next_q, dim=1)
 
             target = (
                 rearrange(n_step_return, "b -> b 1")
