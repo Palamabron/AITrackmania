@@ -86,7 +86,7 @@ TMRL_PWSH_EXE := $(TMRL_WIN_ROOT)/System32/WindowsPowerShell/v1.0/powershell.exe
 else
 TMRL_PWSH_EXE := powershell.exe
 endif
-TMRL_KILL_PS1 := $(subst \,/,$(dir $(abspath $(lastword $(MAKEFILE_LIST))))scripts/kill_tcp_port.ps1)
+TMRL_KILL_PS1 := $(subst \,/,$(dir $(abspath $(lastword $(MAKEFILE_LIST))))scripts/platform/kill_tcp_port.ps1)
 
 ifneq ($(TMRL_IS_WINDOWS),)
 SHELL := $(TMRL_PWSH_EXE)

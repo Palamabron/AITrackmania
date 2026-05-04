@@ -67,7 +67,7 @@ def obs_dim(observation_space) -> int:
     try:
         return sum(prod(s for s in space.shape) for space in observation_space)
     except TypeError:
-        return prod(observation_space.shape)
+        return int(prod(observation_space.shape))
 
 
 def cat_obs(obs, tuple_obs: bool) -> torch.Tensor:
@@ -96,7 +96,7 @@ def vector_dim_except(observation_space, image_index: int) -> int:
     try:
         spaces = list(observation_space)
     except TypeError:
-        return prod(observation_space.shape)
+        return int(prod(observation_space.shape))
     return sum(
         prod(space.shape) if hasattr(space, "shape") else int(space)
         for i, space in enumerate(spaces)
@@ -216,7 +216,7 @@ class MBConv(nn.Module):
 
 
 def conv_3x3_bn(inp, oup, stride):
-    """3×3 conv + BN + SiLU."""
+    """3x3 conv + BN + SiLU."""
     return nn.Sequential(
         nn.Conv2d(inp, oup, 3, stride, 1, bias=False),
         nn.BatchNorm2d(oup),
@@ -225,7 +225,7 @@ def conv_3x3_bn(inp, oup, stride):
 
 
 def conv_dw_3x3_bn(inp, oup, stride):
-    """Depthwise 3×3 + pointwise 1×1 stem (fewer FLOPs than conv_3x3_bn)."""
+    """Depthwise 3x3 + pointwise 1x1 stem (fewer FLOPs than conv_3x3_bn)."""
     return nn.Sequential(
         nn.Conv2d(inp, inp, 3, stride, 1, groups=inp, bias=False),
         nn.BatchNorm2d(inp),
@@ -237,7 +237,7 @@ def conv_dw_3x3_bn(inp, oup, stride):
 
 
 def conv_1x1_bn(inp, oup):
-    """1×1 conv + BN + SiLU."""
+    """1x1 conv + BN + SiLU."""
     return nn.Sequential(
         nn.Conv2d(inp, oup, 1, 1, 0, bias=False),
         nn.BatchNorm2d(oup),
@@ -254,7 +254,8 @@ class EffNetV2(nn.Module):
     """EfficientNetV2-style CNN.
 
     Args:
-        cfgs: Block config list — each entry is [expand_ratio, channels, num_blocks, stride, use_se].
+        cfgs: Block config list; each entry is
+            ``[expand_ratio, channels, num_blocks, stride, use_se]``.
         nb_channels_in: Input channels (default 3 for RGB).
         dim_output: Output embedding dimension.
         width_mult: Channel width multiplier.
@@ -313,7 +314,7 @@ class EffNetV2(nn.Module):
 
 
 def effnetv2_xs(**kwargs) -> EffNetV2:
-    """EfficientNetV2-XS: 8 blocks, ~5× faster than S."""
+    """EfficientNetV2-XS: 8 blocks, ~5x faster than S."""
     cfgs = [
         [1, 16, 1, 1, 0],
         [4, 32, 2, 2, 0],
@@ -478,7 +479,7 @@ class ResidualMLPBlock(nn.Module):
 
 
 def residual_mlp_backbone(input_dim: int, hidden_dim: int, num_blocks: int) -> nn.Module:
-    """Build: input_proj → num_blocks × ResidualMLPBlock. Output dim = hidden_dim."""
+    """Build: input_proj -> num_blocks ResidualMLPBlock layers. Output dim = hidden_dim."""
     scale = 1.0 / max(1, num_blocks) ** 0.5
     layers: list[nn.Module] = [
         nn.Linear(input_dim, hidden_dim),
@@ -496,7 +497,7 @@ def residual_mlp_backbone(input_dim: int, hidden_dim: int, num_blocks: int) -> n
 
 
 def _l2_normalize(x: torch.Tensor, dim: int = -1, eps: float = 1e-8) -> torch.Tensor:
-    return x / (x.norm(dim=dim, keepdim=True) + eps)
+    return cast(torch.Tensor, x / (x.norm(dim=dim, keepdim=True) + eps))
 
 
 class HypersphericalLinear(nn.Module):
@@ -588,10 +589,10 @@ _SQUASH_CLAMP = 20.0
 def squashed_logprob(pi_distribution: Normal, pi_action: torch.Tensor) -> torch.Tensor:
     """Log-prob of a Gaussian policy corrected for tanh squashing (SAC appendix C).
 
-    Numerically stable form:  logp -= 2·(log2 − a − softplus(−2a))
-    Pre-tanh action is clamped to ±20 to prevent −inf / NaN at large magnitudes.
+    Numerically stable form:  logp -= 2*(log2 - a - softplus(-2*a))
+    Pre-tanh action is clamped to +/-20 to prevent -inf / NaN at large magnitudes.
     """
     logp = pi_distribution.log_prob(pi_action).sum(axis=-1)
     a = pi_action.clamp(-_SQUASH_CLAMP, _SQUASH_CLAMP)
     logp -= (2.0 * (_LOG2 - a - F.softplus(-2.0 * a))).sum(dim=1)
-    return logp
+    return cast(torch.Tensor, logp)

@@ -4,7 +4,8 @@ Finer spacing gives a more granular progress signal (e.g. on difficult turns)
 without changing total reward scale: progress is still (distance_gained * 100 / total_length).
 
 Usage:
-  tmrl-interpolate-reward --input /path/to/reward_<MAP_NAME>.pkl [--factor 10] [--out path] [--dry-run]
+  tmrl-interpolate-reward --input /path/to/reward_<MAP_NAME>.pkl
+    [--factor 10] [--out path] [--dry-run]
 
 Example (TmrlData on Windows WSL):
   tmrl-interpolate-reward --input /mnt/c/Users/szulc/TmrlData/reward/reward_test-3.pkl --factor 10

@@ -18,7 +18,7 @@ from tmrl.custom.models.shared.blocks import (
 
 
 def rgb_to_grayscale(images):
-    """Extract first channel from RGB observations (shape: batch × hist × H × W × 3)."""
+    """Extract first channel from RGB observations (shape: batch x hist x H x W x 3)."""
     return images[:, :, :, :, 0]
 
 
@@ -53,7 +53,7 @@ class VanillaCNN(nn.Module):
         h, w = conv2d_out_dims(self.conv4, h, w)
 
         self.flat_features = self.conv4.out_channels * h * w
-        # scalars: speed + gear + rpm (3) + act1 + act2 (2×3=6) [+ act (3) for Q]
+        # scalars: speed + gear + rpm (3) + act1 + act2 (2x3=6) [+ act (3) for Q]
         scalar_dim = 12 if q_net else 9
         mlp_sizes = [self.flat_features + scalar_dim, 256, 256] + ([1] if q_net else [])
         self.mlp = mlp(mlp_sizes, nn.ReLU)

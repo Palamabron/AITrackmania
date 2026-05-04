@@ -105,8 +105,8 @@ def make_world_telemetry_obs_preprocessor(track_coords_divisor: float):
 
 def obs_preprocessor_world_telemetry_act_in_obs(obs):
     """
-    Preprocessor for world-telemetry interface (TQC_GrabData plugin): normalize speed and progress to [0,1],
-    scale other API channels to bounded ranges for stable SAC/TQC training.
+    Preprocessor for world-telemetry interface (TQC_GrabData plugin): normalize speed and
+    progress to [0,1], scale other API channels to bounded ranges for stable SAC/TQC training.
     Track (obs[0]) is normalized to ~[-1, 1] so it matches scale of other inputs.
     Obs = (track, speed, accel, jerk, race_progress, steer, gas, brake, gear, aim_yaw, aim_pitch,
           steer_angle(2), slip_coef(2), failure_counter[, optional action buffer...]).
