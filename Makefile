@@ -133,7 +133,7 @@ interpolate-reward:
 	@$$env:UV_PROJECT_ENVIRONMENT = '$(strip $(TMRL_UV_ENV))'; $$in = '$(REWARD_INPUT)'; if ($$in -eq '') { $$in = (uv run python -c "import tmrl.config as c; print(c.REWARD_PATH)") }; uv run python scripts/interpolate_reward_trajectory.py --input $$in --factor $(INTERP_FACTOR)
 
 plot-boundaries:
-	@$$env:UV_PROJECT_ENVIRONMENT = '$(strip $(TMRL_UV_ENV))'; uv run python scripts/plotTrackPoints.py $(PLOT_ARGS)
+	@$$env:UV_PROJECT_ENVIRONMENT = '$(strip $(TMRL_UV_ENV))'; uv run python -m tmrl.tools.plot_track_points $(PLOT_ARGS)
 
 check-env:
 	@$$env:UV_PROJECT_ENVIRONMENT = '$(strip $(TMRL_UV_ENV))'; uv run python -m tmrl --check-env
@@ -175,7 +175,7 @@ interpolate-reward:
 	UV_PROJECT_ENVIRONMENT=$(TMRL_UV_ENV) uv run python scripts/interpolate_reward_trajectory.py --input "$$in" --factor $(INTERP_FACTOR)
 
 plot-boundaries:
-	@UV_PROJECT_ENVIRONMENT=$(TMRL_UV_ENV) uv run python scripts/plotTrackPoints.py $(PLOT_ARGS)
+	@UV_PROJECT_ENVIRONMENT=$(TMRL_UV_ENV) uv run python -m tmrl.tools.plot_track_points $(PLOT_ARGS)
 
 check-env:
 	@UV_PROJECT_ENVIRONMENT=$(TMRL_UV_ENV) uv run python -m tmrl --check-env

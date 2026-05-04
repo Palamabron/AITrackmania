@@ -450,9 +450,6 @@ def _pick_obs_preprocessor() -> Any:
 OBS_PREPROCESSOR = _pick_obs_preprocessor()
 SAMPLE_PREPROCESSOR = None
 
-assert not cfg.USE_RNN, "RNNs not supported yet"
-
-
 def _determine_memory_name() -> str:
     """Map interface feature flags to a MEMORIES registry key."""
     explicit = M.memory.memory_type
