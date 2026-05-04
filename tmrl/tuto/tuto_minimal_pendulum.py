@@ -13,7 +13,7 @@ from typing import Any
 import tmrl.config as cfg
 from tmrl.custom.custom_algorithms import SpinupSacAgent
 from tmrl.custom.memories import GenericTorchMemory
-from tmrl.custom.models import MLPActorCritic, SquashedGaussianMLPActor
+from tmrl.custom.models import MLPActor, MLPActorCritic
 from tmrl.envs import GenericGymEnv
 
 # TMRL imports:
@@ -76,9 +76,9 @@ if __name__ == "__main__":
 
 # ActorModule:
 
-# SquashedGaussianMLPActor processes observations through an MLP.
+# MLPActor processes observations through an MLP.
 # It is designed to work with the SAC algorithm.
-actor_module_cls = partial(SquashedGaussianMLPActor)
+actor_module_cls = partial(MLPActor)
 
 # Worker local files
 
@@ -245,7 +245,7 @@ if __name__ == "__main__":
     rendering_worker = RolloutWorker(
         standalone=True,
         env_cls=partial(GenericGymEnv, id="Pendulum-v1", gym_kwargs={"render_mode": "human"}),
-        actor_module_cls=partial(SquashedGaussianMLPActor),
+        actor_module_cls=partial(MLPActor),
         sample_compressor=None,
         device="cpu",
         max_samples_per_episode=1000,

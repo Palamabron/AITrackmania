@@ -1,9 +1,12 @@
 """Shared helpers and utilities for TMRL training agents."""
 
 from contextlib import nullcontext
+from typing import Any
 
 import numpy as np
 import torch
+from loguru import logger
+from torch.optim import SGD, Adam, AdamW
 
 
 def set_seed(seed: int) -> None:
@@ -77,17 +80,8 @@ def sanitize_tensor(t: torch.Tensor) -> torch.Tensor:
 def sanitize_obs(obs: torch.Tensor | tuple) -> torch.Tensor | tuple:
     """Sanitize observation (tuple of tensors or single tensor): NaN/Inf -> 0."""
     if isinstance(obs, torch.Tensor):
-        return (
-            torch.nan_to_num(obs, nan=0.0, posinf=0.0, neginf=0.0)
-            if obs.is_floating_point()
-            else obs
-        )
-    return tuple(
-        torch.nan_to_num(t, nan=0.0, posinf=0.0, neginf=0.0)
-        if isinstance(t, torch.Tensor) and t.is_floating_point()
-        else t
-        for t in obs
-    )
+        return sanitize_tensor(obs)
+    return tuple(sanitize_tensor(t) if isinstance(t, torch.Tensor) else t for t in obs)
 
 
 def _compute_n_step_return_and_bootstrap_mask(
@@ -180,8 +174,50 @@ def polyak_update(model: torch.nn.Module, model_target: torch.nn.Module, polyak:
         polyak: Polyak averaging coefficient (0-1). Target = polyak * target + (1-polyak) * source.
     """
     with torch.no_grad():
-        for p, p_targ in zip(model.parameters(), model_target.parameters(), strict=False):
+        for p, p_targ in zip(model.parameters(), model_target.parameters(), strict=True):
             p_targ.data.mul_(polyak).add_(p.data, alpha=(1 - polyak))
+
+
+def _make_optimizer(
+    params,
+    optimizer_name: str,
+    lr: float,
+    *,
+    weight_decay: float | None = None,
+    eps: float | None = None,
+    betas: tuple[float, ...] | None = None,
+) -> torch.optim.Optimizer:
+    """Build an Adam/AdamW/SGD optimizer from a name string and optional kwargs.
+
+    Args:
+        params: Iterable of parameters to optimize.
+        optimizer_name: One of "adam", "adamw", "sgd" (case-insensitive).
+            Unknown names log a warning and fall back to SGD.
+        lr: Learning rate.
+        weight_decay: L2 regularisation. Omitted when None.
+        eps: Adam epsilon. Ignored for SGD and when None.
+        betas: Adam beta coefficients. Ignored for SGD and when None.
+
+    Returns:
+        Configured optimizer instance.
+    """
+    name = optimizer_name.lower()
+    if name == "adam":
+        cls: type[Adam] | type[AdamW] | type[SGD] = Adam
+    elif name == "adamw":
+        cls = AdamW
+    else:
+        if name != "sgd":
+            logger.warning("Unknown optimizer '{}', defaulting to SGD", name)
+        cls = SGD
+    kwargs: dict[str, Any] = {"lr": lr}
+    if weight_decay is not None:
+        kwargs["weight_decay"] = weight_decay
+    if eps is not None and name in ("adam", "adamw"):
+        kwargs["eps"] = eps
+    if betas is not None and name in ("adam", "adamw"):
+        kwargs["betas"] = tuple(betas)
+    return cls(params, **kwargs)
 
 
 def project_simbav2_weights(model: torch.nn.Module) -> None:
@@ -194,7 +230,7 @@ def project_simbav2_weights(model: torch.nn.Module) -> None:
         SimbaV2 uses hyperspherical linear layers that must be re-projected
         to the unit sphere after gradient updates to maintain constraints.
     """
-    from tmrl.custom.models.shared.neural_network_blocks import SimbaV2Backbone
+    from tmrl.custom.models.shared.blocks import SimbaV2Backbone
 
     for m in model.modules():
         if isinstance(m, SimbaV2Backbone):

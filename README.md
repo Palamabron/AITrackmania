@@ -13,16 +13,13 @@
 
 `tmrl` comes with an example self-driving pipeline for the TrackMania 2020 video game.
 
-![example](https://github.com/trackmania-rl/tmrl/releases/download/v0.2.0/video_lidar.gif)
-
-
  **TL;DR:**
 
 - :red_car: **AI and TM enthusiasts:**\
 `tmrl` enables you to train AIs in TrackMania with minimal effort. Tutorial for you guys [here](readme/get_started.md), video of a pre-trained AI [here](https://www.youtube.com/watch?v=hQkltOX0TYw), and beginner introduction to the SAC algorithm [here](https://www.youtube.com/watch?v=LN29DDlHp1U).
 
 - :rocket: **ML developers / roboticists:**\
-`tmrl` is a python library designed to facilitate the implementation of ad-hoc RL pipelines for industrial applications, and most notably real-time control. Minimal example [here](https://github.com/trackmania-rl/tmrl/blob/master/tmrl/tuto/tuto_minimal_drone.py), full tutorial [here](readme/tuto_library.md) and documentation [here](https://tmrl.readthedocs.io/en/latest/).
+`tmrl` is a python library designed to facilitate the implementation of ad-hoc RL pipelines for industrial applications, and most notably real-time control. Full tutorial [here](readme/tuto_library.md) and documentation [here](https://tmrl.readthedocs.io/en/latest/).
 
 - :ok_hand: **ML developers who are TM enthusiasts with no interest in learning this huge thing:**\
 `tmrl` provides a Gymnasium environment for TrackMania that is easy to use. Fast-track for you guys [here](#trackmania-gymnasium-environment).
@@ -123,9 +120,49 @@ Detailed instructions for installation are provided at [this link](readme/Instal
 
 Full guidance toward setting up an environment in TrackMania 2020, testing pre-trained weights, as well as a beginner-friendly tutorial to train, test, and fine-tune your own models, are provided at [this link](readme/get_started.md).
 
+## Configuration system
+
+`tmrl` uses [Hydra](https://hydra.cc/) for hierarchical configuration with [Pydantic](https://docs.pydantic.dev/) validation. Configuration files are in YAML format and organized by component:
+
+- **Defaults**: `tmrl/config/defaults/` - Shipped algorithm, model, and environment presets
+- **Presets**: `tmrl/config/presets/` - Complete training configurations (e.g., `optimal-params-tuning-v5.11-stable.yaml`)
+- **User overrides**: `~/TmrlData/config/local.yaml` - Your custom settings (not tracked by git)
+
+**Ways to configure:**
+
+1. **Local YAML file** (recommended):
+   ```yaml
+   # ~/TmrlData/config/local.yaml
+   environment:
+     rtgym_interface: TM20LIDAR
+     map_name: my_custom_map
+   algorithm:
+     name: SAC
+     lr_actor: 0.0001
+   ```
+
+2. **Environment variable**:
+   ```bash
+   export TMRL_HYDRA_OVERRIDES="algorithm.lr_actor=0.0001,environment.map_name=test_track"
+   ```
+
+3. **Preset selection**:
+   ```bash
+   # Uses tmrl/config/presets/my-preset.yaml
+   export TMRL_CONFIG_PRESET=my-preset
+   ```
+
+See `tmrl/config/README.md` for detailed documentation and `tmrl/config/schema/` for all available options.
+
 ## Makefile (development & track pipeline)
 
 This repository ships a `Makefile` that picks a [uv](https://github.com/astral-sh/uv) project environment (`.venv-linux`, `.venv-windows`, or `.venv`) and runs commands with `UV_PROJECT_ENVIRONMENT` set accordingly. On native Windows, recipes use PowerShell so Ctrl+C does not stop in the “Terminate batch job” prompt.
+
+**Quick start for a new track:**
+1. `make record-track-boundaries` - Record left/right track edges interactively
+2. `make build-centerline-reward` or `make record-reward` - Create reward trajectory
+3. `make check-env` - Verify setup before training
+4. `make trainer` / `make worker` - Start distributed training
 
 ### Code quality and tests
 
@@ -195,18 +232,25 @@ This is fine as long as you use `tmrl` on your own private network.
 HOWEVER, THIS IS A SECURITY BREACH IF YOU START USING `tmrl` ON A PUBLIC NETWORK.
 
 To securely use `tmrl` on a public network (for instance, on the Internet), enable Transport Layer Security (TLS).
-To do so, follow these instructions on all your machines:
+Configure these settings in your `~/TmrlData/config/local.yaml` (or via environment variables):
 
-- Open `config.json`;
-- Set the `"TLS"` entry to `true`;
-- Replace the `"PASSWORD"` entry with a strong password of your own (the same on all your machines);
-- On the machine hosting your `Server`, generate a TLS key and certificate (follow the [tlspyo instructions](https://github.com/MISTLab/tls-python-object#tls-setup));
-- Copy your generated certificate on all other machines (either in the default tlspyo credentials directory or in a directory of your choice);
-- If you used your own directory in the previous step, replace the `"TLS_CREDENTIALS_DIRECTORY"` entry with its path.
+```yaml
+distributed:
+  use_tls: true
+  password: "your_strong_password_here"  # Same on all machines
+  tls_hostname: "default"
+  tls_credentials_directory: ""  # Empty for default location
+```
 
-If for any reason you do not wish to use TLS (not recommended), you should still at least use a custom password in `config.json` when training over a public network.
-HOWEVER, DO NOT USE A PASSWORD THAT YOU USE FOR OTHER APPLICATIONS.
-This is because, without TLS encryption, this password will be readable in the packets sent by your machines over the network and can be intercepted.
+**TLS setup steps:**
+
+1. On the **server machine**, generate a TLS key and certificate (follow the [tlspyo instructions](https://github.com/MISTLab/tls-python-object#tls-setup))
+2. Copy the generated certificate to **all worker/trainer machines** (either to the default tlspyo credentials directory or a custom directory)
+3. If using a custom directory, set `distributed.tls_credentials_directory` to its path
+4. Set the **same password** on all machines (or use `TMRL_PASSWORD` environment variable)
+
+**Without TLS** (not recommended): You should still change the default password when training over a public network.
+**DO NOT USE A PASSWORD YOU USE FOR OTHER APPLICATIONS** - without TLS encryption, this password will be readable in network packets and can be intercepted.
 
 # Autonomous driving in TrackMania
 
@@ -223,158 +267,152 @@ In case you only wish to use the `tmrl` Real-Time Gym environment for TrackMania
 _(NB: the game needs to be set up as described in the [getting started](readme/get_started.md) instructions)_
 
 ```python
-from custom_tmrl import get_environment
+from tmrl import get_environment
 from time import sleep
 import numpy as np
 
 
-# LIDAR observations are of shape: ((1,), (4, 19), (3,), (3,))
-# representing: (speed, 4 last LIDARs, 2 previous actions)
-# actions are [gas, break, steer], analog between -1.0 and +1.0
+# Boundary LIDAR observations provide 60-float vectors representing
+# pre-recorded left/right track boundaries ahead of the car
+# Actions are [gas, brake, steer], analog between -1.0 and +1.0
 def model(obs):
   """
-  simplistic policy for LIDAR observations
+  Simplistic policy example - actual observation shape depends on your config.
+  For boundary LIDAR: obs includes speed, boundary points, and action history.
   """
-  deviation = obs[1].mean(0)
-  deviation /= (deviation.sum() + 0.001)
-  steer = 0
-  for i in range(19):
-    steer += (i - 9) * deviation[i]
-  steer = - np.tanh(steer * 4)
-  steer = min(max(steer, -1.0), 1.0)
-  return np.array([1.0, 0.0, steer])
+  # Simple forward acceleration
+  return np.array([1.0, 0.0, 0.0])
 
 
-# Let us retrieve the TMRL Gymnasium environment.
-# The environment you get from get_environment() depends on the content of config.json
+# Retrieve the TMRL Gymnasium environment
+# The environment depends on your Hydra configuration (see config section below)
 env = get_environment()
 
-sleep(1.0)  # just so we have time to focus the TM20 window after starting the script
+sleep(1.0)  # time to focus the TM20 window after starting
 
 obs, info = env.reset()  # reset environment
 for _ in range(200):  # rtgym ensures this runs at 20Hz by default
     act = model(obs)  # compute action
-    obs, rew, terminated, truncated, info = env.step(act)  # step (rtgym ensures healthy time-steps)
+    obs, rew, terminated, truncated, info = env.step(act)  # step
     if terminated or truncated:
         break
-env.unwrapped.wait()  # rtgym-specific method to artificially 'pause' the environment when needed
+env.unwrapped.wait()  # rtgym-specific method to pause the environment
 ```
 
-The environment flavor can be chosen and customized by changing the content of the `ENV` entry in `TmrlData\config\config.json`:
+### Configuration
 
-_(NB: do not copy-paste the examples, comments are not supported in vanilla .json files)_
+`tmrl` uses [Hydra](https://hydra.cc/) for configuration management with [Pydantic](https://docs.pydantic.dev/) schema validation. Configuration can be customized in several ways:
 
-### Full environment:
-This version of the environment features full screenshots to be processed with, e.g., a CNN.
-In addition, this version features the speed, gear and RPM.
-This works on any track, using any (sensible) camera configuration.
+1. **Create a local config file** at `~/TmrlData/config/local.yaml`
+2. **Use environment variable**: `export TMRL_HYDRA_OVERRIDES="environment.rtgym_interface=TM20LIDAR"`
+3. **Edit preset files** in `tmrl/config/presets/` or `tmrl/config/defaults/`
 
-```json5
-{
-  "ENV": {
-    "RTGYM_INTERFACE": "TM20FULL",  // TrackMania 2020 with full screenshots
-    "WINDOW_WIDTH": 256,  // width of the game window (min: 256)
-    "WINDOW_HEIGHT": 128,  // height of the game window (min: 128)
-    "SLEEP_TIME_AT_RESET": 1.5,  // the environment sleeps for this amount of time after each reset
-    "IMG_HIST_LEN": 4,  // length of the history of images in observations (set to 1 for RNNs)
-    "IMG_WIDTH": 64,  // actual (resized) width of the images in observations
-    "IMG_HEIGHT": 64,  // actual (resized) height of the images in observations
-    "IMG_GRAYSCALE": true,  // true for grayscale images, false for color images
-    "RTGYM_CONFIG": {
-      "time_step_duration": 0.05,  // duration of a time step
-      "start_obs_capture": 0.04,  // duration before an observation is captured
-      "time_step_timeout_factor": 1.0,  // maximum elasticity of a time step
-      "act_buf_len": 2,  // length of the history of actions in observations (set to 1 for RNNs)
-      "benchmark": false,  // enables benchmarking your environment when true
-      "wait_on_done": true,  // true
-      "ep_max_length": 1000  // episodes are truncated after this number of time steps
-    },
-    "REWARD_CONFIG": {
-      "END_OF_TRACK": 100.0,  // reward for reaching the finish line
-      "CONSTANT_PENALTY": 0.0,  // constant reward at every time-step
-      "CHECK_FORWARD": 500,  // maximum computed cut from last point
-      "CHECK_BACKWARD": 10,  // maximum computed backtracking from last point
-      "FAILURE_COUNTDOWN": 10,  // early termination after this number time steps
-      "MIN_STEPS": 70,  // number of time steps before early termination kicks in
-      "MAX_STRAY": 100.0  // early termination if further away from the demo trajectory
-    }
-  }
-}
-```
-Note that human players can see or hear the features provided by this environment: we provide no "cheat" that would render the approach non-transferable to the real world.
-In case you do wish to cheat, though, you can easily take inspiration from our [rtgym interfaces](https://github.com/trackmania-rl/tmrl/blob/master/tmrl/custom/interfaces/) to build your own custom environment for TrackMania.
+See `tmrl/config/README.md` for detailed configuration documentation.
 
-The `Full` environment is used in the official [TMRL competition](https://github.com/trackmania-rl/tmrl/blob/master/readme/competition.md), and custom environments are featured in the "off" competition :wink:
+### Vision-based environment (images):
+This version uses camera images processed with CNNs, along with speed and other telemetry from OpenPlanet.
+Works on any track with any camera configuration.
 
-### LIDAR environment:
-In this version of the environment, screenshots are reduced to 19-beam LIDARs to be processed with, e.g., an MLP.
-In addition, this version features the speed (that human players can see).
-This works only on plain road with black borders, using the front camera with car hidden.
-```json5
-{
-  "ENV": {
-    "RTGYM_INTERFACE": "TM20LIDAR",  // TrackMania 2020 with LIDAR observations
-    "WINDOW_WIDTH": 958,  // width of the game window (min: 256)
-    "WINDOW_HEIGHT": 488,  // height of the game window (min: 128)
-    "SLEEP_TIME_AT_RESET": 1.5,  // the environment sleeps for this amount of time after each reset
-    "IMG_HIST_LEN": 4,  // length of the history of LIDAR measurements in observations (set to 1 for RNNs)
-    "RTGYM_CONFIG": {
-      "time_step_duration": 0.05,  // duration of a time step
-      "start_obs_capture": 0.04,  // duration before an observation is captured
-      "time_step_timeout_factor": 1.0,  // maximum elasticity of a time step
-      "act_buf_len": 2,  // length of the history of actions in observations (set to 1 for RNNs)
-      "benchmark": false,  // enables benchmarking your environment when true
-      "wait_on_done": true,  // true
-      "ep_max_length": 1000  // episodes are truncated after this number of time steps
-    },
-    "REWARD_CONFIG": {
-      "END_OF_TRACK": 100.0,  // reward for reaching the finish line
-      "CONSTANT_PENALTY": 0.0,  // constant reward at every time-step
-      "CHECK_FORWARD": 500,  // maximum computed cut from last point
-      "CHECK_BACKWARD": 10,  // maximum computed backtracking from last point
-      "FAILURE_COUNTDOWN": 10,  // early termination after this number time steps
-      "MIN_STEPS": 70,  // number of time steps before early termination kicks in
-      "MAX_STRAY": 100.0  // early termination if further away from the demo trajectory
-    }
-  }
-}
+```yaml
+# ~/TmrlData/config/local.yaml
+environment:
+  rtgym_interface: TQCGRAB_IMAGES  # Vision-based interface
+  window_width: 256
+  window_height: 128
+  img_width: 64
+  img_height: 64
+  img_grayscale: true
+  use_images: true
+  img_hist_len: 4  # History of 4 images (set to 1 for RNNs)
+  sleep_time_at_reset: 1.5
+
+  rtgym_config:
+    time_step_duration: 0.05
+    start_obs_capture: 0.04
+    time_step_timeout_factor: 1.0
+    act_buf_len: 2  # Action history (set to 1 for RNNs)
+    ep_max_length: 5000  # Episode truncation
+
+  reward:
+    end_of_track_reward: 10.0
+    constant_penalty: 0.0
+    check_forward: 500
+    check_backward: 10
+    max_stray: 50.0
+    min_seconds_before_failure: 3.5  # Terminate after 3.5s without progress
+    crash_penalty: 0.5
 ```
 
-### LIDAR with track progress
+The vision environment is used in the official [TMRL competition](readme/competition.md).
+Note that observations are limited to what human players can perceive (no "cheating" with internal game state).
 
-If you have watched the [2022-06-08 episode](https://www.youtube.com/watch?v=c1xq7iJ3f9E) of the Underscore_ talk show (french), note that the policy you have seen has been trained in a slightly augmented version of the LIDAR environment: on top of LIDAR and speed value, we have added a value representing the percentage of completion of the track, so that the model can know the turns in advance similarly to humans practicing a given track.
-This environment will not be accepted in the competition, as it is de-facto less generalizable.
-However, if you wish to use this environment, e.g., to beat our results, you can use the following `config.json`:
+### Boundary LIDAR environment (default):
+This is the default interface using **pre-recorded track boundaries** sampled ahead of the car.
+Boundaries are recorded once per track using OpenPlanet telemetry (see `make record-track-boundaries`).
+The observation is a 60-float vector (30 left + 30 right boundary points) processed with an MLP.
 
-```json5
-{
-  "ENV": {
-    "RTGYM_INTERFACE": "TM20LIDARPROGRESS",  // TrackMania 2020 with LIDAR and percentage of completion
-    "WINDOW_WIDTH": 958,  // width of the game window (min: 256)
-    "WINDOW_HEIGHT": 488,  // height of the game window (min: 128)
-    "SLEEP_TIME_AT_RESET": 1.5,  // the environment sleeps for this amount of time after each reset
-    "IMG_HIST_LEN": 4,  // length of the history of LIDAR measurements in observations (set to 1 for RNNs)
-    "RTGYM_CONFIG": {
-      "time_step_duration": 0.05,  // duration of a time step
-      "start_obs_capture": 0.04,  // duration before an observation is captured
-      "time_step_timeout_factor": 1.0,  // maximum elasticity of a time step
-      "act_buf_len": 2,  // length of the history of actions in observations (set to 1 for RNNs)
-      "benchmark": false,  // enables benchmarking your environment when true
-      "wait_on_done": true,  // true
-      "ep_max_length": 1000  // episodes are truncated after this number of time steps
-    },
-    "REWARD_CONFIG": {
-      "END_OF_TRACK": 100.0,  // reward for reaching the finish line
-      "CONSTANT_PENALTY": 0.0,  // constant reward at every time-step
-      "CHECK_FORWARD": 500,  // maximum computed cut from last point
-      "CHECK_BACKWARD": 10,  // maximum computed backtracking from last point
-      "FAILURE_COUNTDOWN": 10,  // early termination after this number time steps
-      "MIN_STEPS": 70,  // number of time steps before early termination kicks in
-      "MAX_STRAY": 100.0  // early termination if further away from the demo trajectory
-    }
-  }
-}
+```yaml
+# ~/TmrlData/config/local.yaml (or use defaults)
+environment:
+  rtgym_interface: TM20LIDAR  # Default: pre-recorded boundary interface
+  map_name: "your_map_name"  # Must match recorded boundary files
+  window_width: 640
+  window_height: 480
+  sleep_time_at_reset: 1.5
+  use_images: false
+
+  rtgym_config:
+    time_step_duration: 0.05
+    act_buf_len: 2
+    ep_max_length: 5000
+
+  reward:
+    min_seconds_before_failure: 3.5
+    off_track_seconds_before_failure: 0.5
+    crash_penalty: 0.5
+    max_stray: 50.0
 ```
+
+**Recording boundaries:** Use `make record-track-boundaries` to record left/right track edges for a new map.
+The boundaries are saved to `~/TmrlData/track/{map_name}_left.pkl` and `{map_name}_right.pkl`.
+
+**Alternative tokens:**
+- `TM20TRACKMAP` - Legacy alias for TM20LIDAR
+- `TM20TRACKMAPIMAGES` - Boundary + image fusion
+- `TM20LIDARIMAGES` - Boundary + image fusion
+
+### Advanced reward shaping
+
+Modern `tmrl` includes sophisticated reward components beyond simple progress tracking:
+
+```yaml
+environment:
+  reward:
+    # Progress rewards
+    progress_reward_full_lap: 200.0  # Bonus for completing one lap
+    end_of_track_reward: 10.0  # Finish line bonus
+
+    # Speed rewards (encourage fast, aligned driving)
+    speed_reward_weight: 0.0  # Scale for speed-based rewards
+    speed_reward_exponent: 1.0  # Emphasize high-speed segments
+    max_speed_kmh: 300.0  # Normalization reference
+
+    # Drift rewards (experimental)
+    drift_reward_weight: 0.0  # Enable drift shaping
+
+    # Penalties and termination
+    crash_penalty: 0.5
+    constant_penalty: 0.0  # Per-step penalty
+    min_seconds_before_failure: 3.5  # Terminate after 3.5s without progress
+    off_track_seconds_before_failure: 0.5  # Grace period after reset
+    max_stray: 50.0  # Max lateral distance from trajectory (meters)
+
+    # Advanced options
+    reward_scale: 1.0  # Global reward multiplier
+    reward_clip_floor: 10.0  # Clip large negative rewards
+```
+
+See `tmrl/config/schema/environment.py` for all available reward parameters.
 
 ## TrackMania training details
 
@@ -440,27 +478,31 @@ The improvement introduced by REDQ consists essentially of training an ensemble 
 The authors show that this enables low-bias updates and a sample efficiency comparable to model-based algorithms, at a much lower computational cost.
 
 By default, `tmrl` trains policies with vanilla SAC.
-To use REDQ-SAC, edit `TmrlData\config\config.json` on the machine used for training, and replace the `"SAC"` value with `"REDQSAC"` in the `"ALGORITHM"` entry.
-You also need values for the `"REDQ_N"`, `"REDQ_M"` and `"REDQ_Q_UPDATES_PER_POLICY_UPDATE"` entries, where `"REDQ_N"` is the number of parallel critics, `"REDQ_M"` is the size of the subset, and `"REDQ_Q_UPDATES_PER_POLICY_UPDATE"` is a number of critic updates happenning between each actor update.
+To use REDQ-SAC, set the algorithm in your configuration:
 
-For instance, a valid `"ALG"` entry using REDQ-SAC is:
-
-```json
-  "ALG": {
-    "ALGORITHM": "REDQSAC",
-    "LEARN_ENTROPY_COEF":false,
-    "LR_ACTOR":0.0003,
-    "LR_CRITIC":0.00005,
-    "LR_ENTROPY":0.0003,
-    "GAMMA":0.995,
-    "POLYAK":0.995,
-    "TARGET_ENTROPY":-7.0,
-    "ALPHA":0.37,
-    "REDQ_N":10,
-    "REDQ_M":2,
-    "REDQ_Q_UPDATES_PER_POLICY_UPDATE":20
-  },
+```yaml
+# ~/TmrlData/config/local.yaml
+algorithm:
+  name: REDQSAC
+  learn_entropy_coef: false
+  lr_actor: 0.0003
+  lr_critic: 0.00005
+  lr_entropy: 0.0003
+  gamma: 0.995
+  polyak: 0.995
+  target_entropy: -7.0
+  alpha: 0.37
+  redq_n: 10  # Number of parallel critics
+  redq_m: 2  # Subset size
+  redq_q_updates_per_policy_update: 20  # Critic updates per actor update
 ```
+
+Other supported algorithms:
+- **SAC** (default): Soft Actor-Critic
+- **REDQSAC**: REDQ variant of SAC
+- **TQC**: Truncated Quantile Critics
+- **IQN**: Implicit Quantile Networks (discrete actions)
+- **SDSAC**: Sophy-inspired SAC variant
 
 ### A clever reward
 
@@ -488,27 +530,34 @@ In a nutshell, whereas the previous reward function was measuring how fast the c
 
 ### Available action spaces
 
-In `tmrl`, the car can be controlled in two different ways:
+In `tmrl`, the car can be controlled in different ways:
 
-- The policy can control the car with analog inputs by emulating an XBox360 controller thanks to the [vgamepad](https://pypi.org/project/vgamepad/) library.
-- The policy can output simple (binary) arrow presses.
+- **Analog control** (continuous): The policy controls gas, brake, and steering with continuous values [-1.0, +1.0] via a virtual XBox360 controller using the [vgamepad](https://pypi.org/project/vgamepad/) library (Windows/Linux).
+- **Discrete actions**: The policy selects from a discrete set of actions (used with IQN algorithm).
+
+The default is analog control with continuous SAC-based algorithms.
 
 ### Available observation spaces
 
-Different observation spaces are available in the TrackMania pipeline::
+Different observation spaces are available in the TrackMania pipeline:
 
-- A history of raw screenshots (typically 4).
-- A history of LIDAR measurement computed from raw screenshots in tracks with black borders.
+- **Vision (images)**: History of raw screenshots (typically 4 frames) processed with CNNs
+- **Boundary LIDAR**: Pre-recorded track boundaries ahead of the car (60-float vector: 30 left + 30 right points)
+- **Hybrid**: Combination of images and boundary observations
+- **World telemetry**: Full vehicle state from OpenPlanet (position, velocity, orientation, etc.)
 
-In addition,the pipeline provides the norm of the velocity as part of the observation space.
+All interfaces include velocity information as part of the observation space.
 
-Example of `tmrl` environment in TrackMania Nations Forever with a single LIDAR measurement:
+Example visualization of boundary LIDAR:
 
 ![reward](readme/img/lidar.png)
 
-In TrackMania Nations Forever, we use to compute the raw speed from screenshots thanks to the 1-NN algorithm.
+In TrackMania 2020, we use the [OpenPlanet](https://openplanet.nl) plugin to retrieve real-time telemetry:
+- **Car state**: Position, velocity, orientation, angular velocity, wheel contact
+- **Track boundaries**: Pre-recorded during track exploration (saved to `.pkl` files)
+- **Race info**: Checkpoint times, lap completion, race state
 
-In TrackMania 2020, we now use the [OpenPlanet](https://openplanet.nl) API to retrieve the raw speed directly.
+**Note:** Boundary "LIDAR" observations are **not** computed from screenshots. They are recorded once per track using OpenPlanet telemetry and stored in files. During training, the nearest boundary segments ahead of the car are looked up and transformed to the car's local coordinate frame.
 
 ### Results
 
@@ -531,7 +580,7 @@ This project uses [Real-Time Gym](https://github.com/yannbouteiller/rtgym) (```r
 
 Time-steps are being elastically constrained to their nominal duration. When this elastic constraint cannot be satisfied, the previous time-step times out and the new time-step starts from the current timestamp.
 
-Custom `rtgym` interfaces for Trackmania used by `tmrl` are implemented in [`tmrl/custom/interfaces`](https://github.com/yannbouteiller/tmrl/tree/master/tmrl/custom/interfaces).
+Custom `rtgym` interfaces for Trackmania used by `tmrl` are implemented in [`tmrl/custom/interfaces`](tmrl/custom/interfaces).
 
 ## Remote training architecture:
 
@@ -577,12 +626,13 @@ When contributing, please submit a PR with your name in the contributors list wi
 
 ## Contributors:
 - Simon Ramstedt - initial code base
-- AndrejGobeX - optimization of screen capture (TrackMania)
-- Pius - Linux support (TrackMania)
+- AndrejGobeX - optimization of screen capture
+- Pius - Linux support
+- Jakub Szulc - codebase refactoring and modernization
 
 # License
 
-MIT, Bouteiller and Geze.
+MIT, Bouteiller and Geze, 2021-2026.
 
 # Sponsors:
 

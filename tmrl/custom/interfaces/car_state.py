@@ -30,7 +30,6 @@ from tmrl.custom.tm.utils.tools import TM2020OpenPlanetClient
 from tmrl.registry import INTERFACES
 
 _DEFAULT_MIN_STEPS_END_OF_TRACK = 50
-GEAR_NORMALIZER = 5.0
 CURVATURE_SCALE = 10.0
 
 
@@ -229,7 +228,7 @@ class TM2020RLInterface(TM2020Interface):
         slip_coef = np.array(
             [data[TmrlDataPlugin.SLIP_FL], data[TmrlDataPlugin.SLIP_FR]], dtype=np.float32
         )
-        gear = np.array([data[TmrlDataPlugin.ENGINE_GEAR] / GEAR_NORMALIZER], dtype=np.float32)
+        gear = np.array([data[TmrlDataPlugin.ENGINE_GEAR]], dtype=np.float32)
         wheel_slips = [
             float(data[TmrlDataPlugin.SLIP_FL]),
             float(data[TmrlDataPlugin.SLIP_FR]),
@@ -390,7 +389,7 @@ class TM2020RLInterface(TM2020Interface):
         slip_coef = np.array(
             [data[TmrlDataPlugin.SLIP_FL], data[TmrlDataPlugin.SLIP_FR]], dtype=np.float32
         )
-        gear = np.array([data[TmrlDataPlugin.ENGINE_GEAR] / GEAR_NORMALIZER], dtype=np.float32)
+        gear = np.array([data[TmrlDataPlugin.ENGINE_GEAR]], dtype=np.float32)
         track_yaw = yaw_val
         self._prev_speed_for_kinematics = speed_kmh
         self._prev_acc_for_kinematics = 0.0

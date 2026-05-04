@@ -1,5 +1,5 @@
 """
-Constants for TQCGRAB (TQC_GrabData plugin) observation structure.
+Constants for the world-telemetry observation structure (TQC_GrabData plugin).
 
 Observation is a list: [track_info, speed, acceleration, jerk, race_progress,
 input_steer, input_gas_pedal, input_brake, gear, aim_yaw, aim_pitch,
@@ -10,8 +10,8 @@ Use these indices instead of magic numbers when indexing observations.
 from enum import IntEnum
 
 
-class TQCGRABObsIndex(IntEnum):
-    """Indices of observation parts in TQCGRAB interface (total_obs list)."""
+class WorldTelemetryObsIndex(IntEnum):
+    """Indices of observation parts in the world-telemetry interface (total_obs list)."""
 
     TRACK_INFO = 0
     SPEED = 1

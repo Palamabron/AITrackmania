@@ -6,6 +6,8 @@ from rtgym.envs.real_time_env import DEFAULT_CONFIG_DICT
 import tmrl.config as cfg
 from tmrl.custom.interfaces import TM2020Interface, TM2020InterfaceBoundary
 
+_CHECK_ROUNDS = 1200
+
 
 def check_env_tm20_boundary():
     env_config = DEFAULT_CONFIG_DICT.copy()
@@ -18,9 +20,8 @@ def check_env_tm20_boundary():
     }
     env = gymnasium.make("real-time-gym-v1", config=env_config)
     _, _ = env.reset()
-    rounds = 1200
     current = 0
-    while current < rounds:
+    while current < _CHECK_ROUNDS:
         current += 1
         _o, r, d, t, _ = env.step(None)
         logger.info(f"r:{r}, d:{d}")

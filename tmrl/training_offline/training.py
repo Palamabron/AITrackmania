@@ -5,7 +5,6 @@ import math
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from numbers import Real
 from typing import Any, cast
 
 import gymnasium
@@ -22,6 +21,20 @@ from tmrl.tools.player_runs import (
     observation_matches_space,
     poll_player_runs_for_injection,
 )
+from tmrl.training_offline._batch_utils import _concat_batches
+from tmrl.training_offline._obs_utils import (
+    _batch_observation_dim,
+    _check_observation_integrity,
+    _observation_dim,
+    _observation_space_from_sample,
+    _one_obs_from_batch,
+)
+from tmrl.training_offline._stats_utils import (
+    _IS_IQN,
+    _mean_stats_dicts,
+    _round_stat_to_wandb_log_dict,
+    _stats_dict_to_numeric,
+)
 from tmrl.util import pandas_dict, wandb_monotonic_step
 
 try:
@@ -30,250 +43,6 @@ except ImportError:
     wandb = None  # type: ignore[assignment]
 
 __docformat__ = "google"
-
-_WANDB_ROUND_KEYS: tuple[str, ...]
-_IS_IQN = getattr(cfg_obj, "ALG_NAME", "") == "IQN"
-
-# Keys that must be present for wandb round-level logging (same as networking.run_with_wandb).
-if _IS_IQN:
-    _WANDB_ROUND_KEYS = (
-        "loss/iqn_loss",
-        "metrics/return_test",
-        "metrics/return_train",
-        "metrics/episode_length_test",
-        "metrics/episode_length_train",
-        "eval/return_deterministic",
-        "eval/episode_length_deterministic",
-        "eval/finish_time_test_s",
-        "eval/finished_track_count_test",
-        "eval/competition_eliminated",
-        "eval/competition_crashes",
-    )
-else:
-    _WANDB_ROUND_KEYS = (
-        "losses/actor",
-        "losses/critic",
-        "metrics/return_test",
-        "metrics/return_train",
-        "metrics/episode_length_test",
-        "metrics/episode_length_train",
-        "eval/return_deterministic",
-        "eval/episode_length_deterministic",
-        "eval/finish_time_test_s",
-        "eval/finished_track_count_test",
-        "eval/competition_eliminated",
-        "eval/competition_crashes",
-    )
-
-
-def _round_stat_to_wandb_log_dict(round_series) -> dict[str, Any]:
-    """Build a sanitized dict from a round stat Series for wandb.log (mirrors networking)."""
-    log_dict = round_series.to_dict() if hasattr(round_series, "to_dict") else dict(round_series)
-    if _IS_IQN:
-        # IQN does not optimize actor/critic losses; avoid polluting wandb with NaNs.
-        log_dict.pop("losses/actor", None)
-        log_dict.pop("losses/critic", None)
-    for k, v in list(log_dict.items()):
-        is_invalid = v is None or (
-            isinstance(v, float) and (v != v or v == float("inf") or v == float("-inf"))
-        )
-        if is_invalid:
-            log_dict[k] = (
-                float("nan")
-                if k.startswith("losses/")
-                else (
-                    0.0
-                    if k
-                    in (
-                        "metrics/return_test",
-                        "metrics/return_train",
-                        "metrics/episode_length_test",
-                        "metrics/episode_length_train",
-                        "eval/return_deterministic",
-                        "eval/episode_length_deterministic",
-                        "eval/finish_time_test_s",
-                        "eval/finished_track_count_test",
-                        "eval/competition_eliminated",
-                        "eval/competition_crashes",
-                    )
-                    else None
-                )
-            )
-    for key in _WANDB_ROUND_KEYS:
-        if key not in log_dict or log_dict[key] is None:
-            log_dict[key] = float("nan") if key.startswith("losses/") else 0.0
-    return log_dict
-
-
-def _observation_space_from_sample(observation) -> gymnasium.spaces.Space:
-    """Build a gymnasium observation space from a single observation (e.g. tuple of arrays).
-
-    Use this when the replay buffer already has data so the model is built with the same
-    observation shape as the data (avoids LayerNorm / backbone shape mismatch).
-    """
-    if isinstance(observation, (list, tuple)):
-        spaces_list = []
-        for s in observation:
-            arr = np.asarray(s)
-            spaces_list.append(
-                gymnasium.spaces.Box(
-                    low=np.float32(-np.inf),
-                    high=np.float32(np.inf),
-                    shape=arr.shape,
-                    dtype=np.float32,
-                )
-            )
-        return gymnasium.spaces.Tuple(tuple(spaces_list))
-    else:
-        arr = np.asarray(observation)
-        return gymnasium.spaces.Box(
-            low=np.float32(-np.inf),
-            high=np.float32(np.inf),
-            shape=arr.shape,
-            dtype=np.float32,
-        )
-
-
-def _observation_dim(space: gymnasium.spaces.Space) -> int:
-    """Total dimension of an observation space (Tuple of Box or single Box)."""
-    if isinstance(space, gymnasium.spaces.Tuple):
-        return sum(math.prod(s.shape or ()) for s in space.spaces)
-    return math.prod(space.shape or ())
-
-
-def _one_obs_from_batch(batch_obs) -> np.ndarray | tuple:
-    """Extract a single observation (numpy) from batch observation (tensor or tuple of tensors)."""
-    if isinstance(batch_obs, (list, tuple)):
-        return tuple(
-            cast(np.ndarray, t[0].cpu().numpy() if hasattr(t, "cpu") else np.asarray(t[0]))
-            for t in batch_obs
-        )
-    if hasattr(batch_obs, "cpu"):
-        return cast(np.ndarray, batch_obs[0].cpu().numpy())
-    return cast(np.ndarray, np.asarray(batch_obs[0]))
-
-
-def _batch_observation_dim(batch) -> int:
-    """Total observation dimension from a training batch (batch[0] = prev_obs)."""
-    one_obs = _one_obs_from_batch(batch[0])
-    return _observation_dim(_observation_space_from_sample(one_obs))
-
-
-def _check_observation_integrity(batch) -> None:
-    """Assert batch observations are finite (no NaN/Inf) when OBSERVATION_BOUNDS_CHECK is True."""
-    if not getattr(cfg, "OBSERVATION_BOUNDS_CHECK", False):
-        return
-    for name, obs in (("prev_obs", batch[0]), ("next_obs", batch[3])):
-        if isinstance(obs, (tuple, list)):
-            for i, t in enumerate(obs):
-                if (
-                    isinstance(t, torch.Tensor)
-                    and t.is_floating_point()
-                    and (torch.isnan(t).any() or torch.isinf(t).any())
-                ):
-                    raise ValueError(
-                        f"Observation integrity check failed: {name}[{i}] contains NaN or Inf"
-                    )
-        elif (
-            isinstance(obs, torch.Tensor)
-            and obs.is_floating_point()
-            and (torch.isnan(obs).any() or torch.isinf(obs).any())
-        ):
-            raise ValueError(f"Observation integrity check failed: {name} contains NaN or Inf")
-
-
-def _stats_dict_to_numeric(d: dict) -> dict:
-    """Convert tensor values in a stats dict to Python scalars so pandas can aggregate."""
-    out = {}
-    for k, v in d.items():
-        if isinstance(v, torch.Tensor):
-            out[k] = v.item() if v.numel() == 1 else float(v.mean().item())
-        else:
-            out[k] = v
-    return out
-
-
-def _mean_stats_dicts(items: list[dict[str, Any]]) -> dict[str, float]:
-    """Fast mean aggregation without pandas DataFrame construction."""
-    sums: dict[str, float] = {}
-    counts: dict[str, int] = {}
-    for row in items:
-        for k, v in row.items():
-            if isinstance(v, Real):
-                vf = float(v)
-                if vf == vf and vf not in (float("inf"), float("-inf")):
-                    sums[k] = sums.get(k, 0.0) + vf
-                    counts[k] = counts.get(k, 0) + 1
-    return {k: (sums[k] / counts[k]) for k in sums if counts.get(k, 0) > 0}
-
-
-def _concat_batches(batches: list[Any]) -> Any:
-    """Concatenate multiple training batches along the batch dimension (dim 0).
-
-    Each batch has the same structure as from memory.sample(): (obs, actions, rewards,
-    next_obs, dones, ...) where obs/next_obs may be tuples of tensors. Used when
-    BATCHES_PER_STEP > 1 to run multiple R2D2 batches through the model in one step.
-
-    Examples of structure mismatch that trigger errors:
-        - Worker A has USE_IMAGES=True (obs tuple length 3), Worker B has False (length 2)
-        - Corrupted network packet caused truncated observation tuple
-        - Mixed worker configurations with different TRACK_CURVATURE_OBS settings
-
-    Args:
-        batches: List of batch tuples from memory.sample(), all must have identical structure
-
-    Returns:
-        Single batch with all samples concatenated along dim 0
-
-    Raises:
-        ValueError: When batch structures don't match across samples (different top-level length)
-        RuntimeError: When tuple lengths differ (avoids silent data corruption). This indicates
-            incompatible worker configurations or corrupted data in the replay buffer.
-    """
-    if len(batches) == 1:
-        return batches[0]
-    n_top = len(batches[0])
-    for bi, b in enumerate(batches):
-        if len(b) != n_top:
-            raise ValueError(
-                f"_concat_batches: batch structure mismatch: batch 0 has {n_top} "
-                f"elements, batch {bi} has {len(b)}. Ensure all replay samples have "
-                "the same format (e.g. same obs tuple length, no mixed worker configs)."
-            )
-    out: list[Any] = []
-    for i in range(n_top):
-        elem = batches[0][i]
-        if isinstance(elem, (list, tuple)):
-            n_inner = min(len(b[i]) for b in batches)
-            if n_inner != len(elem):
-                raise RuntimeError(
-                    f"_concat_batches: tuple length mismatch at index {i}: batch 0 has "
-                    f"{len(elem)} elements, min across batches is {n_inner}. Refusing to "
-                    "truncate (would silently corrupt training). Ensure all workers use "
-                    "the same observation format (e.g. USE_IMAGES) and no corrupted packets. "
-                    "Timeouts and validation in retrieve_data() plus interface handling of "
-                    "telemetry_invalid/position_patched are the first line of defense against "
-                    "corrupted samples entering the replay buffer."
-                )
-            out.append(
-                type(elem)(torch.cat([b[i][j] for b in batches], dim=0) for j in range(n_inner))
-            )
-        elif isinstance(elem, torch.Tensor):
-            out.append(torch.cat([b[i] for b in batches], dim=0))
-        elif isinstance(elem, dict):
-            merged: dict[str, Any] = {}
-            for key in elem:
-                vals = [b[i][key] for b in batches]
-                if isinstance(vals[0], torch.Tensor):
-                    merged[key] = torch.cat(vals, dim=0)
-                elif isinstance(vals[0], (bool, int, float)):
-                    merged[key] = vals[0]
-                else:
-                    merged[key] = vals[0]
-            out.append(merged)
-        else:
-            out.append(torch.cat([torch.as_tensor(b[i]) for b in batches], dim=0))
-    return type(batches[0])(out)
 
 
 @dataclass(eq=False)

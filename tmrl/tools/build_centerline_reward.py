@@ -14,9 +14,9 @@ same "cross-section" of the track, because left/right recorded start-to-finish h
 different lengths (inner vs outer barrier) -- naive left[i]+right[i] produces a bad center.
 
 Usage:
-  python scripts/build_centerline_reward.py [--spacing-m 0.2] [--smooth]
-  python scripts/build_centerline_reward.py --debug-plot  # saves to output_files/debug/
-  python scripts/build_centerline_reward.py --base-reward /path/to/reward_test-3.pkl
+  tmrl-build-centerline [--spacing-m 0.2] [--smooth]
+  tmrl-build-centerline --debug-plot  # saves to output_files/debug/
+  tmrl-build-centerline --base-reward /path/to/reward_test-3.pkl
 
 Input formats: .pkl (N,3) x,y,z or .csv (N,2) x,z.
 Output: reward_<MAP>.pkl (N,3), ready for RewardFunction.
@@ -85,7 +85,7 @@ def resample_by_arc_length(points: np.ndarray, num_points: int) -> np.ndarray:
     seg_len[seg_len <= 0] = 1.0
     t = np.clip((s_values - seg_start) / seg_len, 0.0, 1.0)
     result = (1.0 - t[:, None]) * points[seg_idx] + t[:, None] * points[seg_idx + 1]
-    return result
+    return np.asarray(result, dtype=np.float64)
 
 
 def resample_by_spacing_m(points: np.ndarray, spacing_m: float) -> np.ndarray:
@@ -198,7 +198,7 @@ def build_centerline(
         center = smooth_centerline(center)
     if spacing_m is not None and spacing_m > 0:
         center = resample_by_spacing_m(center, spacing_m)
-    return center
+    return np.asarray(center, dtype=np.float64)
 
 
 def _save_debug_plot(
@@ -266,9 +266,11 @@ def _save_debug_plot(
     fig.savefig(path, dpi=120, bbox_inches="tight")
     plt.close(fig)
 
-    path_2d = path.rsplit(".", 1)
+    path_parts = path.rsplit(".", 1)
     path_2d = (
-        (path_2d[0] + "_topdown." + path_2d[1]) if len(path_2d) == 2 else (path + "_topdown.png")
+        f"{path_parts[0]}_topdown.{path_parts[1]}"
+        if len(path_parts) == 2
+        else f"{path}_topdown.png"
     )
     fig2, ax2 = plt.subplots(figsize=(10, 10))
     ax2.plot(left_ds[:, 0], left_ds[:, 2], "b-", alpha=0.7, label="left", linewidth=0.8)

@@ -1,6 +1,6 @@
-# third-party imports
-
 import numpy as np
+
+from tmrl.custom.tm.observation_constants import WorldTelemetryObsIndex as _Obs
 
 # OBSERVATION PREPROCESSING ==================================
 
@@ -51,12 +51,12 @@ def obs_preprocessor_mobilenet_act_in_obs(obs):
     return obs
 
 
-# Legacy default for ``obs_preprocessor_tqcgrab_act_in_obs`` when no divisor is injected.
+# Legacy default for ``obs_preprocessor_world_telemetry_act_in_obs`` when no divisor is injected.
 TRACK_COORDS_SCALE = 100.0
 
 
-def make_tqcgrab_obs_preprocessor(track_coords_divisor: float):
-    """Build TQCGRAB preprocessor with a configurable track geometry scale.
+def make_world_telemetry_obs_preprocessor(track_coords_divisor: float):
+    """Build world-telemetry preprocessor with a configurable track geometry scale.
 
     ``obs[0]`` is divided by ``track_coords_divisor`` and clipped to ``[-1, 1]``.
     Lower divisors amplify signal for small local-frame coordinates; large world-frame
@@ -72,38 +72,46 @@ def make_tqcgrab_obs_preprocessor(track_coords_divisor: float):
 
     def _preprocess(obs):
         obs = list(obs)
-        if len(obs) < 14:
+        if len(obs) < len(_Obs):
             return tuple(obs)
-        track = np.asarray(obs[0], dtype=np.float32)
+        track = np.asarray(obs[_Obs.TRACK_INFO], dtype=np.float32)
         if track.size > 0:
-            obs[0] = np.clip(track / divisor, -1.0, 1.0).astype(np.float32)
-        obs[1] = np.clip(obs[1].astype(np.float32) / 500.0, 0.0, 1.0)
-        obs[2] = np.clip(obs[2].astype(np.float32) / 50.0, -1.0, 1.0)
-        obs[3] = np.clip(obs[3].astype(np.float32) / 5.0, -1.0, 1.0)
-        obs[4] = np.clip(obs[4].astype(np.float32), 0.0, 1.0)
-        obs[5] = np.clip(obs[5].astype(np.float32), -1.0, 1.0)
-        obs[6] = np.clip(obs[6].astype(np.float32), 0.0, 1.0)
-        obs[7] = np.clip(obs[7].astype(np.float32), 0.0, 1.0)
-        obs[8] = np.clip(obs[8].astype(np.float32) / 6.0, 0.0, 1.0)
-        obs[9] = np.clip(obs[9].astype(np.float32) / np.float32(np.pi), -1.0, 1.0)
-        obs[10] = np.clip(obs[10].astype(np.float32) / np.float32(np.pi / 2), -1.0, 1.0)
-        obs[11] = np.clip(obs[11].astype(np.float32) / 30.0, -1.0, 1.0)
-        obs[12] = np.clip(obs[12].astype(np.float32), 0.0, 1.0)
-        obs[13] = np.clip(obs[13].astype(np.float32) / 15.0, 0.0, 1.0)
+            obs[_Obs.TRACK_INFO] = np.clip(track / divisor, -1.0, 1.0).astype(np.float32)
+        obs[_Obs.SPEED] = np.clip(obs[_Obs.SPEED].astype(np.float32) / 500.0, 0.0, 1.0)
+        obs[_Obs.ACCELERATION] = np.clip(
+            obs[_Obs.ACCELERATION].astype(np.float32) / 50.0, -1.0, 1.0
+        )
+        obs[_Obs.JERK] = np.clip(obs[_Obs.JERK].astype(np.float32) / 5.0, -1.0, 1.0)
+        obs[_Obs.RACE_PROGRESS] = np.clip(obs[_Obs.RACE_PROGRESS].astype(np.float32), 0.0, 1.0)
+        obs[_Obs.INPUT_STEER] = np.clip(obs[_Obs.INPUT_STEER].astype(np.float32), -1.0, 1.0)
+        obs[_Obs.INPUT_GAS_PEDAL] = np.clip(obs[_Obs.INPUT_GAS_PEDAL].astype(np.float32), 0.0, 1.0)
+        obs[_Obs.INPUT_BRAKE] = np.clip(obs[_Obs.INPUT_BRAKE].astype(np.float32), 0.0, 1.0)
+        obs[_Obs.GEAR] = np.clip(obs[_Obs.GEAR].astype(np.float32) / 6.0, 0.0, 1.0)
+        obs[_Obs.AIM_YAW] = np.clip(
+            obs[_Obs.AIM_YAW].astype(np.float32) / np.float32(np.pi), -1.0, 1.0
+        )
+        obs[_Obs.AIM_PITCH] = np.clip(
+            obs[_Obs.AIM_PITCH].astype(np.float32) / np.float32(np.pi / 2), -1.0, 1.0
+        )
+        obs[_Obs.STEER_ANGLE] = np.clip(obs[_Obs.STEER_ANGLE].astype(np.float32) / 30.0, -1.0, 1.0)
+        obs[_Obs.SLIP_COEF] = np.clip(obs[_Obs.SLIP_COEF].astype(np.float32), 0.0, 1.0)
+        obs[_Obs.FAILURE_COUNTER] = np.clip(
+            obs[_Obs.FAILURE_COUNTER].astype(np.float32) / 15.0, 0.0, 1.0
+        )
         return tuple(obs)
 
     return _preprocess
 
 
-def obs_preprocessor_tqcgrab_act_in_obs(obs):
+def obs_preprocessor_world_telemetry_act_in_obs(obs):
     """
-    Preprocessor for TQCGRAB (TQC_GrabData plugin): normalize speed and progress to [0,1],
-    scale other API channels to bounded ranges for stable SAC/TQC training.
+    Preprocessor for world-telemetry interface (TQC_GrabData plugin): normalize speed and
+    progress to [0,1], scale other API channels to bounded ranges for stable SAC/TQC training.
     Track (obs[0]) is normalized to ~[-1, 1] so it matches scale of other inputs.
     Obs = (track, speed, accel, jerk, race_progress, steer, gas, brake, gear, aim_yaw, aim_pitch,
           steer_angle(2), slip_coef(2), failure_counter[, optional action buffer...]).
     """
-    return make_tqcgrab_obs_preprocessor(TRACK_COORDS_SCALE)(obs)
+    return make_world_telemetry_obs_preprocessor(TRACK_COORDS_SCALE)(obs)
 
 
 # SAMPLE PREPROCESSING =======================================

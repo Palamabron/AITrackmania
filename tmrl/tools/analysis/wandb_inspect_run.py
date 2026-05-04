@@ -9,7 +9,7 @@ already load it before tmrl starts); this script also loads .env from repo root 
 Example:
   cd AITrackmania
   export WANDB_API_KEY=...
-  python scripts/wandb_inspect_run.py --entity tmrl --project tmrl \\
+  tmrl-inspect-wandb --entity tmrl --project tmrl \\
       --name-contains miqncrossing-testv1.5 --history-samples 100000 --api-timeout 180
 
 Suggestions printed with --print-suggestions are heuristics derived from exported metrics —
@@ -48,7 +48,7 @@ DEFAULT_WORKER_METRICS = [
 
 
 def _load_dotenv_optional() -> None:
-    env_path = Path(__file__).resolve().parents[1] / ".env"
+    env_path = Path(__file__).resolve().parents[3] / ".env"
     if not env_path.is_file():
         return
     for line in env_path.read_text(encoding="utf-8", errors="replace").splitlines():

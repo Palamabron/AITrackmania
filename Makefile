@@ -1,6 +1,6 @@
 .PHONY: fmt lint types check test tests install-dev server trainer worker record-episode \
 	record-reward record-track-boundaries extend-boundaries build-centerline-reward \
-	interpolate-reward plot-boundaries plot-reward check-env explain-config import-player-runs
+	interpolate-reward plot-boundaries check-env explain-config import-player-runs
 
 fmt:
 	.venv/bin/ruff format .
@@ -86,7 +86,7 @@ TMRL_PWSH_EXE := $(TMRL_WIN_ROOT)/System32/WindowsPowerShell/v1.0/powershell.exe
 else
 TMRL_PWSH_EXE := powershell.exe
 endif
-TMRL_KILL_PS1 := $(subst \,/,$(dir $(abspath $(lastword $(MAKEFILE_LIST))))scripts/kill_tcp_port.ps1)
+TMRL_KILL_PS1 := $(subst \,/,$(dir $(abspath $(lastword $(MAKEFILE_LIST))))scripts/platform/kill_tcp_port.ps1)
 
 ifneq ($(TMRL_IS_WINDOWS),)
 SHELL := $(TMRL_PWSH_EXE)
@@ -133,10 +133,7 @@ interpolate-reward:
 	@$$env:UV_PROJECT_ENVIRONMENT = '$(strip $(TMRL_UV_ENV))'; $$in = '$(REWARD_INPUT)'; if ($$in -eq '') { $$in = (uv run python -c "import tmrl.config as c; print(c.REWARD_PATH)") }; uv run python scripts/interpolate_reward_trajectory.py --input $$in --factor $(INTERP_FACTOR)
 
 plot-boundaries:
-	@$$env:UV_PROJECT_ENVIRONMENT = '$(strip $(TMRL_UV_ENV))'; uv run python scripts/plotTrackPoints.py $(PLOT_ARGS)
-
-plot-reward:
-	@$$env:UV_PROJECT_ENVIRONMENT = '$(strip $(TMRL_UV_ENV))'; uv run python scripts/plotRewardPoints.py $(PLOT_ARGS)
+	@$$env:UV_PROJECT_ENVIRONMENT = '$(strip $(TMRL_UV_ENV))'; uv run python -m tmrl.tools.plot_track_points $(PLOT_ARGS)
 
 check-env:
 	@$$env:UV_PROJECT_ENVIRONMENT = '$(strip $(TMRL_UV_ENV))'; uv run python -m tmrl --check-env
@@ -178,10 +175,7 @@ interpolate-reward:
 	UV_PROJECT_ENVIRONMENT=$(TMRL_UV_ENV) uv run python scripts/interpolate_reward_trajectory.py --input "$$in" --factor $(INTERP_FACTOR)
 
 plot-boundaries:
-	@UV_PROJECT_ENVIRONMENT=$(TMRL_UV_ENV) uv run python scripts/plotTrackPoints.py $(PLOT_ARGS)
-
-plot-reward:
-	@UV_PROJECT_ENVIRONMENT=$(TMRL_UV_ENV) uv run python scripts/plotRewardPoints.py $(PLOT_ARGS)
+	@UV_PROJECT_ENVIRONMENT=$(TMRL_UV_ENV) uv run python -m tmrl.tools.plot_track_points $(PLOT_ARGS)
 
 check-env:
 	@UV_PROJECT_ENVIRONMENT=$(TMRL_UV_ENV) uv run python -m tmrl --check-env

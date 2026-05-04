@@ -41,3 +41,4 @@ environment:
   reward:
     min_seconds_before_failure: 3.5
     off_track_seconds_before_failure: 0.5
+    crash_penalty: 0.5

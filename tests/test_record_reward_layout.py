@@ -1,4 +1,4 @@
-from tmrl.tools.record_reward import _is_lap_finished
+from tmrl.tools.telemetry import _is_lap_finished
 
 
 def test_finish_flag_uses_index_9_for_tqc_20f_layout() -> None:

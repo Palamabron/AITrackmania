@@ -67,9 +67,9 @@ def _boundary_ahead(
     i_r_max = i_r_min + look_ahead_distance
 
     extra_l = np.full((look_ahead_distance, 2), left_boundary.T[-1])
-    left_boundary_extended = np.append(left_boundary.T, extra_l, axis=0).T
+    left_boundary_extended = np.concatenate([left_boundary.T, extra_l], axis=0).T
     extra_r = np.full((look_ahead_distance, 2), right_boundary.T[-1])
-    right_boundary_extended = np.append(right_boundary.T, extra_r, axis=0).T
+    right_boundary_extended = np.concatenate([right_boundary.T, extra_r], axis=0).T
 
     l_x = left_boundary_extended[0][i_l_min:i_l_max]
     l_z = left_boundary_extended[1][i_l_min:i_l_max]
@@ -121,8 +121,8 @@ class TM2020InterfaceBoundary(TM2020Interface):
     """
     Telemetry + pre-recorded track boundaries ahead of the car.
 
-    Observation: (speed, gear, rpm, track_information (60 floats = 15 left xz + 15 right xz),
-    acceleration, steering_angle, slipping_tires, crash, failure_counter).
+    Observation: (track_information (60 floats = 15x[left_x, left_y, right_x, right_y], car-frame),
+    speed, gear, rpm, acceleration, steering_angle, slipping_tires, crash, failure_counter).
     """
 
     def __init__(
@@ -201,14 +201,14 @@ class TM2020InterfaceBoundary(TM2020Interface):
             look_ahead_distance=BOUNDARY_LOOK_AHEAD,
             nearby_correction=BOUNDARY_NEARBY_CORRECTION,
         )
-        l_x, l_z, r_x, r_z = _to_car_frame(l_x, l_z, r_x, r_z, car_position, yaw)
+        l_x, l_y, r_x, r_y = _to_car_frame(l_x, l_z, r_x, r_z, car_position, yaw)
         if self._observed_boundaries is not None:
             self._observed_boundaries[0].append(l_x.tolist())
-            self._observed_boundaries[1].append(l_z.tolist())
+            self._observed_boundaries[1].append(l_y.tolist())
             self._observed_boundaries[2].append(r_x.tolist())
-            self._observed_boundaries[3].append(r_z.tolist())
+            self._observed_boundaries[3].append(r_y.tolist())
             self._observed_boundaries[4].append(car_position)
-        return np.array(np.append(np.append(l_x, r_x), np.append(l_z, r_z)), dtype=np.float32)
+        return np.concatenate([l_x, l_y, r_x, r_y]).astype(np.float32)
 
     def get_obs_rew_terminated_info(self):
         data = self.grab_data()
@@ -422,10 +422,8 @@ class TM2020InterfaceBoundaryImages(TM2020Interface):
             self.look_ahead_distance,
             self.nearby_correction,
         )
-        l_x, l_z, r_x, r_z = _to_car_frame(l_x, l_z, r_x, r_z, car_position, yaw)
-        track_information = np.array(
-            np.append(np.append(l_x, r_x), np.append(l_z, r_z)), dtype=np.float32
-        )
+        l_x, l_y, r_x, r_y = _to_car_frame(l_x, l_z, r_x, r_z, car_position, yaw)
+        track_information = np.concatenate([l_x, l_y, r_x, r_y]).astype(np.float32)
         w, h = self.resize_to
         img = cv2.resize(raw_img, (w, h), interpolation=cv2.INTER_AREA)
         if self.grayscale:

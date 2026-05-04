@@ -38,23 +38,23 @@ from tmrl.custom.memories import (
     get_local_buffer_sample_tm20_imgs,
 )
 from tmrl.custom.models import (
+    FrozenEffNetResidualActor,
     FrozenEffNetResidualActorCritic,
+    GRUActor,
+    GRUActorCritic,
+    MLPActor,
     MLPActorCritic,
     REDQMLPActorCritic,
     REDQResidualMLPActorCritic,
+    ResidualMLPActor,
     ResidualMLPActorCritic,
-    RNNActorCritic,
-    SquashedGaussianFrozenEffNetResidualActor,
-    SquashedGaussianMLPActor,
-    SquashedGaussianResidualMLPActor,
-    SquashedGaussianRNNActor,
-    SquashedGaussianVanillaCNNActor,
-    SquashedGaussianVanillaColorCNNActor,
+    RGBVanillaCNNActor,
+    RGBVanillaCNNActorCritic,
+    VanillaCNNActor,
     VanillaCNNActorCritic,
-    VanillaColorCNNActorCritic,
 )
 from tmrl.custom.tm.tm_preprocessors import (
-    make_tqcgrab_obs_preprocessor,
+    make_world_telemetry_obs_preprocessor,
     obs_preprocessor_lidar_act_in_obs,
     obs_preprocessor_lidar_images_act_in_obs,
     obs_preprocessor_mobilenet_act_in_obs,
@@ -191,11 +191,11 @@ def _train_model_and_policy() -> tuple[Any, Any]:
             }
             return (
                 partial(FrozenEffNetResidualActorCritic, **lidar_images_sac_kw),
-                partial(SquashedGaussianFrozenEffNetResidualActor, **lidar_images_sac_kw),
+                partial(FrozenEffNetResidualActor, **lidar_images_sac_kw),
             )
         if cfg.USE_RNN:
             assert ALG_NAME == "SAC", f"{ALG_NAME} is not implemented here."
-            return RNNActorCritic, SquashedGaussianRNNActor
+            return GRUActorCritic, GRUActor
         if arch.use_residual_mlp:
             residual_kw = {
                 "hidden_dim": arch.residual_mlp_hidden_dim,
@@ -206,10 +206,10 @@ def _train_model_and_policy() -> tuple[Any, Any]:
                 if ALG_NAME == "SAC"
                 else partial(REDQResidualMLPActorCritic, n=alg.redq_n, **residual_kw)
             )
-            return train_model, partial(SquashedGaussianResidualMLPActor, **residual_kw)
+            return train_model, partial(ResidualMLPActor, **residual_kw)
         return (
             MLPActorCritic if ALG_NAME == "SAC" else REDQMLPActorCritic,
-            SquashedGaussianMLPActor,
+            MLPActor,
         )
 
     if cfg.USE_IMAGES_R2D2_SEQUENCE_BUFFER:
@@ -240,7 +240,7 @@ def _train_model_and_policy() -> tuple[Any, Any]:
             }
             return (
                 partial(FrozenEffNetResidualActorCritic, **frozen_effnet_kw),
-                partial(SquashedGaussianFrozenEffNetResidualActor, **frozen_effnet_kw),
+                partial(FrozenEffNetResidualActor, **frozen_effnet_kw),
             )
         if cfg.USE_IMAGES and not cfg.USE_OBS_WORLD_TELEMETRY_LAYOUT:
             impala_ac_cls = MODELS.get("impala_ac")
@@ -341,8 +341,8 @@ def _train_model_and_policy() -> tuple[Any, Any]:
             "only SAC is supported in this runtime branch."
         )
     if cfg.GRAYSCALE:
-        return VanillaCNNActorCritic, SquashedGaussianVanillaCNNActor
-    return VanillaColorCNNActorCritic, SquashedGaussianVanillaColorCNNActor
+        return VanillaCNNActorCritic, VanillaCNNActor
+    return RGBVanillaCNNActorCritic, RGBVanillaCNNActor
 
 
 _validate_runtime_compatibility()
@@ -440,7 +440,7 @@ def _pick_obs_preprocessor() -> Any:
         return obs_preprocessor_lidar_images_act_in_obs
     if _USE_MOBILENET_OR_R2D2_IMAGE_STACK:
         return (
-            make_tqcgrab_obs_preprocessor(float(M.environment.tqcgrab_track_coords_divisor))
+            make_world_telemetry_obs_preprocessor(float(M.environment.track_coords_divisor))
             if cfg.USE_OBS_WORLD_TELEMETRY_LAYOUT
             else obs_preprocessor_mobilenet_act_in_obs
         )
@@ -449,9 +449,6 @@ def _pick_obs_preprocessor() -> Any:
 
 OBS_PREPROCESSOR = _pick_obs_preprocessor()
 SAMPLE_PREPROCESSOR = None
-
-assert not cfg.USE_RNN, "RNNs not supported yet"
-
 
 def _determine_memory_name() -> str:
     """Map interface feature flags to a MEMORIES registry key."""
@@ -701,7 +698,7 @@ def _build_agent() -> Any:
             lr_actor=alg.lr_actor,
             lr_critic=alg.lr_critic,
             lr_alpha=alg.lr_entropy,
-            tau_polyak=float(1.0 - alg.polyak),
+            polyak=alg.polyak,
             n_steps=alg.n_steps if alg.n_steps > 0 else 1,
             auto_alpha=alg.learn_entropy_coef,
             alpha_init=alg.alpha,

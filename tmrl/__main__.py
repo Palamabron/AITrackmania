@@ -60,6 +60,12 @@ class TmrlCli:
     record_reward: bool = False
     """Record a reward function in TrackMania 2020."""
 
+    record_track: bool = False
+    """Record a track boundary (left or right) in TrackMania 2020."""
+
+    record_track_side: str = "left"
+    """Which boundary to record with --record-track: 'left' or 'right'."""
+
     record_episode: bool = False
     """Record an episode into the replay buffer."""
 
@@ -191,6 +197,14 @@ def main(cli: TmrlCli) -> None:
             trainer.run()
     elif cli.record_reward:
         record_reward_dist(path_reward=cfg.REWARD_PATH)
+    elif cli.record_track:
+        from tmrl.tools.record_track import record_track
+
+        side = cli.record_track_side.lower()
+        if side not in ("l", "r", "left", "right"):
+            raise ValueError(f"--record-track-side must be left/right/l/r, got '{side}'")
+        path = cfg.TRACK_PATH_LEFT if side in ("l", "left") else cfg.TRACK_PATH_RIGHT
+        record_track(path_track=path)
     elif cli.check_env:
         if cfg.USE_LIDAR or cfg.USE_LIDAR_IMAGES:
             check_env_tm20_boundary()
@@ -246,15 +260,21 @@ def main(cli: TmrlCli) -> None:
             " --benchmark, "
             " --expert, "
             " --record-reward, "
+            " --record-track, "
             " --record-episode, "
             " --import-player-runs, "
-            " --check-environment, "
+            " --check-env, "
             " --wsl-ip, "
             " --print-config, "
             " --explain-active-config."
         )
 
 
-if __name__ == "__main__":
+def entrypoint() -> None:
+    """Console-script entry point (``tmrl`` command after ``pip install``)."""
     cli_args = tyro.cli(TmrlCli)
     main(cli_args)
+
+
+if __name__ == "__main__":
+    entrypoint()

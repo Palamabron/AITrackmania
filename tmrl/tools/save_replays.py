@@ -1,5 +1,7 @@
 """Save TrackMania replays by running a standalone rollout worker with save_replays enabled."""
 
+from __future__ import annotations
+
 from dataclasses import dataclass
 
 import numpy as np
@@ -11,6 +13,9 @@ from tmrl.envs import GenericGymEnv
 from tmrl.networking import RolloutWorker
 from tmrl.util import partial
 
+# Steps budget passed to run_episodes; large enough that nb_episodes is the effective limit.
+_MAX_STEPS = 10_000
+
 
 @dataclass
 class SaveReplaysCli:
@@ -20,11 +25,11 @@ class SaveReplaysCli:
     """Number of replays to record (0 = unlimited)."""
 
 
-def save_replays(nb_replays: float = np.inf) -> None:
+def save_replays(nb_replays: int | None = None) -> None:
     """Run a standalone worker that saves TrackMania replays.
 
     Args:
-        nb_replays: Maximum number of replays to save (default: no limit).
+        nb_replays: Maximum number of replays to save (None = no limit).
     """
     env_config = cfg_obj.CONFIG_DICT.copy()
     env_config["interface_kwargs"] = {"save_replays": True}
@@ -39,10 +44,10 @@ def save_replays(nb_replays: float = np.inf) -> None:
         crc_debug=cfg.CRC_DEBUG,
         standalone=True,
     )
-    limit = int(nb_replays) if nb_replays else np.inf
-    rollout_worker.run_episodes(10000, nb_episodes=limit)
+    limit: int | float = nb_replays if nb_replays is not None else np.inf
+    rollout_worker.run_episodes(_MAX_STEPS, nb_episodes=limit)
 
 
 if __name__ == "__main__":
     cli = tyro.cli(SaveReplaysCli)
-    save_replays(np.inf if cli.nb_replays == 0 else float(cli.nb_replays))
+    save_replays(None if cli.nb_replays == 0 else cli.nb_replays)

@@ -178,7 +178,7 @@ class RewardConfig(BaseModel):
         description="Half-width scale (m) for boundary and cross-track penalties.",
     )
     crash_penalty: float = Field(
-        default=2.0,
+        default=0.5,
         ge=0.0,
         description=(
             "Penalty applied when a crash or hard reset is triggered (RewardFunction and "
@@ -480,10 +480,10 @@ class EnvironmentConfig(BaseModel):
     obs_track_scale: Annotated[float, Field(gt=0.0)] = Field(
         default=1.0, description="Multiplier on track geometry channels."
     )
-    tqcgrab_track_coords_divisor: Annotated[float, Field(gt=0.0)] = Field(
+    track_coords_divisor: Annotated[float, Field(gt=0.0)] = Field(
         default=100.0,
         description=(
-            "For TQCGRAB* telemetry observations: preprocessor divides track tensor obs[0] by this "
+            "For world-telemetry observations: preprocessor divides track tensor obs[0] by this "
             "value (then clips to [-1, 1]). Lower values amplify small local-frame coordinates for "
             "GNN/Conv encoders; use ~100 for very large world-frame extents. Preset algorithm=iqn "
             "sets a lower default for typical local-track setups."

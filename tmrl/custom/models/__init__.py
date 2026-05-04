@@ -1,146 +1,147 @@
-"""TrackMania models grouped by accepted input modality.
+"""TrackMania RL models grouped by input modality.
 
 Layout:
-- ``shared``: reusable blocks/constants (`mlp`, residual backbones, EffNet stems).
-- ``vector_input``: boundary lidar / vector policies (MLP, residual MLP, GRU).
-- ``image_input``: image-first policies (vanilla CNN, EfficientNet, IMPALA-like).
+- ``shared``: reusable building blocks (mlp, residual MLP, EffNet, SimbaV2, …).
+- ``vector_input``: vector/lidar policies (MLP, residual MLP, GRU).
+- ``image_input``: image-first policies (vanilla CNN, frozen/trainable EfficientNet, IMPALA).
 - ``hybrid_input``: mixed track+physics(+image) pipelines (Sophy family).
-- ``discrete_actions``: IQN/discrete Q networks.
-
-The package still re-exports common public classes for
-`from tmrl.custom.models import ...`.
+- ``discrete_actions``: IQN / discrete Q-networks.
 """
 
 from tmrl.custom.models.hybrid_input.gnn_effnet_sophy import (
     GnnEffNetSophyResidualActorCritic,
     QRCNNGnnEffNetSophyResidual,
     SquashedActorGnnEffNetSophyResidual,
-    _build_track_gnn_branch,
-    _obs_to_flat_tensor,
-    _TrackGNN,
 )
 from tmrl.custom.models.image_input.efficientnet import (
-    EffNetActorCritic,
-    EffNetQFunction,
+    EffNetActor,
+    FrozenEffNetResidualActor,
     FrozenEffNetResidualActorCritic,
     FrozenEffNetResidualQFunction,
-    SquashedGaussianEffNetActor,
-    SquashedGaussianFrozenEffNetResidualActor,
 )
-from tmrl.custom.models.image_input.vanilla_cnn_sac import (
-    SquashedGaussianVanillaCNNActor,
-    SquashedGaussianVanillaColorCNNActor,
+from tmrl.custom.models.image_input.vanilla_cnn import (
+    RGBVanillaCNNActor,
+    RGBVanillaCNNActorCritic,
+    RGBVanillaCNNQFunction,
     VanillaCNN,
+    VanillaCNNActor,
     VanillaCNNActorCritic,
     VanillaCNNQFunction,
-    VanillaColorCNNActorCritic,
-    VanillaColorCNNQFunction,
-    remove_colors,
+    rgb_to_grayscale,
 )
-from tmrl.custom.models.shared.base import (
+from tmrl.custom.models.shared.blocks import (
     EPSILON,
     LOG_STD_MAX,
     LOG_STD_MIN,
     EffNetV2,
+    FrozenEfficientNetEncoder,
+    HypersphericalLinear,
     MBConv,
+    ResidualMLPBlock,
     SELayer,
     SiLU,
-    _cat_obs,
-    _cat_obs_except_image,
-    _ensure_float,
-    _make_divisible,
-    _obs_dim,
-    _obs_spaces_list,
-    _vector_dim_except,
+    SimbaV2Backbone,
+    cat_obs,
+    cat_obs_except_image,
     combined_shape,
     conv2d_out_dims,
-    conv_1x1_bn,
-    conv_3x3_bn,
     count_vars,
     effnetv2_l,
     effnetv2_m,
     effnetv2_s,
     effnetv2_xl,
     effnetv2_xs,
+    ensure_float,
     mlp,
     num_flat_features,
+    obs_dim,
+    obs_spaces_list,
+    residual_mlp_backbone,
+    simba_v2_backbone,
+    squashed_logprob,
+    vector_dim_except,
 )
-from tmrl.custom.models.vector_input.sac_gru_actor_critic import (
-    RNNActorCritic,
-    RNNQFunction,
-    SquashedGaussianRNNActor,
+from tmrl.custom.models.vector_input.gru_actor_critic import (
+    GRUActor,
+    GRUActorCritic,
+    GRUQFunction,
     build_stacked_gru,
 )
-from tmrl.custom.models.vector_input.sac_mlp_actor_critic import (
+from tmrl.custom.models.vector_input.mlp_actor_critic import (
+    MLPActor,
     MLPActorCritic,
     MLPQFunction,
     REDQMLPActorCritic,
-    SquashedGaussianMLPActor,
 )
-from tmrl.custom.models.vector_input.sac_residual_mlp_actor_critic import (
+from tmrl.custom.models.vector_input.residual_mlp_actor_critic import (
     REDQResidualMLPActorCritic,
+    ResidualMLPActor,
     ResidualMLPActorCritic,
     ResidualMLPQFunction,
-    SquashedGaussianResidualMLPActor,
 )
 
 __all__ = [
+    # Constants
     "EPSILON",
     "LOG_STD_MAX",
     "LOG_STD_MIN",
-    "EffNetActorCritic",
-    "EffNetQFunction",
+    "EffNetActor",
+    # Shared building blocks
     "EffNetV2",
+    "FrozenEffNetResidualActor",
     "FrozenEffNetResidualActorCritic",
     "FrozenEffNetResidualQFunction",
+    "FrozenEfficientNetEncoder",
+    # Vector-input actor-critics
+    "GRUActor",
+    "GRUActorCritic",
+    "GRUQFunction",
+    # Hybrid-input actor-critics
     "GnnEffNetSophyResidualActorCritic",
+    "HypersphericalLinear",
     "MBConv",
+    "MLPActor",
     "MLPActorCritic",
     "MLPQFunction",
     "QRCNNGnnEffNetSophyResidual",
     "REDQMLPActorCritic",
     "REDQResidualMLPActorCritic",
-    "RNNActorCritic",
-    "RNNQFunction",
+    # Image-input actor-critics
+    "RGBVanillaCNNActor",
+    "RGBVanillaCNNActorCritic",
+    "RGBVanillaCNNQFunction",
+    "ResidualMLPActor",
     "ResidualMLPActorCritic",
+    "ResidualMLPBlock",
     "ResidualMLPQFunction",
     "SELayer",
     "SiLU",
+    "SimbaV2Backbone",
     "SquashedActorGnnEffNetSophyResidual",
-    "SquashedGaussianEffNetActor",
-    "SquashedGaussianFrozenEffNetResidualActor",
-    "SquashedGaussianMLPActor",
-    "SquashedGaussianRNNActor",
-    "SquashedGaussianResidualMLPActor",
-    "SquashedGaussianVanillaCNNActor",
-    "SquashedGaussianVanillaColorCNNActor",
     "VanillaCNN",
+    "VanillaCNNActor",
     "VanillaCNNActorCritic",
     "VanillaCNNQFunction",
-    "VanillaColorCNNActorCritic",
-    "VanillaColorCNNQFunction",
-    "_TrackGNN",
-    "_build_track_gnn_branch",
-    "_cat_obs",
-    "_cat_obs_except_image",
-    "_ensure_float",
-    "_make_divisible",
-    "_obs_dim",
-    "_obs_spaces_list",
-    "_obs_to_flat_tensor",
-    "_vector_dim_except",
     "build_stacked_gru",
+    # Obs-space utilities
+    "cat_obs",
+    "cat_obs_except_image",
     "combined_shape",
     "conv2d_out_dims",
-    "conv_1x1_bn",
-    "conv_3x3_bn",
     "count_vars",
     "effnetv2_l",
     "effnetv2_m",
     "effnetv2_s",
     "effnetv2_xl",
     "effnetv2_xs",
+    "ensure_float",
     "mlp",
     "num_flat_features",
-    "remove_colors",
+    "obs_dim",
+    "obs_spaces_list",
+    "residual_mlp_backbone",
+    "rgb_to_grayscale",
+    "simba_v2_backbone",
+    "squashed_logprob",
+    "vector_dim_except",
 ]

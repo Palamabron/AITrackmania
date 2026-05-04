@@ -18,14 +18,12 @@ from tmrl.custom.models.image_input.efficientnet import (
     _gnn_effnet_image_index,
     _gnn_effnet_physics_dims,
 )
-from tmrl.custom.models.shared.base import (
+from tmrl.custom.models.shared.blocks import (
     LOG_STD_MAX,
     LOG_STD_MIN,
-    _ensure_float,
-    _obs_spaces_list,
-)
-from tmrl.custom.models.shared.neural_network_blocks import (
     FrozenEfficientNetEncoder,
+    ensure_float,
+    obs_spaces_list,
     residual_mlp_backbone,
 )
 from tmrl.custom.utils.nn import GSDEModule
@@ -83,12 +81,12 @@ def _build_track_gnn_branch(
     gnn_layers: int = 3,
 ) -> nn.Module:
     """Build a GNN-based track encoding branch."""
-    assert dim_track >= 3, "track dim must be at least 3"
-    assert dim_track % 3 == 0, "track dim must be 6*N (3 channels)"
-    num_nodes = dim_track // 3
+    assert dim_track >= 4, "track dim must be at least 4"
+    assert dim_track % 4 == 0, "track dim must be 4*N (left_x, left_y, right_x, right_y)"
+    num_nodes = dim_track // 4
     gnn = _TrackGNN(
         num_nodes=num_nodes,
-        in_dim=3,
+        in_dim=4,
         hidden_dim=gnn_hidden,
         num_layers=gnn_layers,
     )
@@ -148,10 +146,10 @@ class _GnnEffNetJointFeaturesMixin:
     layernorm_joint: nn.Module
 
     def _joint_features(self, obs, batch_size: int) -> torch.Tensor:
-        track = _ensure_float(obs[0].view(batch_size, -1)).view(batch_size, 3, self._dim_track // 3)
+        track = ensure_float(obs[0].view(batch_size, -1)).view(batch_size, 4, self._dim_track // 4)
         physics = _obs_to_flat_tensor(obs[1 : self._image_index], batch_size)
         track_embed = self.track_gnn(track)
-        imgs = _ensure_float(obs[self._image_index])
+        imgs = ensure_float(obs[self._image_index])
         _ensure_image_4d(imgs, self._image_index)
         img_embed = self.img_proj(self.image_encoder(imgs))
         physics_embed = self.physics_proj(physics)
@@ -206,7 +204,7 @@ class SquashedActorGnnEffNetSophyResidual(_GnnEffNetJointFeaturesMixin, TorchAct
         self.use_sde = use_sde
         self._sde_clip_mean = sde_clip_mean
         self._r2d2_sequence_length = r2d2_sequence_length
-        spaces = _obs_spaces_list(observation_space)
+        spaces = obs_spaces_list(observation_space)
         image_index = _gnn_effnet_image_index(observation_space)
         self._image_index = image_index
         dim_track, dim_physics = _gnn_effnet_physics_dims(observation_space, image_index)
@@ -417,7 +415,7 @@ class QRCNNGnnEffNetSophyResidual(_GnnEffNetJointFeaturesMixin, nn.Module):
         super().__init__()
         torch.manual_seed(seed)
         self._r2d2_sequence_length = r2d2_sequence_length
-        spaces = _obs_spaces_list(observation_space)
+        spaces = obs_spaces_list(observation_space)
         image_index = _gnn_effnet_image_index(observation_space)
         self._image_index = image_index
         dim_track, dim_physics = _gnn_effnet_physics_dims(observation_space, image_index)
