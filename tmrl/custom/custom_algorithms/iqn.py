@@ -20,7 +20,7 @@ import torch
 from loguru import logger
 from torch.optim import Adam
 
-from tmrl.custom.models.shared.neural_network_blocks import SimbaV2Backbone
+from tmrl.custom.models.shared.blocks import SimbaV2Backbone
 
 try:
     import wandb
@@ -78,8 +78,6 @@ def epsilon_cosine_schedule(
         - "cosine": Damped sinusoid (full wave per cycle, peak->trough->peak).
         - "ramp": Half-cosine (peak->trough per cycle, then floor).
     """
-    import math
-
     min_eps = epsilon_end
     floor_frac = max(0.0, min(1.0, floor_frac))
     floor_steps = max(0, floor_steps)
@@ -160,8 +158,6 @@ def epsilon_cosine_anneal_schedule(
     Returns:
         Epsilon value for the given step.
     """
-    import math
-
     if step <= 0.0:
         return epsilon_start
     if step >= decay_steps:
@@ -363,30 +359,33 @@ class IQNAgent(TrainingAgent):
 
     model_nograd = cached_property(lambda self: no_grad(copy_shared(self.model)))
 
+    def _iqn_network_kwargs(self) -> dict:
+        """Common architecture kwargs shared between IQNQNetwork and DQNActor."""
+        return {
+            "hidden_dim": self.hidden_dim,
+            "num_blocks": self.num_blocks,
+            "n_cos": self.n_cos,
+            "dueling": self.dueling,
+            "n_actions": self.n_actions,
+            "split_track_observation": self.split_track_observation,
+            "track_encoder": self.track_encoder,
+            "use_rnn": self.use_rnn,
+            "rnn_hidden_size": self.rnn_hidden_size,
+            "api_layernorm": self.api_layernorm,
+            "use_simbav2": self.use_simbav2,
+            "r2d2_sequence_length": self.r2d2_sequence_length,
+            "r2d2_burn_in": self.r2d2_burn_in,
+            "gnn_hidden": self.gnn_hidden,
+            "gnn_layers": self.gnn_layers,
+        }
+
     def __post_init__(self) -> None:
         set_seed(self.seed)
         if self.monotonicity_regularization and not self.sort_quantiles:
             raise ValueError("IQN monotonicity_regularization requires sort_quantiles=True.")
         device = self.device or ("cuda" if torch.cuda.is_available() else "cpu")
 
-        self.model = IQNQNetwork(
-            self.observation_space,
-            n_actions=self.n_actions,
-            hidden_dim=self.hidden_dim,
-            num_blocks=self.num_blocks,
-            n_cos=self.n_cos,
-            dueling=self.dueling,
-            split_track_observation=self.split_track_observation,
-            track_encoder=self.track_encoder,
-            use_rnn=self.use_rnn,
-            rnn_hidden_size=self.rnn_hidden_size,
-            api_layernorm=self.api_layernorm,
-            use_simbav2=self.use_simbav2,
-            r2d2_sequence_length=self.r2d2_sequence_length,
-            r2d2_burn_in=self.r2d2_burn_in,
-            gnn_hidden=self.gnn_hidden,
-            gnn_layers=self.gnn_layers,
-        ).to(device)
+        self.model = IQNQNetwork(self.observation_space, **self._iqn_network_kwargs()).to(device)
 
         self.model_target = no_grad(deepcopy(self.model))
 
@@ -505,31 +504,15 @@ class IQNAgent(TrainingAgent):
         Returns:
             DQNActor wrapper with synchronized weights and current epsilon.
         """
-        actor = self.model_nograd
         wrapper = DQNActor(
             self.observation_space,
             self.action_space,
-            hidden_dim=self.hidden_dim,
-            num_blocks=self.num_blocks,
-            n_cos=self.n_cos,
-            dueling=self.dueling,
-            n_actions=self.n_actions,
+            **self._iqn_network_kwargs(),
             epsilon=self._epsilon,
             n_quantiles_eval=self.n_quantiles_eval,
             explore_repeat_steps=self.explore_repeat_steps,
-            split_track_observation=self.split_track_observation,
-            track_encoder=self.track_encoder,
-            use_rnn=self.use_rnn,
-            rnn_hidden_size=self.rnn_hidden_size,
-            api_layernorm=self.api_layernorm,
-            use_simbav2=self.use_simbav2,
-            r2d2_sequence_length=self.r2d2_sequence_length,
-            r2d2_burn_in=self.r2d2_burn_in,
-            gnn_hidden=self.gnn_hidden,
-            gnn_layers=self.gnn_layers,
         )
-        # Share weights: copy state dict from the no-grad model
-        wrapper.q_net.load_state_dict(actor.state_dict())
+        wrapper.q_net.load_state_dict(self.model_nograd.state_dict())
         wrapper.set_epsilon(self._epsilon)
         return wrapper
 
@@ -573,9 +556,6 @@ class IQNAgent(TrainingAgent):
         eps = self._update_epsilon()
 
         o, a, r, o2, d = batch[0], batch[1], batch[2], batch[3], batch[4]
-        # Convert batch to list for potential PER weight mutation
-        batch = list(batch)  # type: ignore[assignment]
-
         device = self.device or "cpu"
         batch_size = r.shape[0]
 

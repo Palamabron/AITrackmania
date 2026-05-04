@@ -14,9 +14,9 @@ same "cross-section" of the track, because left/right recorded start-to-finish h
 different lengths (inner vs outer barrier) -- naive left[i]+right[i] produces a bad center.
 
 Usage:
-  python scripts/build_centerline_reward.py [--spacing-m 0.2] [--smooth]
-  python scripts/build_centerline_reward.py --debug-plot  # saves to output_files/debug/
-  python scripts/build_centerline_reward.py --base-reward /path/to/reward_test-3.pkl
+  tmrl-build-centerline [--spacing-m 0.2] [--smooth]
+  tmrl-build-centerline --debug-plot  # saves to output_files/debug/
+  tmrl-build-centerline --base-reward /path/to/reward_test-3.pkl
 
 Input formats: .pkl (N,3) x,y,z or .csv (N,2) x,z.
 Output: reward_<MAP>.pkl (N,3), ready for RewardFunction.

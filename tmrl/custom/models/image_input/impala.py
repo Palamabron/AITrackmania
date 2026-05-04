@@ -10,7 +10,7 @@ from torch.distributions import Normal
 from torchrl.modules import NoisyLinear
 
 from tmrl.actor import TorchActorModule
-from tmrl.custom.models.shared.model_constants import LOG_STD_MAX, LOG_STD_MIN
+from tmrl.custom.models.shared.blocks import LOG_STD_MAX, LOG_STD_MIN
 from tmrl.registry import MODELS
 
 

@@ -3,6 +3,7 @@
 import contextlib
 import itertools
 import math
+from collections import deque
 from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any
@@ -22,6 +23,7 @@ from tmrl.custom.custom_algorithms._common import (
     _amp_dtype,
     _amp_enabled,
     _compute_n_step_return_and_bootstrap_mask,
+    _make_optimizer,
     _tensor_to_scalar,
     autocast_context,
     clip_model_weights,
@@ -132,37 +134,16 @@ class TQCAgent(TrainingAgent):
         """Build model, target, optimizers, and entropy coefficient (if learned)."""
         set_seed(self.seed)
         if self.n_steps == 1:
+            logger.warning(
+                "n_steps=1 is equivalent to n_steps=0 (standard 1-step TD); normalising to 0."
+            )
             self.n_steps = 0
-        observation_space, action_space = self.observation_space, self.action_space
+        action_space = self.action_space
         device = self.device or ("cuda" if torch.cuda.is_available() else "cpu")
-        model = self.model_cls(observation_space, action_space)
         logger.debug(" device TQC: {}", device)
-        self.model = model.to(device)
-        self.model_target = no_grad(deepcopy(self.model))
-        pi_kwargs: dict[str, Any] = {
-            "lr": self.lr_actor,
-            "weight_decay": self.actor_weight_decay,
-            "eps": self.adam_eps,
-        }
-        if self.betas_actor is not None:
-            pi_kwargs["betas"] = tuple(self.betas_actor)
-        self.actor_optimizer = Adam(self.model.actor.parameters(), **pi_kwargs)
-        q_kwargs: dict[str, Any] = {
-            "lr": self.lr_critic,
-            "weight_decay": self.critic_weight_decay,
-            "eps": self.adam_eps,
-        }
-        if self.betas_critic is not None:
-            q_kwargs["betas"] = tuple(self.betas_critic)
-        self.critic_optimizer = Adam(
-            itertools.chain(self.model.q1.parameters(), self.model.q2.parameters()),
-            **q_kwargs,
-        )
         self.use_mixed_precision = _amp_enabled(device, self.mixed_precision)
         self.amp_dtype = _amp_dtype(self.mixed_precision_dtype)
-        # GradScaler not recommended for bfloat16; use only for float16
-        use_scaler = self.use_mixed_precision and (self.amp_dtype != torch.bfloat16)
-        self.grad_scaler = torch.amp.GradScaler("cuda", enabled=use_scaler)
+        self._build_model_and_optimizers(device)
 
         if self.scheduler_name:
             self.actor_scheduler = CosineAnnealingWarmRestarts(
@@ -172,7 +153,6 @@ class TQCAgent(TrainingAgent):
                 self.scheduler_eta_min,
                 self.scheduler_last_epoch,
             )
-
             self.critic_scheduler = CosineAnnealingWarmRestarts(
                 self.critic_optimizer,
                 self.scheduler_t_0,
@@ -181,37 +161,27 @@ class TQCAgent(TrainingAgent):
                 self.scheduler_last_epoch,
             )
 
-        self.quantiles_total = self.model.q1.num_quantiles + self.model.q2.num_quantiles
-        # Proper TQC truncation: drop d * N elements globally
-        self.total_quantiles_to_drop = self.top_quantiles_to_drop * 2
-
         if self.target_entropy is None:
             self.target_entropy = -np.prod(action_space.shape).astype(np.float32)
         else:
             self.target_entropy = float(self.target_entropy)
 
-        self._entropy_schedule = self.entropy_schedule
-        self._entropy_floor = self.entropy_floor
-        self._entropy_cosine_t0 = self.entropy_cosine_t0
-        self._entropy_cosine_tmult = self.entropy_cosine_tmult
-        self._entropy_cosine_decay = self.entropy_cosine_decay
-
-        if self._entropy_schedule == "cosine":
+        if self.entropy_schedule == "cosine":
             self.learn_entropy_coef = False
             self.alpha_t = torch.tensor(float(self.alpha)).to(device)
             logger.info(
                 " Entropy schedule: cosine (T0={}, Tmult={:.1f}, decay={:.2f}, floor={:.4f})",
-                self._entropy_cosine_t0,
-                self._entropy_cosine_tmult,
-                self._entropy_cosine_decay,
-                self._entropy_floor,
+                self.entropy_cosine_t0,
+                self.entropy_cosine_tmult,
+                self.entropy_cosine_decay,
+                self.entropy_floor,
             )
         elif self.learn_entropy_coef:
             self.log_alpha = torch.log(torch.ones(1, device=device) * self.alpha).requires_grad_(
                 True
             )
             self.alpha_optimizer = Adam([self.log_alpha], lr=self.lr_entropy)
-            logger.info(" Entropy schedule: learnable (floor={:.4f})", self._entropy_floor)
+            logger.info(" Entropy schedule: learnable (floor={:.4f})", self.entropy_floor)
         else:
             self.alpha_t = torch.tensor(float(self.alpha)).to(device)
 
@@ -221,7 +191,40 @@ class TQCAgent(TrainingAgent):
         self._nan_weight_check_interval = 50
         self._consecutive_bad_steps = 0
         self._consecutive_low_grad_steps = 0
-        self._trunc_var_history: list[float] = []
+        self._trunc_var_history: deque[float] = deque(maxlen=500)
+
+    def _build_model_and_optimizers(self, device: str) -> None:
+        """(Re)create model, target, optimizers, quantile counts, and grad scaler.
+
+        Called from both ``__post_init__`` and ``_reinitialize_model``.
+        ``self.use_mixed_precision`` and ``self.amp_dtype`` must be set before calling.
+        """
+        observation_space, action_space = self.observation_space, self.action_space
+        model = self.model_cls(observation_space, action_space)
+        self.model = model.to(device)
+        self.model_target = no_grad(deepcopy(self.model))
+        self.actor_optimizer = _make_optimizer(
+            self.model.actor.parameters(),
+            "adam",
+            self.lr_actor,
+            weight_decay=self.actor_weight_decay,
+            eps=self.adam_eps,
+            betas=self.betas_actor,
+        )
+        self.critic_optimizer = _make_optimizer(
+            itertools.chain(self.model.q1.parameters(), self.model.q2.parameters()),
+            "adam",
+            self.lr_critic,
+            weight_decay=self.critic_weight_decay,
+            eps=self.adam_eps,
+            betas=self.betas_critic,
+        )
+        self.quantiles_total = self.model.q1.num_quantiles + self.model.q2.num_quantiles
+        # Proper TQC truncation: drop d * N elements globally
+        self.total_quantiles_to_drop = self.top_quantiles_to_drop * 2
+        # GradScaler not recommended for bfloat16; use only for float16
+        use_scaler = self.use_mixed_precision and (self.amp_dtype != torch.bfloat16)
+        self.grad_scaler = torch.amp.GradScaler("cuda", enabled=use_scaler)
 
     def _cosine_alpha(self, step: int) -> float:
         """Cosine annealing with warm restarts for entropy coefficient.
@@ -230,11 +233,11 @@ class TQCAgent(TrainingAgent):
         amplitude decays by ``decay`` per cycle, producing an envelope of
         decreasing exploration spikes.
         """
-        t0 = max(1, self._entropy_cosine_t0)
-        t_mult = self._entropy_cosine_tmult
-        decay = self._entropy_cosine_decay
+        t0 = max(1, self.entropy_cosine_t0)
+        t_mult = self.entropy_cosine_tmult
+        decay = self.entropy_cosine_decay
         alpha_max = float(self.alpha)
-        alpha_min = self._entropy_floor
+        alpha_min = self.entropy_floor
         t = step
         cycle = 0
         cycle_len = t0
@@ -253,34 +256,7 @@ class TQCAgent(TrainingAgent):
         """Rebuild model, target, and optimizers from scratch when weights are corrupted."""
         logger.warning(" Model weights contain NaN — reinitializing model, target, and optimizers.")
         device = self.device or ("cuda" if torch.cuda.is_available() else "cpu")
-        observation_space, action_space = self.observation_space, self.action_space
-        model = self.model_cls(observation_space, action_space)
-        self.model = model.to(device)
-        self.model_target = no_grad(deepcopy(self.model))
-        pi_kwargs: dict[str, Any] = {
-            "lr": self.lr_actor,
-            "weight_decay": self.actor_weight_decay,
-            "eps": self.adam_eps,
-        }
-        if self.betas_actor is not None:
-            pi_kwargs["betas"] = tuple(self.betas_actor)
-        self.actor_optimizer = Adam(self.model.actor.parameters(), **pi_kwargs)
-        q_kwargs: dict[str, Any] = {
-            "lr": self.lr_critic,
-            "weight_decay": self.critic_weight_decay,
-            "eps": self.adam_eps,
-        }
-        if self.betas_critic is not None:
-            q_kwargs["betas"] = tuple(self.betas_critic)
-        self.critic_optimizer = Adam(
-            itertools.chain(self.model.q1.parameters(), self.model.q2.parameters()),
-            **q_kwargs,
-        )
-        self.quantiles_total = self.model.q1.num_quantiles + self.model.q2.num_quantiles
-        # Proper TQC truncation: drop d * N elements globally
-        self.total_quantiles_to_drop = self.top_quantiles_to_drop * 2
-        use_scaler = self.use_mixed_precision and (self.amp_dtype != torch.bfloat16)
-        self.grad_scaler = torch.amp.GradScaler("cuda", enabled=use_scaler)
+        self._build_model_and_optimizers(device)
         if self.learn_entropy_coef:
             self.log_alpha = torch.log(torch.ones(1, device=device) * self.alpha).requires_grad_(
                 True
@@ -337,8 +313,10 @@ class TQCAgent(TrainingAgent):
         huber_loss = self.calculate_huber_loss(pairwise_delta)
 
         n_quantiles = quantiles.shape[2]
-        device = self.device or ("cuda" if torch.cuda.is_available() else "cpu")
-        tau = torch.arange(n_quantiles, device=device).float() / n_quantiles + 1 / 2 / n_quantiles
+        tau = (
+            torch.arange(n_quantiles, device=quantiles.device).float() / n_quantiles
+            + 1 / 2 / n_quantiles
+        )
         loss = torch.abs(tau[None, None, :, None] - (pairwise_delta < 0).float()) * huber_loss
         return loss.mean(dim=3).sum(dim=2).mean(dim=1)
 
@@ -453,9 +431,9 @@ class TQCAgent(TrainingAgent):
 
         # ── 2. Entropy coefficient ──
         alpha_loss = None
-        if self._entropy_schedule == "cosine":
+        if self.entropy_schedule == "cosine":
             raw_alpha = self._cosine_alpha(self._training_step)
-            alpha_t = torch.tensor(max(raw_alpha, self._entropy_floor), device=pi.device)
+            alpha_t = torch.tensor(max(raw_alpha, self.entropy_floor), device=pi.device)
         elif self.learn_entropy_coef:
             alpha_t = torch.exp(self.log_alpha.detach())
             target = self.target_entropy
@@ -469,7 +447,7 @@ class TQCAgent(TrainingAgent):
             alpha_loss.backward()
             self.alpha_optimizer.step()
             with torch.no_grad():
-                _log_alpha_min = math.log(self._entropy_floor)
+                _log_alpha_min = math.log(self.entropy_floor)
                 self.log_alpha.clamp_(min=_log_alpha_min)
 
         # ── 3. Critic forward on BUFFER actions ──
@@ -504,8 +482,6 @@ class TQCAgent(TrainingAgent):
                 with torch.no_grad():
                     var_current = float(sorted_z.var().item())
                     self._trunc_var_history.append(var_current)
-                    if len(self._trunc_var_history) > 500:
-                        self._trunc_var_history.pop(0)
                     if len(self._trunc_var_history) >= 20:
                         pct_val = float(
                             np.percentile(
@@ -794,7 +770,7 @@ class TQCAgent(TrainingAgent):
                 ret_dict["debug/a1_1"] = _tensor_to_scalar(pi[:, 1].detach().mean())
                 ret_dict["debug/a1_2"] = _tensor_to_scalar(pi[:, 2].detach().mean())
 
-        if self._entropy_schedule == "cosine":
+        if self.entropy_schedule == "cosine":
             ret_dict["entropy_coef"] = float(alpha_t)
         elif self.learn_entropy_coef and alpha_loss is not None:
             ret_dict["loss_entropy_coef"] = alpha_loss.detach().item()

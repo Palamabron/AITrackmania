@@ -38,7 +38,7 @@ algorithm:
   quantiles_number: 25
   top_quantiles_to_drop: 3
 
-# Stronger track-channel dynamic range for TQCGRAB* + local-frame geometry (GNN/Conv branch).
+# Stronger track-channel dynamic range for world-telemetry + local-frame geometry (GNN/Conv branch).
 # Boundary lidar interfaces ignore this field (different preprocessor).
 environment:
-  tqcgrab_track_coords_divisor: 50.0
+  track_coords_divisor: 50.0

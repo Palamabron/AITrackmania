@@ -17,8 +17,12 @@ from torch.distributions import Normal
 from torchrl.modules import NoisyLinear
 
 from tmrl.actor import TorchActorModule
-from tmrl.custom.models.shared.model_constants import LOG_STD_MAX, LOG_STD_MIN
-from tmrl.custom.models.shared.neural_network_blocks import residual_mlp_backbone, simba_v2_backbone
+from tmrl.custom.models.shared.blocks import (
+    LOG_STD_MAX,
+    LOG_STD_MIN,
+    residual_mlp_backbone,
+    simba_v2_backbone,
+)
 from tmrl.custom.utils.nn import GSDEModule
 from tmrl.registry import MODELS
 
@@ -413,10 +417,10 @@ def _build_track_conv1d_branch(dim_track: int, hidden_dim: int) -> nn.Module:
     Returns:
         torch.nn.Module: The constructed Conv1d branch.
     """
-    assert dim_track >= 3, "track dim must be at least 3"
-    assert dim_track % 3 == 0, "track dim must be 6*N (3 channels of 2*N)"
+    assert dim_track >= 4, "track dim must be at least 4"
+    assert dim_track % 4 == 0, "track dim must be 4*N (left_x, left_y, right_x, right_y)"
     return nn.Sequential(
-        nn.Conv1d(3, 32, kernel_size=5, padding=2),
+        nn.Conv1d(4, 32, kernel_size=5, padding=2),
         nn.BatchNorm1d(32),
         nn.ReLU(inplace=True),
         nn.Conv1d(32, 64, kernel_size=5, padding=2),
@@ -434,14 +438,14 @@ def _build_track_spline_mlp_branch(dim_track: int, hidden_dim: int) -> nn.Module
     representation via pooling + MLP (B-spline / Frenet-Serret style compact encoding).
     Input (B, 3, N) -> pool to fixed size -> MLP -> (B, hidden_dim).
     """
-    assert dim_track >= 3, "track dim must be at least 3"
-    assert dim_track % 3 == 0, "track dim must be 3*N (3 channels)"
-    n_pts = dim_track // 3
+    assert dim_track >= 4, "track dim must be at least 4"
+    assert dim_track % 4 == 0, "track dim must be 4*N (4 channels)"
+    n_pts = dim_track // 4
     pool_size = min(16, max(4, n_pts // 4))
     return nn.Sequential(
         nn.AdaptiveAvgPool1d(pool_size),
         nn.Flatten(),
-        nn.Linear(3 * pool_size, 128),
+        nn.Linear(4 * pool_size, 128),
         nn.LayerNorm(128),
         nn.SiLU(),
         nn.Linear(128, hidden_dim),
@@ -490,12 +494,12 @@ class _TrackGNN(nn.Module):
 def _build_track_gnn_branch(
     dim_track: int, hidden_dim: int, gnn_hidden: int = 64, gnn_layers: int = 3
 ) -> nn.Module:
-    assert dim_track >= 3, "track dim must be at least 3"
-    assert dim_track % 3 == 0, "track dim must be 6*N (3 channels)"
-    num_nodes = dim_track // 3
+    assert dim_track >= 4, "track dim must be at least 4"
+    assert dim_track % 4 == 0, "track dim must be 4*N (4 channels)"
+    num_nodes = dim_track // 4
     gnn = _TrackGNN(
         num_nodes=num_nodes,
-        in_dim=3,
+        in_dim=4,
         hidden_dim=gnn_hidden,
         num_layers=gnn_layers,
     )
@@ -580,7 +584,7 @@ class SquashedActorSophyResidual(TorchActorModule):
         self._use_track_conv = split_track_observation and len(observation_space) > 1
         if self._use_track_conv:
             dim_track_first = math.prod(observation_space[0].shape)
-            if dim_track_first % 3 != 0:
+            if dim_track_first % 4 != 0:
                 self._use_track_conv = False
         self._use_rnn = use_rnn
         self._r2d2_sequence_length = r2d2_sequence_length
@@ -589,7 +593,7 @@ class SquashedActorSophyResidual(TorchActorModule):
         if self._use_track_conv:
             dim_track = math.prod(observation_space[0].shape)
             dim_physics = dim_obs - dim_track
-            assert dim_track % 3 == 0, "track_info should be 6*N (left+center+right)"
+            assert dim_track % 4 == 0, "track_info should be 4*N (left_x, left_y, right_x, right_y)"
             self._dim_track = dim_track
             self._dim_physics = dim_physics
             if track_encoder == "spline_mlp":
@@ -672,7 +676,7 @@ class SquashedActorSophyResidual(TorchActorModule):
             torch.Tensor: Combined features.
         """
         track = observation[0].view(batch_size, -1).float()
-        track = track.view(batch_size, 3, self._dim_track // 3)
+        track = track.view(batch_size, 4, self._dim_track // 4)
         track_embed = self.track_conv(track)
         physics = _obs_to_flat_tensor(observation[1:], batch_size)
         physics_embed = self.physics_proj(physics)
@@ -928,7 +932,7 @@ class QRCNNSophyResidual(nn.Module):
         self._use_track_conv = split_track_observation and len(observation_space) > 1
         if self._use_track_conv:
             dim_track_first = math.prod(observation_space[0].shape)
-            if dim_track_first % 3 != 0:
+            if dim_track_first % 4 != 0:
                 self._use_track_conv = False
         self._use_rnn = use_rnn
         self._r2d2_sequence_length = r2d2_sequence_length
@@ -937,7 +941,7 @@ class QRCNNSophyResidual(nn.Module):
         if self._use_track_conv:
             dim_track = math.prod(observation_space[0].shape)
             dim_physics = dim_obs - dim_track
-            assert dim_track % 3 == 0, "track_info should be 6*N"
+            assert dim_track % 4 == 0, "track_info should be 4*N (left_x, left_y, right_x, right_y)"
             self._dim_track = dim_track
             self._dim_physics = dim_physics
             if track_encoder == "spline_mlp":
@@ -992,7 +996,7 @@ class QRCNNSophyResidual(nn.Module):
         """
         if self._use_track_conv:
             track = observation[0].view(batch_size, -1).float()
-            track = track.view(batch_size, 3, self._dim_track // 3)
+            track = track.view(batch_size, 4, self._dim_track // 4)
             track_embed = self.track_conv(track)
             physics = _obs_to_flat_tensor(observation[1:], batch_size)
             physics_embed = self.physics_proj(physics)

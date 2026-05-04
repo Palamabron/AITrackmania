@@ -1,6 +1,6 @@
 .PHONY: fmt lint types check test tests install-dev server trainer worker record-episode \
 	record-reward record-track-boundaries extend-boundaries build-centerline-reward \
-	interpolate-reward plot-boundaries plot-reward check-env explain-config import-player-runs
+	interpolate-reward plot-boundaries check-env explain-config import-player-runs
 
 fmt:
 	.venv/bin/ruff format .
@@ -135,9 +135,6 @@ interpolate-reward:
 plot-boundaries:
 	@$$env:UV_PROJECT_ENVIRONMENT = '$(strip $(TMRL_UV_ENV))'; uv run python scripts/plotTrackPoints.py $(PLOT_ARGS)
 
-plot-reward:
-	@$$env:UV_PROJECT_ENVIRONMENT = '$(strip $(TMRL_UV_ENV))'; uv run python scripts/plotRewardPoints.py $(PLOT_ARGS)
-
 check-env:
 	@$$env:UV_PROJECT_ENVIRONMENT = '$(strip $(TMRL_UV_ENV))'; uv run python -m tmrl --check-env
 
@@ -179,9 +176,6 @@ interpolate-reward:
 
 plot-boundaries:
 	@UV_PROJECT_ENVIRONMENT=$(TMRL_UV_ENV) uv run python scripts/plotTrackPoints.py $(PLOT_ARGS)
-
-plot-reward:
-	@UV_PROJECT_ENVIRONMENT=$(TMRL_UV_ENV) uv run python scripts/plotRewardPoints.py $(PLOT_ARGS)
 
 check-env:
 	@UV_PROJECT_ENVIRONMENT=$(TMRL_UV_ENV) uv run python -m tmrl --check-env

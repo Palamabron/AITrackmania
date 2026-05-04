@@ -64,7 +64,7 @@ class TestSquashLogProbClamp:
 class TestSquashedGaussianMLPActor:
     @torch.no_grad()
     def test_forward_no_nan(self):
-        from tmrl.custom.models.vector_input.sac_mlp_actor_critic import SquashedGaussianMLPActor
+        from tmrl.custom.models.vector_input.mlp_actor_critic import MLPActor
 
         obs_space = gym.spaces.Tuple(
             [
@@ -72,7 +72,7 @@ class TestSquashedGaussianMLPActor:
             ]
         )
         act_space = gym.spaces.Box(low=-1.0, high=1.0, shape=(3,), dtype=np.float32)
-        actor = SquashedGaussianMLPActor(obs_space, act_space)
+        actor = MLPActor(obs_space, act_space)
         actor.eval()
 
         obs = [torch.randn(4, 8)]
@@ -82,7 +82,7 @@ class TestSquashedGaussianMLPActor:
 
     @torch.no_grad()
     def test_action_bounded(self):
-        from tmrl.custom.models.vector_input.sac_mlp_actor_critic import SquashedGaussianMLPActor
+        from tmrl.custom.models.vector_input.mlp_actor_critic import MLPActor
 
         obs_space = gym.spaces.Tuple(
             [
@@ -90,7 +90,7 @@ class TestSquashedGaussianMLPActor:
             ]
         )
         act_space = gym.spaces.Box(low=-1.0, high=1.0, shape=(3,), dtype=np.float32)
-        actor = SquashedGaussianMLPActor(obs_space, act_space)
+        actor = MLPActor(obs_space, act_space)
         actor.eval()
 
         obs = [torch.randn(16, 8)]

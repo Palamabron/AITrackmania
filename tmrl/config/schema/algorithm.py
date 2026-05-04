@@ -209,7 +209,7 @@ class AlgorithmConfig(BaseModel):
     adam_eps: Annotated[float, Field(gt=0.0)] = Field(
         default=1e-8,
         description=(
-            "Adam epsilon (SAC via sac_config, TQC optimizers, IQN Q-network Adam). "
+            "Adam epsilon for TQC optimizers and IQN Q-network Adam. "
             "REDQ-SAC uses its own hardcoded optimizers."
         ),
     )

@@ -92,7 +92,7 @@ environment:
   window_width: 1920
   window_height: 1080
   use_images: false
-  tqcgrab_track_coords_divisor: 50.0
+  track_coords_divisor: 50.0
   reward:
     min_seconds_before_failure: 15.0
     debug_reward_components: true

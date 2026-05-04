@@ -13,6 +13,7 @@ References:
 
 from __future__ import annotations
 
+import itertools
 import math
 from copy import deepcopy
 from dataclasses import dataclass
@@ -200,7 +201,7 @@ class SDSACAgent(TrainingAgent):
     lr_actor: float
     lr_critic: float
     lr_alpha: float
-    tau_polyak: float
+    polyak: float
     n_steps: int
     auto_alpha: bool
     alpha_init: float
@@ -248,15 +249,19 @@ class SDSACAgent(TrainingAgent):
         self.model_target = no_grad(deepcopy(self.model))
 
         self.actor_optimizer = Adam(
-            list(self.model.actor_backbone.parameters()) + list(self.model.actor_head.parameters()),
+            itertools.chain(
+                self.model.actor_backbone.parameters(), self.model.actor_head.parameters()
+            ),
             lr=self.lr_actor,
             weight_decay=self.weight_decay,
         )
         self.critic_optimizer = Adam(
-            list(self.model.q1_backbone.parameters())
-            + list(self.model.q1_head.parameters())
-            + list(self.model.q2_backbone.parameters())
-            + list(self.model.q2_head.parameters()),
+            itertools.chain(
+                self.model.q1_backbone.parameters(),
+                self.model.q1_head.parameters(),
+                self.model.q2_backbone.parameters(),
+                self.model.q2_head.parameters(),
+            ),
             lr=self.lr_critic,
             weight_decay=self.weight_decay,
         )
@@ -436,10 +441,12 @@ class SDSACAgent(TrainingAgent):
         else:
             critic_loss.backward()
         critic_grad_norm = self._grad_stabilizer_critic.step(
-            list(self.model.q1_backbone.parameters())
-            + list(self.model.q1_head.parameters())
-            + list(self.model.q2_backbone.parameters())
-            + list(self.model.q2_head.parameters())
+            itertools.chain(
+                self.model.q1_backbone.parameters(),
+                self.model.q1_head.parameters(),
+                self.model.q2_backbone.parameters(),
+                self.model.q2_head.parameters(),
+            )
         )
         if self.use_mixed_precision:
             self.grad_scaler.step(self.critic_optimizer)
@@ -479,7 +486,9 @@ class SDSACAgent(TrainingAgent):
         else:
             actor_loss.backward()
         actor_grad_norm = self._grad_stabilizer_actor.step(
-            list(self.model.actor_backbone.parameters()) + list(self.model.actor_head.parameters())
+            itertools.chain(
+                self.model.actor_backbone.parameters(), self.model.actor_head.parameters()
+            )
         )
         if self.use_mixed_precision:
             self.grad_scaler.step(self.actor_optimizer)
@@ -501,7 +510,7 @@ class SDSACAgent(TrainingAgent):
 
         # -- Target network Polyak update --
         project_simbav2_weights(self.model)
-        polyak_update(self.model, self.model_target, 1.0 - self.tau_polyak)
+        polyak_update(self.model, self.model_target, self.polyak)
 
         # -- Logging --
         ret: dict[str, float] = {

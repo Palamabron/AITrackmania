@@ -86,6 +86,13 @@ dev = [
     "types-PyYAML",
 ]
 
+[project.scripts]
+tmrl = "tmrl.__main__:entrypoint"
+tmrl-build-centerline = "tmrl.tools.build_centerline_reward:main"
+tmrl-interpolate-reward = "tmrl.tools.interpolate_reward_trajectory:main"
+tmrl-plot-track = "tmrl.tools.plot_track_points:main"
+tmrl-inspect-wandb = "tmrl.tools.analysis.wandb_inspect_run:main"
+
 [project.urls]
 Homepage = "https://github.com/trackmania-rl/tmrl"
 Documentation = "https://tmrl.readthedocs.io"

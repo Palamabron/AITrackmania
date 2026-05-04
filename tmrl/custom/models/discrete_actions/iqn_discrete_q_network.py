@@ -26,7 +26,7 @@ from tmrl.custom.models.hybrid_input.sophy import (
     _build_track_spline_mlp_branch,
     _obs_to_flat_tensor,
 )
-from tmrl.custom.models.shared.neural_network_blocks import (
+from tmrl.custom.models.shared.blocks import (
     residual_mlp_backbone,
     simba_v2_backbone,
 )
@@ -112,7 +112,7 @@ class IQNFeatureBackbone(nn.Module):
         self._use_track_conv = split_track_observation and len(observation_space) > 1
         if self._use_track_conv:
             dim_track_first = math.prod(observation_space[0].shape)
-            if dim_track_first % 3 != 0:
+            if dim_track_first % 4 != 0:
                 self._use_track_conv = False
 
         if self._use_track_conv:
@@ -161,7 +161,7 @@ class IQNFeatureBackbone(nn.Module):
 
     def _joint_features(self, observation, batch_size: int) -> torch.Tensor:
         track = observation[0].view(batch_size, -1).float()
-        track = track.view(batch_size, 3, self._dim_track // 3)
+        track = track.view(batch_size, 4, self._dim_track // 4)
         track_embed = self.track_conv(track)
         physics = _obs_to_flat_tensor(observation[1:], batch_size)
         physics_embed = self.physics_proj(physics)

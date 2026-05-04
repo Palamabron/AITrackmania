@@ -8,9 +8,15 @@ from typing import Any
 import numpy as np
 import torch
 from loguru import logger
-from torch.optim import SGD, Adam, AdamW
+from torch.optim import Adam
 
-from tmrl.custom.custom_algorithms._common import amp_setup, autocast_context, set_seed
+from tmrl.custom.custom_algorithms._common import (
+    _make_optimizer,
+    amp_setup,
+    autocast_context,
+    polyak_update,
+    set_seed,
+)
 from tmrl.custom.utils.nn import copy_shared, no_grad
 from tmrl.registry import ALGORITHMS
 from tmrl.training import TrainingAgent
@@ -64,46 +70,19 @@ class SpinupSacAgent(TrainingAgent):
         logger.debug(f" device SAC: {device}")
         self.model = model.to(device)
         self.model_target = no_grad(deepcopy(self.model))
-        self.optimizer_actor = self.optimizer_actor.lower()
-        self.optimizer_critic = self.optimizer_critic.lower()
-        if self.optimizer_actor not in ["adam", "adamw", "sgd"]:
-            logger.warning(
-                f"actor optimizer {self.optimizer_actor} is not valid, defaulting to sgd"
-            )
-        if self.optimizer_critic not in ["adam", "adamw", "sgd"]:
-            logger.warning(
-                f"critic optimizer {self.optimizer_critic} is not valid, defaulting to sgd"
-            )
-        pi_optimizer_cls: type[Adam] | type[AdamW] | type[SGD]
-        if self.optimizer_actor == "adam":
-            pi_optimizer_cls = Adam
-        elif self.optimizer_actor == "adamw":
-            pi_optimizer_cls = AdamW
-        else:
-            pi_optimizer_cls = SGD
-        pi_optimizer_kwargs: dict[str, Any] = {"lr": self.lr_actor}
-        if self.optimizer_actor in ["adam", "adamw"] and self.betas_actor is not None:
-            pi_optimizer_kwargs["betas"] = tuple(self.betas_actor)
-        if self.l2_actor is not None:
-            pi_optimizer_kwargs["weight_decay"] = self.l2_actor
-
-        q_optimizer_cls: type[Adam] | type[AdamW] | type[SGD]
-        if self.optimizer_critic == "adam":
-            q_optimizer_cls = Adam
-        elif self.optimizer_critic == "adamw":
-            q_optimizer_cls = AdamW
-        else:
-            q_optimizer_cls = SGD
-        q_optimizer_kwargs: dict[str, Any] = {"lr": self.lr_critic}
-        if self.optimizer_critic in ["adam", "adamw"] and self.betas_critic is not None:
-            q_optimizer_kwargs["betas"] = tuple(self.betas_critic)
-        if self.l2_critic is not None:
-            q_optimizer_kwargs["weight_decay"] = self.l2_critic
-
-        self.pi_optimizer = pi_optimizer_cls(self.model.actor.parameters(), **pi_optimizer_kwargs)
-        self.q_optimizer = q_optimizer_cls(
+        self.pi_optimizer = _make_optimizer(
+            self.model.actor.parameters(),
+            self.optimizer_actor,
+            self.lr_actor,
+            weight_decay=self.l2_actor,
+            betas=self.betas_actor,
+        )
+        self.q_optimizer = _make_optimizer(
             itertools.chain(self.model.q1.parameters(), self.model.q2.parameters()),
-            **q_optimizer_kwargs,
+            self.optimizer_critic,
+            self.lr_critic,
+            weight_decay=self.l2_critic,
+            betas=self.betas_critic,
         )
         self.use_mixed_precision, self.amp_dtype, self.grad_scaler = amp_setup(
             device, self.mixed_precision, self.mixed_precision_dtype
@@ -186,25 +165,27 @@ class SpinupSacAgent(TrainingAgent):
         self.model.q1.requires_grad_(True)
         self.model.q2.requires_grad_(True)
 
-        self._sac_update_target_network()
+        polyak_update(self.model, self.model_target, self.polyak)
         ret_dict = self._sac_build_return_dict(
-            loss_pi,
-            loss_q,
-            alpha_t,
-            loss_alpha,
-            obs,
-            actions,
-            next_obs,
-            dones,
-            rewards,
-            policy_actions,
-            log_prob_pi,
-            q1_pred,
-            q2_pred,
-            q1_pi,
-            q2_pi,
-            q_pi,
-            td_target,
+            {
+                "loss_pi": loss_pi,
+                "loss_q": loss_q,
+                "alpha_t": alpha_t,
+                "loss_alpha": loss_alpha,
+                "obs": obs,
+                "actions": actions,
+                "next_obs": next_obs,
+                "dones": dones,
+                "rewards": rewards,
+                "policy_actions": policy_actions,
+                "log_prob_pi": log_prob_pi,
+                "q1_pred": q1_pred,
+                "q2_pred": q2_pred,
+                "q1_pi": q1_pi,
+                "q2_pi": q2_pi,
+                "q_pi": q_pi,
+                "td_target": td_target,
+            }
         )
         return ret_dict
 
@@ -234,36 +215,12 @@ class SpinupSacAgent(TrainingAgent):
             min_q_next = torch.min(q1_next, q2_next)
             return rewards + self.gamma * (1 - dones) * (min_q_next - alpha_t * log_prob_next)
 
-    def _sac_update_target_network(self) -> None:
-        """Polyak-update target network parameters."""
-        with torch.no_grad():
-            for param, param_targ in zip(
-                self.model.parameters(), self.model_target.parameters(), strict=True
-            ):
-                param_targ.data.mul_(self.polyak)
-                param_targ.data.add_((1 - self.polyak) * param.data)
-
-    def _sac_build_return_dict(
-        self,
-        loss_pi,
-        loss_q,
-        alpha_t,
-        loss_alpha,
-        obs,
-        actions,
-        next_obs,
-        dones,
-        rewards,
-        policy_actions,
-        log_prob_pi,
-        q1_pred,
-        q2_pred,
-        q1_pi,
-        q2_pi,
-        q_pi,
-        td_target,
-    ):
+    def _sac_build_return_dict(self, ctx: dict) -> dict:
         """Build the dict of scalars to log (and optionally debug metrics)."""
+        loss_pi = ctx["loss_pi"]
+        loss_q = ctx["loss_q"]
+        alpha_t = ctx["alpha_t"]
+        loss_alpha = ctx["loss_alpha"]
         with torch.no_grad():
             if not self.debug_mode:
                 ret_dict = {
@@ -271,6 +228,19 @@ class SpinupSacAgent(TrainingAgent):
                     "losses/critic": loss_q.detach().item(),
                 }
             else:
+                obs = ctx["obs"]
+                actions = ctx["actions"]
+                next_obs = ctx["next_obs"]
+                dones = ctx["dones"]
+                rewards = ctx["rewards"]
+                policy_actions = ctx["policy_actions"]
+                log_prob_pi = ctx["log_prob_pi"]
+                q1_pred = ctx["q1_pred"]
+                q2_pred = ctx["q2_pred"]
+                q1_pi = ctx["q1_pi"]
+                q2_pi = ctx["q2_pi"]
+                q_pi = ctx["q_pi"]
+                td_target = ctx["td_target"]
                 next_actions, log_prob_next = self.model.actor(next_obs)
                 q1_next_obs_next_a = self.model.q1(next_obs, next_actions)
                 q2_next_obs_next_a = self.model.q2(next_obs, next_actions)
