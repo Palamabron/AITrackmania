@@ -7,7 +7,7 @@ from pathlib import Path
 
 
 def write_min_tmrl_test_pickles(base: Path) -> None:
-    """Write tiny trajectories so default LIDAR config passes asset checks."""
+    """Write tiny trajectories so boundary-lidar configs pass optional asset checks."""
     reward_dir = base / "reward"
     track_dir = base / "track"
     reward_dir.mkdir(parents=True, exist_ok=True)

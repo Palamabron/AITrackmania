@@ -142,6 +142,8 @@ class TrackMania2020InterfaceBase(RealTimeGymInterface, ABC):
         self._img_hist_count = 0
         self._img_hist_cursor = 0
         _mcfg = loader.MAIN_CONFIG
+        wandb_cfg = getattr(_mcfg, "wandb", None)
+        use_wandb = bool(getattr(wandb_cfg, "log_from_worker", True))
         self.reward_function = RewardFunction(
             reward_data_path=cfg.REWARD_PATH,
             nb_obs_forward=cfg.REWARD_CONFIG.get("CHECK_FORWARD", 500),
@@ -149,7 +151,7 @@ class TrackMania2020InterfaceBase(RealTimeGymInterface, ABC):
             max_dist_from_traj=cfg.REWARD_CONFIG.get("MAX_STRAY", 50.0),
             crash_penalty=self.crash_penalty,
             constant_penalty=self.constant_penalty,
-            is_lidar=cfg.USE_LIDAR_OBSERVATIONS,
+            require_track_boundary_pickles=cfg.USE_LIDAR_IMAGES,
             track_path_left=cfg_paths.TRACK_PATH_LEFT,
             track_path_right=cfg_paths.TRACK_PATH_RIGHT,
             reward_config=cfg.REWARD_CONFIG,
@@ -157,7 +159,7 @@ class TrackMania2020InterfaceBase(RealTimeGymInterface, ABC):
             points_distance=cfg.POINTS_DISTANCE,
             lap_cooldown=cfg.LAP_COOLDOWN,
             config_file_path=str(loader.LOCAL_OVERRIDE_PATH),
-            use_wandb=bool(_mcfg.wandb.log_from_worker),
+            use_wandb=use_wandb,
             wandb_project=str(_mcfg.wandb.project),
             wandb_entity=str(_mcfg.wandb.entity),
             wandb_run_id=str(_mcfg.run.name),

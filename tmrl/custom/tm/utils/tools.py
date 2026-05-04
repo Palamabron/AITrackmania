@@ -4,11 +4,6 @@ import struct
 import time
 from threading import Lock, Thread
 
-import cv2
-import numpy as np
-
-from tmrl.config import LIDAR_BLACK_THRESHOLD
-
 
 class TM2020OpenPlanetClient:
     """Background socket client for the OpenPlanet TMRL_GrabData plugin.
@@ -193,84 +188,6 @@ def save_ghost(host="127.0.0.1", port=10000):
     """Trigger a ghost save by opening a TCP connection to the ghost-saving server."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.connect((host, port))
-
-
-def armin(tab):
-    """Return the index of the first non-zero element in ``tab`` (or ``len(tab) - 1``)."""
-    nz = np.nonzero(tab)[0]
-    if len(nz) != 0:
-        return nz[0].item()
-    return len(tab) - 1
-
-
-class Lidar:
-    def __init__(self, im):
-        self._set_axis_lidar(im)
-        self.black_threshold = LIDAR_BLACK_THRESHOLD
-
-    def _set_axis_lidar(self, im):
-        """Precompute scan-line pixel coordinates for 19 rays (angles 90-280 deg, 10 deg step)."""
-        h, w, _ = im.shape
-        self.h = h
-        self.w = w
-        self.road_point = (44 * h // 49, w // 2)
-        min_dist = 20
-        list_ax_x = []
-        list_ax_y = []
-        for angle in range(90, 280, 10):
-            axis_x: list[int] = []
-            axis_y: list[int] = []
-            x = self.road_point[0]
-            y = self.road_point[1]
-            dx = math.cos(math.radians(angle))
-            dy = math.sin(math.radians(angle))
-            lenght = False
-            dist = min_dist
-            while not lenght:
-                newx = int(x + dist * dx)
-                newy = int(y + dist * dy)
-                if newx <= 0 or newy <= 0 or newy >= w - 1:
-                    lenght = True
-                    list_ax_x.append(np.array(axis_x))
-                    list_ax_y.append(np.array(axis_y))
-                else:
-                    axis_x.append(newx)
-                    axis_y.append(newy)
-                dist = dist + 1
-        self.list_axis_x = list_ax_x
-        self.list_axis_y = list_ax_y
-
-    def lidar_20(self, img, show=False):
-        """Return the 19 ray distances (in pixels) hitting a black (< threshold) pixel.
-
-        Rebuilds the scan axes if ``img`` has a different shape than the last call.
-        When ``show`` is set, draws the rays on ``img`` and opens a debug window.
-        """
-        h, w, _ = img.shape
-        if h != self.h or w != self.w:
-            self._set_axis_lidar(img)
-        distances = []
-        if show:
-            color = (255, 0, 0)
-            thickness = 4
-            img = cv2.cvtColor(img, cv2.COLOR_RGBA2RGB)
-        for axis_x, axis_y in zip(self.list_axis_x, self.list_axis_y, strict=False):
-            index = armin(np.all(img[axis_x, axis_y] < self.black_threshold, axis=1))
-            if show:
-                img = cv2.line(
-                    img,
-                    (self.road_point[1], self.road_point[0]),
-                    (axis_y[index], axis_x[index]),
-                    color,
-                    thickness,
-                )
-            index = np.float32(index)
-            distances.append(index)
-        res = np.array(distances, dtype=np.float32)
-        if show:
-            cv2.imshow("Environment", img)
-            cv2.waitKey(1)
-        return res
 
 
 if __name__ == "__main__":

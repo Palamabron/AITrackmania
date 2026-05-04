@@ -42,6 +42,7 @@
     - [Linux](readme/install_linux.md)
   - [Getting started](readme/get_started.md)
     - [Quick reference guide](readme/reference_guide.md)
+  - [Makefile (development & track pipeline)](#makefile-development--track-pipeline)
   - [TMRL python library for robot learning](readme/tuto_library.md)
     - [API reference](https://tmrl.readthedocs.io/en/latest/)
   - [Security (important)](#security)
@@ -121,6 +122,62 @@ Detailed instructions for installation are provided at [this link](readme/Instal
 ## Getting started
 
 Full guidance toward setting up an environment in TrackMania 2020, testing pre-trained weights, as well as a beginner-friendly tutorial to train, test, and fine-tune your own models, are provided at [this link](readme/get_started.md).
+
+## Makefile (development & track pipeline)
+
+This repository ships a `Makefile` that picks a [uv](https://github.com/astral-sh/uv) project environment (`.venv-linux`, `.venv-windows`, or `.venv`) and runs commands with `UV_PROJECT_ENVIRONMENT` set accordingly. On native Windows, recipes use PowerShell so Ctrl+C does not stop in the “Terminate batch job” prompt.
+
+### Code quality and tests
+
+The `fmt`, `lint`, and `types` targets call Ruff and Mypy under `.venv/bin/` (see the Makefile). If they fail, create or sync that venv (`uv venv`, `make install-dev`).
+
+| Target | Command |
+|--------|---------|
+| `make install-dev` | `uv sync --group dev` |
+| `make fmt` | Ruff format + auto-fix |
+| `make lint` | Ruff check |
+| `make types` | Mypy on `tmrl/` |
+| `make check` | `lint` + `types` |
+| `make test` / `make tests` | Pytest |
+
+### Distributed training
+
+| Target | Notes |
+|--------|--------|
+| `make server` | Frees `TMRL_SERVER_PORT` (default `55555`) then runs `python -m tmrl --server`. Override with `make server TMRL_SERVER_PORT=...`. |
+| `make trainer` | Prints active config, then trainer. |
+| `make worker` | Prints active config, then rollout worker. |
+| `make record-episode` | Records episodes; optional count: `make record-episode 5`. |
+
+### Track reward, boundaries, and verification
+
+These targets wrap the same Python entrypoints as the CLI/scripts; paths come from your TmrlData / Hydra config unless you pass overrides.
+
+**Typical order for a new map:** record left/right boundaries → build or record a reward trajectory → optionally densify the reward polyline → `check-env` before training.
+
+| Target | What it runs |
+|--------|----------------|
+| `make record-track-boundaries` | `tmrl/tools/record_track.py` — interactive left/right boundary recording (OpenPlanet telemetry; spline/resampling on lap finish). |
+| `make extend-boundaries` | `record_track.py extend` — append straight extensions. Set **`BOUNDARY_PKLS`** to one or more `.pkl` paths (space-separated); use exactly two for parallel left/right extension. Optional **`EXTEND_METERS`** (default `100`). |
+| `make build-centerline-reward` | `scripts/build_centerline_reward.py` — centerline reward from boundary pickles. Optional **`CENTERLINE_ARGS`** (e.g. `--debug-plot`, `--base-reward /path/to.pkl`). |
+| `make record-reward` | `python -m tmrl --record-reward` — drive a lap to record a reward trajectory to `REWARD_PATH`. |
+| `make interpolate-reward` | `scripts/interpolate_reward_trajectory.py` — arc-length upsampling along the reward polyline. Optional **`REWARD_INPUT`** (empty → `tmrl.config.REWARD_PATH`). **`INTERP_FACTOR`** (default `10`). |
+| `make plot-boundaries` | `scripts/plotTrackPoints.py` — optional **`PLOT_ARGS`** (e.g. `--html-out tmp/track.html`). |
+| `make plot-reward` | `scripts/plotRewardPoints.py` — optional **`PLOT_ARGS`**. |
+| `make check-env` | `python -m tmrl --check-env` — verify boundary lidar or full-vision env. |
+| `make explain-config` | `python -m tmrl --explain-active-config` — which config fields apply to the current algorithm/interface. |
+| `make import-player-runs` | Requires **`PLAYER_RUNS_PATHS`** (comma-separated `.pkl` list); runs `--import-player-runs`. |
+
+**Examples:**
+
+```bash
+make record-track-boundaries
+make build-centerline-reward CENTERLINE_ARGS='--debug-plot'
+make interpolate-reward INTERP_FACTOR=10
+make extend-boundaries BOUNDARY_PKLS="track_mymap_left.pkl track_mymap_right.pkl"
+make check-env
+make import-player-runs PLAYER_RUNS_PATHS="$HOME/TmrlData/player_runs/run1.pkl,$HOME/TmrlData/player_runs/run2.pkl"
+```
 
 ## TMRL python library
 

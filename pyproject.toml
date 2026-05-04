@@ -97,8 +97,14 @@ Repository = "https://github.com/trackmania-rl/tmrl"
 index-strategy = "unsafe-best-match"
 
 [tool.uv.sources]
-torch = { index = "pytorch-cuda" }
-torchvision = { index = "pytorch-cuda" }
+torch = [
+    { index = "pytorch-cuda", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { index = "pypi", marker = "sys_platform == 'darwin'" },
+]
+torchvision = [
+    { index = "pytorch-cuda", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { index = "pypi", marker = "sys_platform == 'darwin'" },
+]
 # Force from PyPI; cu124 index only has cp314 wheels for markupsafe
 markupsafe = { index = "pypi" }
 
@@ -142,6 +148,8 @@ ignore = [
     "N999",  # allow PascalCase module names (e.g. tmrl/custom/models/Sophy.py)
     "N812",  # allow F for torch.nn.functional (PyTorch convention)
 ]
+# RUF022 (__all__ sort) defaults to "unsafe"; allow it under `ruff check --fix` / `make fmt`.
+extend-safe-fixes = ["RUF022"]
 
 [tool.ruff.lint.isort]
 # The repo root contains a local ``wandb/`` directory of run outputs, which isort

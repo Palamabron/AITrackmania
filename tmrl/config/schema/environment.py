@@ -112,11 +112,11 @@ class RewardConfig(BaseModel):
     min_progress_rate: float = Field(
         default=0.0,
         ge=0.0,
-        description="Minimum track progress per second averaged over slow_progress_window_seconds.",
+        description="Legacy/no-op: not used by the current RewardFunction.",
     )
     slow_progress_window_seconds: Annotated[float, Field(gt=0.0)] = Field(
         default=5.0,
-        description="Sliding window length for computing progress velocity.",
+        description="Legacy/no-op companion for min_progress_rate.",
     )
     debug_reward_components: bool = Field(
         default=False,
@@ -180,7 +180,11 @@ class RewardConfig(BaseModel):
     crash_penalty: float = Field(
         default=2.0,
         ge=0.0,
-        description="Penalty applied when a crash or hard reset is triggered.",
+        description=(
+            "Penalty applied when a crash or hard reset is triggered (RewardFunction and "
+            "interface crash subtraction). Merged at load: non-zero environment.crash_penalty "
+            "overrides this value for the effective runtime scalar."
+        ),
     )
     reward_clip_floor: float = Field(
         default=10.0,
@@ -263,12 +267,12 @@ class RewardConfig(BaseModel):
         default=0.0,
         ge=0.0,
         le=1.0,
-        description="Velocity-tangent cosine must exceed this to accrue progress reward.",
+        description="Legacy/no-op: progress reward is not gated by velocity alignment.",
     )
     velocity_alignment_reward_weight: float = Field(
         default=0.0,
         ge=0.0,
-        description="Explicit bonus weight for dot(velocity, track_tangent).",
+        description="Legacy/no-op: no separate velocity-alignment reward is applied.",
     )
     speed_safe_deviation_ratio: float = Field(
         default=0.15,
@@ -308,10 +312,10 @@ class RewardConfig(BaseModel):
     cte_penalty_weight: float = Field(
         default=0.0,
         ge=0.0,
-        description="Cross-track error penalty gain.",
+        description="Legacy/no-op: no cross-track error penalty is applied.",
     )
     cte_penalty_exponent: Annotated[float, Field(gt=0.0)] = Field(
-        default=2.0, description="Exponent on normalized CTE."
+        default=2.0, description="Legacy/no-op companion for cte_penalty_weight."
     )
     proximity_reward_shaping: float = Field(
         default=0.0,
@@ -343,7 +347,9 @@ class EnvironmentConfig(BaseModel):
     rtgym_interface: str = Field(
         ...,
         description=(
-            "Case-insensitive interface token (e.g. LIDAR, TQCGRAB_IMAGES, MTQC). "
+            "Case-insensitive interface token "
+            "(e.g. TM20LIDAR, TM20TRACKMAP, TM20TRACKMAPIMAGES, TM20LIDARIMAGES, "
+            "TQCGRAB_IMAGES, MTQC). "
             "Selects observation layout and preprocessor pipeline."
         ),
     )
@@ -433,7 +439,12 @@ class EnvironmentConfig(BaseModel):
     )
     crash_penalty: float = Field(
         default=0.0,
-        description="Penalty scalar applied on crash events at env level.",
+        description=(
+            "Optional override for crash penalty magnitude. When non-zero, replaces "
+            "environment.reward.crash_penalty for the effective value (logged as "
+            "CRASH_PENALTY and written back into reward config at load). When zero "
+            "(default), use reward.crash_penalty only."
+        ),
     )
     crash_cooldown: int = Field(
         default=0,
@@ -469,6 +480,15 @@ class EnvironmentConfig(BaseModel):
     obs_track_scale: Annotated[float, Field(gt=0.0)] = Field(
         default=1.0, description="Multiplier on track geometry channels."
     )
+    tqcgrab_track_coords_divisor: Annotated[float, Field(gt=0.0)] = Field(
+        default=100.0,
+        description=(
+            "For TQCGRAB* telemetry observations: preprocessor divides track tensor obs[0] by this "
+            "value (then clips to [-1, 1]). Lower values amplify small local-frame coordinates for "
+            "GNN/Conv encoders; use ~100 for very large world-frame extents. Preset algorithm=iqn "
+            "sets a lower default for typical local-track setups."
+        ),
+    )
     reward: RewardConfig = Field(
         default_factory=RewardConfig,
         description="Reward function weights, gates, and termination thresholds.",
@@ -477,6 +497,16 @@ class EnvironmentConfig(BaseModel):
         default_factory=RtGymConfig,
         description="Low-level stepping and buffering parameters forwarded to real-time-gym.",
     )
+
+    @model_validator(mode="after")
+    def _reject_legacy_screen_ray_rangefinder_tokens(self) -> EnvironmentConfig:
+        rt = str(self.rtgym_interface).upper()
+        if "LIDARPROGRESS" in rt:
+            raise ValueError(
+                "Legacy TM20*LIDAR*PROGRESS screen-ray rangefinder tokens were removed; "
+                "use TM20LIDAR / TM20TRACKMAP or a token with *LIDARIMAGES* / *TRACKMAPIMAGES*."
+            )
+        return self
 
     def rtgym_config_dict(self) -> dict[str, Any]:
         """Plain dict for mutating and passing into rtgym DEFAULT_CONFIG_DICT."""

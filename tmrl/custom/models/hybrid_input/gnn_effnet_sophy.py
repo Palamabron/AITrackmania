@@ -288,7 +288,7 @@ class SquashedActorGnnEffNetSophyResidual(_GnnEffNetJointFeaturesMixin, TorchAct
     @staticmethod
     def _squash_log_prob(logp: torch.Tensor, pre_tanh_action: torch.Tensor) -> torch.Tensor:
         corr = 2 * (_LOG2 - pre_tanh_action - F.softplus(-2 * pre_tanh_action))
-        logp -= corr.sum(axis=1)
+        logp -= corr.sum(dim=1)  # type: ignore[call-overload]
         return logp
 
     # Clamp pre-tanh to avoid -inf/NaN in squash log-prob correction when action is extreme

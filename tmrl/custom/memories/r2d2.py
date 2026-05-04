@@ -15,6 +15,7 @@ from tmrl.custom.memories.enums import (
     R2D2SophyObsField,
     R2D2woImagesTrailingField,
 )
+from tmrl.custom.memories.utils import canonical_replay_action_vector
 from tmrl.memory import R2D2Memory
 from tmrl.registry import MEMORIES
 
@@ -161,7 +162,10 @@ class MemoryR2D2(R2D2Memory):
 
         data_fields = [
             [first_data_idx + i for i, _ in enumerate(buffer.memory)],
-            [b[bf.ACTION] for b in buffer.memory],
+            [
+                canonical_replay_action_vector(b[bf.ACTION], self.discrete_n_steer_bins)
+                for b in buffer.memory
+            ],
             [np.array(b[bf.OBSERVATION][o.CHECKPOINTS]) for b in buffer.memory],
             [np.array(b[bf.OBSERVATION][o.SPEEDS]) for b in buffer.memory],
             [np.array(b[bf.OBSERVATION][o.ACCELERATIONS]) for b in buffer.memory],
@@ -334,7 +338,10 @@ class MemoryR2D2woImages(R2D2Memory):
 
         data_fields = [
             [first_data_idx + i for i, _ in enumerate(buffer.memory)],
-            [b[bf.ACTION] for b in buffer.memory],
+            [
+                canonical_replay_action_vector(b[bf.ACTION], self.discrete_n_steer_bins)
+                for b in buffer.memory
+            ],
         ]
         for j in range(n_obs):
             data_fields.append([np.array(b[bf.OBSERVATION][j]) for b in buffer.memory])
@@ -483,7 +490,10 @@ class MemoryR2D2Sophy(R2D2Memory):
 
         data_fields = [
             [first_data_idx + i for i, _ in enumerate(buffer.memory)],
-            [b[bf.ACTION] for b in buffer.memory],
+            [
+                canonical_replay_action_vector(b[bf.ACTION], self.discrete_n_steer_bins)
+                for b in buffer.memory
+            ],
             [np.array(b[bf.OBSERVATION][o.TRACK_INFO]) for b in buffer.memory],
             [np.array(b[bf.OBSERVATION][o.SPEEDS]) for b in buffer.memory],
             [np.array(b[bf.OBSERVATION][o.ACCELERATIONS]) for b in buffer.memory],

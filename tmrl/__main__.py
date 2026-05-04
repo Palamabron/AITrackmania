@@ -21,7 +21,6 @@ from tmrl.networking import RolloutWorker, Server, Trainer
 from tmrl.tools.check_environment import (
     check_env_tm20_boundary,
     check_env_tm20full,
-    check_env_tm20lidar,
 )
 from tmrl.tools.import_player_runs import import_player_runs
 from tmrl.tools.record_reward import record_reward_dist
@@ -89,7 +88,7 @@ class TmrlCli:
     """Validate import only, without writing dataset."""
 
     check_env: bool = False
-    """Verify environment (Lidar/Full/Boundary) works."""
+    """Verify environment (boundary lidar or full vision) works."""
 
     wandb: bool = True
     """Enable Weights & Biases logging on trainer (default True; use --no-wandb to disable)."""
@@ -193,11 +192,8 @@ def main(cli: TmrlCli) -> None:
     elif cli.record_reward:
         record_reward_dist(path_reward=cfg.REWARD_PATH)
     elif cli.check_env:
-        if cfg.USE_LIDAR_OBSERVATIONS:
-            if cfg.USE_TRACKMAP:
-                check_env_tm20_boundary()
-            else:
-                check_env_tm20lidar()
+        if cfg.USE_LIDAR or cfg.USE_LIDAR_IMAGES:
+            check_env_tm20_boundary()
         else:
             check_env_tm20full()
     elif cli.record_episode:

@@ -211,6 +211,7 @@ DEBUGGER_CONFIG = MAIN_CONFIG.debugger.model_dump()
 def create_config() -> dict[str, Any]:
     """Flat snake_case dict for W&B logging and legacy helpers expecting one-level keys."""
     from tmrl.config.constants import (
+        CRASH_PENALTY,
         POINTS_NUMBER,
         REWARD_CONFIG,
     )
@@ -267,7 +268,7 @@ def create_config() -> dict[str, Any]:
             REWARD_CONFIG["off_track_seconds_before_failure"]
         ),
         "oscillation_period": e.oscillation_period,
-        "crash_penalty": e.crash_penalty,
+        "crash_penalty": float(CRASH_PENALTY),
         "crash_cooldown": e.crash_cooldown,
         "constant_penalty": e.constant_penalty,
         "lap_reward": e.lap_reward,

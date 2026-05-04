@@ -4,18 +4,10 @@ from loguru import logger
 from rtgym.envs.real_time_env import DEFAULT_CONFIG_DICT
 
 import tmrl.config as cfg
-from tmrl.custom.interfaces import (
-    TM2020Interface,
-    TM2020InterfaceBoundary,
-    TM2020InterfaceLidar,
-)
-from tmrl.custom.tm.utils.tools import Lidar
-from tmrl.custom.tm.utils.window import WindowInterface
+from tmrl.custom.interfaces import TM2020Interface, TM2020InterfaceBoundary
 
 
 def check_env_tm20_boundary():
-    window_interface = WindowInterface("Trackmania")
-    lidar = Lidar(window_interface.screenshot())
     env_config = DEFAULT_CONFIG_DICT.copy()
     env_config["interface"] = TM2020InterfaceBoundary
     env_config["wait_on_done"] = True
@@ -37,32 +29,6 @@ def check_env_tm20_boundary():
             print("d: ", d)
             print("t: ", t)
             _o, _ = env.reset()
-        img = window_interface.screenshot()[:, :, :3]
-        lidar.lidar_20(img, True)
-
-
-def check_env_tm20lidar():
-    window_interface = WindowInterface("Trackmania")
-    # Required on Linux: X11 needs an explicit move/resize before screen-capture works.
-    if cfg.SYSTEM != "Windows":
-        window_interface.move_and_resize()
-    lidar = Lidar(window_interface.screenshot())
-    env_config = DEFAULT_CONFIG_DICT.copy()
-    env_config["interface"] = TM2020InterfaceLidar
-    env_config["wait_on_done"] = True
-    env_config["interface_kwargs"] = {
-        "img_hist_len": 1,
-        "gamepad": False,
-    }
-    env = gymnasium.make(cfg.RTGYM_VERSION, config=env_config)
-    _, _ = env.reset()
-    while True:
-        _o, r, d, t, _ = env.step(None)
-        logger.info(f"r:{r}, d:{d}, t:{t}")
-        if d or t:
-            _, _ = env.reset()
-        img = window_interface.screenshot()[:, :, :3]
-        lidar.lidar_20(img, True)
 
 
 def show_imgs(imgs, scale=cfg.IMG_SCALE_CHECK_ENV):

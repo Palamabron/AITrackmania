@@ -18,7 +18,13 @@ class InterfaceConfig(BaseModel):
     resize_to: tuple[int, int] = Field(default=(64, 64))
     finish_reward: float = Field(default=1.0)
     constant_penalty: float = Field(default=0.0)
-    crash_penalty: float = Field(default=10.0)
+    crash_penalty: float = Field(
+        default=2.0,
+        description=(
+            "Hydra-only preset mirror; effective crash penalty is environment.reward.crash_penalty "
+            "merged with environment.crash_penalty (see constants / RewardFunction)."
+        ),
+    )
     reward_check_forward: int = Field(default=500, ge=1)
     reward_check_backward: int = Field(default=10, ge=0)
     reward_max_stray: float = Field(default=50.0, gt=0.0)

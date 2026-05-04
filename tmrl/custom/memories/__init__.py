@@ -8,8 +8,7 @@ from tmrl.custom.memories.base import (
 )
 from tmrl.custom.memories.compressors import (
     get_local_buffer_sample_lidar,
-    get_local_buffer_sample_lidar_progress,
-    get_local_buffer_sample_lidar_progress_images,
+    get_local_buffer_sample_lidar_images,
     get_local_buffer_sample_mobilenet,
     get_local_buffer_sample_tm20_imgs,
 )
@@ -25,12 +24,8 @@ from tmrl.custom.memories.enums import (
     TMBestObsField,
     TMFullField,
     TMFullObsField,
-    TMLidarField,
-    TMLidarObsField,
-    TMLidarProgressField,
-    TMLidarProgressImagesField,
-    TMLidarProgressImagesObsField,
-    TMLidarProgressObsField,
+    TMLidarImagesField,
+    TMLidarImagesObsField,
 )
 from tmrl.custom.memories.r2d2 import (
     MemoryR2D2,
@@ -39,11 +34,7 @@ from tmrl.custom.memories.r2d2 import (
 )
 from tmrl.custom.memories.tm_best import MemoryTMBest
 from tmrl.custom.memories.tm_full import MemoryTMFull
-from tmrl.custom.memories.tm_lidar import (
-    MemoryTMLidar,
-    MemoryTMLidarProgress,
-    MemoryTMLidarProgressImages,
-)
+from tmrl.custom.memories.tm_lidar_images import MemoryTMLidarImages
 from tmrl.custom.memories.utils import (
     ACTION_STEER_INDEX,
     _hflip_action,
@@ -63,9 +54,7 @@ __all__ = [
     "MemoryTM",
     "MemoryTMBest",
     "MemoryTMFull",
-    "MemoryTMLidar",
-    "MemoryTMLidarProgress",
-    "MemoryTMLidarProgressImages",
+    "MemoryTMLidarImages",
     "R2D2Field",
     "R2D2ObsField",
     "R2D2SophyField",
@@ -75,19 +64,14 @@ __all__ = [
     "TMBestObsField",
     "TMFullField",
     "TMFullObsField",
-    "TMLidarField",
-    "TMLidarObsField",
-    "TMLidarProgressField",
-    "TMLidarProgressImagesField",
-    "TMLidarProgressImagesObsField",
-    "TMLidarProgressObsField",
+    "TMLidarImagesField",
+    "TMLidarImagesObsField",
     "_hflip_action",
     "_hflip_discrete_action",
     "_is_discrete_action",
     "fog_recency_resample",
     "get_local_buffer_sample_lidar",
-    "get_local_buffer_sample_lidar_progress",
-    "get_local_buffer_sample_lidar_progress_images",
+    "get_local_buffer_sample_lidar_images",
     "get_local_buffer_sample_mobilenet",
     "get_local_buffer_sample_tm20_imgs",
     "last_true_in_list",

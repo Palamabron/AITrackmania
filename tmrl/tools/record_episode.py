@@ -24,6 +24,17 @@ def _extract_human_action_from_obs_tqcgrab(obs):
     return np.array([gas, brake, steer], dtype=np.float32)
 
 
+def _extract_human_action_from_record_info(info, *, fallback: np.ndarray) -> np.ndarray:
+    """Boundary lidar path: interfaces add ``human_control_vec`` when ``record_human``."""
+    if isinstance(info, dict):
+        vec = info.get("human_control_vec")
+        if vec is not None:
+            a = np.asarray(vec, dtype=np.float32).ravel()
+            if a.size >= 3:
+                return np.array([float(a[0]), float(a[1]), float(a[2])], dtype=np.float32)
+    return np.asarray(fallback, dtype=np.float32).copy()
+
+
 def _collect_human_episode(env, max_samples, obs_preprocessor, crc_debug):
     """Collect one episode using human control (neutral sent so human drives) and Del to end."""
     neutral_action = np.zeros(3, dtype=np.float32)
@@ -44,7 +55,16 @@ def _collect_human_episode(env, max_samples, obs_preprocessor, crc_debug):
         if i == max_samples - 1 and not terminated:
             truncated = True
 
-        act_for_sample = _extract_human_action_from_obs_tqcgrab(new_obs)
+        if cfg.USE_OBS_WORLD_TELEMETRY_LAYOUT:
+            act_for_sample = _extract_human_action_from_obs_tqcgrab(new_obs)
+        elif cfg.USE_LIDAR or cfg.USE_LIDAR_IMAGES:
+            act_for_sample = _extract_human_action_from_record_info(info, fallback=neutral_action)
+        else:
+            raise NotImplementedError(
+                "Human recording is only implemented for TM20LIDAR / TM20TRACKMAP / "
+                "TM20TRACKMAPIMAGES / TM20LIDARIMAGES layouts "
+                "or TQCGRAB-style layouts."
+            )
         if is_del_pressed():
             truncated = True
 
@@ -52,7 +72,9 @@ def _collect_human_episode(env, max_samples, obs_preprocessor, crc_debug):
             info = dict(info)
             info["crc_sample"] = (obs, act_for_sample, new_obs, rew, terminated, truncated)
             info["crc_sample_ts"] = (0, steps)
-        sample = (act_for_sample, new_obs, rew, terminated, truncated, info)
+        info_stored = dict(info) if isinstance(info, dict) else {}
+        info_stored.pop("human_control_vec", None)
+        sample = (act_for_sample, new_obs, rew, terminated, truncated, info_stored)
         buffer_memory.append(sample)
 
         ret += rew
@@ -80,11 +102,11 @@ def record_episode(
     if nb_episodes <= 0:
         raise ValueError("nb_episodes must be > 0")
 
-    if not cfg.USE_OBS_WORLD_TELEMETRY_LAYOUT:
+    if not cfg.USE_OBS_WORLD_TELEMETRY_LAYOUT and not cfg.USE_LIDAR and not cfg.USE_LIDAR_IMAGES:
         raise NotImplementedError(
-            "Human recording is only supported when environment.rtgym_interface includes the "
-            "world-telemetry observation layout (screen + world-state channels). "
-            "Set environment.rtgym_interface to a matching id in config."
+            "Human recording needs environment.rtgym_interface boundary lidar tokens "
+            "(TM20LIDAR / *TRACKMAP*) or fused lidar+images (*TRACKMAPIMAGES*, *LIDARIMAGES*), "
+            "or a TQCGRAB* token (world-telemetry layout)."
         )
 
     env_config = cfg_obj.CONFIG_DICT.copy()

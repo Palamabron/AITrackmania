@@ -1,14 +1,12 @@
 """Track-boundary TrackMania 2020 rtgym interfaces.
 
-The observation packs a 60-float vector of left/right track-boundary points ahead of
-the car, sampled from a *pre-recorded* boundary map loaded from disk (CSV or pkl).
-This differs from ``lidar``, which casts rays against screen pixels at every step.
+Observations use a 60-float vector of left/right track-boundary points ahead of the car,
+sampled from a *pre-recorded* boundary map (CSV for :class:`TM2020InterfaceBoundary`,
+per-map pickles for :class:`TM2020InterfaceBoundaryImages`). This is the default TMRL
+geometry path for TM2020.
 
 - ``TM2020InterfaceBoundary``       - telemetry + pre-recorded track boundaries ahead.
 - ``TM2020InterfaceBoundaryImages`` - camera image history + track boundaries + progress.
-
-``TM2020InterfaceBoundary`` reads the CSV-based left/right boundaries; the ``Images``
-variant reads per-map pickle dumps produced by ``record_track.py``.
 """
 
 from __future__ import annotations
@@ -24,8 +22,8 @@ from scipy import spatial
 import tmrl.config as cfg
 from tmrl.config.paths import BOUNDARY_CSV_LEFT, BOUNDARY_CSV_RIGHT
 from tmrl.custom.interfaces.base import MPS_TO_KMPH
-from tmrl.custom.interfaces.lidar import TM2020InterfaceLidar, TM2020InterfaceLidarProgress
 from tmrl.custom.interfaces.telemetry_indices import TmrlDataPlugin, yaw_pitch_from_dir_xyz
+from tmrl.custom.interfaces.vision import TM2020Interface
 from tmrl.custom.tm.utils.control_mouse import mouse_save_replay_tm20
 from tmrl.custom.tm.utils.window import WindowInterface
 from tmrl.registry import INTERFACES
@@ -118,8 +116,8 @@ def _load_boundary_csv_or_fallback(path: str) -> np.ndarray:
     return np.array([[0.0, 1.0], [0.0, 1.0]], dtype=np.float64)
 
 
-@INTERFACES.register("trackmap")
-class TM2020InterfaceBoundary(TM2020InterfaceLidar):
+@INTERFACES.register("lidar")
+class TM2020InterfaceBoundary(TM2020Interface):
     """
     Telemetry + pre-recorded track boundaries ahead of the car.
 
@@ -136,16 +134,18 @@ class TM2020InterfaceBoundary(TM2020InterfaceLidar):
         save_replay: bool = False,
         **kwargs,
     ):
+        # RtGym merges ``interface_kwargs`` (e.g. ``save_replays``) into the constructor; avoid
+        # passing ``save_replays`` twice to :class:`TM2020Interface`.
+        save_replays_val = bool(kwargs.pop("save_replays", save_replay))
         super().__init__(
             img_hist_len=img_hist_len,
             gamepad=gamepad,
             min_nb_steps_before_failure=min_nb_steps_before_failure,
-            save_replays=save_replay,
+            save_replays=save_replays_val,
             **kwargs,
         )
         self.record = record
         self.window_interface: WindowInterface | None = None
-        self.lidar = None
         self.last_pos = [0, 0]
         self.index = 0
         self.left_boundary = _load_boundary_csv_or_fallback(BOUNDARY_CSV_LEFT)
@@ -157,11 +157,19 @@ class TM2020InterfaceBoundary(TM2020InterfaceLidar):
         self._bd_prev_speed_kmh: float = 0.0
         self._bd_prev_acc_kmh: float = 0.0
 
+    def initialize(self):
+        """Skip screen-ray rangefinder precomputation; geometry comes from boundary CSV/pkl."""
+        self.initialize_common()
+        self.small_window = False
+        assert self.window_interface is not None
+        self.initialized = True
+
     def get_observation_space(self):
+        # Track channel first so IQN ``split_track_observation`` + GNN (dim % 3 == 0) works.
+        track_information = spaces.Box(low=-300, high=300, shape=(BOUNDARY_OBS_DIM,))
         speed = spaces.Box(low=0.0, high=1000.0, shape=(1,))
         gear = spaces.Box(low=0.0, high=6, shape=(1,))
         rpm = spaces.Box(low=0.0, high=np.inf, shape=(1,))
-        track_information = spaces.Box(low=-300, high=300, shape=(BOUNDARY_OBS_DIM,))
         acceleration = spaces.Box(low=-100, high=100.0, shape=(1,))
         steering_angle = spaces.Box(low=-1, high=1.0, shape=(1,))
         slipping_tires = spaces.Box(low=0.0, high=1, shape=(4,))
@@ -169,10 +177,10 @@ class TM2020InterfaceBoundary(TM2020InterfaceLidar):
         failure_counter = spaces.Box(low=0.0, high=15, shape=(1,))
         return spaces.Tuple(
             (
+                track_information,
                 speed,
                 gear,
                 rpm,
-                track_information,
                 acceleration,
                 steering_angle,
                 slipping_tires,
@@ -240,11 +248,20 @@ class TM2020InterfaceBoundary(TM2020InterfaceLidar):
 
         crash_penalty = -float(self.crash_penalty)
         end_of_track = bool(data[TmrlDataPlugin.FINISH_UI_ACTIVE])
-        info = {
+        info: dict[str, object] = {
             "end_of_track": end_of_track,
             "crashed": crashed_this_step,
             "crash_penalty": float(self.crash_penalty),
         }
+        if self.record_human:
+            info["human_control_vec"] = np.array(
+                [
+                    float(data[TmrlDataPlugin.INPUT_GAS]),
+                    float(data[TmrlDataPlugin.INPUT_BRAKE]),
+                    float(data[TmrlDataPlugin.INPUT_STEER]),
+                ],
+                dtype=np.float32,
+            )
         reward = 0.0
         if bool(self.is_crashed):
             reward -= abs(crash_penalty)
@@ -283,10 +300,10 @@ class TM2020InterfaceBoundary(TM2020InterfaceLidar):
             terminated = bool(terminated)
 
         obs = [
+            track_information,
             speed,
             gear,
             rpm,
-            track_information,
             acceleration,
             steering_angle,
             slipping_tires,
@@ -294,9 +311,18 @@ class TM2020InterfaceBoundary(TM2020InterfaceLidar):
             np.array([fc_scalar], dtype=np.float32),
         ]
         self.cooldown_control()
+        assert self.reward_function is not None
+        self.reward_function.log_model_run(terminated=bool(terminated), end_of_track=end_of_track)
         return obs, np.float32(reward), terminated, info
 
     def reset(self, seed=None, options=None):
+        rf = getattr(self, "reward_function", None)
+        if (
+            rf is not None
+            and getattr(rf, "step_counter", 0) > 0
+            and not getattr(rf, "_logged_run_this_episode", False)
+        ):
+            rf.log_model_run(terminated=True, end_of_track=False, truncated=True)
         self.reset_common()
         data = self.grab_data()
         self._bd_prev_speed_kmh = 0.0
@@ -319,10 +345,10 @@ class TM2020InterfaceBoundary(TM2020InterfaceLidar):
         )
         crash = np.array([float(bool(self.is_crashed))], dtype=np.float32)
         obs = [
+            track_information,
             speed,
             gear,
             rpm,
-            track_information,
             acceleration,
             steering_angle,
             slipping_tires,
@@ -334,8 +360,8 @@ class TM2020InterfaceBoundary(TM2020InterfaceLidar):
         return obs, {}
 
 
-@INTERFACES.register("trackmap_images")
-class TM2020InterfaceBoundaryImages(TM2020InterfaceLidarProgress):
+@INTERFACES.register("lidar_images")
+class TM2020InterfaceBoundaryImages(TM2020Interface):
     """
     Camera images + pre-recorded track boundaries ahead + race progress.
 
@@ -353,21 +379,27 @@ class TM2020InterfaceBoundaryImages(TM2020InterfaceLidarProgress):
         save_replays: bool = False,
         **kwargs,
     ):
+        save_replays_val = bool(kwargs.pop("save_replays", save_replays))
         super().__init__(
             img_hist_len=img_hist_len,
             gamepad=gamepad,
             min_nb_steps_before_failure=min_nb_steps_before_failure,
-            save_replays=save_replays,
+            save_replays=save_replays_val,
+            grayscale=grayscale,
+            resize_to=resize_to or (cfg.IMG_WIDTH, cfg.IMG_HEIGHT),
             **kwargs,
         )
-        self.grayscale = grayscale
-        self.resize_to = resize_to or (cfg.IMG_WIDTH, cfg.IMG_HEIGHT)
         self.image_hist: list = []
         self.left_boundary, self.right_boundary = _load_boundary_pkl(
             cfg.TRACK_PATH_LEFT, cfg.TRACK_PATH_RIGHT
         )
         self.look_ahead_distance = BOUNDARY_LOOK_AHEAD
         self.nearby_correction = BOUNDARY_NEARBY_CORRECTION
+
+    def initialize(self):
+        self.initialize_common()
+        self.small_window = False
+        self.initialized = True
 
     def _grab_speed_track_and_image(self):
         assert self.window_interface is not None
@@ -404,6 +436,13 @@ class TM2020InterfaceBoundaryImages(TM2020InterfaceLidarProgress):
         return speed, data, track_information, img
 
     def reset(self, seed=None, options=None):
+        rf = getattr(self, "reward_function", None)
+        if (
+            rf is not None
+            and getattr(rf, "step_counter", 0) > 0
+            and not getattr(rf, "_logged_run_this_episode", False)
+        ):
+            rf.log_model_run(terminated=True, end_of_track=False, truncated=True)
         self.reset_common()
         speed, _data, track_information, img = self._grab_speed_track_and_image()
         self.image_hist = [img for _ in range(self.img_hist_len)]
@@ -445,6 +484,8 @@ class TM2020InterfaceBoundaryImages(TM2020InterfaceLidarProgress):
         if end_of_track:
             rew += self.finish_reward
             terminated = True
+
+        self.reward_function.log_model_run(terminated=bool(terminated), end_of_track=end_of_track)
         return obs, np.float32(rew), terminated, info
 
     def get_observation_space(self):

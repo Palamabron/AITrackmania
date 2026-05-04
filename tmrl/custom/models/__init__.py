@@ -2,7 +2,7 @@
 
 Layout:
 - ``shared``: reusable blocks/constants (`mlp`, residual backbones, EffNet stems).
-- ``vector_input``: vector/lidar policies (MLP, residual MLP, GRU).
+- ``vector_input``: boundary lidar / vector policies (MLP, residual MLP, GRU).
 - ``image_input``: image-first policies (vanilla CNN, EfficientNet, IMPALA-like).
 - ``hybrid_input``: mixed track+physics(+image) pipelines (Sophy family).
 - ``discrete_actions``: IQN/discrete Q networks.

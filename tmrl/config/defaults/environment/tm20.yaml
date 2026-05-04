@@ -1,8 +1,13 @@
 # @package _global_
 # TrackMania 2020 defaults: interface name, images, rt-gym timing.
+defaults:
+  - tm20_rtgym
+  - _self_
+
 environment:
   seed: 0
-  rtgym_interface: LIDAR
+  # Pre-recorded left/right boundaries (CSV / boundary .pkl), not legacy screen-ray beams.
+  rtgym_interface: TM20LIDAR
   init_gas_bias: 0.0
   map_name: ""
   end_of_track_reward: 0.0
@@ -10,7 +15,7 @@ environment:
   window_height: 480
   img_width: 64
   img_height: 64
-  use_images: true
+  use_images: false
   img_grayscale: true
   sleep_time_at_reset: 1.5
   img_hist_len: 4
@@ -36,14 +41,3 @@ environment:
   reward:
     min_seconds_before_failure: 3.5
     off_track_seconds_before_failure: 0.5
-  rtgym:
-    time_step_duration: 0.05
-    start_obs_capture: 0.04
-    time_step_timeout_factor: 1.0
-    act_buf_len: 2
-    reset_act_buf: true
-    benchmark: false
-    wait_on_done: true
-    ep_max_length: 1000
-    interface_kwargs:
-      save_replays: false

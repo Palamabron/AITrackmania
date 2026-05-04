@@ -74,7 +74,7 @@ class SquashedGaussianResidualMLPActor(TorchActorModule):
             logp_pi = pi_distribution.log_prob(pi_action).sum(axis=-1)
             pi_action_for_corr = pi_action.clamp(-_SQUASH_CLAMP, _SQUASH_CLAMP)
             logp_pi -= (2 * (_LOG2 - pi_action_for_corr - F.softplus(-2 * pi_action_for_corr))).sum(
-                axis=1
+                dim=1  # type: ignore[call-overload]
             )
         else:
             logp_pi = None
@@ -110,7 +110,7 @@ class ResidualMLPQFunction(nn.Module):
 
 
 class ResidualMLPActorCritic(nn.Module):
-    """Actor-critic with residual MLP (depth 4-8 blocks, width 256). For Lidar + SAC."""
+    """Residual MLP actor-critic (depth 4-8, width 256); boundary lidar geometry + SAC."""
 
     def __init__(
         self,

@@ -249,18 +249,28 @@ class DuelingHead(nn.Module):
             nn.Linear(hidden_dim, n_actions),
         )
 
-    def forward(self, features: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self, features: torch.Tensor, return_components: bool = False
+    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """Map features to Q-values via dueling decomposition.
 
         Args:
             features: Tensor of shape ``(..., hidden_dim)``.
 
         Returns:
-            Q-values of shape ``(..., n_actions)``.
+            If ``return_components`` is False:
+                Q-values of shape ``(..., n_actions)``.
+            If ``return_components`` is True:
+                Tuple ``(q_values, value, advantage, centered_advantage)`` where
+                ``value`` has shape ``(..., 1)`` and ``advantage`` / ``centered_advantage``
+                have shape ``(..., n_actions)``.
         """
         v = self.value_stream(features)
         a = self.advantage_stream(features)
-        result: torch.Tensor = v + a - a.mean(dim=-1, keepdim=True)
+        centered_a = a - a.mean(dim=-1, keepdim=True)
+        result: torch.Tensor = v + centered_a
+        if return_components:
+            return result, v, a, centered_a
         return result
 
 
@@ -327,6 +337,39 @@ class IQNQNetwork(nn.Module):
         features = self.backbone(observation, tau)
         quantile_values: torch.Tensor = self.head(features)
         return quantile_values, tau
+
+    def forward_with_head_stats(
+        self,
+        observation,
+        tau: torch.Tensor | None = None,
+        n_quantiles: int = 32,
+    ) -> tuple[torch.Tensor, torch.Tensor, dict[str, torch.Tensor] | None]:
+        """Forward pass plus optional dueling-head internals for diagnostics.
+
+        Returns:
+            quantile_values: (batch, n_quantiles, n_actions)
+            tau: quantile fractions used
+            head_stats: dict with dueling streams when dueling is enabled, else None
+        """
+        batch_size = observation[0].shape[0]
+        device = observation[0].device
+        if tau is None:
+            tau = torch.rand(batch_size, n_quantiles, device=device)
+
+        features = self.backbone(observation, tau)
+        if isinstance(self.head, DuelingHead):
+            quantile_values, value, advantage, centered_advantage = self.head(
+                features, return_components=True
+            )
+            head_stats = {
+                "value": value,
+                "advantage": advantage,
+                "centered_advantage": centered_advantage,
+            }
+            return quantile_values, tau, head_stats
+
+        quantile_values = self.head(features)
+        return quantile_values, tau, None
 
     def q_values(self, observation, n_quantiles: int = 32) -> torch.Tensor:
         """Expected Q-values: mean over quantile dimension.

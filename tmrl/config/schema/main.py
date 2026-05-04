@@ -7,6 +7,7 @@ import warnings
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from tmrl.config.rtgym_boundary_iface import rtgym_discrete_boundary_lidar_family
 from tmrl.config.schema.algorithm import AlgorithmConfig
 from tmrl.config.schema.distributed import DistributedConfig
 from tmrl.config.schema.environment import EnvironmentConfig
@@ -71,12 +72,13 @@ class MainConfig(BaseModel):
     def _validate_cross_field_runtime_constraints(self) -> MainConfig:
         iface = self.environment.rtgym_interface.upper()
 
-        if self.model.use_rnn and not iface.endswith("LIDAR"):
+        if self.model.use_rnn and not rtgym_discrete_boundary_lidar_family(iface):
             images_r2d2_or_world_telemetry = "TQCGRAB" in iface or iface.endswith("MTQC")
             if not (images_r2d2_or_world_telemetry and self.algorithm.name in ("IQN", "SDSAC")):
                 raise ValueError(
                     "model.use_rnn=true is only validated for "
-                    "(1) environment.rtgym_interface ending with 'LIDAR' "
+                    "(1) boundary-lidar rt-gym tokens (TM20LIDAR / *TRACKMAP*, "
+                    "or tokens containing *LIDARIMAGES* / *TRACKMAPIMAGES*), "
                     "(SAC RNN actor-critic path), or (2) interfaces that use the "
                     "R2D2 sequence buffer or world-telemetry observation layout "
                     "(IQN or SDSAC only)."

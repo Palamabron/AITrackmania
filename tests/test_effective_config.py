@@ -23,18 +23,38 @@ def _validate_with(**overrides: dict) -> MainConfig:
     return MainConfig.model_validate(d)
 
 
-def test_build_interface_context_lidar_progress_marks_lidar():
+def test_removed_screen_lidar_interface_rejected_by_schema():
     env = MAIN_CONFIG.environment.model_copy(
         update={"rtgym_interface": "TM20LIDARPROGRESS", "use_images": False}
     )
-    assert build_interface_context(env).use_lidar_observations is True
+    with pytest.raises(ValueError, match="removed"):
+        MainConfig.model_validate(MAIN_CONFIG.model_dump() | {"environment": env.model_dump()})
+
+
+def test_build_interface_context_lidar_geometry_detected():
+    env = MAIN_CONFIG.environment.model_copy(
+        update={"rtgym_interface": "TM20LIDAR", "use_images": False}
+    )
+    ctx = build_interface_context(env)
+    assert ctx.lidar_geometry_interface is True
+    assert ctx.lidar_includes_images is False
+
+
+def test_build_interface_context_legacy_trackmap_token_still_lidar():
+    env = MAIN_CONFIG.environment.model_copy(
+        update={"rtgym_interface": "TM20TRACKMAP", "use_images": False}
+    )
+    ctx = build_interface_context(env)
+    assert ctx.lidar_geometry_interface is True
 
 
 @pytest.mark.parametrize(
     ("alg", "iface", "expected_route"),
     [
-        ("IQN", "LIDAR", "lidar_iqn"),
-        ("SDSAC", "LIDAR", "lidar_sdsac"),
+        ("IQN", "TM20LIDAR", "lidar_iqn"),
+        ("SDSAC", "TM20LIDAR", "lidar_sdsac"),
+        ("IQN", "TM20TRACKMAP", "lidar_iqn"),
+        ("SDSAC", "TM20TRACKMAP", "lidar_sdsac"),
     ],
 )
 def test_model_policy_route_named_routes(alg: str, iface: str, expected_route: str):
@@ -60,7 +80,7 @@ def test_model_policy_route_named_routes(alg: str, iface: str, expected_route: s
 def test_active_model_fields(
     alg: str, must_contain: tuple[str, ...], must_not_contain: tuple[str, ...]
 ):
-    m = _validate_with(algorithm={"name": alg}, environment={"rtgym_interface": "LIDAR"})
+    m = _validate_with(algorithm={"name": alg}, environment={"rtgym_interface": "TM20TRACKMAP"})
     active = active_model_field_names(m)
     for name in must_contain:
         assert name in active
@@ -100,7 +120,7 @@ def test_iqn_warns_when_actor_critic_depths_disagree(
 def test_iqn_preset_compatibility(preset: str, should_reject: bool):
     d = MAIN_CONFIG.model_dump()
     d["algorithm"]["name"] = "IQN"
-    d["environment"]["rtgym_interface"] = "LIDAR"
+    d["environment"]["rtgym_interface"] = "TM20TRACKMAP"
     d["model"]["type"] = preset
     if should_reject:
         with pytest.raises(ValueError, match="discrete-action-capable"):
@@ -134,15 +154,15 @@ def test_removed_barrier_touch_reward_fields_are_rejected(field_name: str):
         MainConfig.model_validate(d)
 
 
-_LIDAR_IFACE = "LIDAR"
+_GEOM_IFACE = "TM20LIDAR"
 _ADVANCED_IFACE = "TQCGRAB_IMAGES"
 _VANILLA_IFACE = "TM2020"
 
 _SUPPORTED = [
-    ("SAC", _LIDAR_IFACE),
-    ("REDQSAC", _LIDAR_IFACE),
-    ("IQN", _LIDAR_IFACE),
-    ("SDSAC", _LIDAR_IFACE),
+    ("SAC", _GEOM_IFACE),
+    ("REDQSAC", _GEOM_IFACE),
+    ("IQN", _GEOM_IFACE),
+    ("SDSAC", _GEOM_IFACE),
     ("TQC", _ADVANCED_IFACE),
     ("SAC", _ADVANCED_IFACE),
     ("IQN", _ADVANCED_IFACE),
@@ -151,7 +171,7 @@ _SUPPORTED = [
 ]
 
 _UNSUPPORTED = [
-    ("TQC", _LIDAR_IFACE),
+    ("TQC", _GEOM_IFACE),
     ("REDQSAC", _ADVANCED_IFACE),
     ("TQC", _VANILLA_IFACE),
     ("IQN", _VANILLA_IFACE),
@@ -174,7 +194,7 @@ def test_model_policy_route_supported_matrix(alg: str, iface: str, supported: bo
 
 
 def test_explain_active_config_unsupported_does_not_crash():
-    m = _validate_with(algorithm={"name": "TQC"}, environment={"rtgym_interface": "LIDAR"})
+    m = _validate_with(algorithm={"name": "TQC"}, environment={"rtgym_interface": "TM20TRACKMAP"})
     text = explain_active_config_text(m)
     assert "unsupported" in text.lower()
     assert "WARNING" in text

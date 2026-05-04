@@ -87,7 +87,7 @@ class AlgorithmConfig(BaseModel):
         default=0.5,
         description=(
             "R2D2-style replay only (MTQC / TQCGRAB interfaces): temporal rewind augmentation "
-            "probability. Unused for LIDAR tuple memory."
+            "probability. Unused for boundary lidar tuple memory."
         ),
     )
     r2d2_num_sequences: int = Field(
@@ -95,7 +95,7 @@ class AlgorithmConfig(BaseModel):
         ge=0,
         description=(
             "R2D2-style replay only: parallel sequences per minibatch; 0 uses i.i.d. transitions. "
-            "Unused for LIDAR tuple memory."
+            "Unused for boundary lidar tuple memory."
         ),
     )
     r2d2_sequence_length: int = Field(
@@ -103,7 +103,7 @@ class AlgorithmConfig(BaseModel):
         ge=0,
         description=(
             "R2D2-style replay only: sequence length L for recurrent / stacked batches. "
-            "IQN GNN+Lidar uses this only if USE_RNN_MODEL and batch layout matches."
+            "IQN GNN + boundary lidar uses this only if USE_RNN_MODEL and batch layout matches."
         ),
     )
     r2d2_burn_in: int = Field(
@@ -111,7 +111,7 @@ class AlgorithmConfig(BaseModel):
         ge=0,
         description=(
             "R2D2-style replay / GRU path: burn-in prefix without full BPTT. "
-            "Unused for plain LIDAR MLP IQN."
+            "Unused for plain boundary lidar MLP IQN."
         ),
     )
     optimizer_actor: str = Field(
@@ -310,15 +310,7 @@ class AlgorithmConfig(BaseModel):
         description=(
             "FoG (forgetful observation gating) episode bias in R2D2-style memory sampling "
             "(tmrl.memory): >0 weights recent episodes; 0 disables. "
-            "No effect on LIDAR tuple replay."
-        ),
-    )
-    eder_oversample_ratio: int = Field(
-        default=0,
-        ge=0,
-        description=(
-            "IQN / SDSAC: batch diversity filter oversample ratio (>=2 enables EDER-style filter). "
-            "0 disables. Unused for SAC/TQC/REDQ."
+            "No effect on boundary lidar tuple replay."
         ),
     )
     sdsac_avg_q: bool = Field(
@@ -438,6 +430,47 @@ class AlgorithmConfig(BaseModel):
         default=True,
         description="Log IQN target/TD distribution diagnostics to wandb.",
     )
+    iqn_sort_quantiles: bool = Field(
+        default=False,
+        description=(
+            "Sort sampled IQN quantile fractions before forward pass for more stable "
+            "monotonic regularization and diagnostics."
+        ),
+    )
+    iqn_monotonicity_regularization: bool = Field(
+        default=False,
+        description=(
+            "Enable an auxiliary penalty that discourages quantile crossing "
+            "(q_{i+1} < q_i) in IQN outputs."
+        ),
+    )
+    iqn_monotonicity_lambda: Annotated[float, Field(ge=0.0)] = Field(
+        default=0.01,
+        description="Weight of the IQN quantile-crossing monotonicity regularization term.",
+    )
+    iqn_munchausen_enabled: bool = Field(
+        default=False,
+        description=(
+            "Enable Munchausen RL reward shaping in IQN targets "
+            "(adds clipped log-policy term to rewards)."
+        ),
+    )
+    iqn_munchausen_alpha: Annotated[float, Field(ge=0.0)] = Field(
+        default=0.9,
+        description="Munchausen reward-shaping coefficient alpha_m.",
+    )
+    iqn_munchausen_tau: Annotated[float, Field(gt=0.0)] = Field(
+        default=0.03,
+        description="Temperature tau used to build softmax policy for Munchausen term.",
+    )
+    iqn_munchausen_clip_min: float = Field(
+        default=-1.0,
+        description="Lower clipping bound for log-policy term in Munchausen shaping.",
+    )
+    iqn_munchausen_clip_max: float = Field(
+        default=0.0,
+        description="Upper clipping bound for log-policy term in Munchausen shaping.",
+    )
     iqn_epsilon_cosine_initial_amplitude: Annotated[float, Field(ge=0.0, le=1.0)] = Field(
         default=0.1,
         description="Starting relative amplitude for cosine-shaped epsilon schedules.",
@@ -469,6 +502,11 @@ class AlgorithmConfig(BaseModel):
             BRAKE_TAP_TABLE_N_BRAKE,
             BRAKE_TAP_TABLE_N_GAS,
         )
+
+        if self.iqn_munchausen_clip_min > self.iqn_munchausen_clip_max:
+            raise ValueError("iqn_munchausen_clip_min must be <= iqn_munchausen_clip_max")
+        if self.iqn_monotonicity_regularization and not self.iqn_sort_quantiles:
+            raise ValueError("iqn_monotonicity_regularization requires iqn_sort_quantiles=true")
 
         expected = self.iqn_n_steer_bins * BRAKE_TAP_TABLE_N_GAS * BRAKE_TAP_TABLE_N_BRAKE
         if self.iqn_n_actions != expected:

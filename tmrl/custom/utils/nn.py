@@ -1,9 +1,7 @@
-# standard library imports
 from collections.abc import MutableMapping
 from copy import deepcopy
 from typing import Any, cast
 
-# third-party imports
 import numpy as np
 import torch
 import torch.nn as nn
@@ -12,14 +10,17 @@ from torch.nn import Module
 from torch.nn.init import kaiming_uniform_
 from torch.nn.parameter import Parameter
 
-# local imports
 from tmrl.util import partial
 
 
 def detach(x):
-    """
-    Detaches a tensor if torch tensor, else recursively detaches from elements.
-    Returns: Detached tensor or a detached version of the object.
+    """Detach tensor from computation graph, or recursively detach elements.
+
+    Args:
+        x: A torch.Tensor or iterable of tensors/objects.
+
+    Returns:
+        Detached tensor if input is a tensor, otherwise a list of detached elements.
     """
     if isinstance(x, torch.Tensor):
         return x.detach()
@@ -28,9 +29,13 @@ def detach(x):
 
 
 def no_grad(model):
-    """
-    Functionality: Sets requires_grad attribute of all parameters in the model to False.
-    Returns: The modified model with requires_grad set to False for all parameters.
+    """Set requires_grad=False for all parameters in the model.
+
+    Args:
+        model: A torch.nn.Module.
+
+    Returns:
+        The same model instance with all parameters frozen (requires_grad=False).
     """
     for p in model.parameters():
         p.requires_grad = False
@@ -38,20 +43,37 @@ def no_grad(model):
 
 
 def exponential_moving_average(averages, values, factor):
-    """
-    Updates the averages using exponential moving average for values and factor.
+    """Update averages in-place using exponential moving average.
+
+    Args:
+        averages: Iterable of tensors to update (modified in-place).
+        values: Iterable of current values.
+        factor: EMA blending factor (0-1). Higher values weight new values more.
     """
     with torch.no_grad():
         for a, v in zip(averages, values, strict=True):
-            a += factor * (v - a)  # equivalent to a = (1-factor) * a + factor * v
+            a += factor * (v - a)
 
 
 def copy_shared(model_a):
-    """Deepcopy of model with state_dict shared. E.g. useful with `no_grad`."""
+    """Create a deepcopy of a model with shared parameter storage.
+
+    The copied model shares the underlying parameter tensors with the original,
+    so updates to one affect the other. Useful for creating no-grad evaluation
+    copies that stay in sync with a training model.
+
+    Args:
+        model_a: Model to copy.
+
+    Returns:
+        A deepcopy of the model with state_dict storage shared with the original.
+
+    Note:
+        torch.cuda.Stream cannot be pickled/deepcopied, so streams are replaced
+        with None during copy and will be recreated on first use if needed.
+    """
     import copy as copy_module
 
-    # torch.cuda.Stream cannot be pickled/deepcopied; make deepcopy replace it with None
-    # (copied model will recreate streams on first use where needed)
     stream_type = getattr(getattr(torch, "cuda", None), "Stream", None)
     dispatch = cast(
         MutableMapping[type, Any] | None, getattr(copy_module, "_deepcopy_dispatch", None)
@@ -78,12 +100,24 @@ def copy_shared(model_a):
 
 
 class PopArt(Module):
-    """PopArt http://papers.nips.cc/paper/6076-learning-values-across-many-orders-of-magnitude"""
+    """PopArt normalization for value functions.
+
+    Adaptively normalizes targets and rescales output layer weights to handle
+    rewards spanning many orders of magnitude.
+
+    Reference:
+        http://papers.nips.cc/paper/6076-learning-values-across-many-orders-of-magnitude
+
+    Args:
+        output_layer: Linear layer(s) to adapt. Can be a single layer or tuple/list.
+        beta: EMA update rate for statistics.
+        zero_debias: If True, uses bias-corrected EMA (recommended).
+        start_pop: Delay weight rescaling for this many updates to accumulate stable stats.
+    """
 
     def __init__(
         self, output_layer, beta: float = 0.0003, zero_debias: bool = True, start_pop: int = 8
     ):
-        # zero_debias=True, start_pop=8 help a little; (False, 0) works as well
         super().__init__()
         self.start_pop = start_pop
         self.beta = beta
@@ -96,7 +130,7 @@ class PopArt(Module):
         layer0 = self.output_layers[0]
         shape = tuple(layer0.bias.shape)  # type: ignore[arg-type,union-attr]
         device = layer0.bias.device  # type: ignore[union-attr]
-        assert all(shape == tuple(x.bias.shape) for x in self.output_layers)
+        assert all(shape == tuple(x.bias.shape) for x in self.output_layers)  # type: ignore[arg-type]
         self.mean = Parameter(torch.zeros(shape, device=device), requires_grad=False)  # type: ignore[arg-type]
         self.mean_square = Parameter(torch.ones(shape, device=device), requires_grad=False)  # type: ignore[arg-type]
         self.std = Parameter(torch.ones(shape, device=device), requires_grad=False)  # type: ignore[arg-type]
@@ -104,22 +138,24 @@ class PopArt(Module):
 
     @torch.no_grad()
     def update(self, targets):
-        """
-        Updates the internal state based on the given target values and normalizes the targets.
+        """Update statistics and rescale output layer, then return normalized targets.
+
+        Args:
+            targets: Target values to incorporate into statistics.
+
+        Returns:
+            Normalized targets.
         """
         beta = max(1 / (self.updates + 1), self.beta) if self.zero_debias else self.beta
-        # for beta = 1/self.updates, mean/std are the true mean/std over all past data
 
         new_mean = (1 - beta) * self.mean + beta * targets.mean(0)
         new_mean_square = (1 - beta) * self.mean_square + beta * (targets * targets).mean(0)
         new_std = (new_mean_square - new_mean * new_mean).sqrt().clamp(0.0001, 1e6)
 
-        # assert self.std.shape == (1,), 'this has only been tested in 1D'
-
         if self.updates >= self.start_pop:
             for layer in self.output_layers:
-                layer.weight *= (self.std / new_std)[:, None]
-                layer.bias *= self.std
+                layer.weight *= (self.std / new_std)[:, None]  # type: ignore[operator]
+                layer.bias *= self.std  # type: ignore[operator]
                 layer.bias += self.mean - new_mean
                 layer.bias /= new_std
 
@@ -130,26 +166,44 @@ class PopArt(Module):
         return self.normalize(targets)
 
     def normalize(self, x):
-        """
-        Normalizes the input tensor.
+        """Normalize input using current statistics.
+
+        Args:
+            x: Input tensor.
+
+        Returns:
+            Normalized tensor.
         """
         return (x - self.mean) / self.std
 
     def unnormalize(self, x):
-        """
-        Un-normalizes the input tensor.
+        """Inverse of normalize - convert from normalized to original scale.
+
+        Args:
+            x: Normalized tensor.
+
+        Returns:
+            Unnormalized tensor.
         """
         return x * self.std + self.mean
 
     def normalize_sum(self, s):
-        """normalize x.sum(1) preserving relative weightings between elements"""
+        """Normalize sum while preserving relative weightings.
+
+        Args:
+            s: Sum of values.
+
+        Returns:
+            Normalized sum.
+        """
         return (s - self.mean.sum()) / self.std.norm()
 
 
-# noinspection PyAbstractClass
 class TanhNormal(Distribution):
-    """Distribution of X ~ tanh(Z) where Z ~ N(mean, std)
-    Adapted from https://github.com/vitchyr/rlkit
+    """Distribution of X ~ tanh(Z) where Z ~ N(mean, std).
+
+    Reference:
+        Adapted from https://github.com/vitchyr/rlkit
     """
 
     def __init__(self, normal_mean, normal_std, epsilon=1e-6):
@@ -160,8 +214,13 @@ class TanhNormal(Distribution):
         super().__init__(self.normal.batch_shape, self.normal.event_shape)
 
     def log_prob(self, x):
-        """
-        Calculates the log probability of a given value.
+        """Calculate log probability of a value.
+
+        Args:
+            x: Value in tanh-transformed space.
+
+        Returns:
+            Log probability.
         """
         if hasattr(x, "pre_tanh_value"):
             pre_tanh_value = cast(torch.Tensor, x.pre_tanh_value)
@@ -172,8 +231,13 @@ class TanhNormal(Distribution):
         return self.normal.log_prob(pre_tanh_value) - torch.log(1 - x * x + self.epsilon)
 
     def sample(self, sample_shape=None):
-        """
-        Samples from the distribution.
+        """Sample from the distribution.
+
+        Args:
+            sample_shape: Shape of samples to draw.
+
+        Returns:
+            Sampled values.
         """
         if sample_shape is None:
             sample_shape = torch.Size()
@@ -191,7 +255,6 @@ class TanhNormal(Distribution):
         return out
 
 
-# noinspection PyAbstractClass
 class Independent(torch.distributions.Independent):
     def sample_test(self):
         return torch.tanh(self.base_dist.normal_mean)
@@ -202,8 +265,6 @@ class TanhNormalLayer(torch.nn.Module):
         super().__init__()
 
         self.lin_mean = torch.nn.Linear(n, m)
-        # self.lin_mean.weight.data
-        # self.lin_mean.bias.data
 
         self.lin_std = torch.nn.Linear(n, m)
         self.lin_std.weight.data.uniform_(-1e-3, 1e-3)
@@ -220,12 +281,20 @@ class TanhNormalLayer(torch.nn.Module):
 
 
 class RlkitLinear(torch.nn.Linear):
+    """Linear layer with RLKit-style initialization.
+
+    Note:
+        This implementation follows the original RLKit weight initialization, which
+        uses fan_out (weight.shape[0]) instead of the more conventional fan_in for
+        computing the uniform bound. PyTorch Linear stores weights as (out_features, in_features),
+        so weight.shape[0] = out_features = fan_out.
+
+        Reference: https://github.com/vitchyr/rlkit/blob/master/rlkit/torch/pytorch_util.py
+    """
+
     def __init__(self, *args):
         super().__init__(*args)
-        # TODO: investigate fan_in vs fan_out. Rlkit uses weight.shape[0] (fan_out) here;
-        # PyTorch Linear has (out_features, in_features), so shape[0] is out_features (fan_out).
-        # Ref: https://github.com/vitchyr/rlkit/blob/master/rlkit/torch/pytorch_util.py
-        fan_in = self.weight.shape[0]  # this is actually fan_out!!!
+        fan_in = self.weight.shape[0]
         bound = 1.0 / np.sqrt(fan_in)
         self.weight.data.uniform_(-bound, bound)
         self.bias.data.fill_(0.1)
@@ -284,8 +353,13 @@ AffineSimon = partial(AffineReLU, init_weight_bound=0.01, init_bias=1.0)
 
 
 def dqn_conv(n):
-    """
-    Creates a DQN convolutional neural network architecture.
+    """Create a DQN-style convolutional network.
+
+    Args:
+        n: Number of input channels.
+
+    Returns:
+        Sequential CNN module.
     """
     return torch.nn.Sequential(
         torch.nn.Conv2d(n, 32, kernel_size=8, stride=4),
@@ -298,10 +372,14 @@ def dqn_conv(n):
 
 
 def big_conv(n):
+    """Create a larger convolutional network.
+
+    Args:
+        n: Number of input channels.
+
+    Returns:
+        Sequential CNN module (e.g., 64x256 input -> 2x26 output).
     """
-    Creates a larger convolutional neural network architecture.
-    """
-    # if input shape = 64 x 256 then output shape = 2 x 26
     return torch.nn.Sequential(
         torch.nn.Conv2d(n, 64, 8, stride=2),
         torch.nn.LeakyReLU(),
@@ -315,8 +393,13 @@ def big_conv(n):
 
 
 def hd_conv(n):
-    """
-    Creates a convolutional neural network architecture with more layers.
+    """Create a deeper convolutional network for high-resolution inputs.
+
+    Args:
+        n: Number of input channels.
+
+    Returns:
+        Sequential CNN module with additional downsampling layers.
     """
     return torch.nn.Sequential(
         torch.nn.Conv2d(n, 32, 8, stride=2),
@@ -332,9 +415,6 @@ def hd_conv(n):
     )
 
 
-# Clamp gSDE log_std so policy never becomes fully deterministic (entropy collapse).
-# -3 matches model_constants.LOG_STD_MIN: std >= exp(-3) ~ 0.05 keeps meaningful exploration.
-# -5 allowed too much determinism -> spinning in place (see INVESTIGATION_REPORT_Dv3).
 GSDE_LOG_STD_MIN = -3.0
 GSDE_LOG_STD_MAX = 2.0
 
@@ -352,6 +432,11 @@ class GSDEModule(nn.Module):
         log_std_init: Initial value for the log standard deviation parameter.
         full_std: If True, use (latent_dim x action_dim) parameters for std.
             If False, use (latent_dim x 1) and broadcast.
+
+    Note:
+        Log-std is clamped to [GSDE_LOG_STD_MIN, GSDE_LOG_STD_MAX] = [-3.0, 2.0]
+        to prevent entropy collapse. The lower bound of -3 ensures std >= exp(-3) ~ 0.05,
+        maintaining meaningful exploration. See model_constants.LOG_STD_MIN for context.
     """
 
     def __init__(
@@ -388,17 +473,29 @@ class GSDEModule(nn.Module):
         return torch.ones(self.latent_dim, self.action_dim, device=std.device) * std
 
     def reset_noise(self, batch_size: int = 1) -> None:
-        """Sample new exploration matrix weights from N(0, std)."""
+        """Sample new exploration matrix weights from N(0, std).
+
+        Args:
+            batch_size: Number of exploration matrices to sample for batch processing.
+
+        Note:
+            Samples are detached to make them graph leaves (deepcopy-safe).
+            Log_std gradients flow through get_variance(), not through noise samples.
+        """
         std = self.get_std()
         weights_dist = Normal(torch.zeros_like(std), std)
-        # .detach() so the samples are graph leaves — deepcopy-safe and
-        # correct because log_std gradients flow through get_variance(), not
-        # through the sampled noise itself.
         self.exploration_mat = weights_dist.rsample().detach()
         self.exploration_matrices = weights_dist.rsample((batch_size,)).detach()
 
     def get_noise(self, latent_sde: torch.Tensor) -> torch.Tensor:
-        """Compute state-dependent noise: latent @ exploration_matrix."""
+        """Compute state-dependent noise: latent @ exploration_matrix.
+
+        Args:
+            latent_sde: Latent features (batch, latent_dim).
+
+        Returns:
+            State-dependent noise (batch, action_dim).
+        """
         if len(latent_sde) == 1 or len(latent_sde) != len(self.exploration_matrices):
             return latent_sde @ self.exploration_mat
         latent_sde_3d = latent_sde.unsqueeze(1)
@@ -406,6 +503,13 @@ class GSDEModule(nn.Module):
         return cast(torch.Tensor, noise.squeeze(1))
 
     def get_variance(self, latent_sde: torch.Tensor) -> torch.Tensor:
-        """Compute action variance: latent^2 @ std^2."""
+        """Compute action variance: latent^2 @ std^2.
+
+        Args:
+            latent_sde: Latent features (batch, latent_dim).
+
+        Returns:
+            Action variance (batch, action_dim).
+        """
         std = self.get_std()
         return cast(torch.Tensor, (latent_sde**2) @ (std**2))

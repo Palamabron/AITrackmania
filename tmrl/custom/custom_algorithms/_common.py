@@ -107,6 +107,13 @@ def _compute_n_step_return_and_bootstrap_mask(
     Returns:
         Tuple of (n_step_returns, bootstrap_mask). bootstrap_mask is 1 where
         the transition is not done and we bootstrap from the value function.
+        Both tensors are shaped (batch, 1) for safe broadcasting with quantile
+        matrices in distributional RL algorithms like TQC/IQN.
+
+    Note:
+        The continue_mask is shifted right by one position so the terminal step's
+        own reward is included in the return. A step's reward should count if the
+        episode was alive *before* that step.
     """
     rewards = rewards.reshape(-1)
     dones = dones.reshape(-1)
@@ -129,18 +136,20 @@ def _compute_n_step_return_and_bootstrap_mask(
     discounted = torch.pow(
         torch.as_tensor(gamma, device=rewards.device, dtype=rewards.dtype), step_offsets
     )
-    # Shift continue_mask right by one so the terminal step's own reward is included:
-    # a step's reward should count if the episode was alive *before* that step.
     ones = torch.ones((batch_size, 1), device=rewards.device, dtype=rewards.dtype)
     reward_mask = torch.cat([ones, continue_mask[:, :-1]], dim=1) * valid.to(rewards.dtype)
     n_step_returns = (reward_windows * discounted.unsqueeze(0) * reward_mask).sum(dim=1)
     bootstrap_not_done = continue_mask[:, n_steps - 1]
-    # Enforce (batch, 1) for safe broadcasting with quantile matrices in TQC backup
     return n_step_returns.unsqueeze(-1), bootstrap_not_done.unsqueeze(-1)
 
 
 def clip_model_weights(model: torch.nn.Module, max_value: float = 1.0) -> None:
-    """Clip all model parameters to [-max_value, max_value]."""
+    """Clip all model parameters to [-max_value, max_value].
+
+    Args:
+        model: Model whose parameters to clip.
+        max_value: Maximum absolute value for parameters.
+    """
     for param in model.parameters():
         param.data.clamp_(-max_value, max_value)
 
@@ -148,21 +157,43 @@ def clip_model_weights(model: torch.nn.Module, max_value: float = 1.0) -> None:
 def autocast_context(
     use_mixed_precision: bool, amp_dtype: torch.dtype
 ) -> torch.autocast | nullcontext:
-    """Return an autocast context manager if mixed precision is enabled."""
+    """Return an autocast context manager if mixed precision is enabled.
+
+    Args:
+        use_mixed_precision: Whether to enable automatic mixed precision.
+        amp_dtype: Data type for AMP (e.g., torch.float16, torch.bfloat16).
+
+    Returns:
+        Autocast context manager if enabled, otherwise nullcontext (no-op).
+    """
     if use_mixed_precision:
         return torch.autocast(device_type="cuda", dtype=amp_dtype, enabled=True)
     return nullcontext()
 
 
 def polyak_update(model: torch.nn.Module, model_target: torch.nn.Module, polyak: float) -> None:
-    """Polyak-average (soft-update) target network parameters."""
+    """Polyak-average (soft-update) target network parameters.
+
+    Args:
+        model: Source model (online network).
+        model_target: Target model to update.
+        polyak: Polyak averaging coefficient (0-1). Target = polyak * target + (1-polyak) * source.
+    """
     with torch.no_grad():
         for p, p_targ in zip(model.parameters(), model_target.parameters(), strict=False):
             p_targ.data.mul_(polyak).add_(p.data, alpha=(1 - polyak))
 
 
 def project_simbav2_weights(model: torch.nn.Module) -> None:
-    """Re-project HypersphericalLinear weights after an optimizer step (SimbaV2)."""
+    """Re-project HypersphericalLinear weights after an optimizer step (SimbaV2).
+
+    Args:
+        model: Model containing SimbaV2Backbone modules to project.
+
+    Note:
+        SimbaV2 uses hyperspherical linear layers that must be re-projected
+        to the unit sphere after gradient updates to maintain constraints.
+    """
     from tmrl.custom.models.shared.neural_network_blocks import SimbaV2Backbone
 
     for m in model.modules():

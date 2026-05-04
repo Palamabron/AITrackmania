@@ -134,6 +134,7 @@ class Memory(ABC):
         batch_size: int = 256,
         dataset_path: str = "",
         crc_debug: bool = False,
+        n_step_return: int = 1,
     ) -> None:
         """Initialize the replay buffer.
 
@@ -145,6 +146,8 @@ class Memory(ABC):
             batch_size: Batch size for sampled tensors.
             dataset_path: Path to optional offline dataset to preload.
             crc_debug: If True, run CRC checks on compressed samples (debugging).
+            n_step_return: Number of steps for n-step TD returns. When > 1, sample_indices()
+                           ensures that n consecutive transitions are available for each sample.
         """
         self.nb_steps = nb_steps
         self.device = device
@@ -152,6 +155,7 @@ class Memory(ABC):
         self.memory_size = memory_size
         self.sample_preprocessor = sample_preprocessor
         self.crc_debug = crc_debug
+        self.n_step_return = n_step_return
 
         self.stat_test_return = 0.0
         self.stat_train_return = 0.0
@@ -297,6 +301,13 @@ class Memory(ABC):
         length = len(self)
         if length <= 0:
             return ()
+        # When n_step_return > 1, ensure we can fetch n consecutive transitions per sample.
+        # Sample from [0, length - n_step_return] so indices [i..i+n-1] are all valid.
+        if self.n_step_return > 1:
+            max_start_idx = length - self.n_step_return
+            if max_start_idx <= 0:
+                return ()  # Not enough data for n-step returns
+            return np.random.randint(0, max_start_idx, size=self.batch_size, dtype=np.int64)
         return np.random.randint(0, length, size=self.batch_size, dtype=np.int64)
 
 
@@ -318,6 +329,7 @@ class TorchMemory(Memory, ABC):
         batch_size=256,
         dataset_path="",
         crc_debug=False,
+        n_step_return=1,
     ):
         """
         Args:
@@ -328,6 +340,7 @@ class TorchMemory(Memory, ABC):
             batch_size (int): batch size of the output tensors
             dataset_path (str): an offline dataset may be provided here to initialize the memory
             crc_debug (bool): False usually, True when using CRC debugging of the pipeline
+            n_step_return (int): number of steps for n-step TD returns (1 = single-step)
         """
         super().__init__(
             memory_size=memory_size,
@@ -337,6 +350,7 @@ class TorchMemory(Memory, ABC):
             sample_preprocessor=sample_preprocessor,
             crc_debug=crc_debug,
             device=device,
+            n_step_return=n_step_return,
         )
 
     def collate(self, batch, device):
@@ -378,8 +392,10 @@ class R2D2Memory(Memory, ABC):
         demo_min_batch_fraction: float = 0.0,
         demo_max_batch_fraction: float = 1.0,
         discrete_n_steer_bins: int = 0,
+        n_step_return: int = 1,
     ):
         configure_discrete_steer_bins(discrete_n_steer_bins)
+        self.discrete_n_steer_bins = int(discrete_n_steer_bins)
         super().__init__(
             memory_size=memory_size,
             batch_size=batch_size,
@@ -388,6 +404,7 @@ class R2D2Memory(Memory, ABC):
             sample_preprocessor=sample_preprocessor,
             crc_debug=crc_debug,
             device=device,
+            n_step_return=n_step_return,
         )
         self.rewards_index = rewards_index
         self.previous_episode = 0

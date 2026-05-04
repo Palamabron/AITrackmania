@@ -65,7 +65,6 @@ algorithm:
   entropy_cosine_tmult: 1.5
   entropy_cosine_decay: 0.7
   fog_decay_temperature: 3.0
-  eder_oversample_ratio: 0
   sdsac_avg_q: true
   sdsac_clip_q: true
   sdsac_clip_q_epsilon: 0.5

@@ -31,7 +31,10 @@ class PlotTrackArgs:
     """If > 0, apply Gaussian smoothing (sigma) to both tracks before plotting."""
 
     renderer: str = "browser"
-    """Plotly renderer: 'browser', 'notebook', etc."""
+    """Plotly renderer: 'browser', 'notebook', etc. Ignored if ``html_out`` is set."""
+
+    html_out: str | None = None
+    """If set, write interactive HTML here and skip ``show()`` (no display required)."""
 
 
 def load_track_points(path: str) -> np.ndarray:
@@ -135,7 +138,12 @@ def main() -> int:
             "aspectratio": {"x": 1, "y": 0.01, "z": 1},
         },
     )
-    plotly_fig.show(renderer=args.renderer)
+    if args.html_out:
+        Path(args.html_out).parent.mkdir(parents=True, exist_ok=True)
+        plotly_fig.write_html(args.html_out, include_plotlyjs="cdn")
+        print(f"Wrote {args.html_out}")
+    else:
+        plotly_fig.show(renderer=args.renderer)
     return 0
 
 

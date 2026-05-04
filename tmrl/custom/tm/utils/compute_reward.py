@@ -10,7 +10,9 @@ import math
 import os
 import pickle
 import shutil
+import socket
 import tempfile
+import uuid
 from typing import Any
 
 import numpy as np
@@ -87,11 +89,11 @@ class RewardFunction:
         nb_obs_forward: int = 8,
         nb_obs_backward: int = 8,
         max_dist_from_traj: float = 23.5,
-        crash_penalty: float = 10.0,
+        crash_penalty: float = 2.0,
         constant_penalty: float = 0.0,
         *,
         # --- Track geometry ---
-        is_lidar: bool = False,
+        require_track_boundary_pickles: bool = False,
         track_path_left: str = "",
         track_path_right: str = "",
         # --- Reward tuning (from RewardConfig.model_dump()) ---
@@ -124,14 +126,15 @@ class RewardFunction:
 
         self.datalen = len(self.data)
 
-        if is_lidar:
+        if require_track_boundary_pickles:
             if not os.path.isfile(track_path_left):
                 raise FileNotFoundError(
-                    f"LIDAR requires left track boundary: missing {track_path_left}"
+                    f"Strict track boundaries require left track pickle: missing {track_path_left}"
                 )
             if not os.path.isfile(track_path_right):
                 raise FileNotFoundError(
-                    f"LIDAR requires right track boundary: missing {track_path_right}"
+                    "Strict track boundaries require right track pickle: missing "
+                    f"{track_path_right}"
                 )
             with open(track_path_left, "rb") as f:
                 self.left_track = np.asarray(pickle.load(f), dtype=np.float64)
@@ -264,11 +267,12 @@ class RewardFunction:
         self._drift_sigma_deg = float(rc.get("drift_sigma_deg", 8.0))
         self._drift_threshold_kmh = float(rc.get("drift_threshold_kmh", 80.0))
         self._max_track_width = float(rc.get("max_track_width", 35.0))
-        self.crash_penalty = float(rc.get("crash_penalty", 2.0))
+        self.crash_penalty = float(rc.get("crash_penalty", crash_penalty))
         self._reward_clip_floor = float(rc.get("reward_clip_floor", 5.0))
         self._reward_scale = float(rc.get("reward_scale", 1.0))
         self._end_of_track_reward = float(rc.get("end_of_track_reward", 10.0))
         self._track_curvature_obs = bool(rc.get("track_curvature_obs", False))
+        # Legacy/no-op fields are accepted for old configs but not applied below.
         self._progress_min_alignment = float(rc.get("progress_min_alignment", 0.0))
         self._velocity_alignment_reward_weight = float(
             rc.get("velocity_alignment_reward_weight", 0.0)
@@ -319,17 +323,45 @@ class RewardFunction:
             wandb_dir = tempfile.mkdtemp()
             atexit.register(shutil.rmtree, wandb_dir, ignore_errors=True)
             _ensure_wandb_api_key(wandb_api_key)
-            try:
-                wandb.init(
-                    project=wandb_project,
-                    entity=wandb_entity,
-                    id=wandb_run_id + " WORKER",
-                    config=wandb_config or {},
-                    job_type="worker",
-                    dir=wandb_dir,
+
+            def _init_worker_wandb(attempt: int) -> bool:
+                # Primary id matches the historical convention: "<run.name> WORKER"
+                if attempt == 0:
+                    run_id = f"{wandb_run_id} WORKER"
+                else:
+                    # Collision-safe fallback for distributed workers across hosts/processes.
+                    host = socket.gethostname() or "unknown-host"
+                    short_uuid = uuid.uuid4().hex[:8]
+                    run_id = f"{wandb_run_id} WORKER-{host}-{os.getpid()}-{short_uuid}"
+                try:
+                    wandb.init(
+                        project=wandb_project,
+                        entity=wandb_entity,
+                        id=run_id,
+                        name=f"{wandb_run_id} worker",
+                        config=wandb_config or {},
+                        job_type="worker",
+                        dir=wandb_dir,
+                        resume="allow",
+                    )
+                except Exception as exc:
+                    logger.warning("wandb worker init failed (attempt {}): {}", attempt, exc)
+                    return False
+                if wandb.run is None:
+                    logger.warning("wandb worker init returned no active run (attempt {})", attempt)
+                    return False
+                logger.info(
+                    "W&B worker run active: id={} project={!r} entity={!r} url={}",
+                    wandb.run.id,
+                    wandb_project,
+                    wandb_entity,
+                    wandb.run.get_url() if hasattr(wandb.run, "get_url") else "(no url)",
                 )
-            except Exception as exc:
-                logger.warning(f"wandb error: {exc}")
+                return True
+
+            # One retry with a unique id; keeps training usable even if id collides in W&B.
+            if not _init_worker_wandb(0) and not _init_worker_wandb(1):
+                self._use_wandb = False
 
     def get_n_next_checkpoints_xy(
         self, position: list[float] | np.ndarray, number_of_next_points: int
@@ -735,14 +767,16 @@ class RewardFunction:
 
         return reward, terminated, self.failure_counter, self.episode_reward
 
-    def log_model_run(self, terminated: bool, end_of_track: bool) -> None:
+    def log_model_run(self, terminated: bool, end_of_track: bool, truncated: bool = False) -> None:
         """Log episode outcome to console and optionally to Weights & Biases.
 
         Args:
             terminated: Whether the episode was terminated (stall, off-track, etc.).
             end_of_track: Whether the agent reached the end of the track.
+            truncated: Whether the episode ended due to a time/sample cap (Gymnasium truncation).
         """
-        if (terminated or end_of_track) and not self._logged_run_this_episode:
+        episode_done = bool(terminated or end_of_track or truncated)
+        if episode_done and not self._logged_run_this_episode:
             self._logged_run_this_episode = True
             if end_of_track:
                 self.furthest_race_progress = 1.0
@@ -751,6 +785,8 @@ class RewardFunction:
                 self, "_time_step_duration", TIME_STEP_SECONDS
             )
             term_reason = getattr(self, "_term_reason", None)
+            if truncated and term_reason is None:
+                term_reason = "truncated"
             logger.info(
                 "Total reward of the run: {:.4f} (Steps: {}, Time: {:.2f}s, reason: {})",
                 self.episode_reward,
@@ -764,6 +800,10 @@ class RewardFunction:
             if self._use_wandb:
                 import wandb
 
+                if wandb.run is None:
+                    logger.warning("wandb.log skipped: no active W&B run on worker")
+                    return
+
                 self._episode_count = getattr(self, "_episode_count", 0) + 1
                 log_dict: dict[str, float | int | str] = {
                     "run/reward": self.episode_reward,
@@ -773,6 +813,7 @@ class RewardFunction:
                     "run/episode_count": self._episode_count,
                     "run/finish_time": run_time_seconds if end_of_track else 0.0,
                     "run/finished_track": int(end_of_track),
+                    "run/truncated": int(truncated),
                 }
                 if term_reason is not None:
                     log_dict["run/term_reason"] = term_reason

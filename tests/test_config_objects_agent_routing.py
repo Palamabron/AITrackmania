@@ -24,10 +24,10 @@ from tests.tmrl_test_min_assets import write_min_tmrl_test_pickles
 _TQC_CLIP_VALUE = 0.75
 
 _ALG_ENV_MATRIX: list[tuple[str, str]] = [
-    ("SAC", "LIDAR"),
-    ("REDQSAC", "LIDAR"),
-    ("IQN", "LIDAR"),
-    ("SDSAC", "LIDAR"),
+    ("SAC", "TM20TRACKMAP"),
+    ("REDQSAC", "TM20TRACKMAP"),
+    ("IQN", "TM20TRACKMAP"),
+    ("SDSAC", "TM20TRACKMAP"),
     ("TQC", "MTQC"),
 ]
 

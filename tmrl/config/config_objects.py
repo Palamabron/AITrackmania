@@ -19,13 +19,12 @@ import tmrl.custom.custom_algorithms.sdsac
 import tmrl.custom.custom_algorithms.tqc
 import tmrl.custom.interfaces.boundary
 import tmrl.custom.interfaces.car_state
-import tmrl.custom.interfaces.lidar
 import tmrl.custom.interfaces.vision
 import tmrl.custom.memories.base
 import tmrl.custom.memories.r2d2
 import tmrl.custom.memories.tm_best
 import tmrl.custom.memories.tm_full
-import tmrl.custom.memories.tm_lidar
+import tmrl.custom.memories.tm_lidar_images
 import tmrl.custom.models.discrete_actions.iqn_discrete_q_network
 import tmrl.custom.models.hybrid_input.gnn_effnet_sophy
 import tmrl.custom.models.hybrid_input.sophy
@@ -34,8 +33,7 @@ from tmrl.config.schema.main import MainConfig
 from tmrl.custom.custom_checkpoints import update_run_instance
 from tmrl.custom.memories import (
     get_local_buffer_sample_lidar,
-    get_local_buffer_sample_lidar_progress,
-    get_local_buffer_sample_lidar_progress_images,
+    get_local_buffer_sample_lidar_images,
     get_local_buffer_sample_mobilenet,
     get_local_buffer_sample_tm20_imgs,
 )
@@ -56,12 +54,11 @@ from tmrl.custom.models import (
     VanillaColorCNNActorCritic,
 )
 from tmrl.custom.tm.tm_preprocessors import (
-    obs_preprocessor_lidar_progress_images_act_in_obs,
+    make_tqcgrab_obs_preprocessor,
+    obs_preprocessor_lidar_act_in_obs,
+    obs_preprocessor_lidar_images_act_in_obs,
     obs_preprocessor_mobilenet_act_in_obs,
     obs_preprocessor_tm_act_in_obs,
-    obs_preprocessor_tm_lidar_act_in_obs,
-    obs_preprocessor_tm_lidar_progress_act_in_obs,
-    obs_preprocessor_tqcgrab_act_in_obs,
 )
 from tmrl.envs import GenericGymEnv
 from tmrl.registry import ALGORITHMS, INTERFACES, MEMORIES, MODELS
@@ -78,7 +75,14 @@ if ALG_NAME not in ("SAC", "REDQSAC", "TQC", "IQN", "SDSAC"):
     raise ValueError(f"Unknown algorithm {ALG_NAME!r}. Supported: SAC, REDQSAC, TQC, IQN, SDSAC.")
 
 _USE_IMAGES_MOBILENET_PIPELINE = cfg.USE_IMAGES_MOBILENET_PIPELINE
-_USE_NON_LIDAR_IMAGE_STACK = _USE_IMAGES_MOBILENET_PIPELINE or cfg.USE_IMAGES_R2D2_SEQUENCE_BUFFER
+_USE_MOBILENET_OR_R2D2_IMAGE_STACK = (
+    _USE_IMAGES_MOBILENET_PIPELINE or cfg.USE_IMAGES_R2D2_SEQUENCE_BUFFER
+)
+
+
+def _lidar_geometry_interface() -> bool:
+    """Pre-recorded track-boundary observations packaged as discrete lidar vectors."""
+    return cfg.USE_LIDAR or cfg.USE_LIDAR_IMAGES
 
 
 def _validate_runtime_compatibility() -> None:
@@ -88,22 +92,23 @@ def _validate_runtime_compatibility() -> None:
     config-time error message instead of an opaque assertion deeper in model selection.
     """
     advanced_iface = cfg.USE_IMAGES_MOBILENET_PIPELINE or cfg.USE_IMAGES_R2D2_SEQUENCE_BUFFER
-    vanilla_image_iface = not cfg.USE_LIDAR_OBSERVATIONS and not advanced_iface
+    tm_geom = _lidar_geometry_interface()
+    vanilla_image_iface = not tm_geom and not advanced_iface
     rtgym_iface = M.environment.rtgym_interface
 
-    if cfg.USE_LIDAR_OBSERVATIONS and ALG_NAME not in ("SAC", "REDQSAC", "IQN", "SDSAC"):
+    if tm_geom and ALG_NAME not in ("SAC", "REDQSAC", "IQN", "SDSAC"):
         raise ValueError(
             f"Unsupported combination: algorithm.name={ALG_NAME!r} "
-            f"with LIDAR interface {rtgym_iface!r}. "
-            "Supported LIDAR algorithms: SAC, REDQSAC, IQN, SDSAC."
+            f"with environment.rtgym_interface={rtgym_iface!r}. "
+            "Supported: SAC, REDQSAC, IQN, SDSAC."
         )
 
     if vanilla_image_iface and ALG_NAME != "SAC":
         raise ValueError(
             f"Unsupported combination: algorithm.name={ALG_NAME!r} "
             f"with environment.rtgym_interface={rtgym_iface!r}. "
-            "For non-lidar vanilla image interfaces only SAC is supported "
-            "(set algorithm.name='SAC' or choose a lidar/advanced interface)."
+            "For vanilla image interfaces only SAC is supported "
+            "(set algorithm.name='SAC' or choose a boundary-lidar / advanced interface)."
         )
 
     if advanced_iface and ALG_NAME not in ("TQC", "SAC", "IQN", "SDSAC"):
@@ -113,7 +118,7 @@ def _validate_runtime_compatibility() -> None:
             "Supported algorithms here: TQC, SAC, IQN, SDSAC."
         )
 
-    if cfg.USE_LIDAR_OBSERVATIONS and cfg.USE_RNN and ALG_NAME != "SAC":
+    if tm_geom and cfg.USE_RNN and ALG_NAME != "SAC":
         raise ValueError(
             f"Unsupported combination: USE_RNN=true with algorithm.name={ALG_NAME!r}. "
             "RNN runtime path currently supports only SAC."
@@ -162,7 +167,7 @@ def _train_model_and_policy() -> tuple[Any, Any]:
 
     dqn_actor_cls = MODELS.get("dqn_actor")
 
-    if cfg.USE_LIDAR_OBSERVATIONS:
+    if _lidar_geometry_interface():
         if ALG_NAME in ("IQN", "SDSAC"):
             iqn_kw = {
                 "hidden_dim": arch.residual_mlp_hidden_dim,
@@ -176,8 +181,8 @@ def _train_model_and_policy() -> tuple[Any, Any]:
                 **_arch_kw,
             }
             return None, partial(dqn_actor_cls, **iqn_kw)
-        if (cfg.USE_LIDAR_PROGRESS_IMAGES or cfg.USE_TRACKMAP_IMAGES) and ALG_NAME == "SAC":
-            lidar_images_kw = {
+        if (cfg.USE_LIDAR_IMAGES) and ALG_NAME == "SAC":
+            lidar_images_sac_kw = {
                 "image_index": 3,
                 "embed_dim": arch.frozen_effnet_embed_dim,
                 "hidden_dim": arch.residual_mlp_hidden_dim,
@@ -185,8 +190,8 @@ def _train_model_and_policy() -> tuple[Any, Any]:
                 "width_mult": arch.frozen_effnet_width_mult,
             }
             return (
-                partial(FrozenEffNetResidualActorCritic, **lidar_images_kw),
-                partial(SquashedGaussianFrozenEffNetResidualActor, **lidar_images_kw),
+                partial(FrozenEffNetResidualActorCritic, **lidar_images_sac_kw),
+                partial(SquashedGaussianFrozenEffNetResidualActor, **lidar_images_sac_kw),
             )
         if cfg.USE_RNN:
             assert ALG_NAME == "SAC", f"{ALG_NAME} is not implemented here."
@@ -328,9 +333,7 @@ def _train_model_and_policy() -> tuple[Any, Any]:
         )
 
     if cfg.USE_RNN:
-        raise ValueError(
-            f"Unsupported combination: USE_RNN=true with non-lidar interface {rtgym_iface!r}."
-        )
+        raise ValueError(f"Unsupported combination: USE_RNN=true with interface {rtgym_iface!r}.")
     if ALG_NAME != "SAC":
         raise ValueError(
             f"Unsupported combination: algorithm.name={ALG_NAME!r} "
@@ -348,15 +351,9 @@ TRAIN_MODEL, POLICY = _train_model_and_policy()
 
 def _determine_interface_name() -> str:
     """Derive the interface registry key from interface feature flags."""
-    if cfg.USE_LIDAR_OBSERVATIONS:
-        if cfg.USE_TRACKMAP_IMAGES:
-            return "trackmap_images"
-        if cfg.USE_LIDAR_PROGRESS_IMAGES:
-            return "lidar_progress_images"
-        if cfg.USE_LIDAR_PROGRESS:
-            return "lidar_progress"
-        if cfg.USE_TRACKMAP:
-            return "trackmap"
+    if cfg.USE_LIDAR_IMAGES:
+        return "lidar_images"
+    if cfg.USE_LIDAR:
         return "lidar"
     if cfg.USE_OBS_WORLD_TELEMETRY_LAYOUT:
         return "tqc"
@@ -383,7 +380,7 @@ def _rtgym_interface_partial() -> Any:
         "discrete_n_steer_bins": _n_steer,
     }
 
-    if name in ("trackmap_images", "lidar_progress_images"):
+    if name == "lidar_images":
         common["grayscale"] = cfg.GRAYSCALE
         common["resize_to"] = (cfg.IMG_WIDTH, cfg.IMG_HEIGHT)
 
@@ -391,13 +388,13 @@ def _rtgym_interface_partial() -> Any:
         common["grayscale"] = cfg.GRAYSCALE
         common["resize_to"] = (cfg.IMG_WIDTH, cfg.IMG_HEIGHT)
 
+    if name in ("impala", "sophy", "tqc", "lidar", "lidar_images", "vision"):
+        common["crash_penalty"] = float(cfg.CRASH_PENALTY)
     if name in ("impala", "sophy", "tqc"):
-        common["crash_penalty"] = float(env.crash_penalty)
         common["constant_penalty"] = float(env.constant_penalty)
         common["checkpoint_reward"] = float(env.checkpoint_reward)
         common["lap_reward"] = float(env.lap_reward)
         common["include_camera_images"] = cfg.USE_IMAGES
-        common["include_lidar"] = bool(cfg.REWARD_CONFIG.get("RL_INTERFACE_INCLUDE_LIDAR", False))
 
     return partial(iface_cls, **common)
 
@@ -424,13 +421,11 @@ for k, v in CONFIG_DICT_MODIFIERS.items():
 
 
 def _pick_sample_compressor() -> Any:
-    if cfg.USE_LIDAR_OBSERVATIONS:
-        if cfg.USE_LIDAR_PROGRESS_IMAGES or cfg.USE_TRACKMAP_IMAGES:
-            return get_local_buffer_sample_lidar_progress_images
-        if cfg.USE_LIDAR_PROGRESS:
-            return get_local_buffer_sample_lidar_progress
+    if cfg.USE_LIDAR and not cfg.USE_LIDAR_IMAGES:
         return get_local_buffer_sample_lidar
-    if _USE_NON_LIDAR_IMAGE_STACK:
+    if cfg.USE_LIDAR_IMAGES:
+        return get_local_buffer_sample_lidar_images
+    if _USE_MOBILENET_OR_R2D2_IMAGE_STACK:
         return get_local_buffer_sample_mobilenet
     return get_local_buffer_sample_tm20_imgs
 
@@ -439,15 +434,13 @@ SAMPLE_COMPRESSOR = _pick_sample_compressor()
 
 
 def _pick_obs_preprocessor() -> Any:
-    if cfg.USE_LIDAR_OBSERVATIONS:
-        if cfg.USE_LIDAR_PROGRESS_IMAGES or cfg.USE_TRACKMAP_IMAGES:
-            return obs_preprocessor_lidar_progress_images_act_in_obs
-        if cfg.USE_LIDAR_PROGRESS:
-            return obs_preprocessor_tm_lidar_progress_act_in_obs
-        return obs_preprocessor_tm_lidar_act_in_obs
-    if _USE_NON_LIDAR_IMAGE_STACK:
+    if cfg.USE_LIDAR and not cfg.USE_LIDAR_IMAGES:
+        return obs_preprocessor_lidar_act_in_obs
+    if cfg.USE_LIDAR_IMAGES:
+        return obs_preprocessor_lidar_images_act_in_obs
+    if _USE_MOBILENET_OR_R2D2_IMAGE_STACK:
         return (
-            obs_preprocessor_tqcgrab_act_in_obs
+            make_tqcgrab_obs_preprocessor(float(M.environment.tqcgrab_track_coords_divisor))
             if cfg.USE_OBS_WORLD_TELEMETRY_LAYOUT
             else obs_preprocessor_mobilenet_act_in_obs
         )
@@ -465,12 +458,10 @@ def _determine_memory_name() -> str:
     explicit = M.memory.memory_type
     if explicit != "auto":
         return explicit
-    if cfg.USE_LIDAR_OBSERVATIONS:
-        if cfg.USE_LIDAR_PROGRESS_IMAGES or cfg.USE_TRACKMAP_IMAGES:
-            return "lidar_progress_images"
-        if cfg.USE_LIDAR_PROGRESS:
-            return "lidar_progress"
-        return "lidar"
+    if cfg.USE_LIDAR_IMAGES:
+        return "lidar_images"
+    if cfg.USE_LIDAR:
+        return "generic"
     if cfg.USE_IMAGES_MOBILENET_PIPELINE:
         return "best"
     if cfg.USE_IMAGES_R2D2_SEQUENCE_BUFFER:
@@ -488,13 +479,26 @@ _memory_kwargs: dict[str, Any] = {
     "batch_size": cfg.BATCH_SIZE,
     "sample_preprocessor": SAMPLE_PREPROCESSOR,
     "dataset_path": cfg_paths.DATASET_PATH,
-    "imgs_obs": cfg.IMG_HIST_LEN,
-    "act_buf_len": cfg.ACT_BUF_LEN,
     "crc_debug": cfg.CRC_DEBUG,
     "discrete_n_steer_bins": int(algorithm.iqn_n_steer_bins) if ALG_NAME in ("IQN", "SDSAC") else 0,
+    "n_step_return": int(algorithm.n_steps) if algorithm.n_steps > 0 else 1,
 }
+if _mem_name != "generic":
+    _memory_kwargs["imgs_obs"] = cfg.IMG_HIST_LEN
+    _memory_kwargs["act_buf_len"] = cfg.ACT_BUF_LEN
 
 _is_r2d2_memory = _mem_name.startswith("r2d2")
+_supports_demo_fraction = _is_r2d2_memory or _mem_name in {
+    "lidar_images",
+    "full",
+    "best",
+    "tm_base",
+}
+if _supports_demo_fraction:
+    _memory_kwargs.update(
+        demo_min_batch_fraction=float(cfg.DEMO_MIN_BATCH_FRACTION),
+        demo_max_batch_fraction=float(cfg.DEMO_MAX_BATCH_FRACTION),
+    )
 if _is_r2d2_memory:
     _memory_kwargs.update(
         rewards_index=19 if cfg.USE_IMAGES else 18,
@@ -507,8 +511,6 @@ if _is_r2d2_memory:
         r2d2_sequence_length=int(cfg.R2D2_SEQUENCE_LENGTH),
         player_runs_per_alpha=float(cfg.PLAYER_RUNS_PER_ALPHA),
         fog_decay_temperature=float(cfg.FOG_DECAY_TEMPERATURE),
-        demo_min_batch_fraction=float(cfg.DEMO_MIN_BATCH_FRACTION),
-        demo_max_batch_fraction=float(cfg.DEMO_MAX_BATCH_FRACTION),
     )
 
 MEMORY = partial(MEM, **_memory_kwargs)
@@ -654,7 +656,14 @@ def _build_agent() -> Any:
             value_rescaling_eps=float(alg.iqn_value_rescaling_eps),
             soft_target_tau=float(alg.iqn_soft_target_tau),
             log_target_stats=bool(alg.iqn_log_target_stats),
-            eder_oversample_ratio=int(alg.eder_oversample_ratio),
+            sort_quantiles=bool(alg.iqn_sort_quantiles),
+            monotonicity_regularization=bool(alg.iqn_monotonicity_regularization),
+            monotonicity_lambda=float(alg.iqn_monotonicity_lambda),
+            munchausen_enabled=bool(alg.iqn_munchausen_enabled),
+            munchausen_alpha=float(alg.iqn_munchausen_alpha),
+            munchausen_tau=float(alg.iqn_munchausen_tau),
+            munchausen_clip_min=float(alg.iqn_munchausen_clip_min),
+            munchausen_clip_max=float(alg.iqn_munchausen_clip_max),
             weight_decay=float(alg.weight_decay),
             adam_eps=float(alg.adam_eps),
             grad_clip=float(alg.iqn_grad_clip),
@@ -701,7 +710,6 @@ def _build_agent() -> Any:
             clip_q_epsilon=alg.sdsac_clip_q_epsilon,
             use_entropy_penalty=alg.sdsac_entropy_penalty,
             entropy_penalty_beta=alg.sdsac_entropy_penalty_beta,
-            eder_oversample_ratio=alg.eder_oversample_ratio,
             weight_decay=float(alg.weight_decay),
             reward_normalize_scale=float(alg.reward_normalize_scale),
             r2d2_burn_in=int(alg.r2d2_burn_in),

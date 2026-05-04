@@ -10,10 +10,7 @@ algorithm:
   mixed_precision_dtype: bfloat16
   n_steps: 3
   gamma: 0.99
-  learn_entropy_coef: true
-  lr_actor: 5.0e-5
-  lr_critic: 5.0e-5
-  lr_entropy: 3.0e-5
+  # IQN-specific parameters (removed unused SAC parameters)
   iqn_lr: 1.0e-4
   iqn_epsilon_schedule_mode: linear
   iqn_epsilon_start: 1.0
@@ -30,5 +27,18 @@ algorithm:
   iqn_dueling: true
   iqn_double_dqn: true
   iqn_grad_clip: 10.0
+  iqn_sort_quantiles: false
+  iqn_monotonicity_regularization: false
+  iqn_monotonicity_lambda: 0.01
+  iqn_munchausen_enabled: false
+  iqn_munchausen_alpha: 0.9
+  iqn_munchausen_tau: 0.03
+  iqn_munchausen_clip_min: -1.0
+  iqn_munchausen_clip_max: 0.0
   quantiles_number: 25
   top_quantiles_to_drop: 3
+
+# Stronger track-channel dynamic range for TQCGRAB* + local-frame geometry (GNN/Conv branch).
+# Boundary lidar interfaces ignore this field (different preprocessor).
+environment:
+  tqcgrab_track_coords_divisor: 50.0

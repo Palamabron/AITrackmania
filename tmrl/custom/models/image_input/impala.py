@@ -181,7 +181,7 @@ class CNNModule(nn.Module):
     def flattendim(self, input_shape):
         temp_shape = list(input_shape)
         for seq in self.conv_blocks:
-            for module in seq:
+            for module in seq:  # type: ignore[attr-defined]
                 if isinstance(module, nn.Conv2d):
                     cin, hin, win = temp_shape
 

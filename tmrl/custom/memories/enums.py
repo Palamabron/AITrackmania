@@ -33,45 +33,10 @@ class GenericField(IntEnum):
     DONE = 6
 
 
-class TMLidarField(IntEnum):
-    """Field indices for MemoryTMLidar.data list.
+class TMLidarImagesField(IntEnum):
+    """Field indices for MemoryTMLidarImages.data list.
 
-    Layout: [indexes, actions, speeds, lidar, eoes, rewards, infos, terminated, truncated]
-    """
-
-    INDEXES = 0
-    ACTIONS = 1
-    SPEEDS = 2
-    LIDAR = 3
-    EOES = 4
-    REWARDS = 5
-    INFOS = 6
-    TERMINATED = 7
-    TRUNCATED = 8
-
-
-class TMLidarProgressField(IntEnum):
-    """Field indices for MemoryTMLidarProgress.data list.
-
-    Layout: [indexes, actions, speeds, lidar, eoes, rewards, infos, progress, terminated, truncated]
-    """
-
-    INDEXES = 0
-    ACTIONS = 1
-    SPEEDS = 2
-    LIDAR = 3
-    EOES = 4
-    REWARDS = 5
-    INFOS = 6
-    PROGRESS = 7
-    TERMINATED = 8
-    TRUNCATED = 9
-
-
-class TMLidarProgressImagesField(IntEnum):
-    """Field indices for MemoryTMLidarProgressImages.data list.
-
-    Layout: [indexes, actions, speeds, progress, lidar, images, eoes, rewards, infos,
+    Layout: [indexes, actions, speeds, progress, track, images, eoes, rewards, infos,
              terminated, truncated]
     """
 
@@ -79,7 +44,7 @@ class TMLidarProgressImagesField(IntEnum):
     ACTIONS = 1
     SPEEDS = 2
     PROGRESS = 3
-    LIDAR = 4
+    TRACK = 4
     IMAGES = 5
     EOES = 6
     REWARDS = 7
@@ -231,27 +196,12 @@ class R2D2woImagesTrailingField(IntEnum):
 # ---------------------------------------------------------------------------
 
 
-class TMLidarObsField(IntEnum):
-    """Observation indices for MemoryTMLidar: (speed, lidar)."""
-
-    SPEEDS = 0
-    LIDAR = 1
-
-
-class TMLidarProgressObsField(IntEnum):
-    """Observation indices for MemoryTMLidarProgress: (speed, progress, lidar)."""
+class TMLidarImagesObsField(IntEnum):
+    """Observation indices for MemoryTMLidarImages: (speed, progress, track, images)."""
 
     SPEEDS = 0
     PROGRESS = 1
-    LIDAR = 2
-
-
-class TMLidarProgressImagesObsField(IntEnum):
-    """Observation indices for MemoryTMLidarProgressImages: (speed, progress, lidar, images)."""
-
-    SPEEDS = 0
-    PROGRESS = 1
-    LIDAR = 2
+    TRACK = 2
     IMAGES = 3
 
 

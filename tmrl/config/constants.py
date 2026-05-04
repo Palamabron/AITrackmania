@@ -15,6 +15,10 @@ from tmrl.config.paths import (
     TRACK_PATH_LEFT,
     TRACK_PATH_RIGHT,
 )
+from tmrl.config.rtgym_boundary_iface import (
+    rtgym_discrete_boundary_lidar_images,
+    rtgym_discrete_boundary_lidar_vec,
+)
 from tmrl.config.spacing_lookahead import (
     points_number_from_spacing_config,
     polyline_arc_length_m,
@@ -135,15 +139,10 @@ BINARY_BRAKE = R.binary_brake
 # --- Environment / interface ---
 E = M.environment
 RTGYM_INTERFACE = str(E.rtgym_interface).upper()
-USE_LIDAR_OBSERVATIONS = RTGYM_INTERFACE.endswith("LIDAR")
-USE_LIDAR_PROGRESS = RTGYM_INTERFACE.endswith("LIDARPROGRESS")
-USE_LIDAR_PROGRESS_IMAGES = "LIDARPROGRESSIMAGES" in RTGYM_INTERFACE
-USE_TRACKMAP = RTGYM_INTERFACE.endswith("TRACKMAP")
-USE_TRACKMAP_IMAGES = "TRACKMAPIMAGES" in RTGYM_INTERFACE
+USE_LIDAR = rtgym_discrete_boundary_lidar_vec(RTGYM_INTERFACE)
+USE_LIDAR_IMAGES = rtgym_discrete_boundary_lidar_images(RTGYM_INTERFACE)
 
-# Non-LIDAR stacks: names describe observation layout (lidar / images / telemetry).
-# ``rtgym_interface`` may still use historical suffix tokens; these flags describe what TMRL
-# does with them.
+# Non-boundary-lidar stacks: historical suffix tokens; flags describe what TMRL does with them.
 
 # Screen CNN + MobileNet-style preprocessing
 # (historical MOBILEV3 / CUSTOM / BEST / BEST_TQC suffixes).
@@ -162,15 +161,11 @@ USE_IMAGES_WITH_WORLD_TELEMETRY_STACK = "TQCGRAB_IMAGES" in RTGYM_INTERFACE
 # R2D2 replay layout: MTQC suffix or any world-telemetry interface id above.
 USE_IMAGES_R2D2_SEQUENCE_BUFFER = RTGYM_INTERFACE.endswith("MTQC") or USE_OBS_WORLD_TELEMETRY_LAYOUT
 
-if USE_LIDAR_PROGRESS or USE_TRACKMAP or USE_LIDAR_PROGRESS_IMAGES or USE_TRACKMAP_IMAGES:
-    USE_LIDAR_OBSERVATIONS = True
-
 SEED = E.seed
 MIN_NB_ZERO_REW_BEFORE_FAILURE = E.min_zero_reward_steps_before_failure
 MAX_NB_ZERO_REW_BEFORE_FAILURE = E.max_zero_reward_steps_before_failure
 OSCILLATION_PERIOD = E.oscillation_period
 NB_OBS_FORWARD = E.forward_obs_count
-CRASH_PENALTY = E.crash_penalty
 CRASH_COOLDOWN = E.crash_cooldown
 CONSTANT_PENALTY = E.constant_penalty
 LAP_REWARD = E.lap_reward
@@ -194,8 +189,6 @@ IMG_SCALE_CHECK_ENV = E.img_scale_check_env
 INIT_GAS_BIAS = E.init_gas_bias
 OBS_SPEED_SCALE = float(E.obs_speed_scale)
 OBS_TRACK_SCALE = float(E.obs_track_scale)
-LIDAR_BLACK_THRESHOLD = [55, 55, 55]
-
 REWARD_CONFIG = E.reward.model_dump()
 # Stagnant-progress cutoff: seconds-only (merged reward + environment;
 # RewardFunction reads REWARD_CONFIG).
@@ -225,9 +218,26 @@ if _ot_e > _ot_r:
         _ot_e,
     )
 
+# Crash penalty: single effective value for RewardFunction + all TM20 interfaces.
+# Primary: environment.reward.crash_penalty. Legacy override: environment.crash_penalty
+# when non-zero (same pattern as min_seconds_before_failure merge intent).
+_r_cp = float(REWARD_CONFIG.get("crash_penalty", 2.0))
+_e_cp = float(E.crash_penalty)
+_merged_cp = _e_cp if _e_cp != 0.0 else _r_cp
+REWARD_CONFIG["crash_penalty"] = _merged_cp
+CRASH_PENALTY = _merged_cp
+if _e_cp != 0.0 and _e_cp != _r_cp:
+    logger.info(
+        "Effective crash_penalty={:.4g} (environment.crash_penalty={:.4g} overrides "
+        "environment.reward.crash_penalty={:.4g})",
+        _merged_cp,
+        _e_cp,
+        _r_cp,
+    )
+
 MAX_SPEED_KMH = float(REWARD_CONFIG.get("max_speed_kmh", 300.0))
 
-# Required assets: reward trajectory always; track left/right only for LIDAR-style interfaces.
+# Required assets: reward trajectory always; track pickles optional unless LIDAR+IMAGES fusion.
 if not os.path.isfile(REWARD_PATH):
     raise FileNotFoundError(
         f"Reward trajectory missing for map_name={MAP_NAME!r}: expected {REWARD_PATH}. "
@@ -246,7 +256,7 @@ logger.info(
     _n_reward_pts,
 )
 
-if USE_LIDAR_OBSERVATIONS:
+if USE_LIDAR_IMAGES:
     _track_missing: list[str] = []
     if not os.path.isfile(TRACK_PATH_LEFT):
         _track_missing.append(f"left ({TRACK_PATH_LEFT})")
@@ -254,7 +264,7 @@ if USE_LIDAR_OBSERVATIONS:
         _track_missing.append(f"right ({TRACK_PATH_RIGHT})")
     if _track_missing:
         raise FileNotFoundError(
-            f"LIDAR interface (rtgym_interface={RTGYM_INTERFACE!r}) "
+            f"Boundary lidar + images pipeline (rtgym_interface={RTGYM_INTERFACE!r}) "
             f"requires track boundary pickles for map_name={MAP_NAME!r}. "
             f"Missing: {', '.join(_track_missing)}."
         )

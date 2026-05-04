@@ -1,1 +1,1 @@
-"""Models for vector/lidar observations."""
+"""Models for vector and boundary lidar observations."""

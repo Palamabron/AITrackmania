@@ -6,12 +6,15 @@ import numpy as np
 
 from tmrl.custom.memories.base import MemoryTM, last_true_in_list, replace_hist_before_eoe
 from tmrl.custom.memories.enums import BufferField, TMFullField, TMFullObsField
+from tmrl.custom.memories.utils import canonical_replay_action_vector
 from tmrl.registry import MEMORIES
 
 
 @MEMORIES.register("full")
 class MemoryTMFull(MemoryTM):
     """Full-featured TrackMania replay memory with images."""
+
+    info_field_index = TMFullField.INFOS
 
     def get_transition(self, item: int):
         """Get a single transition with proper episode boundary handling."""
@@ -103,7 +106,10 @@ class MemoryTMFull(MemoryTM):
 
         data_fields = [
             [first_data_idx + i for i, _ in enumerate(buffer.memory)],
-            [b[bf.ACTION] for b in buffer.memory],
+            [
+                canonical_replay_action_vector(b[bf.ACTION], self.discrete_n_steer_bins)
+                for b in buffer.memory
+            ],
             [b[bf.OBSERVATION][o.SPEEDS] for b in buffer.memory],
             [b[bf.OBSERVATION][o.IMAGES] for b in buffer.memory],
             [b[bf.TERMINATED] or b[bf.TRUNCATED] for b in buffer.memory],
