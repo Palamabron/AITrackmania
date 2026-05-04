@@ -236,7 +236,7 @@ class RolloutWorker:
         act = self.act(obs, test=test)
         new_obs, rew, terminated, truncated, info = self.env.step(act)
         if isinstance(info, dict) and info.get("crashed", False):
-            penalty = float(info.get("crash_penalty", cfg.REWARD_CONFIG.get("crash_penalty", 0.0)))
+            penalty = float(info.get("crash_penalty", cfg.REWARD_CONFIG.get("crash_penalty", 0.5)))
             logger.info("Car crashed: -{} reward", penalty)
 
         if self.obs_preprocessor is not None:

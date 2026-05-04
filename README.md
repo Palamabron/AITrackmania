@@ -340,7 +340,7 @@ environment:
     check_backward: 10
     max_stray: 50.0
     min_seconds_before_failure: 3.5  # Terminate after 3.5s without progress
-    crash_penalty: 2.0
+    crash_penalty: 0.5
 ```
 
 The vision environment is used in the official [TMRL competition](readme/competition.md).
@@ -369,6 +369,7 @@ environment:
   reward:
     min_seconds_before_failure: 3.5
     off_track_seconds_before_failure: 0.5
+    crash_penalty: 0.5
     max_stray: 50.0
 ```
 
@@ -400,7 +401,7 @@ environment:
     drift_reward_weight: 0.0  # Enable drift shaping
 
     # Penalties and termination
-    crash_penalty: 2.0
+    crash_penalty: 0.5
     constant_penalty: 0.0  # Per-step penalty
     min_seconds_before_failure: 3.5  # Terminate after 3.5s without progress
     off_track_seconds_before_failure: 0.5  # Grace period after reset

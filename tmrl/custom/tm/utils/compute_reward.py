@@ -89,7 +89,7 @@ class RewardFunction:
         nb_obs_forward: int = 8,
         nb_obs_backward: int = 8,
         max_dist_from_traj: float = 23.5,
-        crash_penalty: float = 2.0,
+        crash_penalty: float = 0.5,
         constant_penalty: float = 0.0,
         *,
         # --- Track geometry ---

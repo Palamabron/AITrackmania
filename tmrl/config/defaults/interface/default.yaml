@@ -9,7 +9,7 @@ interface:
   resize_to: [64, 64]
   finish_reward: 1.0
   constant_penalty: 0.0
-  crash_penalty: 2.0
+  crash_penalty: 0.5
   reward_check_forward: 500
   reward_check_backward: 10
   reward_max_stray: 50.0

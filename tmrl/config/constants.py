@@ -221,7 +221,7 @@ if _ot_e > _ot_r:
 # Crash penalty: single effective value for RewardFunction + all TM20 interfaces.
 # Primary: environment.reward.crash_penalty. Legacy override: environment.crash_penalty
 # when non-zero (same pattern as min_seconds_before_failure merge intent).
-_r_cp = float(REWARD_CONFIG.get("crash_penalty", 2.0))
+_r_cp = float(REWARD_CONFIG.get("crash_penalty", 0.5))
 _e_cp = float(E.crash_penalty)
 _merged_cp = _e_cp if _e_cp != 0.0 else _r_cp
 REWARD_CONFIG["crash_penalty"] = _merged_cp

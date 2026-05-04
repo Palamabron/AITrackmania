@@ -178,7 +178,7 @@ class RewardConfig(BaseModel):
         description="Half-width scale (m) for boundary and cross-track penalties.",
     )
     crash_penalty: float = Field(
-        default=2.0,
+        default=0.5,
         ge=0.0,
         description=(
             "Penalty applied when a crash or hard reset is triggered (RewardFunction and "
