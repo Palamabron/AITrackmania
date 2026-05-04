@@ -6,23 +6,31 @@ the baseline class every other interface family (``lidar``, ``car_state``, ``bou
 inherits from.
 """
 
+from __future__ import annotations
+
+from collections import deque
+
 import cv2
 import numpy as np
 from gymnasium import spaces
 
 import tmrl.config as cfg
-from tmrl.custom.interfaces.base import TrackMania2020InterfaceBase
+from tmrl.custom.interfaces.base import MPS_TO_KMPH, TrackMania2020InterfaceBase
 from tmrl.custom.interfaces.telemetry_indices import (
     TmrlDataPlugin,
     tmrl_grabdata_payload_nb_floats,
 )
+from tmrl.custom.tm.utils.compute_reward import RewardFunction
 from tmrl.custom.tm.utils.control_mouse import mouse_save_replay_tm20
-from tmrl.custom.tm.utils.discrete_control import build_yosh_action_table
+from tmrl.custom.tm.utils.discrete_control import build_brake_tap_action_table
 from tmrl.custom.tm.utils.tools import TM2020OpenPlanetClient
+from tmrl.custom.tm.utils.window import WindowInterface
+from tmrl.registry import INTERFACES
 
-CHECK_FORWARD = 500  # allows (and rewards) 50m cuts
+OPENPLANET_PORT = 9000
 
 
+@INTERFACES.register("vision")
 class TM2020Interface(TrackMania2020InterfaceBase):
     """
     Base camera-based interface for TrackMania 2020 via rtgym.
@@ -38,7 +46,7 @@ class TM2020Interface(TrackMania2020InterfaceBase):
         Same client as :class:`.car_state.TM2020RLInterface`.
         """
         return TM2020OpenPlanetClient(
-            port=9000, nb_floats=tmrl_grabdata_payload_nb_floats(cfg.REWARD_CONFIG)
+            port=OPENPLANET_PORT, nb_floats=tmrl_grabdata_payload_nb_floats(cfg.REWARD_CONFIG)
         )
 
     def __init__(
@@ -53,20 +61,21 @@ class TM2020Interface(TrackMania2020InterfaceBase):
         crash_penalty=None,
         min_nb_steps_before_failure=None,
         record_human: bool = False,
+        discrete_n_steer_bins: int = 0,
         **kwargs,
     ):
-        self.is_crashed = None
-        self.last_time = None
+        self.is_crashed = False
+        self.last_time = 0.0
         self.img_hist_len = img_hist_len
-        self.img_hist = None
-        self.img = None
-        self.reward_function = None
-        self.client = None
+        self.img_hist: deque[np.ndarray] | list[np.ndarray] | None = None
+        self.img: np.ndarray | None = None
+        self.reward_function: RewardFunction | None = None
+        self.client: TM2020OpenPlanetClient | None = None
         self.gamepad = gamepad
         self.j = None
-        self.window_interface = None
+        self.window_interface: WindowInterface | None = None
         self.record_human = record_human
-        self.small_window = None
+        self.small_window: bool | None = None
         self.save_replays = save_replays
         self.grayscale = grayscale
         self.resize_to = resize_to
@@ -87,11 +96,11 @@ class TM2020Interface(TrackMania2020InterfaceBase):
         )
         self.min_nb_steps_before_failure = cfg.REWARD_CONFIG.get("MIN_STEPS", _default_min_steps)
         self.crash_cooldown = 0
-        _alg_cfg = cfg.TMRL_CONFIG.get("ALG", {})
         self.discrete_action_table: list[np.ndarray] | None = None
-        if _alg_cfg.get("ALGORITHM") in ("IQN", "SDSAC"):
-            _n_steer = int(_alg_cfg.get("IQN_N_STEER_BINS", 13))
-            _, self.discrete_action_table = build_yosh_action_table(n_steer=_n_steer)
+        if discrete_n_steer_bins > 0:
+            _, self.discrete_action_table = build_brake_tap_action_table(
+                n_steer=discrete_n_steer_bins
+            )
         self._send_control_logged = False
         self._speed_arr = np.zeros((1,), dtype=np.float32)
         self._gear_arr = np.zeros((1,), dtype=np.float32)
@@ -104,6 +113,8 @@ class TM2020Interface(TrackMania2020InterfaceBase):
         self.initialized = True
 
     def grab_data_and_img(self):
+        assert self.window_interface is not None
+        assert self.client is not None
         img = self.window_interface.screenshot()[:, :, :3]  # BGR ordering
         if self.resize_to is not None:
             img = cv2.resize(img, self.resize_to)
@@ -112,13 +123,18 @@ class TM2020Interface(TrackMania2020InterfaceBase):
         self.img = img
         return data, img
 
-    def reset(self, seed=None, options=None):
-        self.reset_common()
-        data, img = self.grab_data_and_img()
-        self._speed_arr[0] = float(data[TmrlDataPlugin.SPEED_MPS]) * 3.6
+    def _update_telemetry_arrays(self, data) -> None:
+        speed_kmh = float(data[TmrlDataPlugin.SPEED_MPS]) * MPS_TO_KMPH
+        self._speed_arr[0] = speed_kmh
         self._gear_arr[0] = data[TmrlDataPlugin.ENGINE_GEAR]
         self._rpm_arr[0] = data[TmrlDataPlugin.ENGINE_RPM]
-        self._last_speed_kmh = float(data[TmrlDataPlugin.SPEED_MPS]) * 3.6
+        self._last_speed_kmh = speed_kmh
+
+    def reset(self, seed=None, options=None):
+        self.reset_common()
+        assert self.reward_function is not None
+        data, img = self.grab_data_and_img()
+        self._update_telemetry_arrays(data)
         for _ in range(self.img_hist_len):
             self._push_img(img)
         imgs = self._get_img_hist_array()
@@ -127,11 +143,9 @@ class TM2020Interface(TrackMania2020InterfaceBase):
         return obs, {}
 
     def get_obs_rew_terminated_info(self):
+        assert self.reward_function is not None
         data, img = self.grab_data_and_img()
-        self._speed_arr[0] = float(data[TmrlDataPlugin.SPEED_MPS]) * 3.6
-        self._gear_arr[0] = data[TmrlDataPlugin.ENGINE_GEAR]
-        self._rpm_arr[0] = data[TmrlDataPlugin.ENGINE_RPM]
-        self._last_speed_kmh = float(data[TmrlDataPlugin.SPEED_MPS]) * 3.6
+        self._update_telemetry_arrays(data)
         reward, terminated, _failure_counter, _ = self.reward_function.compute_reward(
             pos=np.array(
                 [data[TmrlDataPlugin.POS_X], data[TmrlDataPlugin.POS_Y], data[TmrlDataPlugin.POS_Z]]
@@ -158,8 +172,8 @@ class TM2020Interface(TrackMania2020InterfaceBase):
             reward += self.finish_reward
             if self.save_replays:
                 mouse_save_replay_tm20(True)
-        reward = np.float32(reward)
-        return observation, reward, terminated, info
+        reward_out = np.float32(reward)
+        return observation, reward_out, terminated, info
 
     def get_observation_space(self) -> spaces.Tuple:
         speed = spaces.Box(low=0.0, high=1000.0, shape=(1,))
@@ -183,4 +197,4 @@ class TM2020Interface(TrackMania2020InterfaceBase):
     def get_default_action(self):
         if self.discrete_action_table is not None:
             return np.array(0, dtype=np.int64)
-        return np.array([0.0, 0.0, 0.0], dtype="float32")
+        return np.array([0.0, 0.0, 0.0], dtype=np.float32)

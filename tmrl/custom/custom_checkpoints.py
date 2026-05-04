@@ -8,7 +8,7 @@ import torch
 from loguru import logger
 from torch.optim import Adam
 
-import tmrl.config as cfg
+from tmrl.config.loader import MAIN_CONFIG
 from tmrl.util import dump, load
 
 
@@ -23,7 +23,9 @@ def load_run_instance_images_dataset(checkpoint_path):
     chk_path = Path(checkpoint_path)
     parent_path = chk_path.parent.absolute()
     tar_path = str(parent_path / "dataset.tar")
-    dataset_path = str(cfg.DATASET_PATH)
+    from tmrl.config.paths import DATASET_PATH
+
+    dataset_path = str(DATASET_PATH)
     logger.debug(f" load: tar_path :{tar_path}")
     logger.debug(f" load: dataset_path :{dataset_path}")
     with tarfile.open(tar_path, "r") as t:
@@ -41,7 +43,9 @@ def dump_run_instance_images_dataset(run_instance, checkpoint_path):
     chk_path = Path(checkpoint_path)
     parent_path = chk_path.parent.absolute()
     tar_path = str(parent_path / "dataset.tar")
-    dataset_path = str(cfg.DATASET_PATH)
+    from tmrl.config.paths import DATASET_PATH
+
+    dataset_path = str(DATASET_PATH)
     logger.debug(f" dump: tar_path :{tar_path}")
     logger.debug(f" dump: dataset_path :{dataset_path}")
     with tarfile.open(tar_path, "w") as tar_handle:
@@ -60,9 +64,10 @@ def update_memory(run_instance):
     Returns:
         The updated run_instance, or the original if no modifications were needed.
     """
-    steps = cfg.MODEL_CONFIG["TRAINING_STEPS_PER_ROUND"]
-    memory_size = cfg.MODEL_CONFIG["MEMORY_SIZE"]
-    batch_size = cfg.MODEL_CONFIG["BATCH_SIZE"]
+    _t = MAIN_CONFIG.training
+    steps = _t.training_steps_per_round
+    memory_size = _t.memory_size
+    batch_size = _t.batch_size
     if (
         run_instance.steps != steps
         or run_instance.memory.batch_size != batch_size
@@ -91,7 +96,7 @@ def update_run_instance(run_instance, training_cls):
         run_instance: the updated checkpoint
     """
     # check whether we should start a new experiment entirely and keep only the memory:
-    if cfg.TMRL_CONFIG.get("RESET_TRAINING"):
+    if MAIN_CONFIG.run.reset_training:
         new_run_instance = training_cls()
         new_run_instance.memory = run_instance.memory
         new_run_instance = update_memory(new_run_instance)
@@ -99,21 +104,21 @@ def update_run_instance(run_instance, training_cls):
         return new_run_instance
 
     # update training Agent:
-    alg_config = cfg.TMRL_CONFIG["ALG"]
-    alg_name = alg_config["ALGORITHM"]
+    alg_config = MAIN_CONFIG.algorithm
+    alg_name = alg_config.name
     if alg_name not in ["SAC", "REDQSAC", "TQC"]:
         run_instance = update_memory(run_instance)
         return run_instance
 
     if alg_name in ["SAC", "REDQSAC", "TQC"]:
-        lr_actor = alg_config["LR_ACTOR"]
-        lr_critic = alg_config["LR_CRITIC"]
-        lr_entropy = alg_config["LR_ENTROPY"]
-        gamma = alg_config["GAMMA"]
-        polyak = alg_config["POLYAK"]
-        learn_entropy_coef = alg_config["LEARN_ENTROPY_COEF"]
-        target_entropy = alg_config["TARGET_ENTROPY"]
-        alpha = alg_config["ALPHA"]
+        lr_actor = alg_config.lr_actor
+        lr_critic = alg_config.lr_critic
+        lr_entropy = alg_config.lr_entropy
+        gamma = alg_config.gamma
+        polyak = alg_config.polyak
+        learn_entropy_coef = alg_config.learn_entropy_coef
+        target_entropy = alg_config.target_entropy
+        alpha = alg_config.alpha
 
         agent = getattr(run_instance, "agent", None)
         if agent is None:
@@ -189,8 +194,8 @@ def update_run_instance(run_instance, training_cls):
             logger.info(f"Target entropy: {run_instance.agent.target_entropy}.")
 
             if alg_name == "REDQSAC":
-                m = alg_config["REDQ_M"]
-                q_updates_per_policy_update = alg_config["REDQ_Q_UPDATES_PER_POLICY_UPDATE"]
+                m = alg_config.redq_m
+                q_updates_per_policy_update = alg_config.redq_q_updates_per_policy_update
 
                 if run_instance.agent.q_updates_per_policy_update != q_updates_per_policy_update:
                     old = run_instance.agent.q_updates_per_policy_update
@@ -204,13 +209,14 @@ def update_run_instance(run_instance, training_cls):
                     run_instance.agent.m = m
                     logger.info(f"M switched to {m} (old: {old}).")
 
-    epochs = cfg.MODEL_CONFIG["MAX_EPOCHS"]
-    rounds = cfg.MODEL_CONFIG["ROUNDS_PER_EPOCH"]
-    update_model_interval = cfg.MODEL_CONFIG["UPDATE_MODEL_INTERVAL"]
-    update_buffer_interval = cfg.MODEL_CONFIG["UPDATE_BUFFER_INTERVAL"]
-    max_training_steps_per_env_step = cfg.MODEL_CONFIG["MAX_TRAINING_STEPS_PER_ENVIRONMENT_STEP"]
-    profiling = cfg.PROFILE_TRAINER
-    start_training = cfg.MODEL_CONFIG["ENVIRONMENT_STEPS_BEFORE_TRAINING"]
+    _t = MAIN_CONFIG.training
+    epochs = _t.max_epochs
+    rounds = _t.rounds_per_epoch
+    update_model_interval = _t.update_model_interval
+    update_buffer_interval = _t.update_buffer_interval
+    max_training_steps_per_env_step = _t.max_training_steps_per_environment_step
+    profiling = MAIN_CONFIG.debugger.profile_trainer
+    start_training = _t.environment_steps_before_training
 
     if run_instance.epochs != epochs:
         old = run_instance.epochs

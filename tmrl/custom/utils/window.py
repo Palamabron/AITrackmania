@@ -6,8 +6,6 @@ if platform.system() == "Windows":
     import win32gui
     import win32ui
 
-    import tmrl.config as cfg
-
     class WindowInterface:
         """
         Manages the interaction with a window named "Trackmania" in a Windows environment.
@@ -62,7 +60,7 @@ if platform.system() == "Windows":
             win32gui.ReleaseDC(hwnd, hdc)
             return img
 
-        def move_and_resize(self, x=1, y=0, w=cfg.WINDOW_WIDTH, h=cfg.WINDOW_HEIGHT):
+        def move_and_resize(self, x=1, y=0, w=256, h=128):
             """
             Moves and resizes the window to the specified coordinates and dimensions.
             """

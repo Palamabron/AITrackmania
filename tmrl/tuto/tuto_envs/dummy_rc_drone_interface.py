@@ -5,7 +5,10 @@ This environment simulates a dummy RC drone evolving in a bounded 2D world.
 It features random delays in control and observation capture.
 """
 
+from __future__ import annotations
+
 from threading import Thread
+from typing import Any
 
 import cv2
 import gymnasium.spaces as spaces
@@ -15,7 +18,7 @@ from rtgym import DEFAULT_CONFIG_DICT, DummyRCDrone, RealTimeGymInterface
 
 class DummyRCDroneInterface(RealTimeGymInterface):
     def __init__(self):
-        self.rc_drone = None
+        self.rc_drone: DummyRCDrone | None = None
         self.target = np.array([0.0, 0.0], dtype=np.float32)
         self.initialized = False
         self.blank_image = np.ones((500, 500, 3), dtype=np.uint8) * 255
@@ -44,6 +47,7 @@ class DummyRCDroneInterface(RealTimeGymInterface):
         return np.array([0.0, 0.0], dtype="float32")
 
     def send_control(self, control):
+        assert self.rc_drone is not None
         vel_x = control[0]
         vel_y = control[1]
         self.rc_drone.send_control(vel_x, vel_y)
@@ -53,6 +57,7 @@ class DummyRCDroneInterface(RealTimeGymInterface):
             self.rc_drone = DummyRCDrone()
             self.rendering_thread.start()
             self.initialized = True
+        assert self.rc_drone is not None
         pos_x, pos_y = self.rc_drone.get_observation()
         self.target[0] = np.random.uniform(-0.5, 0.5)
         self.target[1] = np.random.uniform(-0.5, 0.5)
@@ -64,6 +69,7 @@ class DummyRCDroneInterface(RealTimeGymInterface):
         ], {}
 
     def get_obs_rew_terminated_info(self):
+        assert self.rc_drone is not None
         pos_x, pos_y = self.rc_drone.get_observation()
         tar_x = self.target[0]
         tar_y = self.target[1]
@@ -75,28 +81,38 @@ class DummyRCDroneInterface(RealTimeGymInterface):
         ]
         rew = -np.linalg.norm(np.array([pos_x, pos_y], dtype=np.float32) - self.target)
         terminated = rew > -0.01
-        info = {}
+        info: dict[str, Any] = {}
         return obs, rew, terminated, info
 
     def wait(self):
         pass
 
     def render(self):
+        assert self.rc_drone is not None
         image = self.blank_image.copy()
         pos_x, pos_y = self.rc_drone.get_observation()
-        image = cv2.circle(
-            img=image,
-            center=(int(pos_x * 200) + 250, int(pos_y * 200) + 250),
-            radius=10,
-            color=(255, 0, 0),
-            thickness=1,
+        image = np.asarray(
+            cv2.circle(
+                img=image,
+                center=(int(float(pos_x) * 200) + 250, int(float(pos_y) * 200) + 250),
+                radius=10,
+                color=(255, 0, 0),
+                thickness=1,
+            ),
+            dtype=np.uint8,
         )
-        image = cv2.circle(
-            img=image,
-            center=(int(self.target[0] * 200) + 250, int(self.target[1] * 200) + 250),
-            radius=5,
-            color=(0, 0, 255),
-            thickness=-1,
+        image = np.asarray(
+            cv2.circle(
+                img=image,
+                center=(
+                    int(float(self.target[0]) * 200) + 250,
+                    int(float(self.target[1]) * 200) + 250,
+                ),
+                radius=5,
+                color=(0, 0, 255),
+                thickness=-1,
+            ),
+            dtype=np.uint8,
         )
         cv2.imshow("Dummy RC drone", image)
         if cv2.waitKey(1) & 0xFF == ord("q"):

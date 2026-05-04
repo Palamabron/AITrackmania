@@ -13,6 +13,8 @@ from loguru import logger
 from rtgym import RealTimeGymInterface
 
 import tmrl.config as cfg
+import tmrl.config.loader as loader
+import tmrl.config.paths as cfg_paths
 from tmrl.custom.tm.utils.auto_drift import compute_drift_steer, is_auto_drift_action
 from tmrl.custom.tm.utils.compute_reward import RewardFunction
 from tmrl.custom.tm.utils.control_gamepad import (
@@ -30,9 +32,28 @@ from tmrl.custom.tm.utils.discrete_control import (
 from tmrl.custom.tm.utils.tools import TM2020OpenPlanetClient, save_ghost
 from tmrl.custom.tm.utils.window import WindowInterface
 
+MPS_TO_KMPH = 3.6
+
+RUMBLE_CRASH_THRESHOLD = 100
+CRASH_BASE_SPEED_DROP_KMH = 20.0
+CRASH_SPEED_DROP_FACTOR = 0.20
+CRASH_JERK_THRESHOLD = -1.45
+CRASH_COOLDOWN_STEPS = 10
+
+REPLAY_SAVE_SLEEP_S = 1.0
+POST_RACE_SLEEP_S = 0.5
+KEYBOARD_STEER_DEADZONE = 0.5
+
 
 class TrackMania2020InterfaceBase(RealTimeGymInterface, ABC):
     """Control, window init, reward wiring, image ring buffer, and OpenPlanet client creation."""
+
+    client: TM2020OpenPlanetClient | None = None
+    record_human: bool = False
+    _send_control_logged: bool = False
+    img_hist: deque[np.ndarray] | list[np.ndarray] | None = None
+    reward_function: RewardFunction | None = None
+    window_interface: WindowInterface | None = None
 
     # Image ring-buffer state. Initialized in ``initialize_common`` but declared here so
     # mypy can bind ``_img_buf`` at the point of use in ``_push_img`` /
@@ -120,14 +141,28 @@ class TrackMania2020InterfaceBase(RealTimeGymInterface, ABC):
         self._img_buf = None
         self._img_hist_count = 0
         self._img_hist_cursor = 0
+        _mcfg = loader.MAIN_CONFIG
         self.reward_function = RewardFunction(
             reward_data_path=cfg.REWARD_PATH,
             nb_obs_forward=cfg.REWARD_CONFIG.get("CHECK_FORWARD", 500),
             nb_obs_backward=cfg.REWARD_CONFIG.get("CHECK_BACKWARD", 10),
-            min_nb_steps_before_failure=self.min_nb_steps_before_failure,
             max_dist_from_traj=cfg.REWARD_CONFIG.get("MAX_STRAY", 50.0),
             crash_penalty=self.crash_penalty,
             constant_penalty=self.constant_penalty,
+            is_lidar=cfg.USE_LIDAR_OBSERVATIONS,
+            track_path_left=cfg_paths.TRACK_PATH_LEFT,
+            track_path_right=cfg_paths.TRACK_PATH_RIGHT,
+            reward_config=cfg.REWARD_CONFIG,
+            time_step_duration=cfg.RTGYM_TIME_STEP_DURATION,
+            points_distance=cfg.POINTS_DISTANCE,
+            lap_cooldown=cfg.LAP_COOLDOWN,
+            config_file_path=str(loader.LOCAL_OVERRIDE_PATH),
+            use_wandb=bool(_mcfg.wandb.log_from_worker),
+            wandb_project=str(_mcfg.wandb.project),
+            wandb_entity=str(_mcfg.wandb.entity),
+            wandb_run_id=str(_mcfg.run.name),
+            wandb_api_key=str(_mcfg.wandb.api_key),
+            wandb_config=loader.create_config(),
         )
         if self.client is None:
             self.client = self._build_openplanet_client()
@@ -137,7 +172,7 @@ class TrackMania2020InterfaceBase(RealTimeGymInterface, ABC):
 
     def crash_callback(self, client, target, large_motor, small_motor, led_number, user_data):
         """Callback for detecting crashes via gamepad vibration (thread-safe)."""
-        if large_motor > 100:
+        if large_motor > RUMBLE_CRASH_THRESHOLD:
             with self._crash_lock:
                 self._async_rumble_event = True
 
@@ -151,13 +186,11 @@ class TrackMania2020InterfaceBase(RealTimeGymInterface, ABC):
         last_speed = getattr(self, "_last_speed_kmh", current_speed)
         delta_v = last_speed - current_speed
 
-        base_drop = 20.0
-        speed_factor = 0.20
-        dynamic_threshold = base_drop + (last_speed * speed_factor)
+        dynamic_threshold = CRASH_BASE_SPEED_DROP_KMH + (last_speed * CRASH_SPEED_DROP_FACTOR)
 
-        if delta_v > dynamic_threshold and jerk <= -1.45:
+        if delta_v > dynamic_threshold and jerk <= CRASH_JERK_THRESHOLD:
             self.is_crashed = True
-            self.crash_cooldown = 10
+            self.crash_cooldown = CRASH_COOLDOWN_STEPS
 
     def _sync_crash_state(self):
         """Consume the latching flag set by the background gamepad telemetry thread.
@@ -171,7 +204,7 @@ class TrackMania2020InterfaceBase(RealTimeGymInterface, ABC):
 
         if rumble_triggered and self.crash_cooldown == 0:
             self.is_crashed = True
-            self.crash_cooldown = 10
+            self.crash_cooldown = CRASH_COOLDOWN_STEPS
 
     def cooldown_control(self):
         """Reset the single-frame crash impulse and tick the cooldown counter."""
@@ -182,7 +215,7 @@ class TrackMania2020InterfaceBase(RealTimeGymInterface, ABC):
     @staticmethod
     def get_speed_in_kmph(speed):
         """Convert speed from m/s to km/h."""
-        return speed * 3.6
+        return speed * MPS_TO_KMPH
 
     def send_control(self, control):
         if self.record_human:
@@ -226,9 +259,9 @@ class TrackMania2020InterfaceBase(RealTimeGymInterface, ABC):
                     actions.append("f")
                 if control[1] > 0:
                     actions.append("b")
-                if control[2] > 0.5:
+                if control[2] > KEYBOARD_STEER_DEADZONE:
                     actions.append("r")
-                elif control[2] < -0.5:
+                elif control[2] < -KEYBOARD_STEER_DEADZONE:
                     actions.append("l")
                 apply_control(actions)
 
@@ -268,7 +301,7 @@ class TrackMania2020InterfaceBase(RealTimeGymInterface, ABC):
         self.send_control(self.get_default_action())
         if self.save_replays:
             save_ghost()
-            time.sleep(1.0)
+            time.sleep(REPLAY_SAVE_SLEEP_S)
         self.reset_race()
-        time.sleep(0.5)
+        time.sleep(POST_RACE_SLEEP_S)
         self.close_finish_pop_up_tm20()

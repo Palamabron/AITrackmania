@@ -499,7 +499,7 @@ class MyTrainingAgent(TrainingAgent):
     def get_actor(self):
         return self.model_nograd.actor
 
-    def train(self, batch):
+    def train(self, batch, epoch=None, batch_index=None, iters=None):
         o, a, r, o2, d, _ = batch  # ignore the truncated signal
         pi, logp_pi = self.model.actor(o)
         loss_alpha = None
@@ -547,7 +547,7 @@ class MyTrainingAgent(TrainingAgent):
             "loss_actor": loss_pi.detach().item(),
             "loss_critic": loss_q.detach().item(),
         }
-        if self.learn_entropy_coef:
+        if self.learn_entropy_coef and loss_alpha is not None:
             ret_dict["loss_entropy_coef"] = loss_alpha.detach().item()
             ret_dict["entropy_coef"] = alpha_t.item()
         return ret_dict

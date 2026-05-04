@@ -16,8 +16,10 @@ from tmrl.custom.memories.enums import (
     R2D2woImagesTrailingField,
 )
 from tmrl.memory import R2D2Memory
+from tmrl.registry import MEMORIES
 
 
+@MEMORIES.register("r2d2")
 class MemoryR2D2(R2D2Memory):
     """R2D2-style replay memory with full telemetry and images."""
 
@@ -32,6 +34,7 @@ class MemoryR2D2(R2D2Memory):
         sample_preprocessor: Callable[..., Any] | None = None,
         crc_debug: bool = False,
         device: str = "cpu",
+        **kwargs,
     ):
         self.imgs_obs = imgs_obs
         self.act_buf_len = act_buf_len
@@ -47,6 +50,7 @@ class MemoryR2D2(R2D2Memory):
             sample_preprocessor=sample_preprocessor,
             crc_debug=crc_debug,
             device=device,
+            **kwargs,
         )
 
     def __len__(self) -> int:
@@ -194,6 +198,7 @@ class MemoryR2D2(R2D2Memory):
         return self
 
 
+@MEMORIES.register("r2d2_wo_images")
 class MemoryR2D2woImages(R2D2Memory):
     """R2D2-style replay memory without images."""
 
@@ -208,6 +213,7 @@ class MemoryR2D2woImages(R2D2Memory):
         sample_preprocessor: Callable[..., Any] | None = None,
         crc_debug: bool = False,
         device: str = "cpu",
+        **kwargs,
     ):
         self.imgs_obs = imgs_obs
         self.act_buf_len = act_buf_len
@@ -223,6 +229,7 @@ class MemoryR2D2woImages(R2D2Memory):
             sample_preprocessor=sample_preprocessor,
             crc_debug=crc_debug,
             device=device,
+            **kwargs,
         )
 
     def _obs_end(self) -> int:
@@ -240,9 +247,9 @@ class MemoryR2D2woImages(R2D2Memory):
         """Set the authoritative observation space (from the env/interface).
 
         When set, alignment in ``get_transition`` and ``append_buffer`` uses this
-        space instead of rebuilding one from ``cfg.POINTS_NUMBER``, which avoids
-        a 1-dim mismatch when ``RewardFunction._points_number`` overrides the
-        config-level constant.
+        space instead of rebuilding one from ``MAIN_CONFIG.algorithm.num_track_points``,
+        which avoids a 1-dim mismatch when ``RewardFunction._points_number`` overrides
+        the config-level default.
         """
         self._cached_tqc_obs_space = space
 
@@ -360,6 +367,7 @@ class MemoryR2D2woImages(R2D2Memory):
         return self
 
 
+@MEMORIES.register("r2d2_sophy")
 class MemoryR2D2Sophy(R2D2Memory):
     """R2D2-style replay memory for Sophy interface."""
 
@@ -374,6 +382,7 @@ class MemoryR2D2Sophy(R2D2Memory):
         sample_preprocessor: Callable[..., Any] | None = None,
         crc_debug: bool = False,
         device: str = "cpu",
+        **kwargs,
     ):
         self.imgs_obs = imgs_obs
         self.act_buf_len = act_buf_len
@@ -389,6 +398,7 @@ class MemoryR2D2Sophy(R2D2Memory):
             sample_preprocessor=sample_preprocessor,
             crc_debug=crc_debug,
             device=device,
+            **kwargs,
         )
 
     def __len__(self) -> int:

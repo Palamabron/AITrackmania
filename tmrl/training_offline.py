@@ -4,7 +4,7 @@ import datetime
 import math
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from numbers import Real
 from typing import Any, cast
 
@@ -31,21 +31,38 @@ except ImportError:
 
 __docformat__ = "google"
 
+_WANDB_ROUND_KEYS: tuple[str, ...]
+
 # Keys that must be present for wandb round-level logging (same as networking.run_with_wandb).
-_WANDB_ROUND_KEYS = (
-    "losses/actor",
-    "losses/critic",
-    "metrics/return_test",
-    "metrics/return_train",
-    "metrics/episode_length_test",
-    "metrics/episode_length_train",
-    "eval/return_deterministic",
-    "eval/episode_length_deterministic",
-    "eval/finish_time_test_s",
-    "eval/finished_track_count_test",
-    "eval/competition_eliminated",
-    "eval/competition_crashes",
-)
+if getattr(cfg_obj, "ALG_NAME", "") == "IQN":
+    _WANDB_ROUND_KEYS = (
+        "loss/iqn_loss",
+        "metrics/return_test",
+        "metrics/return_train",
+        "metrics/episode_length_test",
+        "metrics/episode_length_train",
+        "eval/return_deterministic",
+        "eval/episode_length_deterministic",
+        "eval/finish_time_test_s",
+        "eval/finished_track_count_test",
+        "eval/competition_eliminated",
+        "eval/competition_crashes",
+    )
+else:
+    _WANDB_ROUND_KEYS = (
+        "losses/actor",
+        "losses/critic",
+        "metrics/return_test",
+        "metrics/return_train",
+        "metrics/episode_length_test",
+        "metrics/episode_length_train",
+        "eval/return_deterministic",
+        "eval/episode_length_deterministic",
+        "eval/finish_time_test_s",
+        "eval/finished_track_count_test",
+        "eval/competition_eliminated",
+        "eval/competition_crashes",
+    )
 
 
 def _round_stat_to_wandb_log_dict(round_series) -> dict[str, Any]:
@@ -279,6 +296,9 @@ class TrainingOffline:
     pytorch_profiling: bool = False
     batches_per_step: int = 1
     total_updates = 0
+    _observation_space_from_env: gymnasium.spaces.Space | None = field(
+        default=None, init=False, repr=False
+    )
 
     def __post_init__(self):
         """
@@ -324,6 +344,8 @@ class TrainingOffline:
                         env_dim,
                     )
                     self.memory.clear()
+                    self.total_samples = 0
+                    self.total_updates = 0
                 dim = _observation_dim(observation_space)
                 logger.info(
                     " Building agent from env observation_space (dim={}), trainer matches worker.",
@@ -422,19 +444,20 @@ class TrainingOffline:
                 batch_obs_space = _observation_space_from_sample(_one_obs_from_batch(batch[0]))
                 batch_dim = _observation_dim(batch_obs_space)
                 if batch_dim != env_dim:
-                    # Buffer dim already matches batch (e.g. player runs); skip rebuild each step.
+                    # Keep trainer shape pinned to env so broadcast weights always
+                    # match worker architecture.
                     if (
                         self.agent is not None
-                        and _observation_dim(self.agent.observation_space) == batch_dim
+                        and _observation_dim(self.agent.observation_space) == env_dim
                     ):
                         return False
-                    logger.info(
-                        " Buffer obs dim ({}) != env ({}); building agent from buffer so "
-                        "training can proceed (e.g. player runs from different config).",
+                    logger.warning(
+                        " Batch observation dim ({}) != env dim ({}); keeping env-based "
+                        "agent so trainer and worker stay compatible.",
                         batch_dim,
                         env_dim,
                     )
-                    observation_space = batch_obs_space
+                    observation_space = self._observation_space_from_env
                 elif (
                     self.agent is not None
                     and _observation_dim(self.agent.observation_space) == env_dim
@@ -461,6 +484,10 @@ class TrainingOffline:
                         )
                         self.memory.clear()
                         self.total_samples = 0
+                        # Ratio gating uses total_updates/total_samples.
+                        # After invalidating replay, reset updates too; otherwise
+                        # ratio stays huge and trainer can wait indefinitely.
+                        self.total_updates = 0
                 logger.info(
                     " Building agent from env observation_space (dim={}) "
                     "so trainer matches worker.",
@@ -540,7 +567,11 @@ class TrainingOffline:
         are discarded so they never enter memory.
         """
         buffer = interface.retrieve_buffer()
-        if len(buffer) > 0 and self._observation_space_from_env is not None:
+        if (
+            len(buffer) > 0
+            and self._observation_space_from_env is not None
+            and hasattr(self.memory, "set_observation_space")
+        ):
             align_buffer_observations_to_space(buffer, self._observation_space_from_env)
             n_bad = filter_buffer_samples_failing_obs_space(
                 buffer, self._observation_space_from_env
@@ -574,24 +605,27 @@ class TrainingOffline:
             consume_on_read=cfg.PLAYER_RUNS_CONSUME_ON_READ,
         )
         if len(demo_buffer) > 0:
-            n_aligned = align_buffer_observations_to_space(
-                demo_buffer, self._observation_space_from_env
-            )
-            n_demo_bad = filter_buffer_samples_failing_obs_space(
-                demo_buffer, self._observation_space_from_env
-            )
-            if n_demo_bad:
-                logger.warning(
-                    " Dropped {} player-run sample(s) incompatible with "
-                    "observation_space after alignment.",
-                    n_demo_bad,
+            if self._observation_space_from_env is not None and hasattr(
+                self.memory, "set_observation_space"
+            ):
+                n_aligned = align_buffer_observations_to_space(
+                    demo_buffer, self._observation_space_from_env
                 )
-            if n_aligned:
-                logger.info(
-                    " Normalized {} player-run observation(s) to trainer observation_space "
-                    "(dim match worker/replay).",
-                    n_aligned,
+                n_demo_bad = filter_buffer_samples_failing_obs_space(
+                    demo_buffer, self._observation_space_from_env
                 )
+                if n_demo_bad:
+                    logger.warning(
+                        " Dropped {} player-run sample(s) incompatible with "
+                        "observation_space after alignment.",
+                        n_demo_bad,
+                    )
+                if n_aligned:
+                    logger.info(
+                        " Normalized {} player-run observation(s) to trainer observation_space "
+                        "(dim match worker/replay).",
+                        n_aligned,
+                    )
             if len(demo_buffer) > 0:
                 repeat = cfg.PLAYER_RUNS_DEMO_INJECTION_REPEAT
                 for _ in range(repeat):
@@ -729,6 +763,8 @@ class TrainingOffline:
                     )
                     self.memory.clear()
                     self.total_samples = 0
+                    # Replay was invalidated; restart update/sample ratio accounting.
+                    self.total_updates = 0
                     break
 
             _check_observation_integrity(batch)
@@ -756,6 +792,7 @@ class TrainingOffline:
             # Warn when loss is NaN/inf so it is not silently shown as 0 in logs
             la = stats_training_dict.get("losses/actor")
             lc = stats_training_dict.get("losses/critic")
+            liqn = stats_training_dict.get("loss/iqn_loss")
 
             def _is_bad(x):
                 if x is None:
@@ -764,12 +801,13 @@ class TrainingOffline:
                     return bool(torch.isnan(x).any() or torch.isinf(x).any())
                 return math.isnan(x) or math.isinf(x)
 
-            if _is_bad(la) or _is_bad(lc):
+            if _is_bad(la) or _is_bad(lc) or _is_bad(liqn):
                 logger.warning(
-                    " NaN or inf loss (loss_actor={}, loss_critic={}). "
+                    " NaN or inf loss (loss_actor={}, loss_critic={}, loss_iqn={}). "
                     "Try MIXED_PRECISION: false or lower learning rate.",
                     la,
                     lc,
+                    liqn,
                 )
 
             t_train = time.time()
@@ -826,7 +864,7 @@ class TrainingOffline:
         Returns:
             List of per-round stat dicts (e.g. round_time, memory_len, return_test).
         """
-        stats = []
+        stats: list[Any] = []
         if self._ensure_agent_from_data():
             self._broadcast_actor_after_rebuild(interface)
 
@@ -844,7 +882,7 @@ class TrainingOffline:
             )
             logger.debug(f"(Training): current memory size:{len(self.memory)}")
 
-            stats_training = []
+            stats_training: list[dict[str, Any]] = []
 
             t0 = time.time()
             self.check_ratio(interface)
@@ -1092,7 +1130,7 @@ class TrainingOffline:
             ) as prof:
                 self.agent.train(batch, self.epoch, 0, len(self.memory))
 
-            stats = {
+            stats: dict[str, Any] = {
                 "epoch": self.epoch,
                 "timestamp": datetime.datetime.now().isoformat(),
                 "device": str(self.device),
@@ -1147,9 +1185,10 @@ class TrainingOffline:
 
             logger.info(" PyTorch profiler stats saved to {}", log_file)
 
-            if stats.get("top_cuda_ops"):
+            top_cuda_ops = stats.get("top_cuda_ops")
+            if top_cuda_ops:
                 logger.info(" Top CUDA operations by time:")
-                for i, op in enumerate(stats["top_cuda_ops"][:5], 1):
+                for i, op in enumerate(cast(list[dict[str, Any]], top_cuda_ops)[:5], 1):
                     logger.info(
                         "  {}. {}: {:.2f}ms ({:.1f}%)",
                         i,

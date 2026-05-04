@@ -56,7 +56,7 @@ def _reset_env_before_recording() -> None:
 
 
 def record_reward_dist(path_reward=PATH_REWARD):
-    positions = []
+    positions: list[list[float]] = []
     client = TM2020OpenPlanetClient(
         port=9000, nb_floats=tmrl_grabdata_payload_nb_floats(cfg.REWARD_CONFIG)
     )
@@ -81,15 +81,15 @@ def record_reward_dist(path_reward=PATH_REWARD):
                     continue
                 logger.info("Computing reward function checkpoints from captured positions...")
                 logger.info(f"Initial number of captured positions: {len(positions)}")
-                positions = np.array(positions)
+                positions_xyz = np.asarray(positions, dtype=np.float64)
 
-                final_positions = [positions[0]]
+                final_positions = [positions_xyz[0]]
                 dist_between_points = 1.05
                 j = 1
                 move_by = dist_between_points
                 pt1 = final_positions[-1]
-                while j < len(positions):
-                    pt2 = positions[j]
+                while j < len(positions_xyz):
+                    pt2 = positions_xyz[j]
                     pt, dst = line(pt1, pt2, move_by)
                     if pt is not None:
                         final_positions.append(pt)
@@ -100,16 +100,16 @@ def record_reward_dist(path_reward=PATH_REWARD):
                         j += 1
                         move_by = dst
 
-                final_positions = np.array(final_positions)
-                if len(final_positions) < 2:
+                final_stack = np.array(final_positions)
+                if len(final_stack) < 2:
                     logger.error(
-                        f"Not enough distinct positions ({len(final_positions)}) for trajectory. "
+                        f"Not enough distinct positions ({len(final_stack)}) for trajectory. "
                         "Drive further along the track before stopping."
                     )
                     return
-                upsampled_arr = interp_points_with_cubic_spline(final_positions, data_density=3)
+                upsampled_arr = interp_points_with_cubic_spline(final_stack, data_density=3)
                 spaced_points = space_points(upsampled_arr)
-                logger.debug(f"final_positions: {final_positions}")
+                logger.debug(f"final_positions: {final_stack}")
                 logger.debug(f"upsampled_arr: {upsampled_arr}")
                 logger.debug(f"spaced_points: {spaced_points}")
                 logger.info(

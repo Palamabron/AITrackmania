@@ -87,60 +87,58 @@ from training_offline import TrainingOffline
 # USEFUL PARAMETERS
 # =====================================================================
 # You can change these parameters here directly (not recommended),
-# or you can change them in the TMRL config.json file (recommended).
+# or override them in ~/TmrlData/config/local.yaml (Hydra-composed defaults).
 
 # Maximum number of training 'epochs':
 # (training is checkpointed at the end of each 'epoch',
 # this is also when training metrics can be logged to wandb).
-epochs = cfg.TMRL_CONFIG["MAX_EPOCHS"]
+epochs = cfg.MAX_EPOCHS
 
 # Number of rounds per 'epoch':
 # (training metrics are displayed in the terminal at the end of each round)
-rounds = cfg.TMRL_CONFIG["ROUNDS_PER_EPOCH"]
+rounds = cfg.ROUNDS_PER_EPOCH
 
 # Number of training steps per round:
 # (a training step is a call to the train() function that we will define later in this tutorial)
-steps = cfg.TMRL_CONFIG["TRAINING_STEPS_PER_ROUND"]
+steps = cfg.TRAINING_STEPS_PER_ROUND
 
 # Minimum number of environment steps collected before training starts:
 # (this is useful when you want to fill your replay buffer with samples from a baseline policy)
-start_training = cfg.TMRL_CONFIG["ENVIRONMENT_STEPS_BEFORE_TRAINING"]
+start_training = cfg.ENVIRONMENT_STEPS_BEFORE_TRAINING
 
 # Maximum training steps / environment steps ratio:
 # (if training becomes faster than this ratio, it will be paused,
 # waiting for new samples from the environment).
-max_training_steps_per_env_step = cfg.TMRL_CONFIG["MAX_TRAINING_STEPS_PER_ENVIRONMENT_STEP"]
+max_training_steps_per_env_step = cfg.MAX_TRAINING_STEPS_PER_ENVIRONMENT_STEP
 
 # Number of training steps performed between broadcasts of policy updates:
-update_model_interval = cfg.TMRL_CONFIG["UPDATE_MODEL_INTERVAL"]
+update_model_interval = cfg.UPDATE_MODEL_INTERVAL
 
 # Training steps between retrievals of received samples into replay buffer:
-update_buffer_interval = cfg.TMRL_CONFIG["UPDATE_BUFFER_INTERVAL"]
+update_buffer_interval = cfg.UPDATE_BUFFER_INTERVAL
 
 # Training device (e.g., "cuda:0"):
 device_trainer = "cuda" if cfg.CUDA_TRAINING else "cpu"
 
 # Maximum size of the replay buffer:
-memory_size = cfg.TMRL_CONFIG["MEMORY_SIZE"]
+memory_size = cfg.MEMORY_SIZE
 
 # Batch size for training:
-batch_size = cfg.TMRL_CONFIG["BATCH_SIZE"]
+batch_size = cfg.BATCH_SIZE
 
 # Wandb credentials:
 # (Change this with your own if you want to keep your training curves private)
 # (Also, please use your own wandb account if you are going to log huge stuff :) )
 
 wandb_run_id = cfg.WANDB_RUN_ID  # change this by a name of your choice for your run
-wandb_project = cfg.TMRL_CONFIG[
-    "WANDB_PROJECT"
-]  # name of the wandb project in which your run will appear
-wandb_entity = cfg.TMRL_CONFIG["WANDB_ENTITY"]  # wandb account
-wandb_key = cfg.TMRL_CONFIG["WANDB_KEY"]  # wandb API key
+wandb_project = cfg.WANDB_PROJECT  # name of the wandb project in which your run will appear
+wandb_entity = cfg.WANDB_ENTITY  # wandb account
+wandb_key = cfg.WANDB_KEY  # wandb API key
 
 os.environ["WANDB_API_KEY"] = wandb_key  # this line sets your wandb API key as the active key
 
 # Number of time-steps after which episodes collected by the worker are truncated:
-max_samples_per_episode = cfg.TMRL_CONFIG["RW_MAX_SAMPLES_PER_EPISODE"]
+max_samples_per_episode = cfg.RW_MAX_SAMPLES_PER_EPISODE
 
 # Networking parameters:
 # (In TMRL, networking is managed by tlspyo. The following are tlspyo parameters.)
@@ -717,7 +715,7 @@ class SACTrainingAgent(TrainingAgent):
         """
         return self.model_nograd.actor
 
-    def train(self, batch):
+    def train(self, batch, epoch=None, batch_index=None, iters=None):
         """
         Executes a training iteration from batched training samples (batches of RL transitions).
 

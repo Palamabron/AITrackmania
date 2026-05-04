@@ -1,0 +1,12 @@
+# @package _global_
+defaults:
+  - default
+  - _self_
+
+algorithm:
+  _target_: tmrl.custom.custom_algorithms.tqc.TQCAgent
+  name: TQC
+  quantiles_number: 25
+  top_quantiles_to_drop: 2
+  n_steps: 3
+  learn_entropy_coef: true

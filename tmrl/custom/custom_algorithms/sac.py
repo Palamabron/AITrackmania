@@ -10,13 +10,14 @@ import torch
 from loguru import logger
 from torch.optim import SGD, Adam, AdamW
 
-import tmrl.config.constants as cfg
-from tmrl.custom.models.mlp import MLPActorCritic
+from tmrl.custom.custom_algorithms._common import amp_setup, autocast_context, set_seed
 from tmrl.custom.utils.nn import copy_shared, no_grad
+from tmrl.registry import ALGORITHMS
 from tmrl.training import TrainingAgent
 from tmrl.util import cached_property
 
 
+@ALGORITHMS.register("SAC")
 @dataclass(eq=False)
 class SpinupSacAgent(TrainingAgent):
     """Soft Actor-Critic (SAC) agent with optional learnable entropy coefficient.
@@ -24,31 +25,39 @@ class SpinupSacAgent(TrainingAgent):
     Adapted from Spinning Up in Deep RL. Supports SAC v1 (fixed alpha) and
     SAC v2 (learnable alpha with target entropy). Uses two Q-networks and
     min-Q target for value estimation.
+
+    All hyperparameters are required constructor arguments — values must be
+    supplied explicitly by the config pipeline (no hidden numeric defaults).
     """
 
     observation_space: type[Any]
     action_space: type[Any]
+    model_cls: type[Any]
+    gamma: float
+    polyak: float
+    alpha: float
+    lr_actor: float
+    lr_critic: float
+    lr_entropy: float
+    learn_entropy_coef: bool
+    optimizer_actor: str
+    optimizer_critic: str
+    mixed_precision: bool
+    mixed_precision_dtype: str
+    seed: int
     device: str | None = None
-    model_cls: type[Any] = MLPActorCritic
-    gamma: float = 0.99
-    polyak: float = 0.995
-    alpha: float = 0.2
-    lr_actor: float = 1e-3
-    lr_critic: float = 1e-3
-    lr_entropy: float = 1e-3
-    learn_entropy_coef: bool = True
     target_entropy: float | None = None
-    optimizer_actor: str = "adam"
-    optimizer_critic: str = "adam"
     betas_actor: tuple[float, ...] | None = None
     betas_critic: tuple[float, ...] | None = None
     l2_actor: float | None = None
     l2_critic: float | None = None
+    debug_mode: bool = False
 
     model_nograd = cached_property(lambda self: no_grad(copy_shared(self.model)))
 
     def __post_init__(self) -> None:
         """Build model, target, optimizers, and entropy coefficient (if learned)."""
+        set_seed(self.seed)
         observation_space, action_space = self.observation_space, self.action_space
         device = self.device or ("cuda" if torch.cuda.is_available() else "cpu")
         model = self.model_cls(observation_space, action_space)
@@ -96,6 +105,9 @@ class SpinupSacAgent(TrainingAgent):
             itertools.chain(self.model.q1.parameters(), self.model.q2.parameters()),
             **q_optimizer_kwargs,
         )
+        self.use_mixed_precision, self.amp_dtype, self.grad_scaler = amp_setup(
+            device, self.mixed_precision, self.mixed_precision_dtype
+        )
         if self.target_entropy is None:
             self.target_entropy = -np.prod(action_space.shape)
         else:
@@ -117,45 +129,60 @@ class SpinupSacAgent(TrainingAgent):
         """Perform one SAC training step on the given batch.
 
         Args:
-            batch: Tuple (obs, actions, rewards, next_obs, dones, info).
+            batch: Tuple (obs, actions, rewards, next_obs, dones, ...).
             epoch: Current epoch (unused, for API compat with training loop).
             batch_index: Current batch index (unused).
             iters: Total iterations (unused).
 
         Returns:
             Dict with losses/actor, losses/critic, and optionally loss_entropy_coef,
-            entropy_coef and debug metrics when DEBUG_MODE is True.
+            entropy_coef and debug metrics when debug_mode is True.
         """
-        obs, actions, rewards, next_obs, dones, _ = batch
+        obs, actions, rewards, next_obs, dones = batch[:5]
 
-        policy_actions, log_prob_pi = self.model.actor(obs)
+        def autocast_ctx():
+            return autocast_context(self.use_mixed_precision, self.amp_dtype)
+
+        with autocast_ctx():
+            policy_actions, log_prob_pi = self.model.actor(obs)
         alpha_t, loss_alpha = self._sac_update_entropy_coef(policy_actions, log_prob_pi)
         if loss_alpha is not None:
             self.alpha_optimizer.zero_grad()
             loss_alpha.backward()
             self.alpha_optimizer.step()
 
-        q1_pred = self.model.q1(obs, actions)
-        q2_pred = self.model.q2(obs, actions)
+        with autocast_ctx():
+            q1_pred = self.model.q1(obs, actions)
+            q2_pred = self.model.q2(obs, actions)
         td_target = self._sac_compute_td_target(next_obs, rewards, dones, alpha_t)
         loss_q1 = ((q1_pred - td_target) ** 2).mean()
         loss_q2 = ((q2_pred - td_target) ** 2).mean()
         loss_q = (loss_q1 + loss_q2) / 2
 
         self.q_optimizer.zero_grad()
-        loss_q.backward()
-        self.q_optimizer.step()
+        if self.use_mixed_precision:
+            self.grad_scaler.scale(loss_q).backward()
+            self.grad_scaler.step(self.q_optimizer)
+        else:
+            loss_q.backward()
+            self.q_optimizer.step()
         self.model.q1.requires_grad_(False)
         self.model.q2.requires_grad_(False)
 
-        q1_pi = self.model.q1(obs, policy_actions)
-        q2_pi = self.model.q2(obs, policy_actions)
-        q_pi = torch.min(q1_pi, q2_pi)
+        with autocast_ctx():
+            q1_pi = self.model.q1(obs, policy_actions)
+            q2_pi = self.model.q2(obs, policy_actions)
+            q_pi = torch.min(q1_pi, q2_pi)
         loss_pi = (alpha_t * log_prob_pi - q_pi).mean()
 
         self.pi_optimizer.zero_grad()
-        loss_pi.backward()
-        self.pi_optimizer.step()
+        if self.use_mixed_precision:
+            self.grad_scaler.scale(loss_pi).backward()
+            self.grad_scaler.step(self.pi_optimizer)
+            self.grad_scaler.update()
+        else:
+            loss_pi.backward()
+            self.pi_optimizer.step()
         self.model.q1.requires_grad_(True)
         self.model.q2.requires_grad_(True)
 
@@ -200,9 +227,10 @@ class SpinupSacAgent(TrainingAgent):
     def _sac_compute_td_target(self, next_obs, rewards, dones, alpha_t):
         """Compute Bellman backup (TD target) for Q-learning."""
         with torch.no_grad():
-            next_actions, log_prob_next = self.model.actor(next_obs)
-            q1_next = self.model_target.q1(next_obs, next_actions)
-            q2_next = self.model_target.q2(next_obs, next_actions)
+            with autocast_context(self.use_mixed_precision, self.amp_dtype):
+                next_actions, log_prob_next = self.model.actor(next_obs)
+                q1_next = self.model_target.q1(next_obs, next_actions)
+                q2_next = self.model_target.q2(next_obs, next_actions)
             min_q_next = torch.min(q1_next, q2_next)
             return rewards + self.gamma * (1 - dones) * (min_q_next - alpha_t * log_prob_next)
 
@@ -237,7 +265,7 @@ class SpinupSacAgent(TrainingAgent):
     ):
         """Build the dict of scalars to log (and optionally debug metrics)."""
         with torch.no_grad():
-            if not cfg.DEBUG_MODE:
+            if not self.debug_mode:
                 ret_dict = {
                     "losses/actor": loss_pi.detach().item(),
                     "losses/critic": loss_q.detach().item(),

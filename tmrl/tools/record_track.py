@@ -68,7 +68,7 @@ def _filter_origin_points(positions: np.ndarray) -> np.ndarray:
 
 
 def record_track(path_track=cfg.TRACK_PATH_LEFT):
-    positions = []
+    positions: list[list[float]] = []
     client = TM2020OpenPlanetClient(
         port=9000, nb_floats=tmrl_grabdata_payload_nb_floats(cfg.REWARD_CONFIG)
     )
@@ -96,16 +96,17 @@ def record_track(path_track=cfg.TRACK_PATH_LEFT):
                 continue
             logger.info("Computing track checkpoints from captured positions...")
             logger.info(f"Initial number of captured positions: {len(positions)}")
-            positions = np.array(positions)
+            positions_xyz = np.asarray(positions, dtype=np.float64)
 
-            positions = _filter_origin_points(positions)
+            positions_filtered = _filter_origin_points(positions_xyz)
 
-            length_after = _track_length_m(positions)
+            length_after = _track_length_m(positions_filtered)
             logger.info(
-                f"After filtering: {len(positions)} positions, path length {length_after:.0f} m"
+                f"After filtering: {len(positions_filtered)} positions, "
+                f"path length {length_after:.0f} m"
             )
 
-            spaced_points = space_points(positions)
+            spaced_points = space_points(positions_filtered)
             smoothed_points = smooth_points(spaced_points)
 
             logger.info(f"Final number of checkpoints of recorded track: {len(smoothed_points)}")

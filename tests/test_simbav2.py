@@ -1,7 +1,7 @@
 """Tests for SimbaV2 architecture: hyperspherical normalization blocks."""
 
 import torch
-from tmrl.custom.models.model_blocks import (
+from tmrl.custom.models.shared.neural_network_blocks import (
     HypersphericalLinear,
     SimbaV2Backbone,
     SimbaV2Block,

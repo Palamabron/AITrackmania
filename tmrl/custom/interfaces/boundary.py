@@ -23,9 +23,16 @@ from scipy import spatial
 
 import tmrl.config as cfg
 from tmrl.config.paths import BOUNDARY_CSV_LEFT, BOUNDARY_CSV_RIGHT
+from tmrl.custom.interfaces.base import MPS_TO_KMPH
 from tmrl.custom.interfaces.lidar import TM2020InterfaceLidar, TM2020InterfaceLidarProgress
 from tmrl.custom.interfaces.telemetry_indices import TmrlDataPlugin, yaw_pitch_from_dir_xyz
 from tmrl.custom.tm.utils.control_mouse import mouse_save_replay_tm20
+from tmrl.custom.tm.utils.window import WindowInterface
+from tmrl.registry import INTERFACES
+
+BOUNDARY_LOOK_AHEAD = 15
+BOUNDARY_NEARBY_CORRECTION = 60
+BOUNDARY_OBS_DIM = 60
 
 
 def _boundary_ahead(
@@ -111,6 +118,7 @@ def _load_boundary_csv_or_fallback(path: str) -> np.ndarray:
     return np.array([[0.0, 1.0], [0.0, 1.0]], dtype=np.float64)
 
 
+@INTERFACES.register("trackmap")
 class TM2020InterfaceBoundary(TM2020InterfaceLidar):
     """
     Telemetry + pre-recorded track boundaries ahead of the car.
@@ -126,15 +134,17 @@ class TM2020InterfaceBoundary(TM2020InterfaceLidar):
         min_nb_steps_before_failure: int | float = int(20 * 3.5),
         record: bool = False,
         save_replay: bool = False,
+        **kwargs,
     ):
         super().__init__(
             img_hist_len=img_hist_len,
             gamepad=gamepad,
             min_nb_steps_before_failure=min_nb_steps_before_failure,
             save_replays=save_replay,
+            **kwargs,
         )
         self.record = record
-        self.window_interface = None
+        self.window_interface: WindowInterface | None = None
         self.lidar = None
         self.last_pos = [0, 0]
         self.index = 0
@@ -151,7 +161,7 @@ class TM2020InterfaceBoundary(TM2020InterfaceLidar):
         speed = spaces.Box(low=0.0, high=1000.0, shape=(1,))
         gear = spaces.Box(low=0.0, high=6, shape=(1,))
         rpm = spaces.Box(low=0.0, high=np.inf, shape=(1,))
-        track_information = spaces.Box(low=-300, high=300, shape=(60,))
+        track_information = spaces.Box(low=-300, high=300, shape=(BOUNDARY_OBS_DIM,))
         acceleration = spaces.Box(low=-100, high=100.0, shape=(1,))
         steering_angle = spaces.Box(low=-1, high=1.0, shape=(1,))
         slipping_tires = spaces.Box(low=0.0, high=1, shape=(4,))
@@ -172,6 +182,7 @@ class TM2020InterfaceBoundary(TM2020InterfaceLidar):
         )
 
     def grab_data(self):
+        assert self.client is not None
         return self.client.retrieve_data()
 
     def _track_information_vector(self, car_position, yaw):
@@ -179,8 +190,8 @@ class TM2020InterfaceBoundary(TM2020InterfaceLidar):
             self.left_boundary,
             self.right_boundary,
             car_position,
-            look_ahead_distance=15,
-            nearby_correction=60,
+            look_ahead_distance=BOUNDARY_LOOK_AHEAD,
+            nearby_correction=BOUNDARY_NEARBY_CORRECTION,
         )
         l_x, l_z, r_x, r_z = _to_car_frame(l_x, l_z, r_x, r_z, car_position, yaw)
         if self._observed_boundaries is not None:
@@ -189,7 +200,7 @@ class TM2020InterfaceBoundary(TM2020InterfaceLidar):
             self._observed_boundaries[2].append(r_x.tolist())
             self._observed_boundaries[3].append(r_z.tolist())
             self._observed_boundaries[4].append(car_position)
-        return np.array(np.append(np.append(l_x, r_x), np.append(l_z, r_z)), dtype="float32")
+        return np.array(np.append(np.append(l_x, r_x), np.append(l_z, r_z)), dtype=np.float32)
 
     def get_obs_rew_terminated_info(self):
         data = self.grab_data()
@@ -203,19 +214,19 @@ class TM2020InterfaceBoundary(TM2020InterfaceLidar):
         self.last_pos = car_position
 
         track_information = self._track_information_vector(car_position, yaw)
-        speed_kmh = float(data[TmrlDataPlugin.SPEED_MPS]) * 3.6
-        speed = np.array([speed_kmh], dtype="float32")
-        gear = np.array([data[TmrlDataPlugin.ENGINE_GEAR]], dtype="float32")
-        rpm = np.array([data[TmrlDataPlugin.ENGINE_RPM]], dtype="float32")
+        speed_kmh = float(data[TmrlDataPlugin.SPEED_MPS]) * MPS_TO_KMPH
+        speed = np.array([speed_kmh], dtype=np.float32)
+        gear = np.array([data[TmrlDataPlugin.ENGINE_GEAR]], dtype=np.float32)
+        rpm = np.array([data[TmrlDataPlugin.ENGINE_RPM]], dtype=np.float32)
         acc_val = speed_kmh - self._bd_prev_speed_kmh
         jerk_val = acc_val - self._bd_prev_acc_kmh
-        acceleration = np.array([acc_val], dtype="float32")
+        acceleration = np.array([acc_val], dtype=np.float32)
         self._bd_prev_speed_kmh = speed_kmh
         self._bd_prev_acc_kmh = acc_val
         self._sync_crash_state()
         self.crash_fallback(current_speed=speed_kmh, jerk=jerk_val)
         crashed_this_step = bool(self.is_crashed)
-        steering_angle = np.array([data[TmrlDataPlugin.INPUT_STEER]], dtype="float32")
+        steering_angle = np.array([data[TmrlDataPlugin.INPUT_STEER]], dtype=np.float32)
         slipping_tires = np.array(
             [
                 data[TmrlDataPlugin.SLIP_FL],
@@ -223,9 +234,9 @@ class TM2020InterfaceBoundary(TM2020InterfaceLidar):
                 data[TmrlDataPlugin.SLIP_RL],
                 data[TmrlDataPlugin.SLIP_RR],
             ],
-            dtype="float32",
+            dtype=np.float32,
         )
-        crash = np.array([float(self.is_crashed)], dtype="float32")
+        crash = np.array([float(bool(self.is_crashed))], dtype=np.float32)
 
         crash_penalty = -float(self.crash_penalty)
         end_of_track = bool(data[TmrlDataPlugin.FINISH_UI_ACTIVE])
@@ -234,18 +245,20 @@ class TM2020InterfaceBoundary(TM2020InterfaceLidar):
             "crashed": crashed_this_step,
             "crash_penalty": float(self.crash_penalty),
         }
-        reward = 0
+        reward = 0.0
         if bool(self.is_crashed):
             reward -= abs(crash_penalty)
 
+        fc_scalar: float
         if end_of_track:
-            reward += self.finish_reward
+            reward += float(self.finish_reward)
             terminated = True
-            failure_counter = 0
+            fc_scalar = 0.0
             if self.save_replays:
                 mouse_save_replay_tm20()
         else:
-            rew, terminated, failure_counter = self.reward_function.compute_reward(
+            assert self.reward_function is not None
+            rew, terminated, fc_int = self.reward_function.compute_reward(
                 pos=np.array(
                     [
                         data[TmrlDataPlugin.POS_X],
@@ -263,9 +276,11 @@ class TM2020InterfaceBoundary(TM2020InterfaceLidar):
                     float(data[TmrlDataPlugin.DIR_Y]),
                     float(data[TmrlDataPlugin.DIR_Z]),
                 ),
-                speed=float(data[TmrlDataPlugin.SPEED_MPS]) * 3.6,
+                speed=float(data[TmrlDataPlugin.SPEED_MPS]) * MPS_TO_KMPH,
             )[:3]
-            reward += rew
+            reward += float(rew)
+            fc_scalar = float(fc_int)
+            terminated = bool(terminated)
 
         obs = [
             speed,
@@ -276,7 +291,7 @@ class TM2020InterfaceBoundary(TM2020InterfaceLidar):
             steering_angle,
             slipping_tires,
             crash,
-            np.array([float(failure_counter)], dtype="float32"),
+            np.array([fc_scalar], dtype=np.float32),
         ]
         self.cooldown_control()
         return obs, np.float32(reward), terminated, info
@@ -286,13 +301,13 @@ class TM2020InterfaceBoundary(TM2020InterfaceLidar):
         data = self.grab_data()
         self._bd_prev_speed_kmh = 0.0
         self._bd_prev_acc_kmh = 0.0
-        track_information = np.full((60,), 0, dtype="float32")
-        speed_kmh = float(data[TmrlDataPlugin.SPEED_MPS]) * 3.6
-        speed = np.array([speed_kmh], dtype="float32")
-        gear = np.array([data[TmrlDataPlugin.ENGINE_GEAR]], dtype="float32")
-        rpm = np.array([data[TmrlDataPlugin.ENGINE_RPM]], dtype="float32")
-        acceleration = np.array([0.0], dtype="float32")
-        steering_angle = np.array([data[TmrlDataPlugin.INPUT_STEER]], dtype="float32")
+        track_information = np.full((BOUNDARY_OBS_DIM,), 0, dtype=np.float32)
+        speed_kmh = float(data[TmrlDataPlugin.SPEED_MPS]) * MPS_TO_KMPH
+        speed = np.array([speed_kmh], dtype=np.float32)
+        gear = np.array([data[TmrlDataPlugin.ENGINE_GEAR]], dtype=np.float32)
+        rpm = np.array([data[TmrlDataPlugin.ENGINE_RPM]], dtype=np.float32)
+        acceleration = np.array([0.0], dtype=np.float32)
+        steering_angle = np.array([data[TmrlDataPlugin.INPUT_STEER]], dtype=np.float32)
         slipping_tires = np.array(
             [
                 data[TmrlDataPlugin.SLIP_FL],
@@ -300,9 +315,9 @@ class TM2020InterfaceBoundary(TM2020InterfaceLidar):
                 data[TmrlDataPlugin.SLIP_RL],
                 data[TmrlDataPlugin.SLIP_RR],
             ],
-            dtype="float32",
+            dtype=np.float32,
         )
-        crash = np.array([float(self.is_crashed)], dtype="float32")
+        crash = np.array([float(bool(self.is_crashed))], dtype=np.float32)
         obs = [
             speed,
             gear,
@@ -312,12 +327,14 @@ class TM2020InterfaceBoundary(TM2020InterfaceLidar):
             steering_angle,
             slipping_tires,
             crash,
-            np.array([0.0], dtype="float32"),
+            np.array([0.0], dtype=np.float32),
         ]
+        assert self.reward_function is not None
         self.reward_function.reset()
         return obs, {}
 
 
+@INTERFACES.register("trackmap_images")
 class TM2020InterfaceBoundaryImages(TM2020InterfaceLidarProgress):
     """
     Camera images + pre-recorded track boundaries ahead + race progress.
@@ -349,15 +366,15 @@ class TM2020InterfaceBoundaryImages(TM2020InterfaceLidarProgress):
         self.left_boundary, self.right_boundary = _load_boundary_pkl(
             cfg.TRACK_PATH_LEFT, cfg.TRACK_PATH_RIGHT
         )
-        self.look_ahead_distance = 15
-        self.nearby_correction = 60
+        self.look_ahead_distance = BOUNDARY_LOOK_AHEAD
+        self.nearby_correction = BOUNDARY_NEARBY_CORRECTION
 
     def _grab_speed_track_and_image(self):
         assert self.window_interface is not None
         assert self.client is not None
         raw_img = self.window_interface.screenshot()[:, :, :3]
         data = self.client.retrieve_data()
-        speed = np.array([float(data[TmrlDataPlugin.SPEED_MPS]) * 3.6], dtype="float32")
+        speed = np.array([float(data[TmrlDataPlugin.SPEED_MPS]) * MPS_TO_KMPH], dtype=np.float32)
         car_position = [data[TmrlDataPlugin.POS_X], data[TmrlDataPlugin.POS_Z]]
         yaw, _p = yaw_pitch_from_dir_xyz(
             (
@@ -375,7 +392,7 @@ class TM2020InterfaceBoundaryImages(TM2020InterfaceLidarProgress):
         )
         l_x, l_z, r_x, r_z = _to_car_frame(l_x, l_z, r_x, r_z, car_position, yaw)
         track_information = np.array(
-            np.append(np.append(l_x, r_x), np.append(l_z, r_z)), dtype="float32"
+            np.append(np.append(l_x, r_x), np.append(l_z, r_z)), dtype=np.float32
         )
         w, h = self.resize_to
         img = cv2.resize(raw_img, (w, h), interpolation=cv2.INTER_AREA)
@@ -390,12 +407,14 @@ class TM2020InterfaceBoundaryImages(TM2020InterfaceLidarProgress):
         self.reset_common()
         speed, _data, track_information, img = self._grab_speed_track_and_image()
         self.image_hist = [img for _ in range(self.img_hist_len)]
-        progress = np.array([0], dtype="float32")
-        images = np.array(list(self.image_hist), dtype="float32")
+        progress = np.array([0], dtype=np.float32)
+        images = np.array(list(self.image_hist), dtype=np.float32)
+        assert self.reward_function is not None
         self.reward_function.reset()
         return [speed, progress, track_information, images], {}
 
     def get_obs_rew_terminated_info(self):
+        assert self.reward_function is not None
         speed, data, track_information, img = self._grab_speed_track_and_image()
         rew, terminated, _failure_counter = self.reward_function.compute_reward(
             pos=np.array(
@@ -415,11 +434,11 @@ class TM2020InterfaceBoundaryImages(TM2020InterfaceLidarProgress):
         )[:3]
         progress = np.array(
             [self.reward_function.cur_idx / max(1, self.reward_function.datalen)],
-            dtype="float32",
+            dtype=np.float32,
         )
         self.image_hist.append(img)
         self.image_hist = self.image_hist[-self.img_hist_len :]
-        images = np.array(list(self.image_hist), dtype="float32")
+        images = np.array(list(self.image_hist), dtype=np.float32)
         obs = [speed, progress, track_information, images]
         end_of_track = bool(data[TmrlDataPlugin.FINISH_UI_ACTIVE])
         info = {"end_of_track": end_of_track}
@@ -433,6 +452,6 @@ class TM2020InterfaceBoundaryImages(TM2020InterfaceLidarProgress):
         h, w = self.resize_to[1], self.resize_to[0]
         speed = spaces.Box(low=0.0, high=1000.0, shape=(1,))
         progress = spaces.Box(low=0.0, high=1.0, shape=(1,))
-        track_information = spaces.Box(low=-300.0, high=300.0, shape=(60,))
+        track_information = spaces.Box(low=-300.0, high=300.0, shape=(BOUNDARY_OBS_DIM,))
         images = spaces.Box(low=0.0, high=1.0, shape=(self.img_hist_len, c, h, w))
         return spaces.Tuple((speed, progress, track_information, images))

@@ -4,8 +4,10 @@ import numpy as np
 
 from tmrl.custom.memories.base import MemoryTM, last_true_in_list, replace_hist_before_eoe
 from tmrl.custom.memories.enums import BufferField, TMBestField, TMBestObsField
+from tmrl.registry import MEMORIES
 
 
+@MEMORIES.register("best")
 class MemoryTMBest(MemoryTM):
     """Comprehensive TrackMania memory with full telemetry data."""
 

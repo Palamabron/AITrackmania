@@ -22,7 +22,6 @@ def check_env_tm20_boundary():
     env_config["interface_kwargs"] = {
         "img_hist_len": 1,
         "gamepad": False,
-        "min_nb_steps_before_failure": (20 * 60),
         "record": False,
     }
     env = gymnasium.make("real-time-gym-v1", config=env_config)
@@ -54,7 +53,6 @@ def check_env_tm20lidar():
     env_config["interface_kwargs"] = {
         "img_hist_len": 1,
         "gamepad": False,
-        "min_nb_steps_before_failure": (20 * 60),
     }
     env = gymnasium.make(cfg.RTGYM_VERSION, config=env_config)
     _, _ = env.reset()
@@ -99,7 +97,6 @@ def check_env_tm20full():
     env_config["wait_on_done"] = True
     env_config["interface_kwargs"] = {
         "gamepad": False,
-        "min_nb_steps_before_failure": (20 * 60),
         "grayscale": cfg.GRAYSCALE,
         "resize_to": (cfg.IMG_WIDTH, cfg.IMG_HEIGHT),
     }

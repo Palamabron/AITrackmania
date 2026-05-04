@@ -3,8 +3,6 @@ import platform
 import numpy as np
 from loguru import logger
 
-import tmrl.config as cfg
-
 if platform.system() == "Windows":
     import win32con
     import win32gui
@@ -57,7 +55,13 @@ if platform.system() == "Windows":
             win32gui.ReleaseDC(hwnd, hdc)
             return img
 
-        def move_and_resize(self, x=1, y=0, w=cfg.WINDOW_WIDTH, h=cfg.WINDOW_HEIGHT):
+        def move_and_resize(self, x=1, y=0, w=None, h=None):
+            from tmrl.config.constants import WINDOW_HEIGHT, WINDOW_WIDTH
+
+            if w is None:
+                w = WINDOW_WIDTH
+            if h is None:
+                h = WINDOW_HEIGHT
             x += self.x_origin_offset
             y += self.y_origin_offset
             w += self.w_diff
@@ -151,7 +155,7 @@ elif platform.system() == "Linux":
         pass
 
     class WindowInterface:  # type: ignore[no-redef]
-        def __init__(self, window_name):
+        def __init__(self, window_name, linux_x_offset: int = 0, linux_y_offset: int = 0):
             self.sct = mss.mss()
 
             self.window_name = window_name
@@ -165,10 +169,10 @@ elif platform.system() == "Linux":
             self.h = None
             self.x = None
             self.y = None
-            self.x_offset = cfg.LINUX_X_OFFSET
-            self.y_offset = cfg.LINUX_Y_OFFSET
+            self.x_offset = linux_x_offset
+            self.y_offset = linux_y_offset
 
-            self.process = None
+            self.process: subprocess.Popen[bytes] | None = None
 
         def __del__(self):
             pass
@@ -182,16 +186,22 @@ elif platform.system() == "Linux":
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                 )
+            assert self.process.stdin is not None
             self.process.stdin.write(c.encode())
             self.process.stdin.flush()
 
         def screenshot(self):
             try:
-                monitor = {
-                    "top": self.x + self.x_offset,
-                    "left": self.y + self.y_offset,
-                    "width": self.w,
-                    "height": self.h,
+                x, y, w, h = self.x, self.y, self.w, self.h
+                assert x is not None
+                assert y is not None
+                assert w is not None
+                assert h is not None
+                monitor: dict[str, int] = {
+                    "top": int(y + self.y_offset),
+                    "left": int(x + self.x_offset),
+                    "width": int(w),
+                    "height": int(h),
                 }
                 img = np.array(self.sct.grab(monitor))
                 return img
@@ -200,7 +210,13 @@ elif platform.system() == "Linux":
                 logger.error("failed to capture screenshot")
                 raise e
 
-        def move_and_resize(self, x=0, y=0, w=cfg.WINDOW_WIDTH, h=cfg.WINDOW_HEIGHT):
+        def move_and_resize(self, x=0, y=0, w=None, h=None):
+            from tmrl.config.constants import WINDOW_HEIGHT, WINDOW_WIDTH
+
+            if w is None:
+                w = WINDOW_WIDTH
+            if h is None:
+                h = WINDOW_HEIGHT
             logger.debug(f"prepare {self.window_name} to {w}x{h} @ {x}, {y}")
 
             try:

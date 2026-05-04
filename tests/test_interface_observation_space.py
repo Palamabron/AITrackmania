@@ -29,12 +29,19 @@ from tmrl.custom.interfaces import (
     TrackMania2020InterfaceBase,
 )
 
+_W = 320
+_H = 180
+
 
 def test_tm2020_observation_space_uses_window_height_width_order() -> None:
-    interface = TM2020Interface(img_hist_len=3, resize_to=None, grayscale=True)
+    interface = TM2020Interface(
+        img_hist_len=3,
+        resize_to=(_W, _H),
+        grayscale=True,
+    )
     obs_space = interface.get_observation_space()
     img_space = obs_space.spaces[3]
-    assert img_space.shape == (3, cfg.WINDOW_HEIGHT, cfg.WINDOW_WIDTH)
+    assert img_space.shape == (3, _H, _W)
 
 
 def test_rl_interface_observation_space_image_tail_shape() -> None:
@@ -68,7 +75,6 @@ def test_base_class_is_abstract() -> None:
     )
     with pytest.raises(TypeError):
         TrackMania2020InterfaceBase()  # type: ignore[abstract]
-    # Concrete subclasses must all derive from the base.
     concrete = [
         TM2020Interface,
         TM2020InterfaceBoundary,
@@ -205,13 +211,55 @@ def test_lidar_progress_forces_its_flags() -> None:
     assert progress_images._include_camera_images is True
 
 
-def test_config_objects_wires_to_renamed_interface_classes() -> None:
+def test_vision_iqn_discrete_action_space() -> None:
+    """IQN default: 13 steer bins x 2 gas x 3 brake = 78 discrete actions."""
+    iface = TM2020Interface(img_hist_len=1, discrete_n_steer_bins=13)
+    act_space = iface.get_action_space()
+    assert isinstance(act_space, spaces.Discrete)
+    assert act_space.n == 78
+
+
+def test_boundary_forwards_discrete_n_steer_bins_to_base() -> None:
+    """Registry wiring passes ``discrete_n_steer_bins`` in kwargs; boundary must forward."""
+    iface = TM2020InterfaceBoundary(img_hist_len=1, discrete_n_steer_bins=13)
+    assert iface.discrete_action_table is not None
+    assert len(iface.discrete_action_table) == 78
+
+
+def test_all_interface_registry_keys_exist() -> None:
+    """Every key returned by ``_determine_interface_name`` must be registered in INTERFACES."""
+    from tmrl.registry import INTERFACES
+
+    expected_keys = {
+        "vision",
+        "lidar",
+        "lidar_progress",
+        "lidar_progress_images",
+        "trackmap",
+        "trackmap_images",
+        "tqc",
+        "sophy",
+        "impala",
+    }
+    for key in expected_keys:
+        assert key in INTERFACES, f"interface key {key!r} missing from INTERFACES registry"
+
+
+def test_iqn_n_actions_matches_steer_bins() -> None:
+    """Pydantic schema must reject mismatched iqn_n_actions / iqn_n_steer_bins."""
+    from tmrl.config.schema.algorithm import AlgorithmConfig
+
+    ok = AlgorithmConfig(name="IQN", iqn_n_steer_bins=13, iqn_n_actions=78)
+    assert ok.iqn_n_actions == 78
+
+    with pytest.raises(ValueError, match="iqn_n_actions"):
+        AlgorithmConfig(name="IQN", iqn_n_steer_bins=13, iqn_n_actions=100)
+
+
+def test_config_objects_has_no_stale_interface_names() -> None:
     """After renaming ``TM2020InterfaceTrackMap`` -> ``TM2020InterfaceBoundary`` and
-    its ``Images`` sibling, the dispatch logic in ``config_objects`` must reference the
-    new class names. A stale string name would still lint-pass but blow up at runtime
-    the first time the TrackMap branch was selected; reading the module source catches
-    that before any user config triggers the branch.
-    """
+    its ``Images`` sibling, the dispatch logic in ``config_objects`` must not reference
+    the old class names."""
     import tmrl.config.config_objects as cfg_obj
 
     src = Path(cfg_obj.__file__).read_text(encoding="utf-8")
@@ -221,7 +269,3 @@ def test_config_objects_wires_to_renamed_interface_classes() -> None:
     assert "TM2020InterfaceTrackMapImages" not in src, (
         "stale class name TM2020InterfaceTrackMapImages in config_objects.py"
     )
-    # Both renamed classes must actually be imported by the module so the partials bind.
-    assert cfg_obj.TM2020InterfaceBoundary is TM2020InterfaceBoundary
-    assert cfg_obj.TM2020InterfaceBoundaryImages is TM2020InterfaceBoundaryImages
-    assert cfg_obj.TM2020RLInterface is TM2020RLInterface

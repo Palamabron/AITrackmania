@@ -1,6 +1,7 @@
 # standard library imports
 import random
 import time
+from typing import Any, cast
 
 # third-party imports
 import gymnasium
@@ -26,7 +27,6 @@ def benchmark():
     env_config["interface_kwargs"] = {
         "img_hist_len": 1,
         "gamepad": False,
-        "min_nb_steps_before_failure": (20 * 60),
     }
     env = gymnasium.make("real-time-gym-v1", config=env_config)
 
@@ -36,14 +36,16 @@ def benchmark():
         _ = action_space.sample()  # simulate action compute time
         time.sleep(random.uniform(ACT_COMPUTE_MIN, ACT_COMPUTE_MAX))
         # o, r, d, t, i = env.step(act)
-        _o, r, d, t, _i, _s_r = env.step(None)
+        step_out = cast(tuple[Any, ...], env.step(None))
+        _o, r, d, t, _i, _s_r = step_out
         if d or t:
             env.reset()
         logger.info(f"rew:{r}")
     t_f = time.time()
 
     elapsed_time = t_f - t_d
-    logger.info(f"benchmark results: {env.benchmarks()}")
+    bench = getattr(env, "benchmarks", None)
+    logger.info(f"benchmark results: {bench() if callable(bench) else 'n/a'}")
     logger.info(f"elapsed time: {elapsed_time}")
     logger.info(f"time-step duration: {elapsed_time / NB_STEPS}")
 

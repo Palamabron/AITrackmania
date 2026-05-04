@@ -30,7 +30,7 @@ def _position_start_idx(data: tuple[float, ...]) -> int:
 
 
 def record_reward_dist(path_reward=PATH_REWARD):
-    positions = []
+    positions: list[list[float]] = []
     client = TM2020OpenPlanetClient(nb_floats=tmrl_grabdata_payload_nb_floats(cfg.REWARD_CONFIG))
     path = path_reward
 
@@ -42,15 +42,15 @@ def record_reward_dist(path_reward=PATH_REWARD):
             if terminated:
                 logger.info("Computing reward function checkpoints from captured positions...")
                 logger.info(f"Initial number of captured positions: {len(positions)}")
-                positions = np.array(positions)
+                positions_arr = np.asarray(positions, dtype=np.float64)
 
-                final_positions = [positions[0]]
+                final_positions: list = [positions_arr[0]]
                 dist_between_points = 0.1
                 j = 1
                 move_by = dist_between_points
                 pt1 = final_positions[-1]
-                while j < len(positions):
-                    pt2 = positions[j]
+                while j < len(positions_arr):
+                    pt2 = positions_arr[j]
                     pt, dst = line(pt1, pt2, move_by)
                     if pt is not None:
                         final_positions.append(pt)
@@ -61,13 +61,14 @@ def record_reward_dist(path_reward=PATH_REWARD):
                         j += 1
                         move_by = dst
 
-                final_positions = np.array(final_positions)
+                final_positions_arr = np.asarray(final_positions, dtype=np.float64)
                 logger.info(
-                    f"Final number of checkpoints in the reward function: {len(final_positions)}"
+                    "Final number of checkpoints in the reward function: {}",
+                    len(final_positions_arr),
                 )
 
                 with open(path, "wb") as f:
-                    pickle.dump(final_positions, f)
+                    pickle.dump(final_positions_arr, f)
                 logger.info("All done")
                 return
             else:

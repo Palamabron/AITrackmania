@@ -13,6 +13,7 @@ from tmrl.custom.custom_algorithms._common import (
     _amp_enabled,
     _compute_n_step_return_and_bootstrap_mask,
     _tensor_to_scalar,
+    amp_setup,
     set_seed,
 )
 from tmrl.custom.custom_algorithms.iqn import IQNAgent
@@ -33,5 +34,6 @@ __all__ = [
     "_amp_enabled",
     "_compute_n_step_return_and_bootstrap_mask",
     "_tensor_to_scalar",
+    "amp_setup",
     "set_seed",
 ]

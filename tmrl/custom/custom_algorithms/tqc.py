@@ -1,5 +1,6 @@
 """Truncated Quantile Critic (TQC) agent."""
 
+import contextlib
 import itertools
 import math
 from copy import deepcopy
@@ -17,9 +18,6 @@ try:
 except ImportError:
     wandb = None  # type: ignore[assignment]
 
-import contextlib
-
-import tmrl.config.constants as cfg
 from tmrl.custom.custom_algorithms._common import (
     _amp_dtype,
     _amp_enabled,
@@ -33,37 +31,98 @@ from tmrl.custom.custom_algorithms._common import (
     sanitize_tensor,
     set_seed,
 )
-from tmrl.custom.models.Sophy import SophyActorCritic
 from tmrl.custom.utils.nn import copy_shared, no_grad
+from tmrl.registry import ALGORITHMS
 from tmrl.training import TrainingAgent
 from tmrl.util import cached_property
 
 
+@ALGORITHMS.register("TQC")
 @dataclass(eq=False)
 class TQCAgent(TrainingAgent):
     """Truncated Quantile Critic (TQC) agent for continuous control.
 
     Implements TQC from "Controlling Overestimation Bias with Truncated Mixture of
     Continuous Distributional Quantile Critics" (Kuznetsov et al., 2020).
-    Uses distributional critics, truncation of the return distribution, and
-    ensembling to control overestimation bias. See https://arxiv.org/abs/2005.04269.
+
+    All hyperparameters are required constructor arguments — values must be
+    supplied explicitly by the config pipeline (no hidden numeric defaults).
     """
 
+    # --- Required: core SAC/TQC hyperparameters ---
     observation_space: type[Any]
     action_space: type[Any]
+    model_cls: type[Any]
+    gamma: float
+    polyak: float
+    alpha: float
+    lr_actor: float
+    lr_critic: float
+    lr_entropy: float
+    learn_entropy_coef: bool
+    top_quantiles_to_drop: int
+    quantiles_number: int
+    n_steps: int
+
+    # --- Required: optimizer / regularisation ---
+    actor_weight_decay: float
+    critic_weight_decay: float
+    adam_eps: float
+
+    # --- Required: entropy schedule ---
+    entropy_schedule: str
+    entropy_floor: float
+    entropy_cosine_t0: int
+    entropy_cosine_tmult: float
+    entropy_cosine_decay: float
+
+    # --- Required: training stability ---
+    reward_normalize_scale: float
+    backup_clip_range: float
+    grad_clip_actor: float
+    grad_clip_critic: float
+    weight_clipping_enabled: bool
+    clip_weights_value: float
+    mean_penalty_coef: float
+
+    # --- Required: behavior cloning ---
+    bc_lambda: float
+    bc_lambda_start: float
+    bc_lambda_end: float
+    bc_anneal_steps_start: int
+    bc_anneal_steps_end: int
+
+    # --- Required: advanced TQC knobs ---
+    dynamic_truncation_enabled: bool
+    dynamic_truncation_variance_pct: float
+    vcse_enabled: bool
+    vcse_alpha_base: float
+    vcse_lambda: float
+
+    # --- Required: sequence replay (R2D2) ---
+    r2d2_burn_in: int
+    r2d2_sequence_length: int
+
+    # --- Required: PER / debugging / scheduler ---
+    per_td_enabled: bool
+    wandb_debug: bool
+    wandb_gradients: bool
+    scheduler_name: str
+    scheduler_t_0: int
+    scheduler_t_mult: int
+    scheduler_eta_min: float
+    scheduler_last_epoch: int
+
+    # --- Required: mixed precision ---
+    mixed_precision: bool
+    mixed_precision_dtype: str
+
+    # --- Required: reproducibility ---
+    seed: int
+
+    # --- Structural defaults (None = auto-detect / optional) ---
     device: str | None = None
-    model_cls: type[Any] = SophyActorCritic
-    gamma: float = 0.99
-    polyak: float = 0.995
-    alpha: float = 0.2
-    lr_actor: float = 1e-3
-    lr_critic: float = 1e-3
-    lr_entropy: float = 1e-3
-    learn_entropy_coef: bool = True
     target_entropy: float | None = None
-    top_quantiles_to_drop: int = cfg.ALG_CONFIG["TOP_QUANTILES_TO_DROP"]
-    quantiles_number: int = cfg.ALG_CONFIG["QUANTILES_NUMBER"]
-    n_steps: int = cfg.ALG_CONFIG["N_STEPS"]
     betas_actor: tuple[float, ...] | None = None
     betas_critic: tuple[float, ...] | None = None
 
@@ -71,7 +130,7 @@ class TQCAgent(TrainingAgent):
 
     def __post_init__(self) -> None:
         """Build model, target, optimizers, and entropy coefficient (if learned)."""
-        set_seed()
+        set_seed(self.seed)
         if self.n_steps == 1:
             self.n_steps = 0
         observation_space, action_space = self.observation_space, self.action_space
@@ -80,18 +139,18 @@ class TQCAgent(TrainingAgent):
         logger.debug(" device TQC: {}", device)
         self.model = model.to(device)
         self.model_target = no_grad(deepcopy(self.model))
-        pi_kwargs = {
+        pi_kwargs: dict[str, Any] = {
             "lr": self.lr_actor,
-            "weight_decay": cfg.ACTOR_WEIGHT_DECAY,
-            "eps": cfg.ADAM_EPS,
+            "weight_decay": self.actor_weight_decay,
+            "eps": self.adam_eps,
         }
         if self.betas_actor is not None:
             pi_kwargs["betas"] = tuple(self.betas_actor)
         self.actor_optimizer = Adam(self.model.actor.parameters(), **pi_kwargs)
-        q_kwargs = {
+        q_kwargs: dict[str, Any] = {
             "lr": self.lr_critic,
-            "weight_decay": cfg.CRITIC_WEIGHT_DECAY,
-            "eps": cfg.ADAM_EPS,
+            "weight_decay": self.critic_weight_decay,
+            "eps": self.adam_eps,
         }
         if self.betas_critic is not None:
             q_kwargs["betas"] = tuple(self.betas_critic)
@@ -99,27 +158,27 @@ class TQCAgent(TrainingAgent):
             itertools.chain(self.model.q1.parameters(), self.model.q2.parameters()),
             **q_kwargs,
         )
-        self.use_mixed_precision = _amp_enabled(device)
-        self.amp_dtype = _amp_dtype()
+        self.use_mixed_precision = _amp_enabled(device, self.mixed_precision)
+        self.amp_dtype = _amp_dtype(self.mixed_precision_dtype)
         # GradScaler not recommended for bfloat16; use only for float16
         use_scaler = self.use_mixed_precision and (self.amp_dtype != torch.bfloat16)
         self.grad_scaler = torch.amp.GradScaler("cuda", enabled=use_scaler)
 
-        if len(cfg.SCHEDULER_CONFIG["NAME"]) > 0:
+        if self.scheduler_name:
             self.actor_scheduler = CosineAnnealingWarmRestarts(
                 self.actor_optimizer,
-                cfg.SCHEDULER_CONFIG["T_0"],
-                cfg.SCHEDULER_CONFIG["T_mult"],
-                cfg.SCHEDULER_CONFIG["eta_min"],
-                cfg.SCHEDULER_CONFIG["last_epoch"],
+                self.scheduler_t_0,
+                self.scheduler_t_mult,
+                self.scheduler_eta_min,
+                self.scheduler_last_epoch,
             )
 
             self.critic_scheduler = CosineAnnealingWarmRestarts(
                 self.critic_optimizer,
-                cfg.SCHEDULER_CONFIG["T_0"],
-                cfg.SCHEDULER_CONFIG["T_mult"],
-                cfg.SCHEDULER_CONFIG["eta_min"],
-                cfg.SCHEDULER_CONFIG["last_epoch"],
+                self.scheduler_t_0,
+                self.scheduler_t_mult,
+                self.scheduler_eta_min,
+                self.scheduler_last_epoch,
             )
 
         self.quantiles_total = self.model.q1.num_quantiles + self.model.q2.num_quantiles
@@ -131,11 +190,11 @@ class TQCAgent(TrainingAgent):
         else:
             self.target_entropy = float(self.target_entropy)
 
-        self._entropy_schedule = cfg.ENTROPY_SCHEDULE
-        self._entropy_floor = cfg.ENTROPY_FLOOR
-        self._entropy_cosine_t0 = cfg.ENTROPY_COSINE_T0
-        self._entropy_cosine_tmult = cfg.ENTROPY_COSINE_TMULT
-        self._entropy_cosine_decay = cfg.ENTROPY_COSINE_DECAY
+        self._entropy_schedule = self.entropy_schedule
+        self._entropy_floor = self.entropy_floor
+        self._entropy_cosine_t0 = self.entropy_cosine_t0
+        self._entropy_cosine_tmult = self.entropy_cosine_tmult
+        self._entropy_cosine_decay = self.entropy_cosine_decay
 
         if self._entropy_schedule == "cosine":
             self.learn_entropy_coef = False
@@ -156,7 +215,7 @@ class TQCAgent(TrainingAgent):
         else:
             self.alpha_t = torch.tensor(float(self.alpha)).to(device)
 
-        if cfg.WANDB_GRADIENTS and wandb is not None:
+        if self.wandb_gradients and wandb is not None:
             wandb.watch(self.model, log_freq=10)
         self._training_step = 0
         self._nan_weight_check_interval = 50
@@ -198,18 +257,18 @@ class TQCAgent(TrainingAgent):
         model = self.model_cls(observation_space, action_space)
         self.model = model.to(device)
         self.model_target = no_grad(deepcopy(self.model))
-        pi_kwargs = {
+        pi_kwargs: dict[str, Any] = {
             "lr": self.lr_actor,
-            "weight_decay": cfg.ACTOR_WEIGHT_DECAY,
-            "eps": cfg.ADAM_EPS,
+            "weight_decay": self.actor_weight_decay,
+            "eps": self.adam_eps,
         }
         if self.betas_actor is not None:
             pi_kwargs["betas"] = tuple(self.betas_actor)
         self.actor_optimizer = Adam(self.model.actor.parameters(), **pi_kwargs)
-        q_kwargs = {
+        q_kwargs: dict[str, Any] = {
             "lr": self.lr_critic,
-            "weight_decay": cfg.CRITIC_WEIGHT_DECAY,
-            "eps": cfg.ADAM_EPS,
+            "weight_decay": self.critic_weight_decay,
+            "eps": self.adam_eps,
         }
         if self.betas_critic is not None:
             q_kwargs["betas"] = tuple(self.betas_critic)
@@ -240,13 +299,13 @@ class TQCAgent(TrainingAgent):
 
     def _get_bc_lambda(self) -> float:
         """Current BC coefficient: constant or linear annealing from START to END over steps."""
-        base = float(cfg.ALG_CONFIG.get("BC_LAMBDA", 0.0))
-        step_end = int(cfg.ALG_CONFIG.get("BC_ANNEAL_STEPS_END", 0))
+        base = float(self.bc_lambda)
+        step_end = int(self.bc_anneal_steps_end)
         if step_end <= 0:
             return base
-        start_val = float(cfg.ALG_CONFIG.get("BC_LAMBDA_START", 1.0))
-        end_val = float(cfg.ALG_CONFIG.get("BC_LAMBDA_END", 0.01))
-        step_start = int(cfg.ALG_CONFIG.get("BC_ANNEAL_STEPS_START", 0))
+        start_val = float(self.bc_lambda_start)
+        end_val = float(self.bc_lambda_end)
+        step_start = int(self.bc_anneal_steps_start)
         step = self._training_step
         if step <= step_start:
             return start_val
@@ -345,9 +404,8 @@ class TQCAgent(TrainingAgent):
             d = self._sanitize_tensor(d)
 
         # Reward scaling for Q-value stability (raw rewards ~200 -> ~1-2 when scale=200)
-        reward_normalize_scale = float(cfg.ALG_CONFIG.get("REWARD_NORMALIZE_SCALE", 1.0))
-        if reward_normalize_scale != 1.0 and reward_normalize_scale > 0:
-            r = r / reward_normalize_scale
+        if self.reward_normalize_scale != 1.0 and self.reward_normalize_scale > 0:
+            r = r / self.reward_normalize_scale
 
         def autocast_ctx():
             return autocast_context(self.use_mixed_precision, self.amp_dtype)
@@ -358,17 +416,17 @@ class TQCAgent(TrainingAgent):
                 f"Invalid n-step config: n_steps ({self.n_steps}) must be smaller than "
                 f"batch_size ({batch_size})."
             )
-        burn_in_len = int(cfg.ALG_CONFIG.get("R2D2_BURN_IN", 0))
-        _seq_len_cfg = int(cfg.ALG_CONFIG.get("R2D2_SEQUENCE_LENGTH", 0))
+        burn_in_len = int(self.r2d2_burn_in)
+        _seq_len_cfg = int(self.r2d2_sequence_length)
         if burn_in_len > 0 and _seq_len_cfg > 0 and burn_in_len >= _seq_len_cfg:
             raise ValueError(
-                f"R2D2_BURN_IN ({burn_in_len}) >= R2D2_SEQUENCE_LENGTH ({_seq_len_cfg}). "
+                f"r2d2_burn_in ({burn_in_len}) >= r2d2_sequence_length ({_seq_len_cfg}). "
                 "Burn-in must be < sequence length to leave active training steps."
             )
 
         if self.n_steps <= 1:
             truncated_batch_size = batch_size
-            _seq_len_cfg = int(cfg.ALG_CONFIG.get("R2D2_SEQUENCE_LENGTH", 0))
+            _seq_len_cfg = int(self.r2d2_sequence_length)
             if _seq_len_cfg > 0:
                 seq_len = _seq_len_cfg
                 step_in_seq = torch.arange(truncated_batch_size, device=r.device) % seq_len
@@ -378,10 +436,9 @@ class TQCAgent(TrainingAgent):
                 valid_n_step = None
         else:
             truncated_batch_size = batch_size - self.n_steps
-            seq_len = int(cfg.ALG_CONFIG.get("R2D2_SEQUENCE_LENGTH", 0))
+            seq_len = int(self.r2d2_sequence_length)
             if seq_len > 0:
                 step_in_seq = torch.arange(truncated_batch_size, device=r.device) % seq_len
-                # FIX: Mask out cross-sequence bleeding AND the detached Burn-In phase
                 valid_n_step = (step_in_seq + self.n_steps <= seq_len) & (
                     step_in_seq >= burn_in_len
                 )
@@ -436,16 +493,14 @@ class TQCAgent(TrainingAgent):
                 a2, logp_a2 = self.model.actor(o2)
             logp_a2 = self._safe_logprob(logp_a2)
 
-            # FIX: Compute for full batch first, apply truncation and shifting later
             with autocast_ctx():
                 q1_pi_targ = self.model_target.q1(o2, a2)
                 q2_pi_targ = self.model_target.q2(o2, a2)
 
-            # TQC: truncate the pooled mixture (not per-critic) to suppress overestimation.
             next_z = torch.stack((q1_pi_targ, q2_pi_targ), dim=1)
             sorted_z, _ = torch.sort(next_z.reshape(batch_size, -1))
             effective_drop = self.total_quantiles_to_drop
-            if cfg.ALG_CONFIG.get("DYNAMIC_TRUNCATION_ENABLED", False):
+            if self.dynamic_truncation_enabled:
                 with torch.no_grad():
                     var_current = float(sorted_z.var().item())
                     self._trunc_var_history.append(var_current)
@@ -455,7 +510,7 @@ class TQCAgent(TrainingAgent):
                         pct_val = float(
                             np.percentile(
                                 self._trunc_var_history,
-                                cfg.ALG_CONFIG.get("DYNAMIC_TRUNCATION_VARIANCE_PCT", 0.9) * 100,
+                                self.dynamic_truncation_variance_pct * 100,
                             )
                         )
                         if var_current > pct_val:
@@ -469,8 +524,6 @@ class TQCAgent(TrainingAgent):
 
             if self.n_steps > 1:
                 assert n_step_not_done is not None
-                # FIX: Shift index by n_steps - 1 because o2 is already at t+1.
-                # This correctly targets S_{t+N}
                 target_indices = (
                     torch.arange(truncated_batch_size, device=r.device) + self.n_steps - 1
                 )
@@ -490,8 +543,7 @@ class TQCAgent(TrainingAgent):
             else:
                 backup = r[:truncated_batch_size].unsqueeze(-1) + self.gamma * tmp
 
-        per_td = getattr(cfg, "PER_TD_ENABLED", False)
-        if per_td and isinstance(info, dict) and "is_weight" in info:
+        if self.per_td_enabled and isinstance(info, dict) and "is_weight" in info:
             is_weights = info["is_weight"].float().view(-1)
             is_weights = is_weights / (is_weights.max() + 1e-8)
         else:
@@ -499,8 +551,8 @@ class TQCAgent(TrainingAgent):
 
         # ── 6. Critic loss ──
         cur_z = torch.stack((q1, q2), dim=1)[:truncated_batch_size]
-        if cfg.BACKUP_CLIP_RANGE > 0:
-            backup = backup.clamp(-cfg.BACKUP_CLIP_RANGE, cfg.BACKUP_CLIP_RANGE)
+        if self.backup_clip_range > 0:
+            backup = backup.clamp(-self.backup_clip_range, self.backup_clip_range)
 
         cur_z = cur_z.float()
         backup = backup.float()
@@ -514,7 +566,6 @@ class TQCAgent(TrainingAgent):
 
         per_sample_loss = self._quantile_huber_per_sample(cur_z, backup)
 
-        # Steps outside valid_n_step (padding or beyond sequence) are excluded from the loss.
         if self.n_steps > 1 and seq_len > 0 and valid_n_step is not None:
             per_sample_loss = per_sample_loss * is_weights[:truncated_batch_size]
             denom = valid_n_step.float().sum().clamp(min=1.0)
@@ -545,10 +596,10 @@ class TQCAgent(TrainingAgent):
                 self.grad_scaler.unscale_(self.critic_optimizer)
             else:
                 critic_loss.backward()
-            if cfg.GRAD_CLIP_CRITIC > 0:
+            if self.grad_clip_critic > 0:
                 critic_grad_norm = torch.nn.utils.clip_grad_norm_(
                     itertools.chain(self.model.q1.parameters(), self.model.q2.parameters()),
-                    cfg.GRAD_CLIP_CRITIC,
+                    self.grad_clip_critic,
                 )
             else:
                 critic_grad_norm = None
@@ -577,36 +628,36 @@ class TQCAgent(TrainingAgent):
         q_pi = torch.nan_to_num(q_pi, nan=0.0, posinf=1e4, neginf=-1e4).clamp(-1e4, 1e4)
 
         # VCSE: scale alpha by critic std (more exploration in uncertain states)
-        if cfg.ALG_CONFIG.get("VCSE_ENABLED", False):
+        if self.vcse_enabled:
             q_stack = torch.stack((q1_pi.float().mean(1), q2_pi.float().mean(1)), dim=1)
             sigma_q = q_stack.std(dim=1)
-            alpha_base = float(cfg.ALG_CONFIG.get("VCSE_ALPHA_BASE", 0.0))
-            vcse_lambda = float(cfg.ALG_CONFIG.get("VCSE_LAMBDA", 0.5))
+            alpha_base = float(self.vcse_alpha_base)
+            vcse_lam = float(self.vcse_lambda)
             alpha_per_sample = (
-                alpha_t.float().squeeze() + vcse_lambda * sigma_q
+                alpha_t.float().squeeze() + vcse_lam * sigma_q
                 if alpha_t.dim() > 0
-                else alpha_t.float() + vcse_lambda * sigma_q
+                else alpha_t.float() + vcse_lam * sigma_q
             )
             alpha_per_sample = alpha_per_sample.clamp(min=alpha_base, max=2.0)
             actor_loss_unmasked = alpha_per_sample * logp_actor - q_pi
         else:
             actor_loss_unmasked = alpha_t.float() * logp_actor - q_pi
-        mean_penalty_coef = float(cfg.ALG_CONFIG.get("MEAN_PENALTY_COEF", 0.05))
+        _mean_penalty_coef = float(self.mean_penalty_coef)
 
         if seq_len > 0 and valid_n_step is not None:
             denom = valid_n_step.float().sum().clamp(min=1.0)
             actor_loss = (actor_loss_unmasked * valid_n_step.float()).sum() / denom
             mean_penalty = (
-                mean_penalty_coef * ((mu_actor**2).mean(-1) * valid_n_step.float()).sum() / denom
+                _mean_penalty_coef * ((mu_actor**2).mean(-1) * valid_n_step.float()).sum() / denom
             )
         else:
             actor_loss = actor_loss_unmasked.mean()
-            mean_penalty = mean_penalty_coef * (mu_actor**2).mean()
+            mean_penalty = _mean_penalty_coef * (mu_actor**2).mean()
 
         actor_loss = actor_loss + mean_penalty
 
-        bc_lambda = self._get_bc_lambda()
-        if bc_lambda > 0 and isinstance(info, dict) and "is_demo" in info:
+        bc_lam = self._get_bc_lambda()
+        if bc_lam > 0 and isinstance(info, dict) and "is_demo" in info:
             is_demo = info["is_demo"]
             if isinstance(is_demo, torch.Tensor) and is_demo.any():
                 is_demo_t = is_demo[:truncated_batch_size]
@@ -615,7 +666,7 @@ class TQCAgent(TrainingAgent):
                     a_demo = a_t[is_demo_t]
                     pi_demo = pi_actor[is_demo_t]
                     bc_loss = ((pi_demo - a_demo) ** 2).mean()
-                    actor_loss = actor_loss + bc_lambda * bc_loss
+                    actor_loss = actor_loss + bc_lam * bc_loss
 
         # ── 9. Actor update ──
         actor_loss_bad = _is_bad_loss(actor_loss)
@@ -626,10 +677,10 @@ class TQCAgent(TrainingAgent):
                 self.grad_scaler.unscale_(self.actor_optimizer)
             else:
                 actor_loss.backward()
-            if cfg.GRAD_CLIP_ACTOR > 0:
+            if self.grad_clip_actor > 0:
                 actor_grad_norm = torch.nn.utils.clip_grad_norm_(
                     self.model.actor.parameters(),
-                    cfg.GRAD_CLIP_ACTOR,
+                    self.grad_clip_actor,
                 )
             else:
                 actor_grad_norm = torch.nn.utils.clip_grad_norm_(
@@ -659,13 +710,13 @@ class TQCAgent(TrainingAgent):
         project_simbav2_weights(self.model)
 
         # ── 10. Post-update: scheduler, clipping, target update ──
-        if len(cfg.SCHEDULER_CONFIG["NAME"]) > 0:
+        if self.scheduler_name:
             self.actor_scheduler.step(epoch + batch_index / iters)
             self.critic_scheduler.step(epoch + batch_index / iters)
-        if cfg.WEIGHT_CLIPPING_ENABLED:
-            clip_model_weights(self.model.actor)
-            clip_model_weights(self.model.q1)
-            clip_model_weights(self.model.q2)
+        if self.weight_clipping_enabled:
+            clip_model_weights(self.model.actor, self.clip_weights_value)
+            clip_model_weights(self.model.q1, self.clip_weights_value)
+            clip_model_weights(self.model.q2, self.clip_weights_value)
 
         self.model.q1.requires_grad_(True)
         self.model.q2.requires_grad_(True)
@@ -680,7 +731,7 @@ class TQCAgent(TrainingAgent):
             polyak_update(self.model.q2, self.model_target.q2, self.polyak)
 
         # ── PER: return TD errors and batch indices for priority update ──
-        if per_td and isinstance(info, dict) and "batch_indices" in info:
+        if self.per_td_enabled and isinstance(info, dict) and "batch_indices" in info:
             bi = info["batch_indices"]
             bi = bi.cpu().numpy() if isinstance(bi, torch.Tensor) else np.asarray(bi)
             td_np = td_errors_batch.cpu().numpy()
@@ -699,16 +750,13 @@ class TQCAgent(TrainingAgent):
             ret_dict["losses/critic"] = _tensor_to_scalar(critic_loss.detach())
             ret_dict["lrs/actor_lr"] = self.actor_optimizer.param_groups[0]["lr"]
             ret_dict["lrs/critic_lr"] = self.critic_optimizer.param_groups[0]["lr"]
-            if (
-                cfg.ALG_CONFIG.get("BC_LAMBDA", 0.0) > 0
-                or cfg.ALG_CONFIG.get("BC_ANNEAL_STEPS_END", 0) > 0
-            ):
+            if self.bc_lambda > 0 or self.bc_anneal_steps_end > 0:
                 ret_dict["bc/bc_lambda"] = self._get_bc_lambda()
             if critic_grad_norm is not None:
                 ret_dict["debug/critic_grad_norm"] = float(critic_grad_norm)
             if actor_grad_norm is not None:
                 ret_dict["debug/actor_grad_norm"] = float(actor_grad_norm)
-            if cfg.WANDB_DEBUG:
+            if self.wandb_debug:
                 q1_targ_a = self.model_target.q1(o, a)[:truncated_batch_size]
                 q2_targ_a = self.model_target.q2(o, a)[:truncated_batch_size]
 
@@ -752,7 +800,7 @@ class TQCAgent(TrainingAgent):
             ret_dict["loss_entropy_coef"] = alpha_loss.detach().item()
             ret_dict["entropy_coef"] = torch.exp(self.log_alpha.detach()).item()
             ret_dict["lrs/entropy_lr"] = self.alpha_optimizer.param_groups[0]["lr"]
-            if cfg.WANDB_DEBUG:
+            if self.wandb_debug:
                 ret_dict["debug/log_alpha"] = self.log_alpha.detach().item()
 
         ret_dict.update(ret_dict_per)  # type: ignore[arg-type]

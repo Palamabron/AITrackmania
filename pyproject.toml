@@ -33,9 +33,10 @@ classifiers = [
 ]
 requires-python = ">=3.12"
 dependencies = [
-    "chardet",
+    "chardet<6",
     "einops>=0.7",
     "gymnasium>=0.29",
+    "hydra-core>=1.3",
     "loguru>=0.7",
     "tyro>=0.8",
     "pydantic>=2.0",
@@ -74,6 +75,7 @@ dev = [
     "mypy>=1.8",
     "ruff>=0.4",
     "pytest>=7.0",
+    "types-PyYAML",
 ]
 
 [dependency-groups]
@@ -81,6 +83,7 @@ dev = [
     "mypy>=1.8",
     "ruff>=0.4",
     "pytest>=7.0",
+    "types-PyYAML",
 ]
 
 [project.urls]
@@ -112,6 +115,9 @@ explicit = true
 where = ["."]
 include = ["tmrl*"]
 exclude = ["tests*"]
+
+[tool.setuptools.package-data]
+tmrl = ["config/defaults/**/*.yaml"]
 
 [tool.ruff]
 target-version = "py312"
@@ -154,7 +160,13 @@ python_version = "3.12"
 warn_return_any = true
 warn_unused_configs = true
 ignore_missing_imports = true
+check_untyped_defs = true
 
 [[tool.mypy.overrides]]
 module = ["tlspyo.*", "rtgym.*"]
 ignore_missing_imports = true
+
+# Vendored pywin32 postinstall; Windows-only registry APIs are absent from Unix stubs.
+[[tool.mypy.overrides]]
+module = "tmrl.tools.init_package.init_pywin32"
+ignore_errors = true

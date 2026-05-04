@@ -19,11 +19,14 @@ import numpy as np
 from gymnasium import spaces
 
 import tmrl.config as cfg
+from tmrl.custom.interfaces.base import MPS_TO_KMPH
 from tmrl.custom.interfaces.telemetry_indices import TmrlDataPlugin
 from tmrl.custom.interfaces.vision import TM2020Interface
 from tmrl.custom.tm.utils.tools import Lidar
+from tmrl.registry import INTERFACES
 
 
+@INTERFACES.register("lidar")
 class TM2020InterfaceLidar(TM2020Interface):
     """
     LIDAR observations from a single game screenshot.
@@ -56,7 +59,7 @@ class TM2020InterfaceLidar(TM2020Interface):
         self._lidar_rgb_grayscale = grayscale
         self._lidar_rgb_resize = resize_to or (cfg.IMG_WIDTH, cfg.IMG_HEIGHT)
         self.lidar: Lidar | None = None
-        self.image_hist: list = []
+        self.image_hist: list[np.ndarray] = []
 
     def initialize(self):
         super().initialize_common()
@@ -71,7 +74,7 @@ class TM2020InterfaceLidar(TM2020Interface):
         assert self.lidar is not None
         raw_img = self.window_interface.screenshot()[:, :, :3]
         data = self.client.retrieve_data()
-        speed = np.array([float(data[TmrlDataPlugin.SPEED_MPS]) * 3.6], dtype="float32")
+        speed = np.array([float(data[TmrlDataPlugin.SPEED_MPS]) * MPS_TO_KMPH], dtype=np.float32)
         lidar = self.lidar.lidar_20(img=raw_img, show=False)
         return raw_img, data, speed, lidar
 
@@ -94,7 +97,7 @@ class TM2020InterfaceLidar(TM2020Interface):
         assert self.reward_function is not None
         return np.array(
             [self.reward_function.cur_idx / max(1, self.reward_function.datalen)],
-            dtype="float32",
+            dtype=np.float32,
         )
 
     def _assemble_obs(self, speed, lidars, images=None, progress=None):
@@ -126,21 +129,22 @@ class TM2020InterfaceLidar(TM2020Interface):
             lidar, speed, _data, img = self.grab_lidar_speed_data_and_image()
             self.img_hist = [lidar for _ in range(self.img_hist_len)]
             self.image_hist = [img for _ in range(self.img_hist_len)]
-            lidars = np.array(list(self.img_hist), dtype="float32")
-            images = np.array(list(self.image_hist), dtype="float32")
+            lidars = np.array(list(self.img_hist), dtype=np.float32)
+            images = np.array(list(self.image_hist), dtype=np.float32)
         else:
             lidar, speed, _data = self.grab_lidar_speed_and_data()
             self.img_hist = [lidar for _ in range(self.img_hist_len)]
-            lidars = np.array(list(self.img_hist), dtype="float32")
+            lidars = np.array(list(self.img_hist), dtype=np.float32)
             images = None
 
-        progress = np.array([0], dtype="float32") if self._include_progress else None
+        progress = np.array([0], dtype=np.float32) if self._include_progress else None
         obs = self._assemble_obs(speed, lidars, images, progress)
         self.reward_function.reset()
         return obs, {}
 
     def get_obs_rew_terminated_info(self):
         assert self.reward_function is not None
+        assert self.img_hist is not None
         if self._include_camera_images:
             lidar, speed, data, img = self.grab_lidar_speed_data_and_image()
         else:
@@ -161,18 +165,19 @@ class TM2020InterfaceLidar(TM2020Interface):
                 float(data[TmrlDataPlugin.DIR_Y]),
                 float(data[TmrlDataPlugin.DIR_Z]),
             ),
-            speed=float(data[TmrlDataPlugin.SPEED_MPS]) * 3.6,
+            speed=float(data[TmrlDataPlugin.SPEED_MPS]) * MPS_TO_KMPH,
         )[:3]
 
         self.img_hist.append(lidar)
-        self.img_hist = self.img_hist[-self.img_hist_len :]
-        lidars = np.array(list(self.img_hist), dtype="float32")
+        hist_tail = list(self.img_hist)[-self.img_hist_len :]
+        self.img_hist = hist_tail
+        lidars = np.array(self.img_hist, dtype=np.float32)
 
         images = None
         if self._include_camera_images and img is not None:
             self.image_hist.append(img)
             self.image_hist = self.image_hist[-self.img_hist_len :]
-            images = np.array(list(self.image_hist), dtype="float32")
+            images = np.array(list(self.image_hist), dtype=np.float32)
 
         progress = self._progress_array() if self._include_progress else None
         obs = self._assemble_obs(speed, lidars, images, progress)
@@ -185,6 +190,7 @@ class TM2020InterfaceLidar(TM2020Interface):
         return obs, np.float32(rew), terminated, info
 
 
+@INTERFACES.register("lidar_progress")
 class TM2020InterfaceLidarProgress(TM2020InterfaceLidar):
     """LIDAR with race-progress scalar (no camera images).
 
@@ -199,6 +205,7 @@ class TM2020InterfaceLidarProgress(TM2020InterfaceLidar):
         super().__init__(include_progress=True, include_camera_images=False, **kwargs)
 
 
+@INTERFACES.register("lidar_progress_images")
 class TM2020InterfaceLidarProgressImages(TM2020InterfaceLidar):
     """LIDAR + progress + camera images from the same screenshot (fusion models).
 

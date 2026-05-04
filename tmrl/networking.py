@@ -15,7 +15,7 @@ import threading
 import time
 from collections.abc import Callable, Generator
 from os.path import exists
-from typing import Any
+from typing import Any, cast
 
 import gymnasium
 import numpy as np
@@ -104,12 +104,13 @@ def _start_relay_windows_tcp(
     def run_server():
         from twisted.internet import reactor
 
-        _orig_run = reactor.run
+        _reactor = cast(Any, reactor)
+        _orig_run = _reactor.run
 
         def run_without_signals(install_signal_handlers=0):
             return _orig_run(installSignalHandlers=install_signal_handlers)
 
-        reactor.run = run_without_signals
+        _reactor.run = run_without_signals
         try:
             server.run()
         except Exception as e:
@@ -152,7 +153,7 @@ class Buffer:
         self.stat_train_return = 0.0
         self.stat_test_return = 0.0
         self.stat_train_steps = 0
-        self.stat_test_steps = 0
+        self.stat_test_steps = 0.0
         self.stat_test_finish_time = 0.0
         self.stat_test_finished_track = False
         self.stat_test_finished_count = 0
@@ -302,10 +303,7 @@ class Server:
             f"TMRL server listening on port {port} (trainers + workers). "
             "Leave this process running."
         )
-        try:
-            config_path = str(cfg.CONFIG_FILE_PATH)
-        except AttributeError:
-            config_path = "(config path not available)"
+        config_path = str(cfg.LOCAL_OVERRIDE_PATH)
         print_with_timestamp(
             f"Config: {config_path} (ensure server, trainer, worker use this same config)."
         )
@@ -332,7 +330,8 @@ class Server:
             try:
                 from twisted.internet import reactor
 
-                reactor.callFromThread(reactor.stop)
+                _reactor = cast(Any, reactor)
+                _reactor.callFromThread(_reactor.stop)
             except Exception:
                 pass
             relay_thread_join_timeout = 5.0
@@ -527,6 +526,9 @@ def iterate_epochs(
             logger.info("=== specification ".ljust(70, "="))
             run_instance = run_cls()
             dump_run_instance_fn(run_instance, checkpoint_path)
+            from tmrl.config.run_artifacts import write_run_repro_bundle
+
+            write_run_repro_bundle(checkpoint_path)
             logger.info("")
         else:
             logger.info("Loading checkpoint...")
@@ -579,6 +581,7 @@ def run_with_wandb(
     logger.debug(f" run_cls: {run_cls}")
     config = partial_to_dict(run_cls)
     config["environ"] = log_environment_variables()
+    config["merged_config"] = cfg.merged_config_snapshot_redacted()
     hyperparams_dict = cfg.create_config()
     for key, value in hyperparams_dict.items():
         config[key] = value
@@ -597,6 +600,10 @@ def run_with_wandb(
                 resume=resume,
                 config=config,
                 job_type="trainer",
+            )
+            wandb.config.update(
+                {"tmrl_validated_main_config": cfg.main_config_snapshot_redacted()},
+                allow_val_change=True,
             )
             wandb_initialized = True
 
@@ -850,7 +857,7 @@ class RolloutWorker:
         self.debug_ts_cpt = 0
         self.debug_ts_res_cpt = 0
 
-        self.sde_sample_freq = int(cfg.ALG_CONFIG.get("SDE_SAMPLE_FREQ", 100))
+        self.sde_sample_freq = int(cfg.SDE_SAMPLE_FREQ)
         self.sde_step_counter = 0
 
         self.start_time = time.time()
@@ -1019,8 +1026,8 @@ class RolloutWorker:
         if self.buffer.memory and self.buffer.stat_train_steps > 0:
             last_info = self.buffer.memory[-1][5]
             if isinstance(last_info, dict) and last_info.get("end_of_track", False):
-                time_bonus_scale = float(cfg.REWARD_CONFIG.get("TIME_BONUS_SCALE", 0.0))
-                reward_scale = float(cfg.REWARD_CONFIG.get("REWARD_SCALE", 1.0))
+                time_bonus_scale = float(cfg.REWARD_CONFIG.get("time_bonus_scale", 0.0))
+                reward_scale = float(cfg.REWARD_CONFIG.get("reward_scale", 1.0))
                 if time_bonus_scale > 0 and reward_scale > 0:
                     self.buffer.apply_speed_bonus(time_bonus_scale * reward_scale)
 
@@ -1170,9 +1177,9 @@ class RolloutWorker:
             if terminated or truncated:
                 break
         self.buffer.stat_test_return = ret
-        self.buffer.stat_test_steps = steps
+        self.buffer.stat_test_steps = float(steps)
         if not train:
-            dt = float(cfg.ENV_CONFIG.get("RTGYM_CONFIG", {}).get("time_step_duration", 0.05))
+            dt = float(cfg.RTGYM_TIME_STEP_DURATION)
             end_of_track = saw_end_of_track or (
                 bool(info.get("end_of_track", False)) if isinstance(info, dict) else False
             )

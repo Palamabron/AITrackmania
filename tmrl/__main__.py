@@ -15,6 +15,7 @@ from loguru import logger
 
 import tmrl.config as cfg
 import tmrl.config.config_objects as cfg_obj
+from tmrl.config.loader import format_merged_config_yaml_readable
 from tmrl.envs import GenericGymEnv
 from tmrl.networking import RolloutWorker, Server, Trainer
 from tmrl.tools.check_environment import (
@@ -98,6 +99,12 @@ class TmrlCli:
 
     wsl_ip: bool = False
     """Print this machine's IP (for PUBLIC_IP_SERVER when worker runs on Windows)."""
+
+    print_config: bool = False
+    """Print fully merged redacted config and exit."""
+
+    explain_active_config: bool = False
+    """Print which model.* fields affect this algorithm+interface and which are ignored; exit."""
 
 
 def main(cli: TmrlCli) -> None:
@@ -186,8 +193,8 @@ def main(cli: TmrlCli) -> None:
     elif cli.record_reward:
         record_reward_dist(path_reward=cfg.REWARD_PATH)
     elif cli.check_env:
-        if cfg.PRAGMA_LIDAR:
-            if cfg.PRAGMA_TRACKMAP:
+        if cfg.USE_LIDAR_OBSERVATIONS:
+            if cfg.USE_TRACKMAP:
                 check_env_tm20_boundary()
             else:
                 check_env_tm20lidar()
@@ -221,7 +228,16 @@ def main(cli: TmrlCli) -> None:
             s.connect(("8.8.8.8", 80))
             ip = s.getsockname()[0]
         print(ip)
-        logger.info(f"Set PUBLIC_IP_SERVER to this in Windows TmrlData\\config\\config.json: {ip}")
+        logger.info(
+            f"Set distributed.public_ip_server in Windows TmrlData\\config\\local.yaml: {ip}"
+        )
+    elif cli.print_config:
+        print(format_merged_config_yaml_readable(cfg.merged_config_snapshot_redacted()), end="")
+    elif cli.explain_active_config:
+        import tmrl.config.loader as _loader
+        from tmrl.config.effective_config import explain_active_config_text
+
+        print(explain_active_config_text(_loader.MAIN_CONFIG), end="")
     else:
         raise ValueError(
             "No mode selected."
@@ -237,7 +253,9 @@ def main(cli: TmrlCli) -> None:
             " --record-episode, "
             " --import-player-runs, "
             " --check-environment, "
-            " --wsl-ip."
+            " --wsl-ip, "
+            " --print-config, "
+            " --explain-active-config."
         )
 
 

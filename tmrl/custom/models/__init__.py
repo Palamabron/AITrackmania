@@ -1,18 +1,43 @@
-"""TrackMania custom models: MLP, residual MLP, CNN, EfficientNet-based actor-critics.
+"""TrackMania models grouped by accepted input modality.
 
-This package contains various neural network architectures for reinforcement
-learning in TrackMania, including:
+Layout:
+- ``shared``: reusable blocks/constants (`mlp`, residual backbones, EffNet stems).
+- ``vector_input``: vector/lidar policies (MLP, residual MLP, GRU).
+- ``image_input``: image-first policies (vanilla CNN, EfficientNet, IMPALA-like).
+- ``hybrid_input``: mixed track+physics(+image) pipelines (Sophy family).
+- ``discrete_actions``: IQN/discrete Q networks.
 
-- MLP-based actor-critics (standard SAC)
-- Residual MLP actor-critics (improved gradient flow)
-- EfficientNet-based models (frozen/trainable image encoders)
-- Vanilla CNN models (lightweight image processing)
-- RNN models (sequential decision making)
-- GNN+EffNet+Sophy hybrid models (state-of-the-art architecture)
+The package still re-exports common public classes for
+`from tmrl.custom.models import ...`.
 """
 
-# Base utilities
-from tmrl.custom.models.base import (
+from tmrl.custom.models.hybrid_input.gnn_effnet_sophy import (
+    GnnEffNetSophyResidualActorCritic,
+    QRCNNGnnEffNetSophyResidual,
+    SquashedActorGnnEffNetSophyResidual,
+    _build_track_gnn_branch,
+    _obs_to_flat_tensor,
+    _TrackGNN,
+)
+from tmrl.custom.models.image_input.efficientnet import (
+    EffNetActorCritic,
+    EffNetQFunction,
+    FrozenEffNetResidualActorCritic,
+    FrozenEffNetResidualQFunction,
+    SquashedGaussianEffNetActor,
+    SquashedGaussianFrozenEffNetResidualActor,
+)
+from tmrl.custom.models.image_input.vanilla_cnn_sac import (
+    SquashedGaussianVanillaCNNActor,
+    SquashedGaussianVanillaColorCNNActor,
+    VanillaCNN,
+    VanillaCNNActorCritic,
+    VanillaCNNQFunction,
+    VanillaColorCNNActorCritic,
+    VanillaColorCNNQFunction,
+    remove_colors,
+)
+from tmrl.custom.models.shared.base import (
     EPSILON,
     LOG_STD_MAX,
     LOG_STD_MIN,
@@ -40,66 +65,27 @@ from tmrl.custom.models.base import (
     mlp,
     num_flat_features,
 )
-
-# CNN models
-from tmrl.custom.models.cnn import (
-    SquashedGaussianVanillaCNNActor,
-    SquashedGaussianVanillaColorCNNActor,
-    VanillaCNN,
-    VanillaCNNActorCritic,
-    VanillaCNNQFunction,
-    VanillaColorCNNActorCritic,
-    VanillaColorCNNQFunction,
-    remove_colors,
+from tmrl.custom.models.vector_input.sac_gru_actor_critic import (
+    RNNActorCritic,
+    RNNQFunction,
+    SquashedGaussianRNNActor,
+    build_stacked_gru,
 )
-
-# EfficientNet models
-from tmrl.custom.models.efficientnet import (
-    EffNetActorCritic,
-    EffNetQFunction,
-    FrozenEffNetResidualActorCritic,
-    FrozenEffNetResidualQFunction,
-    SquashedGaussianEffNetActor,
-    SquashedGaussianFrozenEffNetResidualActor,
-)
-
-# GNN+EffNet+Sophy hybrid models
-from tmrl.custom.models.gnn_effnet_sophy import (
-    GnnEffNetSophyResidualActorCritic,
-    QRCNNGnnEffNetSophyResidual,
-    SquashedActorGnnEffNetSophyResidual,
-    _build_track_gnn_branch,
-    _obs_to_flat_tensor,
-    _TrackGNN,
-)
-
-# MLP models
-from tmrl.custom.models.mlp import (
+from tmrl.custom.models.vector_input.sac_mlp_actor_critic import (
     MLPActorCritic,
     MLPQFunction,
     REDQMLPActorCritic,
     SquashedGaussianMLPActor,
 )
-
-# Residual MLP models
-from tmrl.custom.models.residual import (
+from tmrl.custom.models.vector_input.sac_residual_mlp_actor_critic import (
     REDQResidualMLPActorCritic,
     ResidualMLPActorCritic,
     ResidualMLPQFunction,
     SquashedGaussianResidualMLPActor,
 )
 
-# RNN models
-from tmrl.custom.models.rnn import (
-    RNNActorCritic,
-    RNNQFunction,
-    SquashedGaussianRNNActor,
-    rnn,
-)
-
 __all__ = [
     "EPSILON",
-    # Constants
     "LOG_STD_MAX",
     "LOG_STD_MIN",
     "EffNetActorCritic",
@@ -119,26 +105,20 @@ __all__ = [
     "ResidualMLPActorCritic",
     "ResidualMLPQFunction",
     "SELayer",
-    # Base utilities
     "SiLU",
     "SquashedActorGnnEffNetSophyResidual",
     "SquashedGaussianEffNetActor",
-    # EfficientNet
     "SquashedGaussianFrozenEffNetResidualActor",
-    # MLP
     "SquashedGaussianMLPActor",
     "SquashedGaussianRNNActor",
-    # Residual MLP
     "SquashedGaussianResidualMLPActor",
     "SquashedGaussianVanillaCNNActor",
     "SquashedGaussianVanillaColorCNNActor",
-    # CNN
     "VanillaCNN",
     "VanillaCNNActorCritic",
     "VanillaCNNQFunction",
     "VanillaColorCNNActorCritic",
     "VanillaColorCNNQFunction",
-    # GNN+EffNet+Sophy
     "_TrackGNN",
     "_build_track_gnn_branch",
     "_cat_obs",
@@ -149,6 +129,7 @@ __all__ = [
     "_obs_spaces_list",
     "_obs_to_flat_tensor",
     "_vector_dim_except",
+    "build_stacked_gru",
     "combined_shape",
     "conv2d_out_dims",
     "conv_1x1_bn",
@@ -162,6 +143,4 @@ __all__ = [
     "mlp",
     "num_flat_features",
     "remove_colors",
-    # RNN
-    "rnn",
 ]

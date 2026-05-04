@@ -2,7 +2,7 @@ import gymnasium as gym
 import numpy as np
 import tmrl.config as cfg
 import torch
-from tmrl.custom.models.Sophy import AsymmetricSophyResidualActorCritic
+from tmrl.custom.models.hybrid_input.sophy import AsymmetricSophyResidualActorCritic
 
 
 def test_asymmetric_actor_critic():
@@ -58,7 +58,7 @@ def test_asymmetric_actor_critic():
     assert q1_out.shape[0] == batch_size
     assert q2_out.shape[0] == batch_size
     if q1_out.ndim == 2:
-        assert q1_out.shape[1] == cfg.ALG_CONFIG["QUANTILES_NUMBER"]
+        assert q1_out.shape[1] == cfg.QUANTILES_NUMBER
 
     # Test gradients
     print("Testing Gradient Isolation...")

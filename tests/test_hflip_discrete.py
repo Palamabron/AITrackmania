@@ -1,11 +1,21 @@
 """Tests for horizontal flip augmentation with discrete actions."""
 
 import numpy as np
+import pytest
 from tmrl.custom.memories import (
     _hflip_action,
     _hflip_discrete_action,
     _is_discrete_action,
 )
+from tmrl.custom.memories.utils import _set_discrete_steer_bins, configure_discrete_steer_bins
+
+
+@pytest.fixture(autouse=True)
+def _configure_discrete_steer_bins_fixture():
+    """Hflip helpers require an explicit steer-bin count; configure 13 steer bins."""
+    configure_discrete_steer_bins(13)
+    yield
+    _set_discrete_steer_bins(None)
 
 
 class TestIsDiscreteAction:

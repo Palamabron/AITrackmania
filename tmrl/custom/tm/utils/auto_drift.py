@@ -45,11 +45,11 @@ def compute_drift_steer(speed_kmh: float) -> float:
     return float(np.clip(raw, 0.0, 1.0))
 
 
-def build_yosh_action_table_with_drift(
+def build_brake_tap_action_table_with_drift(
     n_steer: int = 13,
     n_gas: int = 2,
 ) -> tuple[int, list[np.ndarray], int]:
-    """Build the 78 + 6 action table: normal Yosh actions + auto-drift actions.
+    """Build the 78 + 6 action table: composite discrete actions + auto-drift actions.
 
     Auto-drift actions have steer=NaN as a sentinel. The interface detects
     NaN steering and replaces it with compute_drift_steer(speed) at runtime.
@@ -64,10 +64,10 @@ def build_yosh_action_table_with_drift(
     """
     from tmrl.custom.tm.utils.discrete_control import (
         BRAKE_TAP_SENTINEL,
-        build_yosh_action_table,
+        build_brake_tap_action_table,
     )
 
-    base_n, base_table = build_yosh_action_table(n_steer=n_steer, n_gas=n_gas)
+    base_n, base_table = build_brake_tap_action_table(n_steer=n_steer, n_gas=n_gas)
 
     brake_values = [0.0, 1.0, BRAKE_TAP_SENTINEL]
     auto_drift_start = base_n
