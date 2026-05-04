@@ -148,6 +148,8 @@ ignore = [
     "N999",  # allow PascalCase module names (e.g. tmrl/custom/models/Sophy.py)
     "N812",  # allow F for torch.nn.functional (PyTorch convention)
 ]
+# RUF022 (__all__ sort) defaults to "unsafe"; allow it under `ruff check --fix` / `make fmt`.
+extend-safe-fixes = ["RUF022"]
 
 [tool.ruff.lint.isort]
 # The repo root contains a local ``wandb/`` directory of run outputs, which isort
