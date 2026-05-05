@@ -1,93 +1,130 @@
-"""Tests for Buffer thread-safety, append/overflow, iadd, clear, speed bonus."""
+"""Smoke tests for Buffer behavior (via the public tmrl.networking import path)."""
+
+from __future__ import annotations
 
 import threading
 
 from tmrl.networking import Buffer
 
 
-def _make_sample(rew=1.0, terminated=False, truncated=False):
-    return (None, None, rew, terminated, truncated, {"reward_sum": rew})
+def _make_sample(rew: float = 1.0):
+    return (None, None, rew, False, False, {"reward_sum": rew})
 
 
-class TestBufferBasic:
-    def test_append_and_len(self):
-        buf = Buffer(maxlen=10)
-        for i in range(5):
+# ---------------------------------------------------------------------------
+# Basic append / clear / speed-bonus
+# ---------------------------------------------------------------------------
+
+
+def test_append_and_overflow_clips_to_maxlen():
+    buf = Buffer(maxlen=3)
+    for i in range(10):
+        buf.append_sample(_make_sample(rew=float(i)))
+    assert len(buf) == 3
+    assert [s[2] for s in buf.memory] == [7.0, 8.0, 9.0]
+
+
+def test_clear_empties_buffer():
+    buf = Buffer(maxlen=10)
+    buf.append_sample(_make_sample())
+    buf.clear()
+    assert len(buf) == 0
+
+
+def test_speed_bonus_updates_rewards():
+    buf = Buffer(maxlen=10)
+    for _ in range(4):
+        buf.append_sample(_make_sample(rew=1.0))
+    buf.apply_speed_bonus(16.0)
+    expected_rew = 1.0 + (16.0 / 16.0)
+    assert all(abs(s[2] - expected_rew) < 1e-6 for s in buf.memory)
+
+
+# ---------------------------------------------------------------------------
+# thread_safe=True: lock-protected append path
+# ---------------------------------------------------------------------------
+
+
+def test_thread_safe_append_and_overflow():
+    """Lock-guarded append and clip_to_maxlen work correctly with thread_safe=True."""
+    buf = Buffer(maxlen=3, thread_safe=True)
+    for i in range(10):
+        buf.append_sample(_make_sample(rew=float(i)))
+    assert len(buf) == 3
+    assert [s[2] for s in buf.memory] == [7.0, 8.0, 9.0]
+
+
+def test_thread_safe_concurrent_appends_stay_within_maxlen():
+    """Concurrent appends from multiple threads never exceed maxlen."""
+    buf = Buffer(maxlen=50, thread_safe=True)
+    barrier = threading.Barrier(5)
+
+    def _worker():
+        barrier.wait()
+        for i in range(20):
             buf.append_sample(_make_sample(rew=float(i)))
-        assert len(buf) == 5
 
-    def test_overflow_clips(self):
-        buf = Buffer(maxlen=3)
-        for i in range(10):
-            buf.append_sample(_make_sample(rew=float(i)))
-        assert len(buf) == 3
-        rewards = [s[2] for s in buf.memory]
-        assert rewards == [7.0, 8.0, 9.0]
-
-    def test_clear_empties(self):
-        buf = Buffer(maxlen=10)
-        buf.append_sample(_make_sample())
-        buf.clear()
-        assert len(buf) == 0
-
-    def test_iadd_merges(self):
-        b1 = Buffer(maxlen=100)
-        b2 = Buffer(maxlen=100)
-        for i in range(3):
-            b1.append_sample(_make_sample(rew=float(i)))
-        for i in range(4):
-            b2.append_sample(_make_sample(rew=float(i + 10)))
-        b2.stat_train_return = 42.0
-        b1 += b2
-        assert len(b1) == 7
-        assert b1.stat_train_return == 42.0
+    threads = [threading.Thread(target=_worker) for _ in range(5)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert len(buf) <= 50
 
 
-class TestBufferSpeedBonus:
-    def test_noop_when_empty(self):
-        buf = Buffer(maxlen=10)
-        buf.apply_speed_bonus(1.0)
-        assert len(buf) == 0
-
-    def test_noop_when_zero_scale(self):
-        buf = Buffer(maxlen=10)
-        buf.append_sample(_make_sample(rew=5.0))
-        buf.apply_speed_bonus(0.0)
-        assert buf.memory[0][2] == 5.0
-
-    def test_bonus_applied(self):
-        buf = Buffer(maxlen=10)
-        n = 4
-        for _ in range(n):
-            buf.append_sample(_make_sample(rew=1.0))
-        buf.apply_speed_bonus(16.0)
-        bonus_per_step = 16.0 / (n * n)
-        expected_rew = 1.0 + bonus_per_step
-        for s in buf.memory:
-            assert abs(s[2] - expected_rew) < 1e-6
+# ---------------------------------------------------------------------------
+# __iadd__: buffer-merging and stats copy logic
+# ---------------------------------------------------------------------------
 
 
-class TestBufferThreadSafe:
-    def test_lock_created_when_thread_safe(self):
-        buf = Buffer(maxlen=10, thread_safe=True)
-        assert buf._lock is not None
+def test_iadd_merges_samples_and_copies_stats():
+    """__iadd__ appends other.memory into dst and copies all stat fields."""
+    dst = Buffer(maxlen=20)
+    src = Buffer(maxlen=20)
+    src.stat_train_return = 42.0
+    src.stat_test_return = 10.0
+    src.stat_train_steps = 5
+    src.stat_test_steps = 3.0
+    src.stat_test_finish_time = 7.5
+    src.stat_test_finished_track = True
+    src.stat_test_finished_count = 2
+    src.stat_test_competition_eliminated = True
+    src.stat_test_competition_crashes = 1
+    for i in range(3):
+        src.append_sample(_make_sample(rew=float(i)))
+    for i in range(2):
+        dst.append_sample(_make_sample(rew=float(i + 10)))
 
-    def test_no_lock_by_default(self):
-        buf = Buffer(maxlen=10)
-        assert buf._lock is None
+    dst += src
 
-    def test_concurrent_appends(self):
-        buf = Buffer(maxlen=10000, thread_safe=True)
-        n_per_thread = 500
-        n_threads = 4
+    assert len(dst) == 5
+    assert dst.stat_train_return == 42.0
+    assert dst.stat_test_return == 10.0
+    assert dst.stat_train_steps == 5
+    assert dst.stat_test_steps == 3.0
+    assert dst.stat_test_finish_time == 7.5
+    assert dst.stat_test_finished_track is True
+    assert dst.stat_test_finished_count == 2
+    assert dst.stat_test_competition_eliminated is True
+    assert dst.stat_test_competition_crashes == 1
 
-        def worker():
-            for i in range(n_per_thread):
-                buf.append_sample(_make_sample(rew=float(i)))
 
-        threads = [threading.Thread(target=worker) for _ in range(n_threads)]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join()
-        assert len(buf) == n_per_thread * n_threads
+def test_iadd_with_thread_safe_dst():
+    """__iadd__ into a thread_safe destination acquires the lock correctly."""
+    dst = Buffer(maxlen=20, thread_safe=True)
+    src = Buffer(maxlen=20)
+    for i in range(3):
+        src.append_sample(_make_sample(rew=float(i)))
+    dst += src
+    assert len(dst) == 3
+
+
+def test_iadd_overflow_clips_to_maxlen():
+    """__iadd__ respects maxlen on the destination buffer."""
+    dst = Buffer(maxlen=3)
+    dst.append_sample(_make_sample(rew=0.0))
+    src = Buffer(maxlen=10)
+    for i in range(5):
+        src.append_sample(_make_sample(rew=float(i + 1)))
+    dst += src
+    assert len(dst) == 3

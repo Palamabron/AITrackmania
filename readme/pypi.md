@@ -14,3 +14,5 @@
 `tmrl` comes with a readily implemented pipeline for the TrackMania 2020 video game.
 
 Find all information on our [GitHub page](https://github.com/trackmania-rl/tmrl).
+
+Configure experiments with **`~/TmrlData/config/local.yaml`** merged on top of bundled Hydra defaults. Release history: [CHANGELOG](https://github.com/trackmania-rl/tmrl/blob/master/CHANGELOG.md).

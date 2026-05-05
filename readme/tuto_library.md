@@ -65,7 +65,7 @@ We use this method a lot in `tmrl`, it enables partially initializing the kwargs
 Import this method into your script:
 
 ```python
-from custom_tmrl.util import partial
+from tmrl.util import partial
 ```
 
 The method can then be used as:
@@ -84,16 +84,18 @@ my_object = my_partially_instantiated_class(missing_kwargs)
 ```
 
 ### Constants
-In case you need them, you can access the constants defined in the `config.json` file via the [config_constants](https://github.com/trackmania-rl/tmrl/blob/master/tmrl/config/config_constants.py) module.
-This module can be imported into your script as follows:
+Runtime scalars and canonical paths are exposed from the top-level config package [`tmrl.config`](https://github.com/trackmania-rl/tmrl/blob/master/tmrl/config/__init__.py), which merges [`tmrl.config.constants`](https://github.com/trackmania-rl/tmrl/blob/master/tmrl/config/constants.py) with path helpers such as [`tmrl.config.paths`](https://github.com/trackmania-rl/tmrl/blob/master/tmrl/config/paths.py). The typed tree is `tmrl.config.loader.MAIN_CONFIG`; user overrides live in **`~/TmrlData/config/local.yaml`**.
+
+Import as follows:
 
 ```python
-import custom_tmrl.config.config_constants as cfg
+import tmrl.config as cfg
 ```
-You can then use the constants in your script, e.g.:
+You can then use constants and paths in your script, e.g.:
 
 ```python
 print(f"Run name: {cfg.RUN_NAME}")
+print(f"Weights dir: {cfg.WEIGHTS_FOLDER}")
 ```
 
 _(NB: read the code for finding available constants)_
@@ -147,12 +149,12 @@ _(NB: the `Server` does not know this, it listens to any incoming connection)_.
 Instantiating a `Server` object is straightforward:
 
 ```python
-from custom_tmrl.networking import Server
+from tmrl.networking import Server
 
 # tmrl Server
 
 # (NB: When you omit arguments,
-# tmrl retrieves the default in your config.json file.
+# tmrl retrieves defaults from validated Hydra YAML + ~/TmrlData/config/local.yaml.
 # Read the documentation of each class for more info.)
 
 my_server = Server(security=security,
@@ -290,7 +292,7 @@ One to several `RolloutWorkers` can coexist in `tmrl`, each one typically encaps
 The prototype of the `RolloutWorker` class is:
 
 ```python
-import custom_tmrl.config.config_constants as cfg  # constants from the config.json file
+import tmrl.config as cfg  # scalars + paths from MainConfig (+ local.yaml)
 
 
 class RolloutWorker:
@@ -328,9 +330,9 @@ Furthermore, this Gymnasium environment needs to be wrapped in the `GenericGymEn
 With our dummy drone environment, this translates to:
 
 ```python
-from custom_tmrl.util import partial
-from custom_tmrl.envs import GenericGymEnv
-import custom_tmrl.config.config_constants as cfg
+from tmrl.util import partial
+from tmrl.envs import GenericGymEnv
+import tmrl.config as cfg
 
 # cfg.RTGYM_VERSION is "real-time-gym-v1" on Windows, "real-time-gym-ts-v1" on Linux
 env_cls = partial(GenericGymEnv, id=cfg.RTGYM_VERSION, gym_kwargs={"config": my_config})
@@ -377,8 +379,8 @@ Let us implement this module for our dummy drone environment.
 Here, we basically copy-paste the implementation of the SAC MLP actor from [OpenAI Spinup](https://github.com/openai/spinningup/blob/038665d62d569055401d91856abb287263096178/spinup/algos/pytorch/sac/core.py#L29) and adapt it to the `TorchActorModule` interface:
 
 ```python
-from custom_tmrl.actor import TorchActorModule
-from custom_tmrl.util import prod
+from tmrl.actor import TorchActorModule
+from tmrl.util import prod
 import torch
 import torch.nn.functional as F
 
@@ -533,11 +535,11 @@ Furthermore, if weights are already present at this path, they will be loaded on
 `model_path_history` refers to the path where the `RolloutWorker` will locally save a history of its weights during training if you set `model_history > 0`.
 
 **CAUTION:** `model_path` and `model_path_history` are weird and will probably change in future versions.
-At the moment, we recommend not setting these parameters and changing the value of the `"RUN_NAME"` entry in the `config.json` file instead (weights will then be saved and loaded from the `weights` folder).
-However, if you do not want to modify the `config.json` file, you can use these kwargs as follows:
+At the moment, we recommend not setting these parameters and changing **`run.name`** in **`~/TmrlData/config/local.yaml`** instead (weights will then be saved and loaded from the `weights` folder).
+However, if you do not want to modify `local.yaml`, you can use these kwargs as follows:
 
 ```python
-import custom_tmrl.config.config_constants as cfg
+import tmrl.config as cfg
 
 my_run_name = "tutorial"
 weights_folder = cfg.WEIGHTS_FOLDER  # path to the weights folder
@@ -574,7 +576,7 @@ We will see how to use it at the end of this tutorial, you can ignore it for now
 Now we can instantiate a `RolloutWorker`:
 
 ```python
-from custom_tmrl.networking import RolloutWorker
+from tmrl.networking import RolloutWorker
 
 my_worker = RolloutWorker(
     env_cls=env_cls,
@@ -643,8 +645,8 @@ The decompressed samples are then used by the `TrainingAgent` object to optimize
 The prototype of the `Trainer` class is:
 
 ```python
-import custom_tmrl.config.config_constants as cfg
-import custom_tmrl.config.config_objects as cfg_obj
+import tmrl.config as cfg
+import tmrl.config.config_objects as cfg_obj
 
 
 class Trainer:
@@ -668,16 +670,16 @@ The `server_port` and the `password` are still valid for our `Trainer`.
 `model_path` is similar to the one of the `RolloutWorker`.
 The trainer will keep a local copy of its model that acts as a saving file.
 
-`checkpoints_path` is similar, but this will save the entire `training_cls` instance (including the `Memory`).
+`checkpoint_path` is similar, but this will save the entire `training_cls` instance (including the `Memory`).
 If set to `None`, training will not be checkpointed.
 
-You could leave both paths to their default value and simply change the value of the `"RUN_NAME"` entry in `config.json` instead.
-But again, if you do not wish to use `"config.json"`, you can set these arguments as follows:
+You could leave both paths to their default value and simply change **`run.name`** in `~/TmrlData/config/local.yaml` instead.
+But again, if you do not wish to use `local.yaml`, you can set these arguments as follows:
 
 **CAUTION: do not set the exact same path as the one of the `RolloutWorker` when running on the same machine** (here, we use _t to differentiate both).
 
 ```python
-import custom_tmrl.config.config_constants as cfg
+import tmrl.config as cfg
 
 weights_folder = cfg.WEIGHTS_FOLDER  # path to the weights folder
 checkpoints_folder = cfg.CHECKPOINTS_FOLDER
@@ -731,9 +733,9 @@ _(Note: be careful when pairing `max_training_steps_per_env_step` with a similar
 `env_cls`: Most of the time, the dummy environment class that you need to pass here is the same class as for the `RolloutWorker` Gymnasium environment:
 
 ```python
-from custom_tmrl.util import partial
-from custom_tmrl.envs import GenericGymEnv
-import custom_tmrl.config.config_constants as cfg
+from tmrl.util import partial
+from tmrl.envs import GenericGymEnv
+import tmrl.config as cfg
 
 env_cls = partial(GenericGymEnv, id=cfg.RTGYM_VERSION, gym_kwargs={"config": my_config})
 ```
@@ -1116,9 +1118,9 @@ Our custom `TrainingAgent` subclass must take the aforementioned args/kwargs, an
 Again, here, we simply adapt the SAC implementation from Spinup, but of course you can implement whatever you want instead:
 
 ```python
-from custom_tmrl.training import TrainingAgent
-from custom_tmrl.custom.utils.nn import copy_shared, no_grad
-from custom_tmrl.util import cached_property
+from tmrl.training import TrainingAgent
+from tmrl.custom.utils.nn import copy_shared, no_grad
+from tmrl.util import cached_property
 from torch.optim import Adam
 from copy import deepcopy
 import itertools
@@ -1308,7 +1310,7 @@ In particular, `profiling` enables profiling training (but this doesn't work wel
 We finally have our training class:
 
 ```python
-from custom_tmrl.training_offline import TorchTrainingOffline
+from tmrl.training_offline import TorchTrainingOffline
 
 training_cls = partial(
     TorchTrainingOffline,
@@ -1330,7 +1332,7 @@ training_cls = partial(
 We can now instantiate our `Trainer`.
 
 ```python
-from custom_tmrl.networking import Trainer
+from tmrl.networking import Trainer
 
 my_trainer = Trainer(
     training_cls=training_cls,

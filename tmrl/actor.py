@@ -193,7 +193,8 @@ class TorchActorModule(ActorModule, torch.nn.Module, ABC):
                 )
                 logger.warning(
                     "Ignoring incompatible weights from server (shape mismatch). PyTorch:\n{}. "
-                    "Trainer and worker must use the same code and TmrlData config.json. "
+                    "Trainer and worker must use the same code and TMRL experiment config "
+                    "(Hydra defaults + ~/TmrlData/config/local.yaml). "
                     "If the error names q_net.backbone.physics_proj: with TRACK_CURVATURE_OBS, "
                     "a 1-row weight mismatch usually means POINTS_NUMBER differs by 1 (track + "
                     "curvature tail). Use the same reward_<MAP>.pkl on both hosts; observation "

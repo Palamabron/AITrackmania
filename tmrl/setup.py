@@ -11,7 +11,9 @@ from setuptools import find_packages, setup
 
 import config as cfg
 
-RESOURCES_URL = "https://github.com/trackmania-rl/tmrl/releases/download/v0.4.2/resources.zip"
+# Legacy ``setup.py`` path; prefer ``pyproject.toml`` / ``pip install tmrl``. Keep URL in sync
+# with ``tmrl.tools.init_package.resources_bundle._FALLBACK_TAG`` if this block still runs.
+RESOURCES_URL = "https://github.com/trackmania-rl/tmrl/releases/download/v0.6.0/resources.zip"
 
 
 def url_retrieve(url: str, outfile: Path, overwrite: bool = False):

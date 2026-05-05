@@ -7,25 +7,34 @@ import torch
 
 import tmrl.config.config_objects as cfg_obj
 
-_IS_IQN = getattr(cfg_obj, "ALG_NAME", "") == "IQN"
 
-# Keys that must be present for wandb round-level logging (same as networking.run_with_wandb).
-if _IS_IQN:
-    _WANDB_ROUND_KEYS: tuple[str, ...] = (
-        "loss/iqn_loss",
-        "metrics/return_test",
-        "metrics/return_train",
-        "metrics/episode_length_test",
-        "metrics/episode_length_train",
-        "eval/return_deterministic",
-        "eval/episode_length_deterministic",
-        "eval/finish_time_test_s",
-        "eval/finished_track_count_test",
-        "eval/competition_eliminated",
-        "eval/competition_crashes",
-    )
-else:
-    _WANDB_ROUND_KEYS = (
+def _is_iqn_algorithm() -> bool:
+    """Return True when ``MainConfig`` selects IQN.
+
+    Must not be evaluated at `_stats_utils` import time: `config_objects` imports
+    ``TorchTrainingOffline`` before assigning ``ALG_NAME``, so a module-level constant
+    would always see an empty algorithm name during that cycle.
+    """
+    return getattr(cfg_obj, "ALG_NAME", "") == "IQN"
+
+
+def _wandb_round_keys() -> tuple[str, ...]:
+    """Keys required for wandb round-level logging (mirrors networking.run_with_wandb)."""
+    if _is_iqn_algorithm():
+        return (
+            "loss/iqn_loss",
+            "metrics/return_test",
+            "metrics/return_train",
+            "metrics/episode_length_test",
+            "metrics/episode_length_train",
+            "eval/return_deterministic",
+            "eval/episode_length_deterministic",
+            "eval/finish_time_test_s",
+            "eval/finished_track_count_test",
+            "eval/competition_eliminated",
+            "eval/competition_crashes",
+        )
+    return (
         "losses/actor",
         "losses/critic",
         "metrics/return_test",
@@ -44,7 +53,7 @@ else:
 def _round_stat_to_wandb_log_dict(round_series) -> dict[str, Any]:
     """Build a sanitized dict from a round stat Series for wandb.log (mirrors networking)."""
     log_dict = round_series.to_dict() if hasattr(round_series, "to_dict") else dict(round_series)
-    if _IS_IQN:
+    if _is_iqn_algorithm():
         # IQN does not optimize actor/critic losses; avoid polluting wandb with NaNs.
         log_dict.pop("losses/actor", None)
         log_dict.pop("losses/critic", None)
@@ -74,7 +83,7 @@ def _round_stat_to_wandb_log_dict(round_series) -> dict[str, Any]:
                     else None
                 )
             )
-    for key in _WANDB_ROUND_KEYS:
+    for key in _wandb_round_keys():
         if key not in log_dict or log_dict[key] is None:
             log_dict[key] = float("nan") if key.startswith("losses/") else 0.0
     return log_dict

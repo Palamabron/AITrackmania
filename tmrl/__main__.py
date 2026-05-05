@@ -245,7 +245,7 @@ def main(cli: TmrlCli) -> None:
         print(format_merged_config_yaml_readable(cfg.merged_config_snapshot_redacted()), end="")
     elif cli.explain_active_config:
         import tmrl.config.loader as _loader
-        from tmrl.config.effective_config import explain_active_config_text
+        from tmrl.config.active_config_explainer import explain_active_config_text
 
         print(explain_active_config_text(_loader.MAIN_CONFIG), end="")
     else:

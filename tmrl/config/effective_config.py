@@ -1,6 +1,25 @@
-"""Which ``model.*`` fields actually affect the current (algorithm, interface) routing.
+"""Explain which ``model.*`` keys are effective for the current runtime route.
 
-Single place to update when changing branches in ``config_objects._train_model_and_policy``.
+Legacy module path kept for backward compatibility.
+Prefer importing from ``tmrl.config.active_config_explainer`` in new code.
+
+This module is the explainability layer for the config runtime selection logic:
+
+- It mirrors the algorithm + interface routing used in
+  ``tmrl.config.config_objects._train_model_and_policy`` via :func:`model_policy_route`.
+- It exposes the subset of ``model`` fields that are actually read on that route
+  via :func:`active_model_field_names`.
+- It generates a human-readable report for ``python -m tmrl --explain-active-config``
+  via :func:`explain_active_config_text`.
+
+Why this file exists:
+Hydra/Pydantic configs often include knobs that are valid globally but ignored for
+a specific algorithm+interface path. This module prevents confusion by showing which
+fields are active right now and why others are ignored.
+
+Maintenance contract:
+Whenever routing branches change in ``config_objects._train_model_and_policy``, keep
+``model_policy_route`` and ``ROUTE_ACTIVE_MODEL_FIELDS`` in sync.
 """
 
 from __future__ import annotations
@@ -18,7 +37,12 @@ from tmrl.config.schema.main import MainConfig
 
 @dataclass(frozen=True)
 class InterfaceContext:
-    """Subset of ``constants.py`` interface flags derived only from ``EnvironmentConfig``."""
+    """Normalized interface flags derived from ``EnvironmentConfig`` only.
+
+    This mirrors the interface booleans from ``tmrl.config.constants`` but avoids
+    importing runtime constants directly, so route resolution stays deterministic from
+    ``MainConfig`` input alone.
+    """
 
     lidar_geometry_interface: bool
     lidar_includes_images: bool
@@ -30,7 +54,7 @@ class InterfaceContext:
 
 
 def build_interface_context(env: EnvironmentConfig) -> InterfaceContext:
-    """Mirror ``tmrl.config.constants`` boundary-lidar detection (no import of ``constants``)."""
+    """Build route-relevant interface flags from ``environment`` configuration."""
     rt = str(env.rtgym_interface).upper()
     lidar_images = rtgym_discrete_boundary_lidar_images(rt)
     lidar_geom = rtgym_discrete_boundary_lidar_family(rt)
@@ -62,11 +86,11 @@ _SUPPORTED_ADVANCED_ALGORITHMS = frozenset({"TQC", "SAC", "IQN", "SDSAC"})
 
 
 def model_policy_route(m: MainConfig) -> str:
-    """Stable route id mirroring ``config_objects._train_model_and_policy`` + final SAC branch.
+    """Return the stable route id selected by current algorithm + interface + model flags.
 
     When you add a branch there, add a route name here and map it in ``ROUTE_ACTIVE_MODEL_FIELDS``.
-    Returns ``"unsupported"`` for algorithm+interface pairs that have no runtime branch
-    so that ``--explain-active-config`` can report the problem instead of crashing.
+    Returns ``"unsupported"`` for algorithm+interface combinations with no runtime branch
+    so ``--explain-active-config`` can report a useful warning instead of crashing.
     """
     alg = m.algorithm.name
     arch = m.model
@@ -226,7 +250,7 @@ ROUTE_ACTIVE_MODEL_FIELDS: dict[str, frozenset[str]] = {
 
 
 def active_model_field_names(m: MainConfig) -> frozenset[str]:
-    """Field names under ``model`` that are meaningful for the resolved policy route."""
+    """Return ``model`` field names that influence the resolved route for this run."""
     route = model_policy_route(m)
     if route in _FULL_MODEL_ROUTES:
         return _all_model_field_names(m)
@@ -234,7 +258,7 @@ def active_model_field_names(m: MainConfig) -> frozenset[str]:
 
 
 def inactive_model_fields_report(m: MainConfig) -> list[tuple[str, Any, str]]:
-    """``(field_name, value, hint)`` for model fields not active on this route."""
+    """Return ``(field_name, value, hint)`` rows for route-inactive ``model`` keys."""
     active = active_model_field_names(m)
     data = m.model.model_dump()
     rows: list[tuple[str, Any, str]] = []
@@ -253,7 +277,7 @@ def inactive_model_fields_report(m: MainConfig) -> list[tuple[str, Any, str]]:
 
 
 def explain_active_config_text(m: MainConfig) -> str:
-    """Human-readable report for CLI."""
+    """Build the CLI report used by ``--explain-active-config``."""
     route = model_policy_route(m)
     lines = [
         f"policy_route: {route}",

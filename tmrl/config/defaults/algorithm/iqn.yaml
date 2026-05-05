@@ -10,7 +10,6 @@ algorithm:
   mixed_precision_dtype: bfloat16
   n_steps: 3
   gamma: 0.99
-  # IQN-specific parameters (removed unused SAC parameters)
   iqn_lr: 1.0e-4
   iqn_epsilon_schedule_mode: linear
   iqn_epsilon_start: 1.0
@@ -26,7 +25,7 @@ algorithm:
   iqn_n_cos: 64
   iqn_dueling: true
   iqn_double_dqn: true
-  iqn_grad_clip: 10.0
+  iqn_grad_clip: 500.0
   iqn_sort_quantiles: false
   iqn_monotonicity_regularization: false
   iqn_monotonicity_lambda: 0.01

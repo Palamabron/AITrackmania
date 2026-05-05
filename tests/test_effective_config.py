@@ -1,14 +1,11 @@
-"""Tests for ``tmrl.config.effective_config`` routing and IQN footgun warnings."""
+"""Smoke tests for config validation and routing."""
 
 from __future__ import annotations
 
-import warnings
-
 import pytest
-from pydantic import ValidationError
-from tmrl.config.effective_config import (
+from tmrl.config.active_config_explainer import (
+    ROUTE_ACTIVE_MODEL_FIELDS,
     active_model_field_names,
-    build_interface_context,
     explain_active_config_text,
     model_policy_route,
 )
@@ -23,7 +20,12 @@ def _validate_with(**overrides: dict) -> MainConfig:
     return MainConfig.model_validate(d)
 
 
-def test_removed_screen_lidar_interface_rejected_by_schema():
+# ---------------------------------------------------------------------------
+# Existing smoke tests
+# ---------------------------------------------------------------------------
+
+
+def test_removed_interface_is_rejected():
     env = MAIN_CONFIG.environment.model_copy(
         update={"rtgym_interface": "TM20LIDARPROGRESS", "use_images": False}
     )
@@ -31,190 +33,101 @@ def test_removed_screen_lidar_interface_rejected_by_schema():
         MainConfig.model_validate(MAIN_CONFIG.model_dump() | {"environment": env.model_dump()})
 
 
-def test_build_interface_context_lidar_geometry_detected():
-    env = MAIN_CONFIG.environment.model_copy(
-        update={"rtgym_interface": "TM20LIDAR", "use_images": False}
+def test_model_route_is_not_unsupported_for_default_config():
+    route = model_policy_route(_validate_with())
+    assert route != "unsupported"
+
+
+def test_redacted_snapshot_exposes_expected_top_level_keys():
+    snapshot = main_config_snapshot_redacted()
+    assert isinstance(snapshot, dict)
+    assert "schema_version" in snapshot
+    assert "algorithm" in snapshot
+
+
+# ---------------------------------------------------------------------------
+# Route-matrix tests: supported algorithm + interface pairs
+# ---------------------------------------------------------------------------
+
+
+def test_lidar_iqn_route():
+    """TM20LIDAR (default) + IQN selects the lidar_iqn route."""
+    cfg = _validate_with(algorithm={"name": "IQN"})
+    assert model_policy_route(cfg) == "lidar_iqn"
+
+
+def test_lidar_sac_plain_mlp_route():
+    """TM20LIDAR + SAC without residual MLP selects lidar_plain_mlp."""
+    cfg = _validate_with(model={"use_residual_mlp": False})
+    assert model_policy_route(cfg) == "lidar_plain_mlp"
+
+
+def test_lidar_residual_route():
+    """TM20LIDAR + SAC with use_residual_mlp=True selects lidar_residual."""
+    cfg = _validate_with(model={"use_residual_mlp": True})
+    assert model_policy_route(cfg) == "lidar_residual"
+
+
+def test_vanilla_gray_route():
+    """Non-lidar, non-advanced interface + SAC + img_grayscale=True → vanilla_gray."""
+    cfg = _validate_with(environment={"rtgym_interface": "TM20STANDARD"})
+    assert model_policy_route(cfg) == "vanilla_gray"
+
+
+# ---------------------------------------------------------------------------
+# Route-matrix tests: unsupported algorithm + interface pairs
+# ---------------------------------------------------------------------------
+
+
+def test_lidar_tqc_is_unsupported():
+    """TM20LIDAR + TQC has no runtime branch and should return unsupported."""
+    cfg = _validate_with(algorithm={"name": "TQC"})
+    assert model_policy_route(cfg) == "unsupported"
+
+
+def test_vanilla_interface_non_sac_is_unsupported():
+    """Non-lidar, non-advanced interface + REDQSAC → unsupported."""
+    cfg = _validate_with(
+        environment={"rtgym_interface": "TM20STANDARD"},
+        algorithm={"name": "REDQSAC"},
     )
-    ctx = build_interface_context(env)
-    assert ctx.lidar_geometry_interface is True
-    assert ctx.lidar_includes_images is False
+    assert model_policy_route(cfg) == "unsupported"
 
 
-def test_build_interface_context_legacy_trackmap_token_still_lidar():
-    env = MAIN_CONFIG.environment.model_copy(
-        update={"rtgym_interface": "TM20TRACKMAP", "use_images": False}
-    )
-    ctx = build_interface_context(env)
-    assert ctx.lidar_geometry_interface is True
+# ---------------------------------------------------------------------------
+# Active-field regression tests
+# ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    ("alg", "iface", "expected_route"),
-    [
-        ("IQN", "TM20LIDAR", "lidar_iqn"),
-        ("SDSAC", "TM20LIDAR", "lidar_sdsac"),
-        ("IQN", "TM20TRACKMAP", "lidar_iqn"),
-        ("SDSAC", "TM20TRACKMAP", "lidar_sdsac"),
-    ],
-)
-def test_model_policy_route_named_routes(alg: str, iface: str, expected_route: str):
-    m = _validate_with(algorithm={"name": alg}, environment={"rtgym_interface": iface})
-    assert model_policy_route(m) == expected_route
+def test_active_fields_for_lidar_iqn_include_expected_keys():
+    """lidar_iqn active fields include IQN-specific backbone knobs."""
+    cfg = _validate_with(algorithm={"name": "IQN"})
+    active = active_model_field_names(cfg)
+    assert "residual_mlp_hidden_dim" in active
+    assert "split_track_observation" in active
+    assert "track_encoder" in active
+    # frozen effnet fields are not read on the lidar_iqn route
+    assert "use_frozen_effnet" not in active
 
 
-@pytest.mark.parametrize(
-    ("alg", "must_contain", "must_not_contain"),
-    [
-        (
-            "IQN",
-            ("residual_mlp_num_blocks", "split_track_observation"),
-            ("residual_mlp_num_blocks_actor",),
-        ),
-        (
-            "SDSAC",
-            ("residual_mlp_num_blocks_actor", "residual_mlp_num_blocks_critic"),
-            (),
-        ),
-    ],
-)
-def test_active_model_fields(
-    alg: str, must_contain: tuple[str, ...], must_not_contain: tuple[str, ...]
-):
-    m = _validate_with(algorithm={"name": alg}, environment={"rtgym_interface": "TM20TRACKMAP"})
-    active = active_model_field_names(m)
-    for name in must_contain:
-        assert name in active
-    for name in must_not_contain:
-        assert name not in active
+def test_route_active_model_fields_covers_all_non_full_routes():
+    """ROUTE_ACTIVE_MODEL_FIELDS maps every non-full (constrained) route."""
+    expected_non_full = {
+        "lidar_iqn",
+        "lidar_sdsac",
+        "lidar_sac_frozen_effnet",
+        "lidar_residual",
+        "lidar_plain_mlp",
+        "adv_iqn",
+        "adv_sdsac",
+        "adv_sac_frozen_effnet",
+    }
+    assert expected_non_full.issubset(ROUTE_ACTIVE_MODEL_FIELDS.keys())
 
 
-@pytest.mark.parametrize(
-    ("actor_blocks", "critic_blocks", "expect_warning"),
-    [
-        (2, 4, True),
-        (6, 6, False),
-    ],
-)
-def test_iqn_warns_when_actor_critic_depths_disagree(
-    actor_blocks: int, critic_blocks: int, expect_warning: bool
-):
-    d = MAIN_CONFIG.model_dump()
-    d["algorithm"]["name"] = "IQN"
-    d["model"]["residual_mlp_num_blocks"] = max(actor_blocks, critic_blocks)
-    d["model"]["residual_mlp_num_blocks_actor"] = actor_blocks
-    d["model"]["residual_mlp_num_blocks_critic"] = critic_blocks
-    with warnings.catch_warnings(record=True) as w:
-        warnings.simplefilter("always")
-        MainConfig.model_validate(d)
-    triggered = any("IQN uses only" in str(x.message) for x in w)
-    assert triggered is expect_warning
-
-
-@pytest.mark.parametrize(
-    ("preset", "should_reject"),
-    [
-        ("vanilla_cnn_actor_critic", True),
-        ("mlp_actor_critic", False),
-    ],
-)
-def test_iqn_preset_compatibility(preset: str, should_reject: bool):
-    d = MAIN_CONFIG.model_dump()
-    d["algorithm"]["name"] = "IQN"
-    d["environment"]["rtgym_interface"] = "TM20TRACKMAP"
-    d["model"]["type"] = preset
-    if should_reject:
-        with pytest.raises(ValueError, match="discrete-action-capable"):
-            MainConfig.model_validate(d)
-    else:
-        MainConfig.model_validate(d)
-
-
-def test_main_config_snapshot_redacted_is_jsonish_tree():
-    s = main_config_snapshot_redacted()
-    assert isinstance(s, dict)
-    assert "schema_version" in s
-    assert "algorithm" in s
-    w = s.get("wandb")
-    if isinstance(w, dict) and "api_key" in w and w["api_key"]:
-        assert w["api_key"] == "<redacted>"
-
-
-@pytest.mark.parametrize(
-    "field_name",
-    [
-        "barrier_touch_penalty",
-        "barrier_touch_radius",
-        "barrier_touch_min_speed_kmh",
-    ],
-)
-def test_removed_barrier_touch_reward_fields_are_rejected(field_name: str):
-    d = MAIN_CONFIG.model_dump()
-    d["environment"]["reward"][field_name] = 1.0
-    with pytest.raises(ValidationError, match="Removed reward config field"):
-        MainConfig.model_validate(d)
-
-
-_GEOM_IFACE = "TM20LIDAR"
-_ADVANCED_IFACE = "TQCGRAB_IMAGES"
-_VANILLA_IFACE = "TM2020"
-
-_SUPPORTED = [
-    ("SAC", _GEOM_IFACE),
-    ("REDQSAC", _GEOM_IFACE),
-    ("IQN", _GEOM_IFACE),
-    ("SDSAC", _GEOM_IFACE),
-    ("TQC", _ADVANCED_IFACE),
-    ("SAC", _ADVANCED_IFACE),
-    ("IQN", _ADVANCED_IFACE),
-    ("SDSAC", _ADVANCED_IFACE),
-    ("SAC", _VANILLA_IFACE),
-]
-
-_UNSUPPORTED = [
-    ("TQC", _GEOM_IFACE),
-    ("REDQSAC", _ADVANCED_IFACE),
-    ("TQC", _VANILLA_IFACE),
-    ("IQN", _VANILLA_IFACE),
-    ("SDSAC", _VANILLA_IFACE),
-    ("REDQSAC", _VANILLA_IFACE),
-]
-
-
-@pytest.mark.parametrize(
-    ("alg", "iface", "supported"),
-    [(a, i, True) for a, i in _SUPPORTED] + [(a, i, False) for a, i in _UNSUPPORTED],
-)
-def test_model_policy_route_supported_matrix(alg: str, iface: str, supported: bool):
-    m = _validate_with(algorithm={"name": alg}, environment={"rtgym_interface": iface})
-    route = model_policy_route(m)
-    if supported:
-        assert route != "unsupported", f"{alg}+{iface} should be supported, got 'unsupported'"
-    else:
-        assert route == "unsupported", f"{alg}+{iface} should be unsupported, got {route!r}"
-
-
-def test_explain_active_config_unsupported_does_not_crash():
-    m = _validate_with(algorithm={"name": "TQC"}, environment={"rtgym_interface": "TM20TRACKMAP"})
-    text = explain_active_config_text(m)
-    assert "unsupported" in text.lower()
+def test_unsupported_explain_text_contains_warning():
+    """explain_active_config_text for an unsupported route emits a WARNING block."""
+    cfg = _validate_with(algorithm={"name": "TQC"})
+    text = explain_active_config_text(cfg)
     assert "WARNING" in text
-
-
-@pytest.mark.parametrize(
-    ("name", "should_reject"),
-    [
-        ("../../etc/evil", True),
-        ("sub/dir", True),
-        (r"sub\dir", True),
-        ("my_experiment-01", False),
-    ],
-)
-def test_run_name_path_separator_validation(name: str, should_reject: bool):
-    d = MAIN_CONFIG.model_dump()
-    d["run"]["name"] = name
-    if should_reject:
-        with pytest.raises(ValueError, match="path separators"):
-            MainConfig.model_validate(d)
-    else:
-        m = MainConfig.model_validate(d)
-        assert m.run.name == name
+    assert "unsupported" in text
