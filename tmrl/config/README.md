@@ -95,6 +95,9 @@ The runtime path intentionally separates **what config says** from **how objects
    continuous-only vanilla CNN preset via `discrete_action_compatible` on model schemas). Further
    **interface** checks still run in `config_objects` and `effective_config.model_policy_route` and raise
    explicit `ValueError` for unsupported algorithm/interface combinations.
+5. **Explainability layer** (`active_config_explainer.py`, legacy alias `effective_config.py`) mirrors runtime routing and powers
+   `--explain-active-config`, so you can see exactly which `model.*` fields are effective for the selected
+   algorithm + interface path.
 
 This avoids silent fallbacks and makes failed experiments fail fast with actionable errors.
 

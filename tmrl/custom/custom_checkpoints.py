@@ -86,7 +86,8 @@ def update_memory(run_instance):
 
 def update_run_instance(run_instance, training_cls):
     """
-    Updates the checkpoint after loading with compatible values from config.json
+    Updates the checkpoint after loading with compatible values from the validated ``MainConfig``
+    tree (Hydra defaults + optional ``~/TmrlData/config/local.yaml``).
 
     Args:
         run_instance: the instance of the checkpoint to update

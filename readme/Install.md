@@ -60,7 +60,7 @@ uv sync
 
 The project is configured for CUDA 12.4 (RTX 4090 / CUDA 12.x) by default. For other setups, edit `[tool.uv]` in `pyproject.toml`.
 
-Then, validate the installation:
+Then, validate that the package runs and **`TmrlData`** exists (it is normally created automatically on first import if missing):
 
 - **If you used Option 1 (pip):** `python -m tmrl --install`
 - **If you used Option 2 (uv):** `uv run python -m tmrl --install` (so the project venv and dependencies are used)
@@ -90,41 +90,38 @@ If at some point you want to do a clean re-install of `tmrl`:
 
 - `pip uninstall tmrl`
 - Delete the `TmrlData` folder from your home folder
-- `pip install tmrl`
+- `pip install tmrl` (the data folder will be recreated when you first run `tmrl` again)
 
 ## Set up TMRL
 
 ### (Optional) Configure/manage TMRL:
 
-The `TmrlData` folder is your _"control pannel"_, it contains everything `tmrl` uses and generates:
+The `TmrlData` folder is your _"control panel"_, it contains everything `tmrl` uses and generates:
 - The `checkpoints` subfolder is used by the trainer process: it contains persistent checkpoints of your training,
 - The `weights` subfolder is used by the worker process: it contains snapshots of your trained policies,
 - The `reward` subfolder is used by the worker process: it contains your reward function,
 - The `dataset` subfolder is for RL developers (to use with custom replay buffers),
-- The `config` subfolder contains a configuration file that you probably want to tweak.
+- The `config` subfolder holds **`local.yaml`**, where you override Hydra defaults.
 
-Navigate to `TmrlData\config` and open `config.json` in a text editor.
+**Configuration is YAML + Hydra defaults**, not `config.json`. Create or edit:
 
-( :information_source: `config.json` is described in details [here](reference_guide.md).)
+`~/TmrlData/config/local.yaml`
 
-In particular, you may want to adapt the following entries:
-- `RUN_NAME`: set a new name for starting training from scratch
-- `LOCALHOST_WORKER`: set to `false` for `workers` not on the same computer as the `server`
-- `LOCALHOST_TRAINER`: set to `false` for `trainer` not on the same computer as the `server`
-- `PUBLIC_IP_SERVER`: public IP of the `server` if not running on localhost
-- `PORT` needs to be forwarded on the `server` if not running on localhost
-- `WANDB_PROJECT`, `WANDB_ENTITY` and `WANDB_KEY` can be replaced by you own [wandb](https://wandb.ai/site) credentials for monitoring training
+( :information_source: Options and examples are in [reference_guide.md](reference_guide.md) and [tmrl/config/README.md](../tmrl/config/README.md).)
 
-You can delete the content of all folders (but not the folders themselves) whenever you like (except `config.json`, a default version is provided in `resources` if you delete this).
+In particular, you may want to adapt:
+- `run.name`: experiment name (checkpoints / weights file names)
+- `distributed.localhost_worker` / `distributed.localhost_trainer`: set to `false` when those processes are not on the same host as the server
+- `distributed.public_ip_server` and `distributed.server_port`: reachability and port forwarding when not on localhost
+- `wandb.*` or `WANDB_API_KEY` for experiment tracking
 
-To reset the library, delete the entire `TmrlData` folder and run:
+You can delete the content of all folders (but not the folders themselves) whenever you like. A fresh `TmrlData` tree is created when the folder is missing and you run the library again.
+
+To only print the data directory path:
 
 ```shell
 python -m tmrl --install
 ```
-
-This will download and extract the `TmrlData` folder back to its original state.
-
 
 ### (Optional) Check that everything works:
 

@@ -2,6 +2,8 @@
 
 Before reading these instructions, make sure you have installed TMRL and OpenPlanet correctly as described [here](Install.md).
 
+**Configuration:** Tune TrackMania experiments in **`~/TmrlData/config/local.yaml`** (YAML merges on top of package defaults). Use `python -m tmrl --print-config` to verify the merged config. Details: [reference_guide.md](reference_guide.md).
+
 ## Pre-trained AI in Trackmania 2020
 
 You can test our pre-trained AIs directly in TrackMania by following these steps (we recommend doing this once, so you understand how `tmrl` controls the video game):
@@ -21,40 +23,54 @@ You can test our pre-trained AIs directly in TrackMania by following these steps
 - Bring the TrackMania window to the top-left corner of the screen. On Windows10, it should automatically fit to a quarter of the screen _(NB: the window will automatically snap to the top-left corner and get sized properly when you start the AI)_.
 - Hide the ghost by pressing the `g` key.
 
-#### If you want to test the pre-trained AI for raw screenshots (default):
-- Replace/ensure the following entries in `TmrlData\config\config.json`:
-```json
-  "RUN_NAME": "SAC_4_imgs_pretrained"
+#### If you want to test the pre-trained AI for raw screenshots
+
+The bundled CNN policies expect the **Vanilla CNN** model preset (not the default residual MLP used for lidar).
+
+1. Set a Hydra model override (shell **or** IDE run configuration), e.g. on Linux/macOS:
+
+   ```bash
+   export TMRL_HYDRA_OVERRIDES='["model=vanilla_cnn_actor_critic"]'
+   ```
+
+   On Windows (PowerShell):
+
+   ```powershell
+   $env:TMRL_HYDRA_OVERRIDES = '["model=vanilla_cnn_actor_critic"]'
+   ```
+
+2. Merge something like the following into **`~/TmrlData/config/local.yaml`** (snippets are illustrative; confirm with `--print-config`):
+
+```yaml
+schema_version: "0.6.0"
+
+run:
+  name: SAC_4_imgs_pretrained
+
+environment:
+  rtgym_interface: TM20FULL
+  use_images: true
+  window_width: 256
+  window_height: 128
+  img_width: 64
+  img_height: 64
+  img_grayscale: true
+  sleep_time_at_reset: 1.5
+  img_hist_len: 4
+  rtgym:
+    time_step_duration: 0.05
+    start_obs_capture: 0.04
+    time_step_timeout_factor: 1.0
+    act_buf_len: 2
+    benchmark: false
+    wait_on_done: true
+  reward:
+    constant_penalty: 0.0
+    check_forward: 500
+    check_backward: 10
+    end_of_track_reward: 100.0
 ```
-```json
-  "ENV": {
-    "RTGYM_INTERFACE": "TM20IMAGES",
-    "WINDOW_WIDTH": 256,
-    "WINDOW_HEIGHT": 128,
-    "IMG_WIDTH": 64,
-    "IMG_HEIGHT": 64,
-    "IMG_GRAYSCALE": true,
-    "SLEEP_TIME_AT_RESET": 1.5,
-    "IMG_HIST_LEN": 4,
-    "RTGYM_CONFIG": {
-      "time_step_duration": 0.05,
-      "start_obs_capture": 0.04,
-      "time_step_timeout_factor": 1.0,
-      "act_buf_len": 2,
-      "benchmark": false,
-      "wait_on_done": true
-    },
-    "REWARD_CONFIG": {
-      "END_OF_TRACK": 100.0,
-      "CONSTANT_PENALTY": 0.0,
-      "CHECK_FORWARD": 500,
-      "CHECK_BACKWARD": 10,
-      "FAILURE_COUNTDOWN": 10,
-      "MIN_STEPS": 70,
-      "MAX_STRAY": 100.0
-    }
-  }
-```
+
 - Use the default camera by hitting the `1` key (the car must be visible).
 - For best performance, use the `Canadian flag` skin, because this is what we trained with.
 
@@ -63,37 +79,37 @@ _(note: it will be downscaled when starting the worker)_:
 
 ![screenshot2](https://github.com/trackmania-rl/tmrl/releases/download/v0.4.0/full_environment.png)
 
-#### If you want to test the pre-trained AI for LIDARs:
-- Replace/ensure the following entries in `TmrlData\config\config.json`:
-```json
-  "RUN_NAME": "SAC_4_LIDAR_pretrained"
+#### If you want to test the pre-trained AI for LIDARs
+
+Merge something like this into **`~/TmrlData/config/local.yaml`** (defaults are already lidar-oriented; this aligns run name / window sizing with older guides):
+
+```yaml
+schema_version: "0.6.0"
+
+run:
+  name: SAC_4_LIDAR_pretrained
+
+environment:
+  rtgym_interface: TM20LIDAR
+  window_width: 958
+  window_height: 488
+  use_images: false
+  sleep_time_at_reset: 1.5
+  img_hist_len: 4
+  rtgym:
+    time_step_duration: 0.05
+    start_obs_capture: 0.04
+    time_step_timeout_factor: 1.0
+    act_buf_len: 2
+    benchmark: false
+    wait_on_done: true
+  reward:
+    constant_penalty: 0.0
+    check_forward: 500
+    check_backward: 10
+    end_of_track_reward: 100.0
 ```
-```json
-  "ENV": {
-    "RTGYM_INTERFACE": "TM20LIDAR",
-    "WINDOW_WIDTH": 958,
-    "WINDOW_HEIGHT": 488,
-    "SLEEP_TIME_AT_RESET": 1.5,
-    "IMG_HIST_LEN": 4,
-    "RTGYM_CONFIG": {
-      "time_step_duration": 0.05,
-      "start_obs_capture": 0.04,
-      "time_step_timeout_factor": 1.0,
-      "act_buf_len": 2,
-      "benchmark": false,
-      "wait_on_done": true
-    },
-    "REWARD_CONFIG": {
-      "END_OF_TRACK": 100.0,
-      "CONSTANT_PENALTY": 0.0,
-      "CHECK_FORWARD": 500,
-      "CHECK_BACKWARD": 10,
-      "FAILURE_COUNTDOWN": 10,
-      "MIN_STEPS": 70,
-      "MAX_STRAY": 100.0
-    }
-  }
-```
+
 - Enter the cockpit view by hitting the `3` key (the car must be hidden, press several times if the cockpit is visible).
 
 The trackmania window should now look like this:
@@ -125,7 +141,7 @@ In the `Graphics` tab of the TM20 settings, make sure that the resolution is 958
 The `Input` setting for gamepads must be the default.
 
 More insight regarding your bottlenecks can be gained using the `--benchmark` option.
-This requires you to set the `"benchmark"` entry to `true` in `config.json`, and then run:
+Set **`environment.rtgym.benchmark: true`** in `local.yaml` (or pass a JSON merge via `TMRL_CONFIG_OVERRIDES`), then run:
 ```bash
 python -m tmrl --benchmark
 ```
@@ -155,8 +171,8 @@ Therefore, we have some margin here, in particular regarding the policy.
 _(Instructions for TrackMania 2020)_
 
 - Build or select a track.
-  - It can be any track when using the `Full` environment (the `Full` environment outputs screenshots that your model needs to deal with)
-  - It must feature only plain road if using the `LIDAR` environemt (The LIDAR is computed from the black pixels on the borders).
+  - It can be any track when using the **vision / full** pipeline (screenshots from the game).
+  - Plain-road tracks suit **boundary lidar** setups best (reward uses pre-recorded left/right boundaries, not legacy screen rays).
 - Record a reward for this track:
   - Execute:
   ```shell
@@ -167,7 +183,7 @@ _(Instructions for TrackMania 2020)_
 - Check that your reward and environment work correctly:
   - Execute:
   ```shell
-  python -m tmrl --check-environment
+  python -m tmrl --check-env
   ```
   - Control the car manually. You should see the screenshots/LIDAR and rewards.
   - Press `CTRL + C` to exit.
@@ -187,12 +203,12 @@ python -m tmrl --trainer
 python -m tmrl --worker
 ```
 
-_(Note: you may want to run these commands on separate computers instead, for instance if the trainer is located on a remote HPC computer. You can adapt `TmrlData\config\config.json` for this matter. `config.json` is described in details [here](reference_guide.md).)_
+_(Note: you may want to run these commands on separate computers instead, for instance if the trainer is located on a remote HPC computer. Adapt **`distributed.*`** in `local.yaml` for this; see [reference_guide.md](reference_guide.md).)_
 
 During training, make sure you don't see too many 'timestep timeouts' in the worker terminal.
-If you do, this means that your GPU is not powerful enough, and you should use remote training instead of localhost training (see `TmrlData\config\config.json`).
+If you do, your GPU may be saturated or the trainer starves the worker—consider remote training (server/worker locally, trainer on a dedicated machine).
 
-Don't forget to tune training hyperparameters in `config.json` (the default should work for the `Full` environment).
+Don't forget to tune hyperparameters under **`training`**, **`algorithm`**, **`model`**, and **`environment`** in `local.yaml`.
 
 With carefully chosen hyperparameters, an RTX3080 on a distant machine as trainer and one local machine as worker/server, it takes approximatively 5 hours for the car to understand how to take a turn correctly in the LIDAR environment.
 And it takes more like 2 days in the raw screenshots environment! :wink:
@@ -201,22 +217,24 @@ _(Note: you can exit these processes by pressing `CTRL + C` in each terminal)_
 
 ### Log training metrics:
 
-You can log your training data to [Weights and Biases](https://wandb.ai) by using the `--wandb` option:
-```shell
-python -m tmrl --trainer --wandb
-```
-The default `config.json` file contains credentials that log your data to the [public tmrl project](https://wandb.ai/tmrl/tmrl).
+Training metrics are logged to [Weights and Biases](https://wandb.ai) **by default** on the trainer. To **disable** logging:
 
-Please replace these credentials with your own if you want to hide/keep your training data, or if you want to log large files.
+```shell
+python -m tmrl --trainer --no-wandb
+```
+
+Set **`wandb.*`** in `local.yaml` or export **`WANDB_API_KEY`** to use your own project instead of defaults.
+
+Please replace defaults with your own credentials if you want to hide/keep your training data, or if you want to log large files.
 We clean the public project once in a while.
 
 ### Save replays:
 
-The `config.json` file enables you to save replays in TrackMania, for shooting videos of your trained AIs: `"interface_kwargs": {"save_replays": true}`.
+Set **`environment.rtgym.interface_kwargs.save_replays: true`** in `local.yaml` to request replay capture when the interface supports it.
 
 All runs will be recorded, including the failed ones.
 
-_Note: If you use `python -m tmrl --test` to record, you may also want to set `"SLEEP_TIME_AT_RESET": 0.0` to get a clean start (but you should leave this to `1.5` when using `python -m tmrl --trainer`)._
+_Note: If you use `python -m tmrl --test` to record, you may also want `environment.sleep_time_at_reset: 0.0` for a clean start (but you should leave this to `1.5` when using `python -m tmrl --trainer`)._
 
 ## Use the TMRL API for other robot applications
 

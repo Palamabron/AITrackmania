@@ -157,7 +157,8 @@ def _model_arch_kwargs() -> dict[str, Any]:
 def _train_model_and_policy() -> tuple[Any, Any]:
     """Select (train_model_cls_or_partial, policy_partial) from model + algorithm.
 
-    Branch conditions must stay aligned with :func:`tmrl.config.effective_config.model_policy_route`
+    Branch conditions must stay aligned with
+    :func:`tmrl.config.active_config_explainer.model_policy_route`
     so ``--explain-active-config`` matches runtime selection.
     """
     alg = algorithm

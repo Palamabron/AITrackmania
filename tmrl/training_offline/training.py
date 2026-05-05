@@ -30,7 +30,7 @@ from tmrl.training_offline._obs_utils import (
     _one_obs_from_batch,
 )
 from tmrl.training_offline._stats_utils import (
-    _IS_IQN,
+    _is_iqn_algorithm,
     _mean_stats_dicts,
     _round_stat_to_wandb_log_dict,
     _stats_dict_to_numeric,
@@ -659,7 +659,7 @@ class TrainingOffline:
                 stats_training_dict["debug/demo_fraction_in_batch"] = float(
                     self.memory.last_sample_demo_fraction
                 )
-            if _IS_IQN:
+            if _is_iqn_algorithm():
                 stats_training_dict.pop("losses/actor", None)
                 stats_training_dict.pop("losses/critic", None)
             stats_training += (_stats_dict_to_numeric(stats_training_dict),)

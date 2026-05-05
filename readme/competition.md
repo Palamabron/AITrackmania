@@ -72,7 +72,7 @@ The `tmrl` competition is an open research initiative, currently in its first it
 In this iteration, competitors race on the `tmrl-test` track (plain road) by solving the `Full` version of the [TrackMania 2020 Gymnasium environment](https://github.com/trackmania-rl/tmrl#trackmania-gymnasium-environment) (the `LIDAR` version is also accepted).
 
 - The `action space` is the default TrackMania 2020 continuous action space (3 floats between -1.0 and 1.0).
-- The `observation space` is a history of 4 raw snapshots along with the speed, gear, rpm and 2 previous actions. The choice of camera is up to you as long as you use one of the default. You are allowed to use colors if you wish (set the `"IMG_GRAYSCALE"` entry to `false` in `config.json`). You may also customize the actual image dimensions (`"IMG_WIDTH"` and `"IMG_HEIGHT"`), and the game window dimensions (`"WINDOW_WIDTH"` and `"WINDOW_HEIGHT"`) if you need to. However, the window dimensions must remain between `(256, 128)` and `(958, 488)` (dimensions greater than `(958, 488)` are **not** allowed).
+- The `observation space` is a history of 4 raw snapshots along with the speed, gear, rpm and 2 previous actions. The choice of camera is up to you as long as you use one of the default. You are allowed to use colors if you wish (set **`environment.img_grayscale: false`** in `~/TmrlData/config/local.yaml`). You may also customize **`environment.img_width` / `environment.img_height`** and **`environment.window_width` / `environment.window_height`**. However, the window dimensions must remain between `(256, 128)` and `(958, 488)` (dimensions greater than `(958, 488)` are **not** allowed).
 - The `control frequency` is 20 Hz.
 
 An entry to the competition simply needs to be a working implementation of the [ActorModule](https://github.com/trackmania-rl/tmrl/blob/master/tmrl/actor.py) interface.
@@ -98,7 +98,7 @@ Use the [discussions](https://github.com/trackmania-rl/tmrl/discussions) section
 
 
 We evaluate your submission using our [evaluation script](https://github.com/trackmania-rl/tmrl/blob/master/tmrl/tuto/competition/competition_eval.py).
-The `"SLEEP_TIME_AT_RESET"` entry in `config.json` (`C:\Users\YourUsername\TmrlData\config`) is set to 0.0 to avoid wasting time at the beginning of the episode (but we recommend leaving this to the default 1.5 for training).
+For evaluation scripts, **`environment.sleep_time_at_reset`** in `~/TmrlData/config/local.yaml` (`C:\Users\YourUsername\TmrlData\config\local.yaml` on Windows) is often set to `0.0` to avoid wasting time at the beginning of each episode (use the default `1.5` for normal training runs).
 
 ## Tutorials:
 The [competition tutorial script](https://github.com/trackmania-rl/tmrl/blob/master/tmrl/tuto/competition/custom_actor_module.py) will help you quickly set up a custom RL training pipeline for the `Full` TrackMania Gymnasium environment.
@@ -106,7 +106,7 @@ The [competition tutorial script](https://github.com/trackmania-rl/tmrl/blob/mas
 ## Submit an entry:
 An entry to the competition comprises:
 - a python script providing a working implementation of the [ActorModule](https://github.com/trackmania-rl/tmrl/blob/master/tmrl/actor.py) interface,
-- the `config.json` file you used for the environment config (please remove all personal information),
+- the **`local.yaml`** (or reproducibility export) matching the environment configuration you used (please remove secrets and personal information),
 - optional **human-readable** data files (typically a `json` file).
 - a name for your team, and all the supporting information you wish to provide (description, video, repo...)
 

@@ -18,27 +18,10 @@ def init_tmrl_data():
     """
     Wipes and re-generates the TmrlData folder.
     """
-    import socket
-    import urllib.error
-    import urllib.request
     from shutil import copy2
     from zipfile import ZipFile
 
-    resources_url = "https://github.com/trackmania-rl/tmrl/releases/download/v0.6.0/resources.zip"
-
-    def url_retrieve(url: str, outfile: Path, overwrite: bool = False):
-        """
-        Adapted from https://www.scivision.dev/python-switch-urlretrieve-requests-timeout/
-        """
-        outfile = Path(outfile).expanduser().resolve()
-        if outfile.is_dir():
-            raise ValueError("Please specify full filepath, including filename")
-        if overwrite or not outfile.is_file():
-            outfile.parent.mkdir(parents=True, exist_ok=True)
-            try:
-                urllib.request.urlretrieve(url, str(outfile))
-            except (socket.gaierror, urllib.error.URLError) as err:
-                raise ConnectionError(f"could not download {url} due to {err}") from err
+    from tmrl.tools.init_package.resources_bundle import download_resources_zip
 
     # destination folder:
     home_folder = Path.home()
@@ -64,7 +47,8 @@ def init_tmrl_data():
 
     # download resources:
     resources_target = tmrl_folder / "resources.zip"
-    url_retrieve(resources_url, resources_target)
+    resources_url_used = download_resources_zip(resources_target)
+    logger.info("Downloaded TMRL resources from {}", resources_url_used)
 
     # unzip downloaded resources:
     with ZipFile(resources_target, "r") as zip_ref:
