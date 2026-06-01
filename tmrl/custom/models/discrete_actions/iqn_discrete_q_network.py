@@ -336,8 +336,8 @@ class DuelingHead(nn.Module):
         out_linear_v: nn.Module
         out_linear_a: nn.Module
         if noisy:
-            out_linear_v = NoisyLinear(hidden_dim, 1, device="cpu", std_init=noisy_std_init)
-            out_linear_a = NoisyLinear(hidden_dim, n_actions, device="cpu", std_init=noisy_std_init)
+            out_linear_v = NoisyLinear(hidden_dim, 1, std_init=noisy_std_init)
+            out_linear_a = NoisyLinear(hidden_dim, n_actions, std_init=noisy_std_init)
         else:
             out_linear_v = nn.Linear(hidden_dim, 1)
             out_linear_a = nn.Linear(hidden_dim, n_actions)
@@ -372,7 +372,7 @@ class DuelingHead(nn.Module):
             layer.reset_noise()
             if self._noise_scale < 1.0:
                 layer.weight_epsilon.mul_(self._noise_scale)
-                if layer.bias_mu is not None:
+                if layer.bias_epsilon is not None:
                     layer.bias_epsilon.mul_(self._noise_scale)
 
     def set_noise_scale(self, scale: float) -> None:

@@ -177,6 +177,9 @@ class TM2020Interface(TrackMania2020InterfaceBase):
         )
         yaw_val, _ = yaw_pitch_from_dir_xyz(dir_xyz_t)
         end_of_track = bool(data[TmrlDataPlugin.FINISH_UI_ACTIVE])
+        next_steps_since_reset = self._steps_since_reset + 1
+        min_steps_before_finish = max(50, int(cfg.REWARD_CONFIG.get("MIN_STEPS", 50)))
+        end_of_track_for_reward = end_of_track and next_steps_since_reset >= min_steps_before_finish
 
         wheel_slips = [
             float(data[TmrlDataPlugin.SLIP_FL]),
@@ -205,7 +208,7 @@ class TM2020Interface(TrackMania2020InterfaceBase):
             wheel_slips=wheel_slips,
             crashed=bool(self.is_crashed),
             speed=speed_kmh,
-            end_of_track=end_of_track,
+            end_of_track=end_of_track_for_reward,
             input_brake=float(data[TmrlDataPlugin.INPUT_BRAKE]),
             aim_yaw=float(yaw_val),
             input_steer=float(data[TmrlDataPlugin.INPUT_STEER]),
@@ -213,10 +216,10 @@ class TM2020Interface(TrackMania2020InterfaceBase):
             slip_angle_deg=None,
         )
 
-        self._steps_since_reset += 1
+        self._steps_since_reset = next_steps_since_reset
         terminated, eot_accepted = apply_episode_length_guards(
-            self._steps_since_reset,
-            end_of_track,
+            next_steps_since_reset,
+            end_of_track_for_reward,
             terminated,
         )
         if eot_accepted and self.save_replays:
@@ -233,7 +236,9 @@ class TM2020Interface(TrackMania2020InterfaceBase):
         }
 
         self.cooldown_control()
-        self.reward_function.log_model_run(terminated=bool(terminated), end_of_track=end_of_track)
+        self.reward_function.log_model_run(
+            terminated=bool(terminated), end_of_track=end_of_track_for_reward
+        )
         reward_out = np.float32(reward)
         return observation, reward_out, terminated, info
 
