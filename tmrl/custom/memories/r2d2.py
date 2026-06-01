@@ -15,7 +15,10 @@ from tmrl.custom.memories.enums import (
     R2D2SophyObsField,
     R2D2woImagesTrailingField,
 )
-from tmrl.custom.memories.utils import canonical_replay_action_vector
+from tmrl.custom.memories.utils import (
+    canonical_replay_action_vector,
+    normalize_stored_replay_actions_slice,
+)
 from tmrl.memory import R2D2Memory
 from tmrl.registry import MEMORIES
 
@@ -151,7 +154,7 @@ class MemoryR2D2(R2D2Memory):
         res = self.data[R2D2Field.ACTIONS][
             (item + self.start_acts_offset) : (item + self.start_acts_offset + self.act_buf_len + 1)
         ]
-        return res
+        return normalize_stored_replay_actions_slice(res, self.discrete_n_steer_bins)
 
     def append_buffer(self, buffer):
         """Append a buffer of samples to the memory."""
@@ -255,14 +258,16 @@ class MemoryR2D2woImages(R2D2Memory):
         which avoids a 1-dim mismatch when ``RewardFunction._points_number`` overrides
         the config-level default.
         """
-        self._cached_tqc_obs_space = space
+        self._cached_openplanet_obs_space = space
 
-    def _trainer_tqc_obs_space(self):
-        if not hasattr(self, "_cached_tqc_obs_space"):
-            from tmrl.custom.tm.tqc_observation_space import build_tqc_sophy_tuple_observation_space
+    def _openplanet_tuple_obs_space(self):
+        if not hasattr(self, "_cached_openplanet_obs_space"):
+            from tmrl.custom.tm.openplanet_observation_space import (
+                build_openplanet_tuple_observation_space,
+            )
 
-            self._cached_tqc_obs_space = build_tqc_sophy_tuple_observation_space()
-        return self._cached_tqc_obs_space
+            self._cached_openplanet_obs_space = build_openplanet_tuple_observation_space()
+        return self._cached_openplanet_obs_space
 
     def get_transition(self, item: int):
         """Get a single transition."""
@@ -274,7 +279,7 @@ class MemoryR2D2woImages(R2D2Memory):
 
         obs_end = self._obs_end()
 
-        space = self._trainer_tqc_obs_space()
+        space = self._openplanet_tuple_obs_space()
         prev_obs = tuple(self.data[i][idx_last] for i in range(2, obs_end))
         next_obs = tuple(self.data[i][idx_now] for i in range(2, obs_end))
         prev_obs = align_observation_to_space(prev_obs, space)
@@ -302,7 +307,7 @@ class MemoryR2D2woImages(R2D2Memory):
         res = self.data[1][
             (item + self.start_acts_offset) : (item + self.start_acts_offset + self.act_buf_len + 1)
         ]
-        return res
+        return normalize_stored_replay_actions_slice(res, self.discrete_n_steer_bins)
 
     def append_buffer(self, buffer):
         """Append a buffer of samples to the memory."""
@@ -312,7 +317,7 @@ class MemoryR2D2woImages(R2D2Memory):
         )
 
         bf = BufferField
-        space = self._trainer_tqc_obs_space()
+        space = self._openplanet_tuple_obs_space()
         kept: list[Any] = []
         n_drop = 0
         for b in buffer.memory:
@@ -326,7 +331,7 @@ class MemoryR2D2woImages(R2D2Memory):
         if n_drop:
             logger.warning(
                 "MemoryR2D2woImages: dropped {} sample(s) with observations incompatible "
-                "with trainer TQC observation_space (after alignment).",
+                "with OpenPlanet telemetry observation space (after alignment).",
                 n_drop,
             )
         if not kept:
@@ -478,7 +483,7 @@ class MemoryR2D2Sophy(R2D2Memory):
         res = self.data[R2D2SophyField.ACTIONS][
             (item + self.start_acts_offset) : (item + self.start_acts_offset + self.act_buf_len + 1)
         ]
-        return res
+        return normalize_stored_replay_actions_slice(res, self.discrete_n_steer_bins)
 
     def append_buffer(self, buffer):
         """Append a buffer of samples to the memory."""

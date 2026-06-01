@@ -1,5 +1,6 @@
 """Shared helpers and utilities for TMRL training agents."""
 
+import random
 from contextlib import nullcontext
 from typing import Any
 
@@ -13,10 +14,12 @@ def set_seed(seed: int) -> None:
     """Set random seeds for reproducibility.
 
     Args:
-        seed: Random seed for NumPy and PyTorch.  Must be supplied explicitly;
-            use ``MAIN_CONFIG.environment.seed`` (or equivalent) at the call site
-            so seeding is driven by the validated config rather than a hard-coded default.
+        seed: Random seed for NumPy, PyTorch, and Python stdlib ``random``.
+            Must be supplied explicitly; use ``MAIN_CONFIG.environment.seed``
+            (or equivalent) at the call site so seeding is driven by the
+            validated config rather than a hard-coded default.
     """
+    random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
     if torch.cuda.is_available():

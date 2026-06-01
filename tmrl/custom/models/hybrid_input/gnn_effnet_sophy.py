@@ -4,8 +4,6 @@ This module contains actor-critic implementations combining GNN track encoders,
 EfficientNet image encoders, and Sophy-style residual MLP backbones.
 """
 
-from typing import cast
-
 import numpy as np
 import torch
 import torch.nn as nn
@@ -14,6 +12,7 @@ from torch.distributions.normal import Normal
 from torchrl.modules import NoisyLinear
 
 from tmrl.actor import TorchActorModule
+from tmrl.custom.models.hybrid_input.sophy import _obs_to_flat_tensor
 from tmrl.custom.models.image_input.efficientnet import (
     _gnn_effnet_image_index,
     _gnn_effnet_physics_dims,
@@ -22,99 +21,39 @@ from tmrl.custom.models.shared.blocks import (
     LOG_STD_MAX,
     LOG_STD_MIN,
     FrozenEfficientNetEncoder,
+    ResidualMLPBlock,
     ensure_float,
     obs_spaces_list,
-    residual_mlp_backbone,
+)
+from tmrl.custom.models.shared.track_encoders import (
+    TRACK_CHANNELS_GTN,
+    build_track_gtn_branch,
 )
 from tmrl.custom.utils.nn import GSDEModule
 from tmrl.registry import MODELS
 from tmrl.util import prod
 
 _LOG2 = float(np.log(2.0))
+_GNN_TRACK_FEATURES_PER_POINT = TRACK_CHANNELS_GTN
 
 
-class _TrackGNN(nn.Module):
-    """Graph Neural Network for processing track point sequences."""
-
-    def __init__(self, num_nodes: int, in_dim: int = 3, hidden_dim: int = 64, num_layers: int = 3):
-        super().__init__()
-        self.num_nodes = num_nodes
-        self.in_dim = in_dim
-        self.hidden_dim = hidden_dim
-        edge_src = torch.cat([torch.arange(num_nodes - 1), torch.arange(1, num_nodes)], dim=0)
-        edge_dst = torch.cat([torch.arange(1, num_nodes), torch.arange(num_nodes - 1)], dim=0)
-        self.register_buffer("edge_src", edge_src)
-        self.register_buffer("edge_dst", edge_dst)
-        self.node_in = nn.Sequential(
-            nn.Linear(in_dim, hidden_dim),
-            nn.LayerNorm(hidden_dim),
-        )
-        self.layers = nn.ModuleList()
-        for _ in range(num_layers):
-            self.layers.append(nn.Linear(hidden_dim * 2, hidden_dim))
-        self.norms = nn.ModuleList([nn.LayerNorm(hidden_dim) for _ in range(num_layers)])
-        self.readout = nn.Linear(hidden_dim, hidden_dim)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        b, _, n = x.shape
-        x = x.permute(0, 2, 1)
-        h = self.node_in(x)
-        edge_src = cast(torch.Tensor, self.edge_src)
-        edge_dst = cast(torch.Tensor, self.edge_dst)
-        for lin, norm in zip(self.layers, self.norms, strict=True):
-            msg = h[:, edge_src]
-            agg = torch.zeros(b, n, self.hidden_dim, device=h.device, dtype=h.dtype)
-            agg.index_add_(1, edge_dst, msg)
-            deg = torch.zeros(n, device=h.device, dtype=h.dtype)
-            deg.index_add_(0, edge_dst, torch.ones_like(edge_dst, dtype=h.dtype))
-            deg = deg.clamp(min=1).view(1, -1, 1)
-            agg = agg / deg
-            h = norm(lin(torch.cat([h, agg], dim=-1)).relu())
-        out = self.readout(h)
-        return cast(torch.Tensor, out.mean(dim=1))
-
-
-def _build_track_gnn_branch(
-    dim_track: int,
-    hidden_dim: int,
-    gnn_hidden: int = 64,
-    gnn_layers: int = 3,
+def _gnn_effnet_sophy_residual_backbone(
+    input_dim: int, hidden_dim: int, num_blocks: int
 ) -> nn.Module:
-    """Build a GNN-based track encoding branch."""
-    assert dim_track >= 4, "track dim must be at least 4"
-    assert dim_track % 4 == 0, "track dim must be 4*N (left_x, left_y, right_x, right_y)"
-    num_nodes = dim_track // 4
-    gnn = _TrackGNN(
-        num_nodes=num_nodes,
-        in_dim=4,
-        hidden_dim=gnn_hidden,
-        num_layers=gnn_layers,
-    )
-    return nn.Sequential(
-        gnn,
-        nn.Linear(gnn_hidden, hidden_dim),
+    """Residual MLP with LN after input projection and each residual sum."""
+    scale = 1.0 / max(1, num_blocks) ** 0.5
+    layers: list[nn.Module] = [
+        nn.Linear(input_dim, hidden_dim),
         nn.LayerNorm(hidden_dim),
         nn.SiLU(),
-    )
+    ]
+    for _ in range(num_blocks):
+        layers.append(ResidualMLPBlock(hidden_dim, scale=scale))
+        layers.append(nn.LayerNorm(hidden_dim))
+    return nn.Sequential(*layers)
 
 
-def _obs_to_flat_tensor(observation, batch_size: int) -> torch.Tensor:
-    """
-    Combines a list of observation tensors into a single flat tensor.
-
-    Args:
-        observation: Observation list or tuple of tensors.
-        batch_size (int): Current batch size.
-
-    Returns:
-        torch.Tensor: Flattened and concatenated observation tensor.
-    """
-    if isinstance(observation, torch.Tensor):
-        return observation.view(batch_size, -1).float()
-    obs_list = list(observation)
-    for i in range(len(obs_list)):
-        obs_list[i] = obs_list[i].view(batch_size, -1)
-    return torch.cat(obs_list, -1).float()
+_build_track_gnn_branch = build_track_gtn_branch
 
 
 def _ensure_image_4d(imgs: torch.Tensor, image_index: int) -> None:
@@ -146,7 +85,11 @@ class _GnnEffNetJointFeaturesMixin:
     layernorm_joint: nn.Module
 
     def _joint_features(self, obs, batch_size: int) -> torch.Tensor:
-        track = ensure_float(obs[0].view(batch_size, -1)).view(batch_size, 4, self._dim_track // 4)
+        track = ensure_float(obs[0].view(batch_size, -1)).view(
+            batch_size,
+            _GNN_TRACK_FEATURES_PER_POINT,
+            self._dim_track // _GNN_TRACK_FEATURES_PER_POINT,
+        )
         physics = _obs_to_flat_tensor(obs[1 : self._image_index], batch_size)
         track_embed = self.track_gnn(track)
         imgs = ensure_float(obs[self._image_index])
@@ -246,7 +189,9 @@ class SquashedActorGnnEffNetSophyResidual(_GnnEffNetJointFeaturesMixin, TorchAct
             self.rnn = None
             backbone_input_dim = joint_dim
         self.layernorm_joint = nn.LayerNorm(backbone_input_dim)
-        self.backbone = residual_mlp_backbone(backbone_input_dim, hidden_dim, num_blocks)
+        self.backbone = _gnn_effnet_sophy_residual_backbone(
+            backbone_input_dim, hidden_dim, num_blocks
+        )
         self.head_proj = nn.Sequential(nn.Linear(hidden_dim, hidden_dim), nn.SiLU())
         self._binary_brake = binary_brake and dim_act >= 3
         self.brake_logits_layer: nn.Linear | None
@@ -457,7 +402,9 @@ class QRCNNGnnEffNetSophyResidual(_GnnEffNetJointFeaturesMixin, nn.Module):
             self.rnn = None
             backbone_input_dim = joint_dim
         self.layernorm_joint = nn.LayerNorm(backbone_input_dim)
-        self.backbone = residual_mlp_backbone(backbone_input_dim, hidden_dim, num_blocks)
+        self.backbone = _gnn_effnet_sophy_residual_backbone(
+            backbone_input_dim, hidden_dim, num_blocks
+        )
         self.mlp_act = nn.Linear(hidden_dim + dim_act, hidden_dim)
         self.head_proj = nn.Sequential(nn.Linear(hidden_dim, hidden_dim), nn.SiLU())
         if noisy_linear_critic:

@@ -6,6 +6,7 @@ for progress, speed-along-track, and off-track/stall detection.
 """
 
 import atexit
+import dataclasses
 import math
 import os
 import pickle
@@ -13,12 +14,14 @@ import shutil
 import socket
 import tempfile
 import uuid
-from typing import Any
+from dataclasses import dataclass
+from typing import Any, ClassVar
 
 import numpy as np
 from loguru import logger
 
 from tmrl.config.spacing_lookahead import points_number_from_spacing_config
+from tmrl.custom.tm.utils.track_features import TrackFeatureProvider, discrete_curvature_xz
 
 OFF_TRACK_PROGRESS_ZERO_MULTIPLIER = 2.0
 SPEED_REWARD_MIN_KMH = 5.0
@@ -27,6 +30,27 @@ DUMMY_TRAJECTORY_THRESHOLD = 2
 MIN_ROAD_HALF_WIDTH_M = 0.5
 DEFAULT_ROAD_HALF_WIDTH_M = 12.0
 DT_MILLISECOND_THRESHOLD = 1.0
+NEAR_FINISH_PROGRESS_THRESHOLD = 0.97
+NEAR_FINISH_MIN_SPEED_KMH = 10.0
+
+
+@dataclass
+class EpisodeState:
+    """Episode-scoped state grouped for safe reset."""
+
+    cur_idx: int = 0
+    prev_idx: int = 0
+    step_counter: int = 0
+    failure_counter: int = 0
+    episode_reward: float = 0.0
+    furthest_race_progress: float = 0.0
+    furthest_reached_idx: int = 0
+    new_lap: bool = False
+    lap_cur_cooldown: int = 0
+    last_progress_step: int = 0
+    term_reason: str | None = None
+    logged_run_this_episode: bool = False
+    prev_pos: np.ndarray | None = None
 
 
 def _resample_polyline_by_arc_length(points: np.ndarray, num_points: int) -> np.ndarray:
@@ -50,23 +74,36 @@ def _resample_polyline_by_arc_length(points: np.ndarray, num_points: int) -> np.
     if total_length <= 0:
         return points.copy()
     arc_positions = np.linspace(0.0, total_length, num_points, endpoint=True)
-    result = []
-    segment_index = 0
-    for arc_s in arc_positions:
-        if arc_s >= total_length:
-            result.append(points[-1].copy())
-            continue
-        while segment_index + 1 < num_input and cumulative_length[segment_index + 1] < arc_s:
-            segment_index += 1
-        if segment_index + 1 >= num_input:
-            result.append(points[-1].copy())
-            continue
-        seg_start = cumulative_length[segment_index]
-        seg_end = cumulative_length[segment_index + 1]
-        interp = (arc_s - seg_start) / (seg_end - seg_start) if seg_end > seg_start else 0.0
-        interp = np.clip(interp, 0.0, 1.0)
-        result.append((1.0 - interp) * points[segment_index] + interp * points[segment_index + 1])
-    return np.array(result, dtype=np.float64)
+    resampled = np.zeros((num_points, points.shape[1]), dtype=np.float64)
+    for dim in range(points.shape[1]):
+        resampled[:, dim] = np.interp(arc_positions, cumulative_length, points[:, dim])
+    return resampled
+
+
+def _polyline_length(points: np.ndarray) -> float:
+    """Total arc length of a polyline."""
+    pts = np.asarray(points, dtype=np.float64)
+    if len(pts) < 2:
+        return 0.0
+    return float(np.sum(np.linalg.norm(np.diff(pts, axis=0), axis=1)))
+
+
+def _extend_polyline_straight(points: np.ndarray, extra_m: float, spacing_m: float) -> np.ndarray:
+    """Append straight samples from the last segment direction."""
+    pts = np.asarray(points, dtype=np.float64)
+    if len(pts) < 2 or extra_m <= 0.0:
+        return pts.copy()
+    tangent = pts[-1] - pts[-2]
+    norm = float(np.linalg.norm(tangent))
+    if norm <= 1e-9:
+        return pts.copy()
+    unit = tangent / norm
+    spacing = max(0.1, float(spacing_m))
+    n_new = max(1, math.ceil(extra_m / spacing))
+    step = extra_m / n_new
+    offsets = step * np.arange(1, n_new + 1, dtype=np.float64)[:, None]
+    extra = pts[-1] + unit * offsets
+    return np.vstack([pts, extra])
 
 
 def _ensure_wandb_api_key(api_key: str) -> None:
@@ -125,6 +162,7 @@ class RewardFunction:
         self._dummy_trajectory = len(self.data) <= DUMMY_TRAJECTORY_THRESHOLD
 
         self.datalen = len(self.data)
+        self._reward_extended_for_boundaries = False
 
         if require_track_boundary_pickles:
             if not os.path.isfile(track_path_left):
@@ -152,6 +190,28 @@ class RewardFunction:
             else:
                 with open(track_path_right, "rb") as f:
                     self.right_track = np.asarray(pickle.load(f), dtype=np.float64)
+
+        # When boundaries were extended beyond the recorded reward trajectory,
+        # keep reward points consistent instead of shrinking boundaries.
+        if len(self.data) >= 2 and len(self.left_track) >= 2 and len(self.right_track) >= 2:
+            reward_len_m = _polyline_length(self.data)
+            left_len_m = _polyline_length(self.left_track)
+            right_len_m = _polyline_length(self.right_track)
+            boundary_len_m = max(left_len_m, right_len_m)
+            if boundary_len_m > reward_len_m + 0.25:
+                mean_seg = reward_len_m / max(1, len(self.data) - 1)
+                spacing_m = max(0.2, mean_seg)
+                extra_m = boundary_len_m - reward_len_m
+                self.data = _extend_polyline_straight(
+                    self.data, extra_m=extra_m, spacing_m=spacing_m
+                )
+                self.datalen = len(self.data)
+                self._reward_extended_for_boundaries = True
+                logger.info(
+                    "Extended reward trajectory to match boundaries (+{:.2f}m, {} points).",
+                    extra_m,
+                    self.datalen,
+                )
 
         self._has_boundaries = (
             len(self.left_track) >= 2 and len(self.right_track) >= 2 and self.datalen >= 2
@@ -185,6 +245,13 @@ class RewardFunction:
         self.prev_idx = 0
         self.nb_obs_forward = nb_obs_forward
         self.nb_obs_backward = nb_obs_backward
+        self._tracking_lookahead_min = int(
+            rc.get("tracking_lookahead_min", max(nb_obs_forward, 24))
+        )
+        self._tracking_lookahead_max = int(
+            rc.get("tracking_lookahead_max", max(self._tracking_lookahead_min, 64))
+        )
+        self._tracking_margin_points = int(rc.get("tracking_lookahead_margin_points", 4))
 
         self.max_dist_from_traj = float(rc.get("max_stray", max_dist_from_traj))
 
@@ -266,6 +333,7 @@ class RewardFunction:
         self._drift_optimal_angle_deg = float(rc.get("drift_optimal_angle_deg", 12.0))
         self._drift_sigma_deg = float(rc.get("drift_sigma_deg", 8.0))
         self._drift_threshold_kmh = float(rc.get("drift_threshold_kmh", 80.0))
+        self._drift_curvature_threshold = float(rc.get("drift_curvature_threshold", 0.01))
         self._max_track_width = float(rc.get("max_track_width", 35.0))
         self.crash_penalty = float(rc.get("crash_penalty", crash_penalty))
         self._reward_clip_floor = float(rc.get("reward_clip_floor", 5.0))
@@ -283,6 +351,15 @@ class RewardFunction:
         self._drift_weight_end = float(rc.get("drift_reward_weight_end", 0.0))
         self._drift_anneal_steps = int(rc.get("drift_anneal_steps", 0))
         self._rear_slip_activation = float(rc.get("REAR_SLIP_ACTIVATION", 0.5))
+
+        # Cornering speed bonus: reward for maintaining speed through curves
+        self._cornering_speed_bonus = float(rc.get("cornering_speed_bonus", 0.0))
+        self._cornering_curvature_threshold = float(rc.get("cornering_curvature_threshold", 0.01))
+
+        # Progress acceleration bonus: reward for increasing rate of progress
+        self._progress_accel_bonus = float(rc.get("progress_acceleration_bonus", 0.0))
+        self._progress_ema: float = 0.0
+
         self._global_env_steps: int = 0
 
         self._term_reason: str | None = None
@@ -316,6 +393,8 @@ class RewardFunction:
             rc.get("debug_log_interval", rc.get("DEBUG_LOG_INTERVAL", 100))
         )
         self._reset_debug_accumulators()
+        self._set_episode_state(EpisodeState(lap_cur_cooldown=self._lap_cooldown_init))
+        self.track_feature_provider = TrackFeatureProvider(self)
 
         if self._use_wandb:
             import wandb
@@ -366,25 +445,10 @@ class RewardFunction:
     def get_n_next_checkpoints_xy(
         self, position: list[float] | np.ndarray, number_of_next_points: int
     ) -> list[float]:
-        """Next N checkpoint (x, z) coordinates relative to position, scaled by 10.
-
-        Args:
-            position: Current (x, y, z) position of the agent.
-            number_of_next_points: Number of future trajectory points to return.
-
-        Returns:
-            Flattened list of (delta_x, delta_z) per point, each scaled by 10.
-        """
-        max_idx = len(self.data) - 1
-        next_indices = [
-            min(self.cur_idx + step * self._checkpoint_stride, max_idx)
-            for step in range(1, number_of_next_points + 1)
-        ]
-        route_to_next_poses = []
-        for pos_index in next_indices:
-            for axis in (0, -1):
-                route_to_next_poses.append((self.data[pos_index][axis] - position[axis]) * 10.0)
-        return route_to_next_poses
+        """Compatibility wrapper. Prefer `track_feature_provider.get_n_next_checkpoints_xy`."""
+        return self.track_feature_provider.get_n_next_checkpoints_xy(
+            position, number_of_next_points
+        )
 
     def _nearest_index_in_window(
         self, pos: np.ndarray, start_idx: int, end_idx: int
@@ -401,90 +465,19 @@ class RewardFunction:
         min_dist = float(dists[best_local])
         return best_index, min_dist
 
+    def _tracking_lookahead_points(self, speed_kmh: float) -> int:
+        """Adaptive trajectory-tracking lookahead independent from observation horizon."""
+        spacing = max(self.average_distance, 0.2)
+        meters_per_step = max(0.0, speed_kmh / 3.6) * self._time_step_duration
+        dynamic_points = math.ceil(meters_per_step / spacing) + self._tracking_margin_points
+        lookahead = max(self._tracking_lookahead_min, dynamic_points)
+        return min(self._tracking_lookahead_max, lookahead)
+
     def get_track_info(
         self, position: list[float] | np.ndarray, points_number: int
-    ) -> (
-        tuple[list[float], list[float], list[float]]
-        | tuple[list[float], list[float], list[float], list[float]]
-    ):
-        """Track boundary (left, center, right) positions relative to current position.
-
-        Args:
-            position: Current (x, y, z) position of the agent.
-            points_number: Number of look-ahead points (ignored if spacing-based points used).
-
-        Returns:
-            Tuple of (left_positions, center_positions, right_positions), each
-            a flat list of relative coordinates.
-        """
-        max_idx = min(len(self.data), len(self.left_track), len(self.right_track)) - 1
-        if (getattr(self, "_point_spacing_m", 0) or 0) > 0 and (
-            getattr(self, "_points_number", 0) or 0
-        ) > 0:
-            next_indices = []
-            cur_idx = self.cur_idx
-            cur_dist = self._cumulative_dist[min(cur_idx, self.datalen - 1)]
-            n_pts = self._points_number or 0
-            for _ in range(n_pts):
-                target_dist = cur_dist + self._point_spacing_m
-                while (
-                    cur_idx < self.datalen - 1 and self._cumulative_dist[cur_idx + 1] <= target_dist
-                ):
-                    cur_idx += 1
-                if cur_idx < self.datalen - 1:
-                    cur_idx += 1
-                    cur_dist = self._cumulative_dist[cur_idx]
-                else:
-                    cur_dist = self._cumulative_dist[-1] + self._point_spacing_m
-                next_indices.append(min(cur_idx, max_idx))
-            points_number = len(next_indices)
-        else:
-            next_indices = [
-                self.cur_idx + step * self._checkpoint_stride + 1 for step in range(points_number)
-            ]
-            for idx in range(len(next_indices)):
-                if next_indices[idx] > max_idx:
-                    next_indices[idx] = max_idx
-
-        left_positions, center_positions, right_positions = [], [], []
-        for pos_index in next_indices:
-            for axis in (0, -1):
-                left_val = self.left_track[pos_index][axis]
-                right_val = self.right_track[pos_index][axis]
-                center_val = (left_val + right_val) / 2.0
-                left_positions.append(left_val - position[axis])
-                center_positions.append(center_val - position[axis])
-                right_positions.append(right_val - position[axis])
-
-        if getattr(self, "_track_curvature_obs", False) and len(next_indices) > 0:
-            curvatures = []
-            for _k, pos_index in enumerate(next_indices):
-                i0 = max(0, pos_index - 1)
-                i1 = pos_index
-                i2 = min(self.datalen - 1, pos_index + 1)
-                if i0 >= i2 or self.datalen < 2:
-                    curvatures.append(0.0)
-                    continue
-                p0 = self.data[i0]
-                p1 = self.data[i1]
-                p2 = self.data[i2]
-                v1 = np.array([p1[0] - p0[0], p1[2] - p0[2]], dtype=np.float64)
-                v2 = np.array([p2[0] - p1[0], p2[2] - p1[2]], dtype=np.float64)
-                n1 = np.linalg.norm(v1)
-                n2 = np.linalg.norm(v2)
-                if n1 < 1e-9 or n2 < 1e-9:
-                    curvatures.append(0.0)
-                    continue
-                v1, v2 = v1 / n1, v2 / n2
-                dot = np.clip(np.dot(v1, v2), -1.0, 1.0)
-                angle = math.acos(dot)
-                cross = v1[0] * v2[1] - v1[1] * v2[0]
-                sign = 1.0 if cross >= 0 else -1.0
-                arc = 0.5 * (n1 + n2)
-                kappa = sign * (angle / arc) if arc > 1e-9 else 0.0
-                curvatures.append(float(kappa))
-            return left_positions, center_positions, right_positions, curvatures
-        return left_positions, center_positions, right_positions
+    ) -> tuple[list[float], list[float], list[float], list[float], list[float]]:
+        """Compatibility wrapper. Prefer `track_feature_provider.get_track_info`."""
+        return self.track_feature_provider.get_track_info(position, points_number)
 
     def calculate_average_distance(self) -> float:
         """Mean segment length between consecutive trajectory points."""
@@ -505,6 +498,19 @@ class RewardFunction:
         self._dbg_progress_rewards = []
         self._dbg_crash_steps = 0
         self._dbg_end_of_track_awarded = False
+
+    _EPISODE_FIELD_MAP: ClassVar[dict[str, str]] = {
+        "last_progress_step": "_last_progress_step",
+        "term_reason": "_term_reason",
+        "logged_run_this_episode": "_logged_run_this_episode",
+        "prev_pos": "_prev_pos",
+    }
+
+    def _set_episode_state(self, state: EpisodeState) -> None:
+        """Apply grouped episode state fields to instance attributes."""
+        for f in dataclasses.fields(state):
+            attr_name = self._EPISODE_FIELD_MAP.get(f.name, f.name)
+            setattr(self, attr_name, getattr(state, f.name))
 
     def _log_episode_debug_summary(self):
         """Logs a per-component reward breakdown for the finished episode."""
@@ -590,7 +596,8 @@ class RewardFunction:
 
         pos = np.asarray(pos, dtype=np.float64).reshape(3)
         start_fwd = self.cur_idx
-        end_fwd = min(self.cur_idx + self.nb_obs_forward, self.datalen)
+        tracking_lookahead = self._tracking_lookahead_points(_speed_kmh)
+        end_fwd = min(self.cur_idx + tracking_lookahead, self.datalen)
         best_index, min_dist = self._nearest_index_in_window(pos, start_fwd, end_fwd)
         reward_progress = 0.0
         if self.datalen > 1 and self._total_traj_length > 0:
@@ -621,7 +628,7 @@ class RewardFunction:
         heading_xz: np.ndarray | None = None
         if dir_xyz is not None:
             d3 = np.asarray(dir_xyz, dtype=np.float64).reshape(3)
-            d_xz = np.array([d3[0], d3[2]], dtype=np.float64)
+            d_xz = d3[[0, 2]]
             d_norm = np.linalg.norm(d_xz)
             if d_norm > 1e-6:
                 heading_xz = d_xz / d_norm
@@ -629,7 +636,7 @@ class RewardFunction:
         motion_xz: np.ndarray | None = None
         if velocity_xyz is not None:
             v3 = np.asarray(velocity_xyz, dtype=np.float64).reshape(3)
-            v_xz = np.array([v3[0], v3[2]], dtype=np.float64)
+            v_xz = v3[[0, 2]]
             v_norm = np.linalg.norm(v_xz)
             if v_norm > 1e-6:
                 motion_xz = v_xz / v_norm
@@ -645,7 +652,7 @@ class RewardFunction:
         else:
             # Fall back to position-delta direction from previous step.
             if self._prev_pos is not None:
-                delta = pos[[0, 2]] - self._prev_pos[[0, 2]]
+                delta = (pos - self._prev_pos)[[0, 2]]
                 delta_norm = np.linalg.norm(delta)
                 if delta_norm > 1e-6:
                     car_dir = delta / delta_norm
@@ -670,18 +677,21 @@ class RewardFunction:
         alignment_effective = 0.0
         if next_idx > best_index:
             track_vec = self.data[next_idx] - self.data[best_index]
-            track_vec_xz = np.array([track_vec[0], track_vec[2]], dtype=np.float64)
+        elif best_index > 0:
+            track_vec = self.data[best_index] - self.data[best_index - 1]
+        else:
+            track_vec = None
+        if track_vec is not None:
+            track_vec_xz = track_vec[[0, 2]]
             norm = np.linalg.norm(track_vec_xz)
             if norm > 0:
                 track_dir = track_vec_xz / norm
                 alignment = np.dot(track_dir, car_dir)
-                if is_airborne:
-                    alignment_effective = 1.0
-                else:
-                    alignment_effective = max(
-                        getattr(self, "_speed_reward_alignment_floor", 0.0),
-                        max(0.0, alignment),
-                    )
+                base_alignment = max(
+                    getattr(self, "_speed_reward_alignment_floor", 0.0),
+                    max(0.0, alignment),
+                )
+                alignment_effective = max(0.5, base_alignment) if is_airborne else base_alignment
 
         reward = reward_progress
 
@@ -696,15 +706,38 @@ class RewardFunction:
                 _speed_reward_added = self._speed_reward_weight * (useful_speed_factor**exp)
                 reward += _speed_reward_added
 
+        track_curvature_abs = 0.0
+        if self.datalen > 2:
+            i0 = max(0, best_index - 1)
+            i2 = min(self.datalen - 1, best_index + 1)
+            if i0 < i2:
+                track_curvature_abs = abs(
+                    discrete_curvature_xz(
+                        self.data[i0],
+                        self.data[best_index],
+                        self.data[i2],
+                        signed=False,
+                    )
+                )
+
         _effective_slip = slip_angle_deg if slip_angle_deg is not None else _computed_slip_deg
-        if wheel_slips is not None and _speed_kmh >= self._drift_threshold_kmh:
+        allow_drift_bonus = track_curvature_abs >= self._drift_curvature_threshold
+        if (
+            wheel_slips is not None
+            and _speed_kmh >= self._drift_threshold_kmh
+            and allow_drift_bonus
+        ):
             ws = np.asarray(wheel_slips, dtype=np.float64).reshape(-1)
             if ws.size >= 4:
                 rear_slip_avg = 0.5 * (abs(float(ws[2])) + abs(float(ws[3])))
                 drift_w = self._current_drift_weight()
                 if drift_w > 0 and rear_slip_avg > self._rear_slip_activation:
                     reward += drift_w * min(1.0, rear_slip_avg)
-        elif _effective_slip is not None and _speed_kmh >= self._drift_threshold_kmh:
+        elif (
+            _effective_slip is not None
+            and _speed_kmh >= self._drift_threshold_kmh
+            and allow_drift_bonus
+        ):
             _effective_slip = abs(float(_effective_slip))
             drift_w = self._current_drift_weight()
             if drift_w > 0:
@@ -714,6 +747,34 @@ class RewardFunction:
                     -((_effective_slip - opt) ** 2) / (2.0 * sigma * sigma)
                 )
                 reward += drift_bonus
+
+        # --- Cornering speed bonus ---
+        if (
+            self._cornering_speed_bonus > 0
+            and track_curvature_abs > self._cornering_curvature_threshold
+        ):
+            speed_frac = min(1.0, _speed_kmh / max(1.0, self._max_speed_kmh))
+            reward += (
+                self._cornering_speed_bonus * speed_frac * track_curvature_abs * alignment_effective
+            )
+
+        # --- Progress acceleration bonus ---
+        if self._progress_accel_bonus > 0 and reward_progress > 0:
+            self._progress_ema = 0.9 * self._progress_ema + 0.1 * reward_progress
+            if reward_progress > self._progress_ema:
+                reward += self._progress_accel_bonus * (reward_progress - self._progress_ema)
+
+        race_progress = self.compute_race_progress()
+        if race_progress > self.furthest_race_progress:
+            self.furthest_race_progress = race_progress
+
+        if (
+            getattr(self, "_use_time_no_progress", False)
+            and race_progress >= NEAR_FINISH_PROGRESS_THRESHOLD
+            and _speed_kmh >= NEAR_FINISH_MIN_SPEED_KMH
+            and not end_of_track
+        ):
+            self._last_progress_step = self.step_counter
 
         if (
             getattr(self, "_use_time_no_progress", False)
@@ -759,9 +820,6 @@ class RewardFunction:
             self.failure_counter = self.step_counter - self._last_progress_step
         else:
             self.failure_counter = 0
-        race_progress = self.compute_race_progress()
-        if race_progress > self.furthest_race_progress:
-            self.furthest_race_progress = race_progress
 
         self.episode_reward += reward
 
@@ -788,11 +846,15 @@ class RewardFunction:
             if truncated and term_reason is None:
                 term_reason = "truncated"
             logger.info(
-                "Total reward of the run: {:.4f} (Steps: {}, Time: {:.2f}s, reason: {})",
+                "Total reward of the run: {:.4f} (Steps: {}, Time: {:.2f}s, reason: {}, "
+                "progress: {:.3f}, idx: {}/{})",
                 self.episode_reward,
                 self.step_counter,
                 run_time_seconds,
                 term_reason,
+                self.furthest_race_progress,
+                self.cur_idx,
+                self.datalen,
             )
             if self._debug_reward:
                 self._log_episode_debug_summary()
@@ -810,6 +872,7 @@ class RewardFunction:
                     "run/time_seconds": run_time_seconds,
                     "run/steps": self.step_counter,
                     "run/best_race_progress": self.furthest_race_progress,
+                    "run/cur_idx_frac": self.cur_idx / max(1, self.datalen - 1),
                     "run/episode_count": self._episode_count,
                     "run/finish_time": run_time_seconds if end_of_track else 0.0,
                     "run/finished_track": int(end_of_track),
@@ -827,18 +890,7 @@ class RewardFunction:
 
     def reset(self) -> None:
         """Reset reward state for a new episode."""
-        self.cur_idx = 0
-        self.prev_idx = 0
-        self.furthest_reached_idx = 0
-        self.step_counter = 0
-        self.failure_counter = 0
-        self._prev_pos = None
-        self._last_progress_step = 0
-        self._term_reason = None
-        self.episode_reward = 0.0
-        self.new_lap = False
-        self.lap_cur_cooldown = self._lap_cooldown_init
-        self.furthest_race_progress = 0.0
-        self._logged_run_this_episode = False
+        self._set_episode_state(EpisodeState(lap_cur_cooldown=self._lap_cooldown_init))
+        self._progress_ema = 0.0
         if self._debug_reward:
             self._reset_debug_accumulators()

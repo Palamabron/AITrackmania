@@ -1,9 +1,8 @@
 """Track-boundary TrackMania 2020 rtgym interfaces.
 
 Observations use a 60-float vector of left/right track-boundary points ahead of the car,
-sampled from a *pre-recorded* boundary map (CSV for :class:`TM2020InterfaceBoundary`,
-per-map pickles for :class:`TM2020InterfaceBoundaryImages`). This is the default TMRL
-geometry path for TM2020.
+sampled from a *pre-recorded* boundary map (per-map pickles for :class:`TM2020InterfaceBoundary`
+and :class:`TM2020InterfaceBoundaryImages`, with CSV fallback when pkls are missing).
 
 - ``TM2020InterfaceBoundary``       - telemetry + pre-recorded track boundaries ahead.
 - ``TM2020InterfaceBoundaryImages`` - camera image history + track boundaries + progress.
@@ -17,16 +16,18 @@ import pickle
 import cv2
 import numpy as np
 from gymnasium import spaces
+from loguru import logger
 from scipy import spatial
 
 import tmrl.config as cfg
 from tmrl.config.paths import BOUNDARY_CSV_LEFT, BOUNDARY_CSV_RIGHT
-from tmrl.custom.interfaces.base import MPS_TO_KMPH
+from tmrl.custom.interfaces.base import MPS_TO_KMPH, apply_episode_length_guards
 from tmrl.custom.interfaces.telemetry_indices import TmrlDataPlugin, yaw_pitch_from_dir_xyz
 from tmrl.custom.interfaces.vision import TM2020Interface
 from tmrl.custom.tm.utils.control_mouse import mouse_save_replay_tm20
 from tmrl.custom.tm.utils.window import WindowInterface
 from tmrl.registry import INTERFACES
+from tmrl.tools.geometry_utils import pad_polyline_xz_straight
 
 BOUNDARY_LOOK_AHEAD = 15
 BOUNDARY_NEARBY_CORRECTION = 60
@@ -66,10 +67,8 @@ def _boundary_ahead(
     i_l_max = i_l_min + look_ahead_distance
     i_r_max = i_r_min + look_ahead_distance
 
-    extra_l = np.full((look_ahead_distance, 2), left_boundary.T[-1])
-    left_boundary_extended = np.concatenate([left_boundary.T, extra_l], axis=0).T
-    extra_r = np.full((look_ahead_distance, 2), right_boundary.T[-1])
-    right_boundary_extended = np.concatenate([right_boundary.T, extra_r], axis=0).T
+    left_boundary_extended = pad_polyline_xz_straight(left_boundary, look_ahead_distance)
+    right_boundary_extended = pad_polyline_xz_straight(right_boundary, look_ahead_distance)
 
     l_x = left_boundary_extended[0][i_l_min:i_l_max]
     l_z = left_boundary_extended[1][i_l_min:i_l_max]
@@ -148,14 +147,31 @@ class TM2020InterfaceBoundary(TM2020Interface):
         self.window_interface: WindowInterface | None = None
         self.last_pos = [0, 0]
         self.index = 0
-        self.left_boundary = _load_boundary_csv_or_fallback(BOUNDARY_CSV_LEFT)
-        self.right_boundary = _load_boundary_csv_or_fallback(BOUNDARY_CSV_RIGHT)
+        left_pkl = getattr(cfg, "TRACK_PATH_LEFT", "")
+        right_pkl = getattr(cfg, "TRACK_PATH_RIGHT", "")
+        if left_pkl and right_pkl and os.path.isfile(left_pkl) and os.path.isfile(right_pkl):
+            self.left_boundary, self.right_boundary = _load_boundary_pkl(left_pkl, right_pkl)
+            logger.info(
+                "Boundary interface: loaded per-map pkls (left={} pts, right={} pts)",
+                self.left_boundary.shape[1],
+                self.right_boundary.shape[1],
+            )
+        else:
+            self.left_boundary = _load_boundary_csv_or_fallback(BOUNDARY_CSV_LEFT)
+            self.right_boundary = _load_boundary_csv_or_fallback(BOUNDARY_CSV_RIGHT)
+            logger.warning(
+                "Boundary interface: per-map pkls missing; falling back to CSV "
+                "(left={!r}, right={!r})",
+                left_pkl or BOUNDARY_CSV_LEFT,
+                right_pkl or BOUNDARY_CSV_RIGHT,
+            )
         # Never set in production: it grows unbounded (one entry per env step, never drained).
         self._observed_boundaries: list[list[list[float]]] | None = (
             [[], [], [], [], []] if record else None
         )
         self._bd_prev_speed_kmh: float = 0.0
         self._bd_prev_acc_kmh: float = 0.0
+        self._steps_since_reset: int = 0
 
     def initialize(self):
         """Skip screen-ray rangefinder precomputation; geometry comes from boundary CSV/pkl."""
@@ -217,7 +233,7 @@ class TM2020InterfaceBoundary(TM2020Interface):
             float(data[TmrlDataPlugin.DIR_Y]),
             float(data[TmrlDataPlugin.DIR_Z]),
         )
-        yaw, _pitch = yaw_pitch_from_dir_xyz(dir_xyz)
+        yaw, _ = yaw_pitch_from_dir_xyz(dir_xyz)
         car_position = [data[TmrlDataPlugin.POS_X], data[TmrlDataPlugin.POS_Z]]
         self.last_pos = car_position
 
@@ -246,7 +262,6 @@ class TM2020InterfaceBoundary(TM2020Interface):
         )
         crash = np.array([float(bool(self.is_crashed))], dtype=np.float32)
 
-        crash_penalty = -float(self.crash_penalty)
         end_of_track = bool(data[TmrlDataPlugin.FINISH_UI_ACTIVE])
         info: dict[str, object] = {
             "end_of_track": end_of_track,
@@ -262,42 +277,59 @@ class TM2020InterfaceBoundary(TM2020Interface):
                 ],
                 dtype=np.float32,
             )
-        reward = 0.0
-        if bool(self.is_crashed):
-            reward -= abs(crash_penalty)
 
-        fc_scalar: float
-        if end_of_track:
-            reward += float(self.finish_reward)
-            terminated = True
+        assert self.reward_function is not None
+        wheel_slips = [
+            float(data[TmrlDataPlugin.SLIP_FL]),
+            float(data[TmrlDataPlugin.SLIP_FR]),
+            float(data[TmrlDataPlugin.SLIP_RL]),
+            float(data[TmrlDataPlugin.SLIP_RR]),
+        ]
+        surface_materials = [
+            int(data[TmrlDataPlugin.MAT_FL]),
+            int(data[TmrlDataPlugin.MAT_FR]),
+            int(data[TmrlDataPlugin.MAT_RL]),
+            int(data[TmrlDataPlugin.MAT_RR]),
+        ]
+
+        rew, terminated, fc_int, reward_sum = self.reward_function.compute_reward(
+            pos=np.array(
+                [
+                    data[TmrlDataPlugin.POS_X],
+                    data[TmrlDataPlugin.POS_Y],
+                    data[TmrlDataPlugin.POS_Z],
+                ]
+            ),
+            velocity_xyz=(
+                float(data[TmrlDataPlugin.VEL_X]),
+                float(data[TmrlDataPlugin.VEL_Y]),
+                float(data[TmrlDataPlugin.VEL_Z]),
+            ),
+            dir_xyz=dir_xyz,
+            surface_materials=surface_materials,
+            wheel_slips=wheel_slips,
+            crashed=bool(self.is_crashed),
+            speed=speed_kmh,
+            end_of_track=end_of_track,
+            input_brake=float(data[TmrlDataPlugin.INPUT_BRAKE]),
+            aim_yaw=float(yaw),
+            input_steer=float(data[TmrlDataPlugin.INPUT_STEER]),
+            gear=float(data[TmrlDataPlugin.ENGINE_GEAR]),
+            slip_angle_deg=None,
+        )
+        info["reward_sum"] = reward_sum
+
+        self._steps_since_reset += 1
+        terminated, eot_accepted = apply_episode_length_guards(
+            self._steps_since_reset,
+            end_of_track,
+            terminated,
+        )
+        fc_scalar = float(fc_int)
+        if eot_accepted:
             fc_scalar = 0.0
             if self.save_replays:
                 mouse_save_replay_tm20()
-        else:
-            assert self.reward_function is not None
-            rew, terminated, fc_int = self.reward_function.compute_reward(
-                pos=np.array(
-                    [
-                        data[TmrlDataPlugin.POS_X],
-                        data[TmrlDataPlugin.POS_Y],
-                        data[TmrlDataPlugin.POS_Z],
-                    ]
-                ),
-                velocity_xyz=(
-                    float(data[TmrlDataPlugin.VEL_X]),
-                    float(data[TmrlDataPlugin.VEL_Y]),
-                    float(data[TmrlDataPlugin.VEL_Z]),
-                ),
-                dir_xyz=(
-                    float(data[TmrlDataPlugin.DIR_X]),
-                    float(data[TmrlDataPlugin.DIR_Y]),
-                    float(data[TmrlDataPlugin.DIR_Z]),
-                ),
-                speed=float(data[TmrlDataPlugin.SPEED_MPS]) * MPS_TO_KMPH,
-            )[:3]
-            reward += float(rew)
-            fc_scalar = float(fc_int)
-            terminated = bool(terminated)
 
         obs = [
             track_information,
@@ -311,9 +343,8 @@ class TM2020InterfaceBoundary(TM2020Interface):
             np.array([fc_scalar], dtype=np.float32),
         ]
         self.cooldown_control()
-        assert self.reward_function is not None
         self.reward_function.log_model_run(terminated=bool(terminated), end_of_track=end_of_track)
-        return obs, np.float32(reward), terminated, info
+        return obs, np.float32(rew), terminated, info
 
     def reset(self, seed=None, options=None):
         rf = getattr(self, "reward_function", None)
@@ -327,6 +358,7 @@ class TM2020InterfaceBoundary(TM2020Interface):
         data = self.grab_data()
         self._bd_prev_speed_kmh = 0.0
         self._bd_prev_acc_kmh = 0.0
+        self._steps_since_reset = 0
         track_information = np.full((BOUNDARY_OBS_DIM,), 0, dtype=np.float32)
         speed_kmh = float(data[TmrlDataPlugin.SPEED_MPS]) * MPS_TO_KMPH
         speed = np.array([speed_kmh], dtype=np.float32)
@@ -395,6 +427,9 @@ class TM2020InterfaceBoundaryImages(TM2020Interface):
         )
         self.look_ahead_distance = BOUNDARY_LOOK_AHEAD
         self.nearby_correction = BOUNDARY_NEARBY_CORRECTION
+        self._steps_since_reset: int = 0
+        self._bdimg_prev_speed_kmh: float = 0.0
+        self._bdimg_prev_acc_kmh: float = 0.0
 
     def initialize(self):
         self.initialize_common()
@@ -448,12 +483,44 @@ class TM2020InterfaceBoundaryImages(TM2020Interface):
         images = np.array(list(self.image_hist), dtype=np.float32)
         assert self.reward_function is not None
         self.reward_function.reset()
+        self._steps_since_reset = 0
+        self._bdimg_prev_speed_kmh = 0.0
+        self._bdimg_prev_acc_kmh = 0.0
         return [speed, progress, track_information, images], {}
 
     def get_obs_rew_terminated_info(self):
         assert self.reward_function is not None
         speed, data, track_information, img = self._grab_speed_track_and_image()
-        rew, terminated, _failure_counter = self.reward_function.compute_reward(
+        skmh = float(speed[0])
+        acc_val = skmh - self._bdimg_prev_speed_kmh
+        jerk_val = acc_val - self._bdimg_prev_acc_kmh
+        self._bdimg_prev_speed_kmh = skmh
+        self._bdimg_prev_acc_kmh = acc_val
+        self._sync_crash_state()
+        self.crash_fallback(current_speed=skmh, jerk=jerk_val)
+
+        dir_xyz_t = (
+            float(data[TmrlDataPlugin.DIR_X]),
+            float(data[TmrlDataPlugin.DIR_Y]),
+            float(data[TmrlDataPlugin.DIR_Z]),
+        )
+        yaw_val, _ = yaw_pitch_from_dir_xyz(dir_xyz_t)
+        end_of_track = bool(data[TmrlDataPlugin.FINISH_UI_ACTIVE])
+
+        wheel_slips = [
+            float(data[TmrlDataPlugin.SLIP_FL]),
+            float(data[TmrlDataPlugin.SLIP_FR]),
+            float(data[TmrlDataPlugin.SLIP_RL]),
+            float(data[TmrlDataPlugin.SLIP_RR]),
+        ]
+        surface_materials = [
+            int(data[TmrlDataPlugin.MAT_FL]),
+            int(data[TmrlDataPlugin.MAT_FR]),
+            int(data[TmrlDataPlugin.MAT_RL]),
+            int(data[TmrlDataPlugin.MAT_RR]),
+        ]
+
+        rew, terminated, _fc_int, reward_sum = self.reward_function.compute_reward(
             pos=np.array(
                 [data[TmrlDataPlugin.POS_X], data[TmrlDataPlugin.POS_Y], data[TmrlDataPlugin.POS_Z]]
             ),
@@ -462,13 +529,18 @@ class TM2020InterfaceBoundaryImages(TM2020Interface):
                 float(data[TmrlDataPlugin.VEL_Y]),
                 float(data[TmrlDataPlugin.VEL_Z]),
             ),
-            dir_xyz=(
-                float(data[TmrlDataPlugin.DIR_X]),
-                float(data[TmrlDataPlugin.DIR_Y]),
-                float(data[TmrlDataPlugin.DIR_Z]),
-            ),
-            speed=float(speed[0]),
-        )[:3]
+            dir_xyz=dir_xyz_t,
+            surface_materials=surface_materials,
+            wheel_slips=wheel_slips,
+            crashed=bool(self.is_crashed),
+            speed=skmh,
+            end_of_track=end_of_track,
+            input_brake=float(data[TmrlDataPlugin.INPUT_BRAKE]),
+            aim_yaw=float(yaw_val),
+            input_steer=float(data[TmrlDataPlugin.INPUT_STEER]),
+            gear=float(data[TmrlDataPlugin.ENGINE_GEAR]),
+            slip_angle_deg=None,
+        )
         progress = np.array(
             [self.reward_function.cur_idx / max(1, self.reward_function.datalen)],
             dtype=np.float32,
@@ -477,12 +549,23 @@ class TM2020InterfaceBoundaryImages(TM2020Interface):
         self.image_hist = self.image_hist[-self.img_hist_len :]
         images = np.array(list(self.image_hist), dtype=np.float32)
         obs = [speed, progress, track_information, images]
-        end_of_track = bool(data[TmrlDataPlugin.FINISH_UI_ACTIVE])
-        info = {"end_of_track": end_of_track}
-        if end_of_track:
-            rew += self.finish_reward
-            terminated = True
+        info = {
+            "end_of_track": end_of_track,
+            "reward_sum": reward_sum,
+            "crashed": bool(self.is_crashed),
+            "crash_penalty": float(self.crash_penalty),
+        }
 
+        self._steps_since_reset += 1
+        terminated, eot_accepted = apply_episode_length_guards(
+            self._steps_since_reset,
+            end_of_track,
+            terminated,
+        )
+        if eot_accepted and self.save_replays:
+            mouse_save_replay_tm20(True)
+
+        self.cooldown_control()
         self.reward_function.log_model_run(terminated=bool(terminated), end_of_track=end_of_track)
         return obs, np.float32(rew), terminated, info
 

@@ -1,0 +1,5 @@
+environment:
+  reward:
+    speed_reward_weight: 3.0
+algorithm:
+  iqn_epsilon_decay_steps: 4000000

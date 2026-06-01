@@ -119,9 +119,11 @@ class TM2020RLInterface(TM2020Interface):
         self.initialized = True
 
     def get_observation_space(self):
-        from tmrl.custom.tm.tqc_observation_space import build_tqc_sophy_tuple_observation_space
+        from tmrl.custom.tm.openplanet_observation_space import (
+            build_openplanet_tuple_observation_space,
+        )
 
-        base_spaces = build_tqc_sophy_tuple_observation_space(self.points_number)
+        base_spaces = build_openplanet_tuple_observation_space(self.points_number)
         if not self.include_camera_images:
             return base_spaces
         spaces_list = list(base_spaces.spaces)
@@ -154,11 +156,14 @@ class TM2020RLInterface(TM2020Interface):
 
     def _track_observation(self, pos, yaw):
         assert self.reward_function is not None
-        track_result = self.reward_function.get_track_info(pos, self.points_number)
+        track_result = self.reward_function.track_feature_provider.get_track_info(
+            pos, self.points_number
+        )
         left_track = track_result[0]
         center_track = track_result[1]
         right_track = track_result[2]
         curvature_list = track_result[3] if len(track_result) >= 4 else None
+        log_distance_list = track_result[4] if len(track_result) >= 5 else None
 
         if bool(cfg.REWARD_CONFIG.get("TRACK_LOCAL_FRAME", False)):
             cos_y, sin_y = np.cos(yaw), np.sin(yaw)
@@ -176,6 +181,8 @@ class TM2020RLInterface(TM2020Interface):
             right_track = _rotate(right_track)
 
         track_list = left_track + center_track + right_track
+        if log_distance_list is not None:
+            track_list += log_distance_list
         if cfg.OBS_TRACK_SCALE != 1.0:
             track_list = [x / cfg.OBS_TRACK_SCALE for x in track_list]
         return np.array(track_list, dtype=np.float32), curvature_list
@@ -229,6 +236,9 @@ class TM2020RLInterface(TM2020Interface):
             [data[TmrlDataPlugin.SLIP_FL], data[TmrlDataPlugin.SLIP_FR]], dtype=np.float32
         )
         gear = np.array([data[TmrlDataPlugin.ENGINE_GEAR]], dtype=np.float32)
+        engine_rpm = np.array([data[TmrlDataPlugin.ENGINE_RPM]], dtype=np.float32)
+        skidding_count = np.array([data[TmrlDataPlugin.WHEELS_SKIDDING_COUNT]], dtype=np.float32)
+        adherence_coef = np.array([data[TmrlDataPlugin.ADHERENCE_COEF]], dtype=np.float32)
         wheel_slips = [
             float(data[TmrlDataPlugin.SLIP_FL]),
             float(data[TmrlDataPlugin.SLIP_FR]),
@@ -313,6 +323,9 @@ class TM2020RLInterface(TM2020Interface):
             input_gas_pedal,
             input_brake,
             gear,
+            engine_rpm,
+            skidding_count,
+            adherence_coef,
             aim_yaw,
             aim_pitch,
             steer_angle,
@@ -390,6 +403,9 @@ class TM2020RLInterface(TM2020Interface):
             [data[TmrlDataPlugin.SLIP_FL], data[TmrlDataPlugin.SLIP_FR]], dtype=np.float32
         )
         gear = np.array([data[TmrlDataPlugin.ENGINE_GEAR]], dtype=np.float32)
+        engine_rpm = np.array([data[TmrlDataPlugin.ENGINE_RPM]], dtype=np.float32)
+        skidding_count = np.array([data[TmrlDataPlugin.WHEELS_SKIDDING_COUNT]], dtype=np.float32)
+        adherence_coef = np.array([data[TmrlDataPlugin.ADHERENCE_COEF]], dtype=np.float32)
         track_yaw = yaw_val
         self._prev_speed_for_kinematics = speed_kmh
         self._prev_acc_for_kinematics = 0.0
@@ -408,6 +424,9 @@ class TM2020RLInterface(TM2020Interface):
             input_gas_pedal,
             input_brake,
             gear,
+            engine_rpm,
+            skidding_count,
+            adherence_coef,
             aim_yaw,
             aim_pitch,
             steer_angle,

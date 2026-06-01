@@ -7,7 +7,7 @@ from typing import Any
 
 import numpy as np
 
-from tmrl.custom.memories.utils import configure_discrete_steer_bins
+from tmrl.custom.memories.utils import canonical_replay_action_vector, configure_discrete_steer_bins
 from tmrl.memory.base import Memory
 from tmrl.util import collate_torch
 
@@ -89,6 +89,11 @@ class R2D2Memory(Memory, ABC):
         self._last_per_is_weights: list[float] = []
         if len(self.data) > 0 and len(self.data[0]) > 0:
             self.priorities = [1.0] * len(self.data[0])
+
+    def __getitem__(self, item):
+        prev_obs, new_act, rew, new_obs, terminated, truncated, info = super().__getitem__(item)
+        new_act = canonical_replay_action_vector(new_act, self.discrete_n_steer_bins)
+        return prev_obs, new_act, rew, new_obs, terminated, truncated, info
 
     def _extend_priorities(self, n: int) -> None:
         """Extend priorities for n new buffer entries (max of current or 1.0)."""

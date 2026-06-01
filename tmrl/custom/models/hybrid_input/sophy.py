@@ -7,7 +7,6 @@ for track information using Conv1d.
 
 import math
 from io import BytesIO
-from typing import cast
 
 import numpy as np
 import torch
@@ -23,8 +22,18 @@ from tmrl.custom.models.shared.blocks import (
     residual_mlp_backbone,
     simba_v2_backbone,
 )
+from tmrl.custom.models.shared.track_encoders import (
+    TRACK_CHANNELS_DEFAULT,
+    TRACK_CHANNELS_GTN,
+    build_track_gtn_branch,
+    is_gtn_encoder,
+)
 from tmrl.custom.utils.nn import GSDEModule
 from tmrl.registry import MODELS
+
+_TRACK_CHANNELS_DEFAULT = TRACK_CHANNELS_DEFAULT
+_TRACK_CHANNELS_GTN = TRACK_CHANNELS_GTN
+_is_gtn_encoder = is_gtn_encoder
 
 
 def mlp(sizes, dim_obs, activation=nn.ReLU):
@@ -452,63 +461,7 @@ def _build_track_spline_mlp_branch(dim_track: int, hidden_dim: int) -> nn.Module
     )
 
 
-class _TrackGNN(nn.Module):
-    def __init__(self, num_nodes: int, in_dim: int = 3, hidden_dim: int = 64, num_layers: int = 3):
-        super().__init__()
-        self.num_nodes = num_nodes
-        self.in_dim = in_dim
-        self.hidden_dim = hidden_dim
-        edge_src = torch.cat([torch.arange(num_nodes - 1), torch.arange(1, num_nodes)], dim=0)
-        edge_dst = torch.cat([torch.arange(1, num_nodes), torch.arange(num_nodes - 1)], dim=0)
-        self.register_buffer("edge_src", edge_src)
-        self.register_buffer("edge_dst", edge_dst)
-        self.node_in = nn.Sequential(
-            nn.Linear(in_dim, hidden_dim),
-            nn.LayerNorm(hidden_dim),
-        )
-        self.layers = nn.ModuleList()
-        for _ in range(num_layers):
-            self.layers.append(nn.Linear(hidden_dim * 2, hidden_dim))
-        self.norms = nn.ModuleList([nn.LayerNorm(hidden_dim) for _ in range(num_layers)])
-        self.readout = nn.Linear(hidden_dim, hidden_dim)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        b, _, n = x.shape
-        x = x.permute(0, 2, 1)
-        h = self.node_in(x)
-        edge_src = cast(torch.Tensor, self.edge_src)
-        edge_dst = cast(torch.Tensor, self.edge_dst)
-        for lin, norm in zip(self.layers, self.norms, strict=False):
-            msg = h[:, edge_src]
-            agg = torch.zeros(b, n, self.hidden_dim, device=h.device, dtype=h.dtype)
-            agg.index_add_(1, edge_dst, msg)
-            deg = torch.zeros(n, device=h.device, dtype=h.dtype)
-            deg.index_add_(0, edge_dst, torch.ones_like(edge_dst, dtype=h.dtype))
-            deg = deg.clamp(min=1).view(1, -1, 1)
-            agg = agg / deg
-            h = norm(lin(torch.cat([h, agg], dim=-1)).relu())
-        out = self.readout(h)
-        return cast(torch.Tensor, out.mean(dim=1))
-
-
-def _build_track_gnn_branch(
-    dim_track: int, hidden_dim: int, gnn_hidden: int = 64, gnn_layers: int = 3
-) -> nn.Module:
-    assert dim_track >= 4, "track dim must be at least 4"
-    assert dim_track % 4 == 0, "track dim must be 4*N (4 channels)"
-    num_nodes = dim_track // 4
-    gnn = _TrackGNN(
-        num_nodes=num_nodes,
-        in_dim=4,
-        hidden_dim=gnn_hidden,
-        num_layers=gnn_layers,
-    )
-    return nn.Sequential(
-        gnn,
-        nn.Linear(gnn_hidden, hidden_dim),
-        nn.LayerNorm(hidden_dim),
-        nn.SiLU(),
-    )
+_build_track_gnn_branch = build_track_gtn_branch
 
 
 def _make_backbone(
@@ -582,9 +535,12 @@ class SquashedActorSophyResidual(TorchActorModule):
         self.use_sde = use_sde
         self._sde_clip_mean = sde_clip_mean
         self._use_track_conv = split_track_observation and len(observation_space) > 1
+        self._track_channels = (
+            _TRACK_CHANNELS_GTN if _is_gtn_encoder(track_encoder) else _TRACK_CHANNELS_DEFAULT
+        )
         if self._use_track_conv:
             dim_track_first = math.prod(observation_space[0].shape)
-            if dim_track_first % 4 != 0:
+            if dim_track_first % self._track_channels != 0:
                 self._use_track_conv = False
         self._use_rnn = use_rnn
         self._r2d2_sequence_length = r2d2_sequence_length
@@ -593,12 +549,14 @@ class SquashedActorSophyResidual(TorchActorModule):
         if self._use_track_conv:
             dim_track = math.prod(observation_space[0].shape)
             dim_physics = dim_obs - dim_track
-            assert dim_track % 4 == 0, "track_info should be 4*N (left_x, left_y, right_x, right_y)"
+            assert dim_track % self._track_channels == 0, (
+                f"track_info should be {self._track_channels}*N for selected track encoder"
+            )
             self._dim_track = dim_track
             self._dim_physics = dim_physics
             if track_encoder == "spline_mlp":
                 self.track_conv = _build_track_spline_mlp_branch(dim_track, hidden_dim)
-            elif track_encoder == "gnn":
+            elif _is_gtn_encoder(track_encoder):
                 self.track_conv = _build_track_gnn_branch(
                     dim_track, hidden_dim, gnn_hidden=gnn_hidden, gnn_layers=gnn_layers
                 )
@@ -676,7 +634,9 @@ class SquashedActorSophyResidual(TorchActorModule):
             torch.Tensor: Combined features.
         """
         track = observation[0].view(batch_size, -1).float()
-        track = track.view(batch_size, 4, self._dim_track // 4)
+        track = track.view(
+            batch_size, self._track_channels, self._dim_track // self._track_channels
+        )
         track_embed = self.track_conv(track)
         physics = _obs_to_flat_tensor(observation[1:], batch_size)
         physics_embed = self.physics_proj(physics)
@@ -909,7 +869,7 @@ class QRCNNSophyResidual(nn.Module):
             split_track_observation: Whether to split track observation into a Conv1d branch.
             use_rnn: Whether to use an RNN layer.
             rnn_hidden_size: Hidden size for the RNN (defaults to hidden_dim if None).
-            track_encoder: Type of track encoder ("conv1d", "spline_mlp", or "gnn").
+            track_encoder: Type of track encoder ("conv1d", "spline_mlp", or "gtn").
             api_layernorm: Whether to apply LayerNorm to the API input.
             noisy_linear_critic: Whether to use NoisyLinear for the output.
             output_dropout: Dropout rate for the output.
@@ -930,9 +890,12 @@ class QRCNNSophyResidual(nn.Module):
         self.num_quantiles = quantiles_number
 
         self._use_track_conv = split_track_observation and len(observation_space) > 1
+        self._track_channels = (
+            _TRACK_CHANNELS_GTN if _is_gtn_encoder(track_encoder) else _TRACK_CHANNELS_DEFAULT
+        )
         if self._use_track_conv:
             dim_track_first = math.prod(observation_space[0].shape)
-            if dim_track_first % 4 != 0:
+            if dim_track_first % self._track_channels != 0:
                 self._use_track_conv = False
         self._use_rnn = use_rnn
         self._r2d2_sequence_length = r2d2_sequence_length
@@ -941,12 +904,14 @@ class QRCNNSophyResidual(nn.Module):
         if self._use_track_conv:
             dim_track = math.prod(observation_space[0].shape)
             dim_physics = dim_obs - dim_track
-            assert dim_track % 4 == 0, "track_info should be 4*N (left_x, left_y, right_x, right_y)"
+            assert dim_track % self._track_channels == 0, (
+                f"track_info should be {self._track_channels}*N for selected track encoder"
+            )
             self._dim_track = dim_track
             self._dim_physics = dim_physics
             if track_encoder == "spline_mlp":
                 self.track_conv = _build_track_spline_mlp_branch(dim_track, hidden_dim)
-            elif track_encoder == "gnn":
+            elif _is_gtn_encoder(track_encoder):
                 self.track_conv = _build_track_gnn_branch(
                     dim_track, hidden_dim, gnn_hidden=gnn_hidden, gnn_layers=gnn_layers
                 )
@@ -996,7 +961,9 @@ class QRCNNSophyResidual(nn.Module):
         """
         if self._use_track_conv:
             track = observation[0].view(batch_size, -1).float()
-            track = track.view(batch_size, 4, self._dim_track // 4)
+            track = track.view(
+                batch_size, self._track_channels, self._dim_track // self._track_channels
+            )
             track_embed = self.track_conv(track)
             physics = _obs_to_flat_tensor(observation[1:], batch_size)
             physics_embed = self.physics_proj(physics)

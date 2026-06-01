@@ -68,6 +68,7 @@ dependencies = [
     "vgamepad>=0.1.0; sys_platform == 'linux'",
     "pywin32>=303; sys_platform == 'win32'",
     "vgamepad; sys_platform == 'win32'",
+    "google-genai>=2.2.0",
 ]
 
 [project.optional-dependencies]

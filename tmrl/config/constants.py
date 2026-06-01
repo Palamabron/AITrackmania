@@ -172,7 +172,7 @@ LAP_REWARD = E.lap_reward
 LAP_COOLDOWN = E.lap_cooldown
 CHECKPOINT_REWARD = E.checkpoint_reward
 CHECKPOINT_COOLDOWN = 0
-END_OF_TRACK_REWARD = E.end_of_track_reward
+END_OF_TRACK_REWARD = E.end_of_track_reward  # overwritten below after REWARD_CONFIG merge
 USE_IMAGES = E.use_images
 SLEEP_TIME_AT_RESET = E.sleep_time_at_reset
 IMG_HIST_LEN = E.img_hist_len
@@ -233,6 +233,23 @@ if _e_cp != 0.0 and _e_cp != _r_cp:
         _merged_cp,
         _e_cp,
         _r_cp,
+    )
+
+# End-of-track reward: environment.end_of_track_reward overrides
+# environment.reward.end_of_track_reward when non-zero (same merge pattern
+# as crash_penalty above).
+_r_eot = float(REWARD_CONFIG.get("end_of_track_reward", 10.0))
+_e_eot = float(E.end_of_track_reward)
+_merged_eot = _e_eot if _e_eot != 0.0 else _r_eot
+REWARD_CONFIG["end_of_track_reward"] = _merged_eot
+END_OF_TRACK_REWARD = _merged_eot
+if _e_eot != 0.0 and _e_eot != _r_eot:
+    logger.info(
+        "Effective end_of_track_reward={:.4g} (environment.end_of_track_reward={:.4g} overrides "
+        "environment.reward.end_of_track_reward={:.4g})",
+        _merged_eot,
+        _e_eot,
+        _r_eot,
     )
 
 MAX_SPEED_KMH = float(REWARD_CONFIG.get("max_speed_kmh", 300.0))

@@ -1,0 +1,7 @@
+training:
+  batch_size: 512
+algorithm:
+  iqn_lr: 3.0e-05
+  iqn_grad_clip: 2.5
+  iqn_soft_target_tau: 0.001
+  weight_decay: 0.0001

@@ -4,7 +4,10 @@ import numpy as np
 
 from tmrl.custom.memories.base import MemoryTM, last_true_in_list, replace_hist_before_eoe
 from tmrl.custom.memories.enums import BufferField, TMBestField, TMBestObsField
-from tmrl.custom.memories.utils import canonical_replay_action_vector
+from tmrl.custom.memories.utils import (
+    canonical_replay_action_vector,
+    normalize_stored_replay_actions_slice,
+)
 from tmrl.registry import MEMORIES
 
 
@@ -120,7 +123,7 @@ class MemoryTMBest(MemoryTM):
         res = self.data[TMBestField.ACTIONS][
             (item + self.start_acts_offset) : (item + self.start_acts_offset + self.act_buf_len + 1)
         ]
-        return res
+        return normalize_stored_replay_actions_slice(res, self.discrete_n_steer_bins)
 
     def append_buffer(self, buffer):
         """Append a buffer of samples to the memory."""

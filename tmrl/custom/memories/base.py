@@ -6,7 +6,7 @@ from typing import Any
 import numpy as np
 
 from tmrl.custom.memories.enums import BufferField, GenericField
-from tmrl.custom.memories.utils import configure_discrete_steer_bins
+from tmrl.custom.memories.utils import canonical_replay_action_vector, configure_discrete_steer_bins
 from tmrl.memory import TorchMemory
 from tmrl.registry import MEMORIES
 
@@ -273,6 +273,11 @@ class MemoryTM(TorchMemory):
 
         self._set_last_sample_demo_fraction(result)
         return result
+
+    def __getitem__(self, item):
+        prev_obs, new_act, rew, new_obs, terminated, truncated, info = super().__getitem__(item)
+        new_act = canonical_replay_action_vector(new_act, self.discrete_n_steer_bins)
+        return prev_obs, new_act, rew, new_obs, terminated, truncated, info
 
     def get_transition(self, item: int):
         """Get a single transition - must be implemented by subclasses."""

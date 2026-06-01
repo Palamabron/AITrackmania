@@ -471,6 +471,29 @@ class AlgorithmConfig(BaseModel):
         default=0.0,
         description="Upper clipping bound for log-policy term in Munchausen shaping.",
     )
+
+    # --- NoisyNet (NoisyLinear on DuelingHead) ---
+    iqn_noisy_linear: bool = Field(
+        default=False,
+        description="Enable NoisyLinear layers in IQN DuelingHead output layers.",
+    )
+    iqn_noisy_std_init: Annotated[float, Field(ge=0.0)] = Field(
+        default=0.5,
+        description="Initial sigma for NoisyLinear factorized Gaussian noise (paper default 0.5).",
+    )
+    iqn_noisy_scale_start: Annotated[float, Field(ge=0.0, le=1.0)] = Field(
+        default=1.0,
+        description="Starting multiplier for NoisyLinear exploration noise epsilon buffers.",
+    )
+    iqn_noisy_scale_end: Annotated[float, Field(ge=0.0, le=1.0)] = Field(
+        default=0.05,
+        description="Final noise scale multiplier after decay.",
+    )
+    iqn_noisy_scale_decay_steps: Annotated[int, Field(ge=1)] = Field(
+        default=1_000_000,
+        description="Steps to linearly decay noise scale from start to end.",
+    )
+
     iqn_epsilon_cosine_initial_amplitude: Annotated[float, Field(ge=0.0, le=1.0)] = Field(
         default=0.1,
         description="Starting relative amplitude for cosine-shaped epsilon schedules.",

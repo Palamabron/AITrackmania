@@ -451,6 +451,7 @@ def _pick_obs_preprocessor() -> Any:
 OBS_PREPROCESSOR = _pick_obs_preprocessor()
 SAMPLE_PREPROCESSOR = None
 
+
 def _determine_memory_name() -> str:
     """Map interface feature flags to a MEMORIES registry key."""
     explicit = M.memory.memory_type
@@ -670,6 +671,11 @@ def _build_agent() -> Any:
             backup_clip_range=float(alg.backup_clip_range),
             mixed_precision=bool(alg.mixed_precision),
             mixed_precision_dtype=str(alg.mixed_precision_dtype),
+            noisy_linear=bool(alg.iqn_noisy_linear),
+            noisy_std_init=float(alg.iqn_noisy_std_init),
+            noisy_scale_start=float(alg.iqn_noisy_scale_start),
+            noisy_scale_end=float(alg.iqn_noisy_scale_end),
+            noisy_scale_decay_steps=int(alg.iqn_noisy_scale_decay_steps),
             split_track_observation=bool(_iqn_arch_kw["split_track_observation"]),
             track_encoder=str(_iqn_arch_kw["track_encoder"]),
             use_rnn=bool(_iqn_arch_kw["use_rnn"]),

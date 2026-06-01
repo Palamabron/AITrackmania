@@ -183,7 +183,7 @@ def _quantile_huber_loss(
         is_weights: (batch,) importance sampling weights for PER (optional).
 
     Returns:
-        Scalar loss.
+        Scalar loss (double-mean over current and target quantile dimensions).
     """
     if current_quantiles.dim() == 2:
         current_quantiles = current_quantiles.unsqueeze(-1)
@@ -203,7 +203,8 @@ def _quantile_huber_loss(
 
     tau_expanded = rearrange(tau, "b n -> b n 1")
     weight = torch.abs(tau_expanded - (delta.detach() < 0).float())
-    per_sample_loss = (weight * huber).sum(dim=-1).mean(dim=-1)
+    # Expectation over both tau and tau' (Dabney et al. 2018; Rainbow IQN reference).
+    per_sample_loss = (weight * huber).mean(dim=(1, 2))
 
     if is_weights is not None:
         # IS weights are already normalized in training_offline.py, so apply directly
@@ -357,6 +358,13 @@ class IQNAgent(TrainingAgent):
     gnn_hidden: int = 64
     gnn_layers: int = 3
 
+    # NoisyNet: factorized Gaussian noise on DuelingHead output layers
+    noisy_linear: bool = False
+    noisy_std_init: float = 0.5
+    noisy_scale_start: float = 1.0
+    noisy_scale_end: float = 0.05
+    noisy_scale_decay_steps: int = 1_000_000
+
     model_nograd = cached_property(lambda self: no_grad(copy_shared(self.model)))
 
     def _iqn_network_kwargs(self) -> dict:
@@ -367,6 +375,8 @@ class IQNAgent(TrainingAgent):
             "n_cos": self.n_cos,
             "dueling": self.dueling,
             "n_actions": self.n_actions,
+            "noisy": self.noisy_linear,
+            "noisy_std_init": self.noisy_std_init,
             "split_track_observation": self.split_track_observation,
             "track_encoder": self.track_encoder,
             "use_rnn": self.use_rnn,
@@ -401,6 +411,7 @@ class IQNAgent(TrainingAgent):
 
         self._training_step = 0
         self._epsilon = self.epsilon_start
+        self._noise_scale = float(self.noisy_scale_start)
         self._grad_stabilizer = GradientStabilizer(ema_decay=0.995)
         logger.info(
             "IQNAgent: n_actions={}, dueling={}, double={}, n_steps={}, gamma={:.3f}, "
@@ -440,6 +451,26 @@ class IQNAgent(TrainingAgent):
             "IQNAgent model fingerprint: observation_space total_dim={}",
             _obs_dim,
         )
+        if self.noisy_linear:
+            logger.info(
+                "IQNAgent NoisyNet: std_init={}, scale_start={}, scale_end={}, "
+                "scale_decay_steps={}",
+                self.noisy_std_init,
+                self.noisy_scale_start,
+                self.noisy_scale_end,
+                self.noisy_scale_decay_steps,
+            )
+
+    def _update_noise_scale(self) -> float:
+        """Linearly decay noise scale from start to end over decay steps."""
+        if not self.noisy_linear or self.noisy_scale_decay_steps <= 0:
+            return self._noise_scale
+        t = float(self._training_step)
+        frac = min(1.0, t / float(self.noisy_scale_decay_steps))
+        self._noise_scale = self.noisy_scale_start + frac * (
+            self.noisy_scale_end - self.noisy_scale_start
+        )
+        return self._noise_scale
 
     def _update_epsilon(self) -> float:
         """Update and return current epsilon value based on configured schedule.
@@ -554,6 +585,17 @@ class IQNAgent(TrainingAgent):
 
         self._training_step += 1
         eps = self._update_epsilon()
+
+        if self.noisy_linear:
+            noise_scale = self._update_noise_scale()
+            head = getattr(self.model, "head", None)
+            if head is not None and hasattr(head, "reset_noise"):
+                head.set_noise_scale(noise_scale)
+                head.reset_noise()
+            head_tgt = getattr(self.model_target, "head", None)
+            if head_tgt is not None and hasattr(head_tgt, "reset_noise"):
+                head_tgt.set_noise_scale(noise_scale)
+                head_tgt.reset_noise()
 
         o, a, r, o2, d = batch[0], batch[1], batch[2], batch[3], batch[4]
         device = self.device or "cpu"
@@ -788,6 +830,8 @@ class IQNAgent(TrainingAgent):
             "debug/grad_ema_norm": self._grad_stabilizer.ema_norm,
             "train/step": self._training_step,
         }
+        if self.noisy_linear:
+            ret["exploration/noise_scale"] = self._noise_scale
         if dueling_head_stats is not None:
             value = dueling_head_stats["value"]
             advantage = dueling_head_stats["advantage"]

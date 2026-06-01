@@ -1,0 +1,371 @@
+{
+  "generated_at": "2026-05-15T14:36:16.444328",
+  "total_experiments": 10,
+  "experiments_with_finish": 6,
+  "best_overall": {
+    "exp_id": "stable-learning-with-strict-clip",
+    "status": "completed",
+    "stop_reason": "max_duration_reached",
+    "hypothesis": "By combining a larger batch size (512) for reduced variance, a slightly lower learning rate (3e-5) for finer updates, and a stricter gradient clipping norm (1.0) to prevent gradient explosions, we aim to achieve more stable training and improve the agent's ability to converge to a better policy, ultimately leading to faster finish times. This addresses the severe gradient saturation observed in recent experiments by enforcing a lower, more stable clipping limit.",
+    "config_overrides": {
+      "training": {
+        "batch_size": 512
+      },
+      "algorithm": {
+        "iqn_lr": 3e-05,
+        "iqn_grad_clip": 1.0
+      }
+    },
+    "registry_best_finish_time_s": 61.650000000000006,
+    "has_analysis": true,
+    "best_finish_time_s": 61.650000000000006,
+    "last_finish_time_s": 93.21111111111146,
+    "median_finish_time_s": 93.21111111111146,
+    "worker_best_finish_time_s": 61.650000000000006,
+    "worker_finish_count": 63,
+    "worker_finish_rate": 0.39622641509433965,
+    "loss_iqn_median": 20.87444496154785,
+    "loss_iqn_last": 69.17322540283203,
+    "loss_iqn_mean": 29.021293623286887,
+    "max_q_last": 42.0,
+    "mean_q_last": 27.0,
+    "epsilon_last": 0.393352865,
+    "grad_norm_last": 1.0,
+    "return_train_last": 635.9555053710938,
+    "return_test_last": 536.9532470703125,
+    "eval_finish_time_max": 93.21111111111146,
+    "loss_trend": "degrading",
+    "return_trend": "improving"
+  },
+  "leaderboard": [
+    {
+      "rank": 1,
+      "exp_id": "stable-learning-with-strict-clip",
+      "best_finish_time_s": 61.650000000000006,
+      "worker_finish_rate": 0.39622641509433965,
+      "status": "completed"
+    },
+    {
+      "rank": 2,
+      "exp_id": "increase-batch-size-to-512",
+      "best_finish_time_s": 64.22999999999966,
+      "worker_finish_rate": 0.3669724770642202,
+      "status": "completed"
+    },
+    {
+      "rank": 3,
+      "exp_id": "lower-iqn-soft-target-tau",
+      "best_finish_time_s": 70.2,
+      "worker_finish_rate": 0.19254658385093168,
+      "status": null
+    },
+    {
+      "rank": 4,
+      "exp_id": "decrease-iqn-lr-to-3e-5",
+      "best_finish_time_s": 70.9850000000003,
+      "worker_finish_rate": 0.16296296296296298,
+      "status": "completed"
+    },
+    {
+      "rank": 5,
+      "exp_id": "lower-lr-and-increase-n-steps",
+      "best_finish_time_s": 95.60000000000001,
+      "worker_finish_rate": 0.06818181818181818,
+      "status": null
+    },
+    {
+      "rank": 6,
+      "exp_id": "increase-grad-clip-with-lower-lr",
+      "best_finish_time_s": 171.95000000000002,
+      "worker_finish_rate": 0.03488372093023256,
+      "status": null
+    },
+    {
+      "rank": null,
+      "exp_id": "add-moderate-weight-decay",
+      "best_finish_time_s": null,
+      "worker_finish_rate": 0.0,
+      "status": null
+    },
+    {
+      "rank": null,
+      "exp_id": "gtn-baseline",
+      "best_finish_time_s": null,
+      "worker_finish_rate": 0.009523809523809525,
+      "status": null
+    },
+    {
+      "rank": null,
+      "exp_id": "increase-gamma-to-0-995",
+      "best_finish_time_s": null,
+      "worker_finish_rate": 0.16161616161616163,
+      "status": "stopped_early"
+    },
+    {
+      "rank": null,
+      "exp_id": "long-horizon-planning-v2",
+      "best_finish_time_s": null,
+      "worker_finish_rate": null,
+      "status": "running"
+    }
+  ],
+  "experiments": [
+    {
+      "exp_id": "add-moderate-weight-decay",
+      "has_analysis": true,
+      "best_finish_time_s": null,
+      "last_finish_time_s": null,
+      "median_finish_time_s": null,
+      "worker_best_finish_time_s": null,
+      "worker_finish_count": 0,
+      "worker_finish_rate": 0.0,
+      "loss_iqn_median": 0.6194428503513336,
+      "loss_iqn_last": 13.514484405517578,
+      "loss_iqn_mean": 3.6751473301171593,
+      "max_q_last": 12.125,
+      "mean_q_last": 7.1875,
+      "epsilon_last": 0.4376176025,
+      "grad_norm_last": 15.0,
+      "return_train_last": 233.34722900390625,
+      "return_test_last": 26.147132873535156,
+      "eval_finish_time_max": 0.0,
+      "loss_trend": "degrading",
+      "return_trend": "improving"
+    },
+    {
+      "exp_id": "decrease-iqn-lr-to-3e-5",
+      "status": "completed",
+      "stop_reason": "max_duration_reached",
+      "hypothesis": "A lower learning rate will stabilize training by reducing the magnitude of updates, addressing the large gradient norms and preventing divergence (as seen with higher gamma), allowing the agent to make consistent progress towards the target.",
+      "config_overrides": {
+        "algorithm": {
+          "iqn_lr": 3e-05
+        }
+      },
+      "registry_best_finish_time_s": 70.985,
+      "has_analysis": true,
+      "best_finish_time_s": 70.9850000000003,
+      "last_finish_time_s": 70.9850000000003,
+      "median_finish_time_s": 70.9850000000003,
+      "worker_best_finish_time_s": null,
+      "worker_finish_count": 0,
+      "worker_finish_rate": 0.16296296296296298,
+      "loss_iqn_median": 17.822555541992188,
+      "loss_iqn_last": 62.93095779418945,
+      "loss_iqn_mean": 23.257024731926325,
+      "max_q_last": 36.75,
+      "mean_q_last": 16.0,
+      "epsilon_last": 0.40338024,
+      "grad_norm_last": 14.999999046325684,
+      "return_train_last": 621.76708984375,
+      "return_test_last": 629.3764038085938,
+      "eval_finish_time_max": 70.9850000000003,
+      "loss_trend": null,
+      "return_trend": null
+    },
+    {
+      "exp_id": "gtn-baseline",
+      "has_analysis": true,
+      "best_finish_time_s": null,
+      "last_finish_time_s": 0.0,
+      "median_finish_time_s": 0.0,
+      "worker_best_finish_time_s": null,
+      "worker_finish_count": 0,
+      "worker_finish_rate": 0.009523809523809525,
+      "loss_iqn_median": 21.40649700164795,
+      "loss_iqn_last": 25.179046630859375,
+      "loss_iqn_mean": 20.440212995031093,
+      "max_q_last": 15.75,
+      "mean_q_last": 10.6875,
+      "epsilon_last": 0.46558343,
+      "grad_norm_last": 14.999998092651367,
+      "return_train_last": 542.32958984375,
+      "return_test_last": 390.1857604980469,
+      "eval_finish_time_max": 0.0,
+      "loss_trend": null,
+      "return_trend": null
+    },
+    {
+      "exp_id": "increase-batch-size-to-512",
+      "status": "completed",
+      "stop_reason": "max_duration_reached",
+      "hypothesis": "Increasing the batch size from 256 to 512 will reduce gradient variance, leading to more stable and potentially faster learning. This aligns with the observation that 256 is 'relatively small for IQN' and was the batch size in the earlier v5.11-stable preset, which might improve convergence towards the target finish time.",
+      "config_overrides": {
+        "training": {
+          "batch_size": 512
+        }
+      },
+      "registry_best_finish_time_s": 64.22999999999966,
+      "has_analysis": true,
+      "best_finish_time_s": 64.22999999999966,
+      "last_finish_time_s": 64.22999999999966,
+      "median_finish_time_s": 70.39500000000034,
+      "worker_best_finish_time_s": null,
+      "worker_finish_count": 0,
+      "worker_finish_rate": 0.3669724770642202,
+      "loss_iqn_median": 46.70159721374512,
+      "loss_iqn_last": 92.69526672363281,
+      "loss_iqn_mean": 47.13446372078774,
+      "max_q_last": 50.25,
+      "mean_q_last": 30.875,
+      "epsilon_last": 0.398150485,
+      "grad_norm_last": 14.999998092651367,
+      "return_train_last": 605.0382080078125,
+      "return_test_last": 647.0259399414062,
+      "eval_finish_time_max": 70.39500000000034,
+      "loss_trend": null,
+      "return_trend": null
+    },
+    {
+      "exp_id": "increase-gamma-to-0-995",
+      "status": "stopped_early",
+      "stop_reason": "No eval finishes after 2 hours. Worker finish_rate 16% but no deterministic eval completions.",
+      "hypothesis": "Increasing the discount factor (gamma) will encourage the agent to optimize for longer-term rewards, which is crucial for completing the entire track within the target time. This parameter was previously attempted but failed due to server issues, so its impact on learning is still unknown.",
+      "config_overrides": {
+        "algorithm": {
+          "gamma": 0.995
+        }
+      },
+      "registry_best_finish_time_s": null,
+      "has_analysis": true,
+      "best_finish_time_s": null,
+      "last_finish_time_s": null,
+      "median_finish_time_s": null,
+      "worker_best_finish_time_s": null,
+      "worker_finish_count": 0,
+      "worker_finish_rate": 0.16161616161616163,
+      "loss_iqn_median": 26.984339714050293,
+      "loss_iqn_last": 60.65184783935547,
+      "loss_iqn_mean": 24.612503433901182,
+      "max_q_last": 41.75,
+      "mean_q_last": 16.75,
+      "epsilon_last": 0.444881205,
+      "grad_norm_last": 15.000000953674316,
+      "return_train_last": 587.3717651367188,
+      "return_test_last": 180.21510314941406,
+      "eval_finish_time_max": 0.0,
+      "loss_trend": null,
+      "return_trend": null
+    },
+    {
+      "exp_id": "increase-grad-clip-with-lower-lr",
+      "has_analysis": true,
+      "best_finish_time_s": 171.95000000000002,
+      "last_finish_time_s": 195.85000000000002,
+      "median_finish_time_s": null,
+      "worker_best_finish_time_s": 171.95000000000002,
+      "worker_finish_count": 3,
+      "worker_finish_rate": 0.03488372093023256,
+      "loss_iqn_median": 9.126956939697266,
+      "loss_iqn_last": 13.355266571044922,
+      "loss_iqn_mean": 8.274370789398219,
+      "max_q_last": 11.75,
+      "mean_q_last": 7.0,
+      "epsilon_last": 0.4812380175,
+      "grad_norm_last": 4.999999523162842,
+      "return_train_last": 21.44946034749349,
+      "return_test_last": -0.3000001013278961,
+      "eval_finish_time_max": 0.0,
+      "loss_trend": "degrading",
+      "return_trend": "improving"
+    },
+    {
+      "exp_id": "long-horizon-planning-v2",
+      "status": "running",
+      "stop_reason": null,
+      "hypothesis": "Building on the stable learning achieved with strict gradient clipping, increasing the discount factor (gamma) to encourage far-sighted planning and extending the n-step returns (n_steps) to provide more informative long-term rewards will enable the agent to learn more efficient strategies for faster track completion. The current stable configuration should be robust enough to handle these changes, which are crucial for complex, long-horizon tasks like TrackMania.",
+      "config_overrides": {
+        "training": {
+          "batch_size": 512
+        },
+        "algorithm": {
+          "iqn_lr": 3e-05,
+          "iqn_grad_clip": 1.0,
+          "gamma": 0.995,
+          "n_steps": 7
+        }
+      },
+      "registry_best_finish_time_s": null,
+      "has_analysis": false
+    },
+    {
+      "exp_id": "lower-iqn-soft-target-tau",
+      "has_analysis": true,
+      "best_finish_time_s": 70.2,
+      "last_finish_time_s": 103.45,
+      "median_finish_time_s": null,
+      "worker_best_finish_time_s": 70.2,
+      "worker_finish_count": 31,
+      "worker_finish_rate": 0.19254658385093168,
+      "loss_iqn_median": 18.947526931762695,
+      "loss_iqn_last": 56.755252838134766,
+      "loss_iqn_mean": 21.517831183752286,
+      "max_q_last": 32.25,
+      "mean_q_last": 17.0,
+      "epsilon_last": 0.4352622,
+      "grad_norm_last": 15.000000953674316,
+      "return_train_last": 595.552490234375,
+      "return_test_last": 567.0529174804688,
+      "eval_finish_time_max": 0.0,
+      "loss_trend": "degrading",
+      "return_trend": "improving"
+    },
+    {
+      "exp_id": "lower-lr-and-increase-n-steps",
+      "has_analysis": true,
+      "best_finish_time_s": 95.60000000000001,
+      "last_finish_time_s": 168.8,
+      "median_finish_time_s": null,
+      "worker_best_finish_time_s": 95.60000000000001,
+      "worker_finish_count": 9,
+      "worker_finish_rate": 0.06818181818181818,
+      "loss_iqn_median": 23.239140510559082,
+      "loss_iqn_last": 36.95381164550781,
+      "loss_iqn_mean": 20.058519597355897,
+      "max_q_last": 14.875,
+      "mean_q_last": 9.875,
+      "epsilon_last": 0.4600381825,
+      "grad_norm_last": 14.999999046325684,
+      "return_train_last": 236.92535400390625,
+      "return_test_last": 417.27099609375,
+      "eval_finish_time_max": 0.0,
+      "loss_trend": "degrading",
+      "return_trend": "improving"
+    },
+    {
+      "exp_id": "stable-learning-with-strict-clip",
+      "status": "completed",
+      "stop_reason": "max_duration_reached",
+      "hypothesis": "By combining a larger batch size (512) for reduced variance, a slightly lower learning rate (3e-5) for finer updates, and a stricter gradient clipping norm (1.0) to prevent gradient explosions, we aim to achieve more stable training and improve the agent's ability to converge to a better policy, ultimately leading to faster finish times. This addresses the severe gradient saturation observed in recent experiments by enforcing a lower, more stable clipping limit.",
+      "config_overrides": {
+        "training": {
+          "batch_size": 512
+        },
+        "algorithm": {
+          "iqn_lr": 3e-05,
+          "iqn_grad_clip": 1.0
+        }
+      },
+      "registry_best_finish_time_s": 61.650000000000006,
+      "has_analysis": true,
+      "best_finish_time_s": 61.650000000000006,
+      "last_finish_time_s": 93.21111111111146,
+      "median_finish_time_s": 93.21111111111146,
+      "worker_best_finish_time_s": 61.650000000000006,
+      "worker_finish_count": 63,
+      "worker_finish_rate": 0.39622641509433965,
+      "loss_iqn_median": 20.87444496154785,
+      "loss_iqn_last": 69.17322540283203,
+      "loss_iqn_mean": 29.021293623286887,
+      "max_q_last": 42.0,
+      "mean_q_last": 27.0,
+      "epsilon_last": 0.393352865,
+      "grad_norm_last": 1.0,
+      "return_train_last": 635.9555053710938,
+      "return_test_last": 536.9532470703125,
+      "eval_finish_time_max": 93.21111111111146,
+      "loss_trend": "degrading",
+      "return_trend": "improving"
+    }
+  ]
+}

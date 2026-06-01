@@ -213,6 +213,17 @@ def run_with_wandb(
                 {"tmrl_validated_main_config": cfg.main_config_snapshot_redacted()},
                 allow_val_change=True,
             )
+            exp_id = os.environ.get("TMRL_EXPERIMENT_ID")
+            if exp_id:
+                wandb.config.update(
+                    {"experiment_id": exp_id, "experiment_framework_version": "1.0"},
+                    allow_val_change=True,
+                )
+                if wandb.run is not None:
+                    wandb.run.tags = [
+                        *list(wandb.run.tags or []),
+                        f"exp:{exp_id}",
+                    ]
             wandb_initialized = True
 
         except Exception as e:
@@ -298,6 +309,9 @@ class TrainerInterface:
             security=security,
             keys_dir=keys_dir,
             hostname=hostname,
+            # Match worker: large Buffer pickles must deserialize on the training thread.
+            # Async mode can silently drop messages on Windows when unpickling fails.
+            deserializer_mode="synchronous",
         )
 
         print_with_timestamp(f"server IP: {self.server_ip}")
@@ -327,7 +341,7 @@ class TrainerInterface:
             res += buf
         self.__endpoint.notify(groups={"trainers": -1})
         if len(res) > 0:
-            logger.debug("retrieve_buffer: got {} samples from server", len(res))
+            logger.info("retrieve_buffer: got {} samples from server", len(res))
         return res
 
 

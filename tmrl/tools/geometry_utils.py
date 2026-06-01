@@ -53,3 +53,28 @@ def interp_points_with_cubic_spline(sub_array, data_density=3):
     new_i = np.arange(0, data_density * n - 1)
     cs = CubicSpline(original_i, sub_array)
     return cs(new_i)
+
+
+def pad_polyline_xz_straight(boundary: np.ndarray, n_pad: int) -> np.ndarray:
+    """Append ``n_pad`` (x, z) samples extrapolated along the last segment direction.
+
+    ``boundary`` is shape (2, N). Used for boundary look-ahead padding near track end.
+    """
+    if n_pad <= 0:
+        return boundary
+    pts = np.asarray(boundary, dtype=np.float64).T
+    if len(pts) < 1:
+        return boundary
+    if len(pts) < 2:
+        extra = np.tile(pts[-1], (n_pad, 1))
+        return np.concatenate([pts, extra], axis=0).T
+    tangent = pts[-1] - pts[-2]
+    norm = float(np.linalg.norm(tangent))
+    if norm < 1e-9:
+        extra = np.tile(pts[-1], (n_pad, 1))
+    else:
+        unit = tangent / norm
+        step = norm
+        offsets = step * np.arange(1, n_pad + 1, dtype=np.float64)[:, None]
+        extra = pts[-1] + unit * offsets
+    return np.concatenate([pts, extra], axis=0).T

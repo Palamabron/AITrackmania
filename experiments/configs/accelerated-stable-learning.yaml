@@ -1,0 +1,6 @@
+training:
+  batch_size: 512
+algorithm:
+  iqn_lr: 4.0e-05
+  iqn_grad_clip: 1.0
+  iqn_soft_target_tau: 0.007

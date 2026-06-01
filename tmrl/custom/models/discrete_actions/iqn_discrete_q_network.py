@@ -12,17 +12,18 @@ The network outputs Q(s, a) for every discrete action in a single forward pass.
 """
 
 import math
+import warnings
 from typing import Any, cast
 
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torchrl.modules import NoisyLinear
 
 from tmrl.actor import TorchActorModule
 from tmrl.custom.models.hybrid_input.sophy import (
     _build_track_conv1d_branch,
-    _build_track_gnn_branch,
     _build_track_spline_mlp_branch,
     _obs_to_flat_tensor,
 )
@@ -30,7 +31,54 @@ from tmrl.custom.models.shared.blocks import (
     residual_mlp_backbone,
     simba_v2_backbone,
 )
+from tmrl.custom.models.shared.track_encoders import (
+    TRACK_CHANNELS_GTN,
+)
+from tmrl.custom.models.shared.track_encoders import (
+    build_track_gtn_branch as _build_track_gnn_branch,
+)
+from tmrl.custom.models.shared.track_encoders import (
+    is_gtn_encoder as _is_gtn_encoder,
+)
 from tmrl.registry import MODELS
+
+_IQN_OUTPUT_INIT_GAIN = 0.01
+
+
+def _init_linear_small(linear: nn.Linear, gain: float = _IQN_OUTPUT_INIT_GAIN) -> None:
+    nn.init.orthogonal_(linear.weight, gain=gain)
+    if linear.bias is not None:
+        nn.init.zeros_(linear.bias)
+
+
+def _init_noisy_linear_small(layer: NoisyLinear, gain: float = _IQN_OUTPUT_INIT_GAIN) -> None:
+    """Init learned mu weights only; leave factorized noise buffers untouched."""
+    if hasattr(layer, "weight_mu"):
+        nn.init.orthogonal_(layer.weight_mu, gain=gain)
+    if getattr(layer, "bias_mu", None) is not None:
+        nn.init.zeros_(layer.bias_mu)
+
+
+def _init_cosine_embedding(
+    cos_embed: "CosineEmbedding", gain: float = _IQN_OUTPUT_INIT_GAIN
+) -> None:
+    _init_linear_small(cos_embed.linear, gain=gain)
+
+
+def _init_dueling_output_layers(head: "DuelingHead", gain: float = _IQN_OUTPUT_INIT_GAIN) -> None:
+    for stream in (head.value_stream, head.advantage_stream):
+        out = stream[-1]
+        if isinstance(out, nn.Linear):
+            _init_linear_small(out, gain=gain)
+        elif isinstance(out, NoisyLinear):
+            _init_noisy_linear_small(out, gain=gain)
+
+
+def _init_iqn_q_head(head: nn.Module, gain: float = _IQN_OUTPUT_INIT_GAIN) -> None:
+    if isinstance(head, DuelingHead):
+        _init_dueling_output_layers(head, gain=gain)
+    elif isinstance(head, nn.Sequential) and isinstance(head[-1], nn.Linear):
+        _init_linear_small(head[-1], gain=gain)
 
 
 class CosineEmbedding(nn.Module):
@@ -106,13 +154,14 @@ class IQNFeatureBackbone(nn.Module):
         gnn_layers: int = 3,
     ):
         super().__init__()
+        self._track_channels = TRACK_CHANNELS_GTN if _is_gtn_encoder(track_encoder) else 4
         self._r2d2_sequence_length = r2d2_sequence_length
         self._r2d2_burn_in = r2d2_burn_in
         dim_obs = sum(math.prod(s for s in space.shape) for space in observation_space)
         self._use_track_conv = split_track_observation and len(observation_space) > 1
         if self._use_track_conv:
             dim_track_first = math.prod(observation_space[0].shape)
-            if dim_track_first % 4 != 0:
+            if dim_track_first % self._track_channels != 0:
                 self._use_track_conv = False
 
         if self._use_track_conv:
@@ -121,7 +170,7 @@ class IQNFeatureBackbone(nn.Module):
             self._dim_track = dim_track
             if track_encoder == "spline_mlp":
                 self.track_conv = _build_track_spline_mlp_branch(dim_track, hidden_dim)
-            elif track_encoder == "gnn":
+            elif _is_gtn_encoder(track_encoder):
                 self.track_conv = _build_track_gnn_branch(
                     dim_track, hidden_dim, gnn_hidden=gnn_hidden, gnn_layers=gnn_layers
                 )
@@ -148,6 +197,8 @@ class IQNFeatureBackbone(nn.Module):
             self._dim_track = 0
             self.rnn = None
             self._use_rnn = False
+            self._api_input_dim = dim_obs
+            self._warned_api_dim_mismatch = False
             self.layernorm_api = nn.LayerNorm(dim_obs) if api_layernorm else None
             backbone_input_dim = dim_obs
 
@@ -161,7 +212,9 @@ class IQNFeatureBackbone(nn.Module):
 
     def _joint_features(self, observation, batch_size: int) -> torch.Tensor:
         track = observation[0].view(batch_size, -1).float()
-        track = track.view(batch_size, 4, self._dim_track // 4)
+        track = track.view(
+            batch_size, self._track_channels, self._dim_track // self._track_channels
+        )
         track_embed = self.track_conv(track)
         physics = _obs_to_flat_tensor(observation[1:], batch_size)
         physics_embed = self.physics_proj(physics)
@@ -202,6 +255,32 @@ class IQNFeatureBackbone(nn.Module):
         joint_out_single: torch.Tensor = joint_out
         return joint_out_single.squeeze(1)
 
+    def _align_api_obs_dim(self, obs_flat: torch.Tensor) -> torch.Tensor:
+        """Ensure API-only observation width matches constructor-time model width.
+
+        In real-time setups, observation vectors can occasionally miss or include a few
+        tail scalars (e.g. action-history buffering race around reset). We pad/truncate
+        to the expected width so LayerNorm/backbone stay shape-safe.
+        """
+        expected = int(getattr(self, "_api_input_dim", obs_flat.shape[-1]))
+        current = int(obs_flat.shape[-1])
+        if current == expected:
+            return obs_flat
+
+        if not getattr(self, "_warned_api_dim_mismatch", False):
+            warnings.warn(
+                f"IQNFeatureBackbone API obs dim mismatch (expected {expected}, got {current}); "
+                "auto-aligning by zero-padding/truncation.",
+                stacklevel=2,
+            )
+            self._warned_api_dim_mismatch = True
+
+        if current < expected:
+            pad = obs_flat.new_zeros(obs_flat.shape[0], expected - current)
+            return torch.cat([obs_flat, pad], dim=-1)
+
+        return obs_flat[:, :expected]
+
     def forward(self, observation, tau: torch.Tensor) -> torch.Tensor:
         """
         Args:
@@ -222,6 +301,7 @@ class IQNFeatureBackbone(nn.Module):
             features = self.backbone(joint)
         else:
             obs_flat = _obs_to_flat_tensor(observation, batch_size)
+            obs_flat = self._align_api_obs_dim(obs_flat)
             if self.layernorm_api is not None:
                 obs_flat = self.layernorm_api(obs_flat)
             features = self.backbone(obs_flat)
@@ -234,20 +314,70 @@ class IQNFeatureBackbone(nn.Module):
 
 
 class DuelingHead(nn.Module):
-    """Dueling DQN head: Q(s,a) = V(s) + A(s,a) - mean(A)."""
+    """Dueling DQN head: Q(s,a) = V(s) + A(s,a) - mean(A).
 
-    def __init__(self, hidden_dim: int, n_actions: int):
+    When ``noisy=True``, the output linear layers use factorized Gaussian
+    NoisyLinear (NoisyNet paper) instead of ``nn.Linear``.  Call
+    ``reset_noise()`` every training step and ``set_noise_scale(s)`` to
+    anneal the exploration noise over time without interfering with the
+    learned sigma parameters.
+    """
+
+    def __init__(
+        self,
+        hidden_dim: int,
+        n_actions: int,
+        noisy: bool = False,
+        noisy_std_init: float = 0.5,
+    ):
         super().__init__()
+        self._noisy = noisy
+
+        out_linear_v: nn.Module
+        out_linear_a: nn.Module
+        if noisy:
+            out_linear_v = NoisyLinear(hidden_dim, 1, device="cpu", std_init=noisy_std_init)
+            out_linear_a = NoisyLinear(hidden_dim, n_actions, device="cpu", std_init=noisy_std_init)
+        else:
+            out_linear_v = nn.Linear(hidden_dim, 1)
+            out_linear_a = nn.Linear(hidden_dim, n_actions)
+
         self.value_stream = nn.Sequential(
             nn.Linear(hidden_dim, hidden_dim),
             nn.SiLU(),
-            nn.Linear(hidden_dim, 1),
+            out_linear_v,
         )
         self.advantage_stream = nn.Sequential(
             nn.Linear(hidden_dim, hidden_dim),
             nn.SiLU(),
-            nn.Linear(hidden_dim, n_actions),
+            out_linear_a,
         )
+        self._noise_scale = 1.0
+
+    # ------------------------------------------------------------------
+    # NoisyLinear helpers
+    # ------------------------------------------------------------------
+
+    def _noisy_layers(self) -> list[NoisyLinear]:
+        layers: list[NoisyLinear] = []
+        for stream in (self.value_stream, self.advantage_stream):
+            for m in stream.modules():
+                if isinstance(m, NoisyLinear):
+                    layers.append(m)
+        return layers
+
+    def reset_noise(self) -> None:
+        """Resample factorized noise, then scale epsilon buffers."""
+        for layer in self._noisy_layers():
+            layer.reset_noise()
+            if self._noise_scale < 1.0:
+                layer.weight_epsilon.mul_(self._noise_scale)
+                if layer.bias_mu is not None:
+                    layer.bias_epsilon.mul_(self._noise_scale)
+
+    def set_noise_scale(self, scale: float) -> None:
+        """Set a multiplier applied to epsilon noise buffers after each reset."""
+        self._noise_scale = max(0.0, min(1.0, scale))
 
     def forward(
         self, features: torch.Tensor, return_components: bool = False
@@ -290,6 +420,8 @@ class IQNQNetwork(nn.Module):
         num_blocks: int = 3,
         n_cos: int = 64,
         dueling: bool = True,
+        noisy: bool = False,
+        noisy_std_init: float = 0.5,
         **backbone_kwargs,
     ):
         super().__init__()
@@ -304,13 +436,21 @@ class IQNQNetwork(nn.Module):
         )
         self.head: nn.Module
         if dueling:
-            self.head = DuelingHead(hidden_dim, n_actions)
+            self.head = DuelingHead(
+                hidden_dim,
+                n_actions,
+                noisy=noisy,
+                noisy_std_init=noisy_std_init,
+            )
         else:
             self.head = nn.Sequential(
                 nn.Linear(hidden_dim, hidden_dim),
                 nn.SiLU(),
                 nn.Linear(hidden_dim, n_actions),
             )
+
+        _init_cosine_embedding(self.backbone.cos_embed)
+        _init_iqn_q_head(self.head)
 
     def forward(
         self,
@@ -401,6 +541,8 @@ class DQNActor(TorchActorModule):
         epsilon: float = 0.00005,
         n_quantiles_eval: int = 32,
         explore_repeat_steps: int = 1,
+        noisy: bool = False,
+        noisy_std_init: float = 0.5,
         **backbone_kwargs,
     ):
         super().__init__(observation_space, action_space)
@@ -411,6 +553,8 @@ class DQNActor(TorchActorModule):
             num_blocks=num_blocks,
             n_cos=n_cos,
             dueling=dueling,
+            noisy=noisy,
+            noisy_std_init=noisy_std_init,
             **backbone_kwargs,
         )
         # Store epsilon as a buffer so it is included in state_dict and

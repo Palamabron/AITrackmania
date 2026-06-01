@@ -12,6 +12,7 @@ import tmrl.config as cfg
 import tmrl.config.config_objects as cfg_obj
 from tmrl.custom.tm.utils.control_keyboard import is_del_pressed
 from tmrl.envs import GenericGymEnv
+from tmrl.networking.buffer import Buffer
 from tmrl.tools.player_runs import align_observation_to_space, save_player_run
 from tmrl.util import partial
 
@@ -87,6 +88,23 @@ def _collect_human_episode(env, max_samples, obs_preprocessor, crc_debug):
     return buffer_memory, ret, steps
 
 
+def _maybe_apply_finish_time_bonus(samples: list) -> tuple[list, float]:
+    """Align with ``RolloutWorker.collect_train_episode``: spread ``time_bonus_scale`` on finish."""
+    if not samples:
+        return samples, 0.0
+    last_info = samples[-1][5]
+    if isinstance(last_info, dict) and last_info.get("end_of_track", False):
+        time_bonus_scale = float(cfg.REWARD_CONFIG.get("time_bonus_scale", 0.0))
+        reward_scale = float(cfg.REWARD_CONFIG.get("reward_scale", 1.0))
+        if time_bonus_scale > 0 and reward_scale > 0:
+            buf = Buffer()
+            buf.memory = list(samples)
+            buf.apply_speed_bonus(time_bonus_scale * reward_scale)
+            samples = buf.memory
+    ep_return = float(sum(float(s[2]) for s in samples))
+    return samples, ep_return
+
+
 def record_episode(
     *,
     nb_episodes: int = 1,
@@ -140,12 +158,13 @@ def record_episode(
                 ep + 1,
                 nb_episodes,
             )
-            samples, ep_return, ep_steps = _collect_human_episode(
+            samples, _ep_ret, ep_steps = _collect_human_episode(
                 env,
                 max_samples=max_samples,
                 obs_preprocessor=cfg_obj.OBS_PREPROCESSOR,
                 crc_debug=cfg.CRC_DEBUG,
             )
+            samples, ep_return = _maybe_apply_finish_time_bonus(samples)
 
             obs_space = env.observation_space
             samples = [

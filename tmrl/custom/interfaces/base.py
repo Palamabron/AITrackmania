@@ -34,6 +34,8 @@ from tmrl.custom.tm.utils.window import WindowInterface
 
 MPS_TO_KMPH = 3.6
 
+DEFAULT_MIN_STEPS_END_OF_TRACK = 50
+
 RUMBLE_CRASH_THRESHOLD = 100
 CRASH_BASE_SPEED_DROP_KMH = 20.0
 CRASH_SPEED_DROP_FACTOR = 0.20
@@ -43,6 +45,35 @@ CRASH_COOLDOWN_STEPS = 10
 REPLAY_SAVE_SLEEP_S = 1.0
 POST_RACE_SLEEP_S = 0.5
 KEYBOARD_STEER_DEADZONE = 0.5
+
+
+def apply_episode_length_guards(
+    steps_since_reset: int,
+    end_of_track: bool,
+    terminated: bool,
+) -> tuple[bool, bool]:
+    """Enforce minimum episode length and end-of-track step threshold.
+
+    Returns ``(terminated, end_of_track_accepted)`` where *end_of_track_accepted*
+    is True only when the step count is high enough for a valid finish.
+    """
+    min_steps_before_finish = max(
+        DEFAULT_MIN_STEPS_END_OF_TRACK,
+        int(cfg.REWARD_CONFIG.get("MIN_STEPS", DEFAULT_MIN_STEPS_END_OF_TRACK)),
+    )
+    end_of_track_accepted = end_of_track and steps_since_reset >= min_steps_before_finish
+    if end_of_track_accepted:
+        terminated = True
+
+    min_guaranteed = int(cfg.REWARD_CONFIG.get("MIN_EPISODE_LENGTH_GUARANTEED", 100))
+    min_length = max(
+        min_guaranteed,
+        2 * int(cfg.REWARD_CONFIG.get("MIN_STEPS", DEFAULT_MIN_STEPS_END_OF_TRACK)),
+    )
+    if steps_since_reset < min_length:
+        terminated = False
+
+    return terminated, end_of_track_accepted
 
 
 class TrackMania2020InterfaceBase(RealTimeGymInterface, ABC):

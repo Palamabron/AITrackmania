@@ -36,7 +36,7 @@ model:
   residual_mlp_num_blocks_critic: 3
   split_track_observation: true
   use_simbav2: true
-  track_encoder: gnn
+  track_encoder: gtn
   gnn_layers: 2
   gnn_hidden: 128
   binary_brake: true

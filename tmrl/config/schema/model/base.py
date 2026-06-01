@@ -97,7 +97,7 @@ class BaseModelConfig(BaseModel):
         default=True,
         description=(
             "When true, the first observation tuple element (discretized track polyline) is "
-            "encoded with track_encoder (conv1d | gnn | spline_mlp); remaining elements are "
+            "encoded with track_encoder (conv1d | gtn | spline_mlp); remaining elements are "
             "telemetry (speed, etc.) merged after projection. When false, all observation "
             "components are flattened into one MLP path (track_encoder unused)."
         ),
@@ -108,7 +108,9 @@ class BaseModelConfig(BaseModel):
     )
     track_encoder: str = Field(
         default="conv1d",
-        description="Track feature encoder family: conv1d, gnn, etc.",
+        description=(
+            "Track feature encoder family: conv1d, gtn, spline_mlp (gnn kept as legacy alias)."
+        ),
     )
     gnn_layers: PositiveInt = Field(
         default=3,
