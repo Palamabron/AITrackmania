@@ -1,0 +1,24 @@
+# Large experiment artifacts (keep configs/*.yaml, *.py, orchestrator_config.yaml)
+experiments/analysis/
+experiments/logs/
+experiments/registry.jsonl
+experiments/ground_truth.json
+experiments/audit_report.json
+experiments/validation_report.json
+experiments/decisions.md
+
+# Generated / local outputs
+output_files/
+wandb/
+**/wandb/
+reports/
+
+# Lock/cache noise (not useful for agent context)
+uv.lock
+.ruff_cache/
+.mypy_cache/
+.pytest_cache/
+htmlcov/
+.venv/
+.venv-linux/
+.venv-windows/

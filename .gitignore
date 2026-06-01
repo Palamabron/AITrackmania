@@ -148,4 +148,15 @@ wandb/
 tmrl/wandb/
 **/wandb/
 
+# Autonomous tuning: generated run data (configs + scripts stay in repo)
+experiments/analysis/*
+!experiments/analysis/.gitkeep
+experiments/logs/*
+!experiments/logs/.gitkeep
+experiments/registry.jsonl
+experiments/ground_truth.json
+experiments/audit_report.json
+experiments/validation_report.json
+experiments/decisions.md
+
 config.json

@@ -39,7 +39,7 @@ CURRENT METRICS SNAPSHOT:
 ${JSON.stringify(snapshot, null, 2)}
 
 INSTRUCTIONS:
-1. Read experiments/decisions.md and experiments/registry.jsonl for full experiment history.
+1. Use the metrics snapshot and exp_entry above; optional local files experiments/registry.jsonl or experiments/analysis/<exp_id>.json if present (not in git).
 2. Analyze the metrics snapshot above.
 3. Decide: should this experiment CONTINUE training, or STOP early?
 
@@ -71,9 +71,9 @@ EXPERIMENT HISTORY:
 ${JSON.stringify(registry ?? [], null, 2)}
 
 INSTRUCTIONS:
-1. Read experiments/decisions.md for the full reasoning history.
+1. Use EXPERIMENT HISTORY in this prompt; optional local experiments/decisions.md or experiments/analysis/<exp_id>.json if present (gitignored).
 2. Read experiments/search_space.yaml for tunable parameters and their ranges.
-3. Read experiments/analysis/ for detailed metrics of completed experiments.
+3. Do not load all of experiments/analysis/ into context — prefer per-exp JSON for the parent run only.
 4. Analyze what has worked and what hasn't across all experiments.
 5. Propose the NEXT experiment to run.
 
@@ -84,7 +84,7 @@ RULES:
 - Use the experiment_manager CLI to register: run the shell command:
   python -m tmrl.tools.experiment_manager register --parent <PARENT_ID> --hypothesis "<WHY>" --overrides '<JSON>'
 
-After running the register command, append your reasoning to experiments/decisions.md.
+After running the register command, append your reasoning to experiments/decisions.md (local, gitignored).
 
 OUTPUT FORMAT (JSON only, no markdown):
 {"action": "proposed", "exp_id": "<new_id>", "parent": "<parent_id>", "hypothesis": "...", "overrides": {...}}
