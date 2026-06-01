@@ -8,7 +8,7 @@
     "propose": "tsx orchestrator-agent.ts propose"
   },
   "dependencies": {
-    "@cursor/sdk": "latest",
-    "tsx": "latest"
+    "@cursor/sdk": "^1.0.17",
+    "tsx": "^4.22.4"
   }
 }

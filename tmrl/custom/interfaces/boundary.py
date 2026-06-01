@@ -21,7 +21,11 @@ from scipy import spatial
 
 import tmrl.config as cfg
 from tmrl.config.paths import BOUNDARY_CSV_LEFT, BOUNDARY_CSV_RIGHT
-from tmrl.custom.interfaces.base import MPS_TO_KMPH, apply_episode_length_guards
+from tmrl.custom.interfaces.base import (
+    MPS_TO_KMPH,
+    apply_episode_length_guards,
+    gate_end_of_track_for_reward,
+)
 from tmrl.custom.interfaces.telemetry_indices import TmrlDataPlugin, yaw_pitch_from_dir_xyz
 from tmrl.custom.interfaces.vision import TM2020Interface
 from tmrl.custom.tm.utils.control_mouse import mouse_save_replay_tm20
@@ -263,9 +267,9 @@ class TM2020InterfaceBoundary(TM2020Interface):
         crash = np.array([float(bool(self.is_crashed))], dtype=np.float32)
 
         end_of_track = bool(data[TmrlDataPlugin.FINISH_UI_ACTIVE])
-        next_steps_since_reset = self._steps_since_reset + 1
-        min_steps_before_finish = max(50, int(cfg.REWARD_CONFIG.get("MIN_STEPS", 50)))
-        end_of_track_for_reward = end_of_track and next_steps_since_reset >= min_steps_before_finish
+        end_of_track_for_reward = gate_end_of_track_for_reward(
+            self._steps_since_reset + 1, end_of_track
+        )
         info: dict[str, object] = {
             "end_of_track": end_of_track,
             "crashed": crashed_this_step,
@@ -322,9 +326,9 @@ class TM2020InterfaceBoundary(TM2020Interface):
         )
         info["reward_sum"] = reward_sum
 
-        self._steps_since_reset = next_steps_since_reset
+        self._steps_since_reset += 1
         terminated, eot_accepted = apply_episode_length_guards(
-            next_steps_since_reset,
+            self._steps_since_reset,
             end_of_track_for_reward,
             terminated,
         )
@@ -511,9 +515,9 @@ class TM2020InterfaceBoundaryImages(TM2020Interface):
         )
         yaw_val, _ = yaw_pitch_from_dir_xyz(dir_xyz_t)
         end_of_track = bool(data[TmrlDataPlugin.FINISH_UI_ACTIVE])
-        next_steps_since_reset = self._steps_since_reset + 1
-        min_steps_before_finish = max(50, int(cfg.REWARD_CONFIG.get("MIN_STEPS", 50)))
-        end_of_track_for_reward = end_of_track and next_steps_since_reset >= min_steps_before_finish
+        end_of_track_for_reward = gate_end_of_track_for_reward(
+            self._steps_since_reset + 1, end_of_track
+        )
 
         wheel_slips = [
             float(data[TmrlDataPlugin.SLIP_FL]),
@@ -564,9 +568,9 @@ class TM2020InterfaceBoundaryImages(TM2020Interface):
             "crash_penalty": float(self.crash_penalty),
         }
 
-        self._steps_since_reset = next_steps_since_reset
+        self._steps_since_reset += 1
         terminated, eot_accepted = apply_episode_length_guards(
-            next_steps_since_reset,
+            self._steps_since_reset,
             end_of_track_for_reward,
             terminated,
         )

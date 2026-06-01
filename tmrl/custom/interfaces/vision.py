@@ -18,6 +18,7 @@ from tmrl.custom.interfaces.base import (
     MPS_TO_KMPH,
     TrackMania2020InterfaceBase,
     apply_episode_length_guards,
+    gate_end_of_track_for_reward,
 )
 from tmrl.custom.interfaces.telemetry_indices import (
     TmrlDataPlugin,
@@ -177,9 +178,9 @@ class TM2020Interface(TrackMania2020InterfaceBase):
         )
         yaw_val, _ = yaw_pitch_from_dir_xyz(dir_xyz_t)
         end_of_track = bool(data[TmrlDataPlugin.FINISH_UI_ACTIVE])
-        next_steps_since_reset = self._steps_since_reset + 1
-        min_steps_before_finish = max(50, int(cfg.REWARD_CONFIG.get("MIN_STEPS", 50)))
-        end_of_track_for_reward = end_of_track and next_steps_since_reset >= min_steps_before_finish
+        end_of_track_for_reward = gate_end_of_track_for_reward(
+            self._steps_since_reset + 1, end_of_track
+        )
 
         wheel_slips = [
             float(data[TmrlDataPlugin.SLIP_FL]),
@@ -216,9 +217,9 @@ class TM2020Interface(TrackMania2020InterfaceBase):
             slip_angle_deg=None,
         )
 
-        self._steps_since_reset = next_steps_since_reset
+        self._steps_since_reset += 1
         terminated, eot_accepted = apply_episode_length_guards(
-            next_steps_since_reset,
+            self._steps_since_reset,
             end_of_track_for_reward,
             terminated,
         )

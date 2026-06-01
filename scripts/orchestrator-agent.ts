@@ -14,9 +14,10 @@
 
 import { Agent } from "@cursor/sdk";
 import { readFileSync } from "fs";
-import { resolve } from "path";
+import { dirname, resolve } from "path";
+import { fileURLToPath } from "url";
 
-const REPO_ROOT = resolve(import.meta.dirname, "..");
+const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 function buildDecidePrompt(context: Record<string, unknown>): string {
   const snapshot = context.snapshot as Record<string, unknown> | undefined;

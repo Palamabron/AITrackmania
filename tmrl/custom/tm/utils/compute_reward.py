@@ -73,6 +73,14 @@ def _resample_polyline_by_arc_length(points: np.ndarray, num_points: int) -> np.
     total_length = float(cumulative_length[-1])
     if total_length <= 0:
         return points.copy()
+    # np.interp requires strictly increasing xp; drop duplicate arc positions.
+    _, unique_idx = np.unique(cumulative_length, return_index=True)
+    unique_idx = np.sort(unique_idx)
+    cumulative_length = cumulative_length[unique_idx]
+    points = points[unique_idx]
+    if len(points) <= 1:
+        return points.copy()
+    total_length = float(cumulative_length[-1])
     arc_positions = np.linspace(0.0, total_length, num_points, endpoint=True)
     resampled = np.zeros((num_points, points.shape[1]), dtype=np.float64)
     for dim in range(points.shape[1]):

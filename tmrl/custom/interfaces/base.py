@@ -47,21 +47,32 @@ POST_RACE_SLEEP_S = 0.5
 KEYBOARD_STEER_DEADZONE = 0.5
 
 
-def apply_episode_length_guards(
-    steps_since_reset: int,
-    end_of_track: bool,
-    terminated: bool,
-) -> tuple[bool, bool]:
-    """Enforce minimum episode length and end-of-track step threshold.
-
-    Returns ``(terminated, end_of_track_accepted)`` where *end_of_track_accepted*
-    is True only when the step count is high enough for a valid finish.
-    """
-    min_steps_before_finish = max(
+def min_steps_before_finish() -> int:
+    """Minimum step count before a finish UI signal counts as a valid finish."""
+    return max(
         DEFAULT_MIN_STEPS_END_OF_TRACK,
         int(cfg.REWARD_CONFIG.get("MIN_STEPS", DEFAULT_MIN_STEPS_END_OF_TRACK)),
     )
-    end_of_track_accepted = end_of_track and steps_since_reset >= min_steps_before_finish
+
+
+def gate_end_of_track_for_reward(steps_since_reset: int, end_of_track: bool) -> bool:
+    """Return True when finish UI is active and the step threshold is met."""
+    return end_of_track and steps_since_reset >= min_steps_before_finish()
+
+
+def apply_episode_length_guards(
+    steps_since_reset: int,
+    end_of_track_gated: bool,
+    terminated: bool,
+) -> tuple[bool, bool]:
+    """Enforce minimum episode length after reward computation.
+
+    *end_of_track_gated* must be the output of ``gate_end_of_track_for_reward``
+    for the same step count (typically after ``_steps_since_reset += 1``).
+
+    Returns ``(terminated, end_of_track_accepted)``.
+    """
+    end_of_track_accepted = end_of_track_gated
     if end_of_track_accepted:
         terminated = True
 

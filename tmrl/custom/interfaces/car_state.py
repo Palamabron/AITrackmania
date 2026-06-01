@@ -17,7 +17,7 @@ from gymnasium import spaces
 from loguru import logger
 
 import tmrl.config as cfg
-from tmrl.custom.interfaces.base import MPS_TO_KMPH
+from tmrl.custom.interfaces.base import MPS_TO_KMPH, gate_end_of_track_for_reward
 from tmrl.custom.interfaces.telemetry_indices import (
     TMRL_GRABDATA_FLOAT_COUNT,
     TmrlDataPlugin,
@@ -199,6 +199,9 @@ class TM2020RLInterface(TM2020Interface):
         cur_cp = int(data[TmrlDataPlugin.CHECKPOINTS_PASSED])
         cur_lap = int(data[TmrlDataPlugin.CURRENT_LAP])
         end_of_track = bool(data[TmrlDataPlugin.FINISH_UI_ACTIVE])
+        end_of_track_for_reward = gate_end_of_track_for_reward(
+            getattr(self, "_steps_since_reset", 0) + 1, end_of_track
+        )
 
         speed_kmh = float(data[TmrlDataPlugin.SPEED_MPS]) * MPS_TO_KMPH
         speed = np.array([speed_kmh / cfg.OBS_SPEED_SCALE], dtype=np.float32)
@@ -262,7 +265,7 @@ class TM2020RLInterface(TM2020Interface):
             speed=speed_kmh,
             next_cp=self.cur_checkpoint < cur_cp,
             next_lap=self.cur_lap < cur_lap,
-            end_of_track=end_of_track,
+            end_of_track=end_of_track_for_reward,
             input_brake=float(data[TmrlDataPlugin.INPUT_BRAKE]),
             aim_yaw=float(yaw_val),
             input_steer=float(data[TmrlDataPlugin.INPUT_STEER]),
@@ -282,12 +285,8 @@ class TM2020RLInterface(TM2020Interface):
         race_progress_scalar = self.reward_function.compute_race_progress()
 
         self._steps_since_reset = getattr(self, "_steps_since_reset", 0) + 1
-        min_steps_before_finish = max(
-            _DEFAULT_MIN_STEPS_END_OF_TRACK,
-            int(cfg.REWARD_CONFIG.get("MIN_STEPS", _DEFAULT_MIN_STEPS_END_OF_TRACK)),
-        )
         fc_for_norm = float(failure_counter)
-        if end_of_track and self._steps_since_reset >= min_steps_before_finish:
+        if end_of_track_for_reward:
             terminated = True
             fc_for_norm = 0.0
             if self.save_replays:

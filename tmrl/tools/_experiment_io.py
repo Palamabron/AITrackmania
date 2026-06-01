@@ -79,17 +79,16 @@ def _atomic_write(path: Path, content: str) -> None:
     try:
         fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp")
         try:
-            data = content.encode("utf-8")
-            with os.fdopen(fd, "wb") as f:
-                f.write(data)
-                f.flush()
-                os.fsync(f.fileno())
-        finally:
-            # fd is closed by fdopen context; keep close() for safety if fdopen failed
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(content)
+                handle.flush()
+                os.fsync(handle.fileno())
+        except OSError:
             try:
                 os.close(fd)
             except OSError:
                 pass
+            raise
         tmp_path = Path(tmp)
         tmp_path.replace(path)
     except OSError:

@@ -341,7 +341,7 @@ class TrainerInterface:
             res += buf
         self.__endpoint.notify(groups={"trainers": -1})
         if len(res) > 0:
-            logger.info("retrieve_buffer: got {} samples from server", len(res))
+            logger.debug("retrieve_buffer: got {} samples from server", len(res))
         return res
 
 
