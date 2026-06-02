@@ -221,10 +221,10 @@ FIELD_IGNORE_HINTS: dict[str, str] = {
         "Ignored when split_track_observation is false or on boundary lidar plain residual/MLP."
     ),
     "gnn_layers": (
-        "Ignored when track_encoder is not gtn/gnn alias or track split is unused for this route."
+        "Ignored when track_encoder is not gtn or track split is unused for this route."
     ),
     "gnn_hidden": (
-        "Ignored when track_encoder is not gtn/gnn alias or track split is unused for this route."
+        "Ignored when track_encoder is not gtn or track split is unused for this route."
     ),
 }
 

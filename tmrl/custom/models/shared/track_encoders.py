@@ -1,7 +1,7 @@
 """Shared track-point encoder modules (GTN transformer, Conv1d, spline-MLP).
 
-Single source of truth for ``_TrackGTN``, ``_build_track_gnn_branch``, and
-the ``_is_gtn_encoder`` alias check.  Imported by ``sophy.py``,
+Single source of truth for ``TrackGTN``, ``build_track_gtn_branch``, and
+``is_gtn_encoder``.  Imported by ``sophy.py``,
 ``gnn_effnet_sophy.py``, and ``iqn_discrete_q_network.py``.
 """
 
@@ -15,11 +15,8 @@ TRACK_CHANNELS_GTN = 7
 
 
 def is_gtn_encoder(track_encoder: str) -> bool:
-    """True when the encoder string selects the GTN (graph-transformer) path.
-
-    ``"gnn"`` is kept as a legacy alias for ``"gtn"``.
-    """
-    return str(track_encoder).lower() in {"gtn", "gnn"}
+    """True when the encoder string selects the GTN (graph-transformer) path."""
+    return str(track_encoder).lower() == "gtn"
 
 
 class TrackGTN(nn.Module):
@@ -69,7 +66,7 @@ class TrackGTN(nn.Module):
 def build_track_gtn_branch(
     dim_track: int, hidden_dim: int, gnn_hidden: int = 64, gnn_layers: int = 3
 ) -> nn.Module:
-    """Build a GTN-based track encoding branch (``gnn`` kept as legacy alias)."""
+    """Build a GTN-based track encoding branch."""
     assert dim_track >= TRACK_CHANNELS_GTN, "track dim must be at least 7"
     assert dim_track % TRACK_CHANNELS_GTN == 0, "track dim must be 7*N (7 channels)"
     num_nodes = dim_track // TRACK_CHANNELS_GTN

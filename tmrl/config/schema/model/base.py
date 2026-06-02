@@ -109,7 +109,7 @@ class BaseModelConfig(BaseModel):
     track_encoder: str = Field(
         default="conv1d",
         description=(
-            "Track feature encoder family: conv1d, gtn, spline_mlp (gnn kept as legacy alias)."
+            "Track feature encoder family: conv1d, gtn, spline_mlp."
         ),
     )
     gnn_layers: PositiveInt = Field(

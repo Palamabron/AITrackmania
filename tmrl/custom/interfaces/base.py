@@ -72,17 +72,15 @@ def apply_episode_length_guards(
 
     Returns ``(terminated, end_of_track_accepted)``.
     """
-    end_of_track_accepted = end_of_track_gated
-    if end_of_track_accepted:
-        terminated = True
-
     min_guaranteed = int(cfg.REWARD_CONFIG.get("MIN_EPISODE_LENGTH_GUARANTEED", 100))
     min_length = max(
         min_guaranteed,
         2 * int(cfg.REWARD_CONFIG.get("MIN_STEPS", DEFAULT_MIN_STEPS_END_OF_TRACK)),
     )
-    if steps_since_reset < min_length:
-        terminated = False
+    too_short = steps_since_reset < min_length
+    end_of_track_accepted = end_of_track_gated and not too_short
+    if end_of_track_accepted:
+        terminated = True
 
     return terminated, end_of_track_accepted
 

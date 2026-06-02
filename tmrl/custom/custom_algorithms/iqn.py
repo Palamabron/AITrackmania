@@ -183,7 +183,7 @@ def _quantile_huber_loss(
         is_weights: (batch,) importance sampling weights for PER (optional).
 
     Returns:
-        Scalar loss (double-mean over current and target quantile dimensions).
+        Scalar loss (sum over N_tau_prime, mean over N_tau, then mean over batch).
     """
     if current_quantiles.dim() == 2:
         current_quantiles = current_quantiles.unsqueeze(-1)
@@ -203,8 +203,8 @@ def _quantile_huber_loss(
 
     tau_expanded = rearrange(tau, "b n -> b n 1")
     weight = torch.abs(tau_expanded - (delta.detach() < 0).float())
-    # Expectation over both tau and tau' (Dabney et al. 2018; Rainbow IQN reference).
-    per_sample_loss = (weight * huber).mean(dim=(1, 2))
+    # Sum over N_tau_prime (target), then mean over N_tau (current) — Dabney et al. 2018.
+    per_sample_loss = (weight * huber).sum(dim=-1).mean(dim=-1)
 
     if is_weights is not None:
         # IS weights are already normalized in training_offline.py, so apply directly
