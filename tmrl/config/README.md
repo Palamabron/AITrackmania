@@ -229,6 +229,41 @@ Hydra preset **names** stay short (`model=mlp_actor_critic`, …). Source files 
 - check whether expected values appear after all merges
 - if startup fails, inspect explicit compatibility/validation error message first
 
+### 4) Debugging reward components
+
+Two fields in `environment.reward` control live reward decomposition logging during rollout:
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `debug_reward_components` | `bool` | `false` | Enable per-component reward logs during rollout. |
+| `debug_log_interval` | `int` | `100` | Environment steps between each debug log line. |
+
+When `debug_reward_components: true`, every `debug_log_interval` steps the worker logs a line like:
+
+```
+[step 500] rew=+1.234 prog=+1.500 spd=+0.000 drift=+0.000 crash=+0.000
+```
+
+At episode termination an episode-level summary is also logged (mean speed, total progress reward, drift, etc.).
+
+**How to enable for a single run (no file edits):**
+
+```bash
+export TMRL_CONFIG_OVERRIDES='{"environment":{"reward":{"debug_reward_components":true,"debug_log_interval":50}}}'
+uv run python -m tmrl --worker
+```
+
+**How to enable in `local.yaml`:**
+
+```yaml
+environment:
+  reward:
+    debug_reward_components: true
+    debug_log_interval: 100
+```
+
+The logs are emitted at `DEBUG` level via `loguru`; make sure your log level is set to `DEBUG` or lower to see them.
+
 ## Migration notes (breaking)
 
 - Config section renamed from `architecture` to `model`.
