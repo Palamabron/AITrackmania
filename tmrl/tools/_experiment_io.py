@@ -10,6 +10,7 @@ import json
 import os
 import sys
 import tempfile
+from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
@@ -84,10 +85,8 @@ def _atomic_write(path: Path, content: str) -> None:
                 handle.flush()
                 os.fsync(handle.fileno())
         except OSError:
-            try:
+            with suppress(OSError):
                 os.close(fd)
-            except OSError:
-                pass
             raise
         tmp_path = Path(tmp)
         tmp_path.replace(path)

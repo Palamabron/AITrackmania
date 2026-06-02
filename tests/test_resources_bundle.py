@@ -4,12 +4,10 @@ from __future__ import annotations
 
 import urllib.error
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
-
 from tmrl.tools.init_package.resources_bundle import download_resources_zip, resources_zip_urls
-
 
 # ---------------------------------------------------------------------------
 # URL-builder tests (no network)
@@ -111,6 +109,6 @@ def test_download_raises_when_all_urls_fail(tmp_path: Path) -> None:
             "tmrl.tools.init_package.resources_bundle.urllib.request.urlretrieve",
             side_effect=err_404,
         ),
+        pytest.raises(ConnectionError),
     ):
-        with pytest.raises(ConnectionError):
-            download_resources_zip(dest)
+        download_resources_zip(dest)

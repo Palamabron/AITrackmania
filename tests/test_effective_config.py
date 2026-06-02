@@ -70,9 +70,7 @@ def test_lidar_residual_route():
 
 def test_vanilla_gray_route():
     """Non-lidar, non-advanced interface + SAC + img_grayscale=True → vanilla_gray."""
-    cfg = _validate_with(
-        algorithm={"name": "SAC"}, environment={"rtgym_interface": "TM20STANDARD"}
-    )
+    cfg = _validate_with(algorithm={"name": "SAC"}, environment={"rtgym_interface": "TM20STANDARD"})
     assert model_policy_route(cfg) == "vanilla_gray"
 
 
