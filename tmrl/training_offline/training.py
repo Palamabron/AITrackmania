@@ -135,6 +135,7 @@ class TrainingOffline:
                     )
                     self.memory.clear()
                     self.total_samples = 0
+                    self.total_demo_samples = 0
                     self.total_updates = 0
                 dim = _observation_dim(observation_space)
                 logger.info(
@@ -177,6 +178,7 @@ class TrainingOffline:
                 "(env or buffer) so observation_space matches worker."
             )
         self.total_samples = len(self.memory)
+        self.total_demo_samples = 0
         self._injected_player_run_ids: set[str] = set()
         self._best_return_train: float = float("-inf")
         self._best_return_eval: float = float("-inf")
@@ -277,6 +279,7 @@ class TrainingOffline:
                         )
                         self.memory.clear()
                         self.total_samples = 0
+                        self.total_demo_samples = 0
                         # Ratio gating uses total_updates/total_samples.
                         # After invalidating replay, reset updates too; otherwise
                         # ratio stays huge and trainer can wait indefinitely.
@@ -450,16 +453,31 @@ class TrainingOffline:
                     )
             if len(demo_buffer) > 0:
                 repeat = cfg.PLAYER_RUNS_DEMO_INJECTION_REPEAT
+                mark_boundary = getattr(self.memory, "mark_episode_boundary", None)
                 for _ in range(repeat):
+                    # Seal the seam between the worker stream and the demo lap
+                    # (and between repeated demo copies) so 1-step transitions and
+                    # n-step windows never span unrelated streams.
+                    if callable(mark_boundary):
+                        mark_boundary()
                     self.memory.append(demo_buffer)
-                    self.total_samples += len(demo_buffer)
+                    # Demo samples are tracked separately: counting them as env
+                    # samples would loosen the max_training_steps_per_env_step
+                    # ratio and the start_training warmup gate. getattr covers
+                    # checkpoints pickled before this attribute existed.
+                    self.total_demo_samples = getattr(self, "total_demo_samples", 0) + len(
+                        demo_buffer
+                    )
+                if callable(mark_boundary):
+                    mark_boundary()
                 logger.info(
                     " Injected {} player-run sample(s) from {} file(s), repeat x{} "
-                    "(effective: {}). run_ids={}",
+                    "(effective: {}, demo samples total: {}). run_ids={}",
                     len(demo_buffer),
                     len(imported_files),
                     repeat,
                     len(demo_buffer) * repeat,
+                    self.total_demo_samples,
                     sorted(imported_ids),
                 )
 
@@ -585,6 +603,7 @@ class TrainingOffline:
                     )
                     self.memory.clear()
                     self.total_samples = 0
+                    self.total_demo_samples = 0
                     # Replay was invalidated; restart update/sample ratio accounting.
                     self.total_updates = 0
                     break

@@ -122,7 +122,11 @@ class BaseModelConfig(BaseModel):
     )
     binary_brake: bool = Field(
         default=False,
-        description="Snap continuous brake output to {0,1} at the final policy layer.",
+        description=(
+            "Snap continuous brake output to {0,1} at the final policy layer. "
+            "Only affects continuous Sophy-style actors; no-op for discrete IQN/SDSAC "
+            "(their action table already has binary gas/brake plus a tap mode)."
+        ),
     )
     use_rnn: bool = Field(
         default=False,

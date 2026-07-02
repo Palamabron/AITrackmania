@@ -217,8 +217,9 @@ class TMFullObsField(IntEnum):
 class TMBestObsField(IntEnum):
     """Observation indices for MemoryTMBest (full game telemetry).
 
-    Note: SURFACE_ID (11) is present in the raw observation but intentionally
-    skipped when building data columns in MemoryTMBest.append_buffer.
+    Note: CRASHED_LIST (22) is present in the raw observation but is not
+    persisted as a data column (no TMBestField slot); every other field maps
+    1:1 onto TMBestField so storage and get_transition stay aligned.
     """
 
     POSITION = 0

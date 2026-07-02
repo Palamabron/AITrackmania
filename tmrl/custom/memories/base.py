@@ -32,9 +32,73 @@ def replace_hist_before_eoe(hist: list, eoe_idx_in_hist: int) -> None:
                 hist[i] = hist[i + 1]
 
 
+def enforce_demo_batch_fraction(
+    result: np.ndarray,
+    item_is_demo_flags: np.ndarray,
+    demo_min: float,
+    demo_max: float,
+) -> np.ndarray:
+    """Swap sampled indices so the demo share of the batch lands in [demo_min, demo_max].
+
+    Enforcement is skipped when the buffer contains only demo or only non-demo
+    items (nothing to swap in).
+
+    Args:
+        result: Sampled item indices (modified in place and returned).
+        item_is_demo_flags: Boolean array over all valid item indices; True = demo.
+        demo_min: Minimum demo fraction of the batch (0-1).
+        demo_max: Maximum demo fraction of the batch (0-1).
+
+    Returns:
+        The adjusted index array.
+    """
+    batch_size = int(len(result))
+    if batch_size == 0 or (demo_min <= 0.0 and demo_max >= 1.0):
+        return result
+    demo_items = np.flatnonzero(item_is_demo_flags)
+    non_demo_items = np.flatnonzero(~item_is_demo_flags)
+    if demo_items.size == 0 or non_demo_items.size == 0:
+        return result
+
+    min_demo = int(np.ceil(demo_min * batch_size))
+    max_demo = int(np.floor(demo_max * batch_size))
+    max_demo = max(min_demo, min(max_demo, batch_size))
+
+    demo_positions = np.flatnonzero(item_is_demo_flags[result])
+    non_demo_positions = np.flatnonzero(~item_is_demo_flags[result])
+
+    if demo_positions.size < min_demo and non_demo_positions.size > 0:
+        need = int(min(min_demo - demo_positions.size, non_demo_positions.size))
+        replace_positions = np.random.choice(non_demo_positions, size=need, replace=False)
+        replacements = np.random.choice(demo_items, size=need, replace=demo_items.size < need)
+        result[replace_positions] = replacements
+        demo_positions = np.flatnonzero(item_is_demo_flags[result])
+
+    if demo_positions.size > max_demo:
+        excess = int(demo_positions.size - max_demo)
+        replace_positions = np.random.choice(demo_positions, size=excess, replace=False)
+        replacements = np.random.choice(
+            non_demo_items, size=excess, replace=non_demo_items.size < excess
+        )
+        result[replace_positions] = replacements
+
+    return result
+
+
 @MEMORIES.register("generic")
 class GenericTorchMemory(TorchMemory):
-    """Generic torch-based memory for simple replay buffer scenarios."""
+    """Generic torch-based memory for simple replay buffer scenarios.
+
+    Supports memory-side n-step returns: when ``n_step_return > 1``, each sampled
+    transition carries the discounted reward sum over up to n consecutive steps
+    (never crossing episode boundaries), the observation n steps ahead, and the
+    effective window length in ``info["n_step_effective"]``.
+
+    When ``discrete_n_steer_bins > 0`` (discrete IQN/SDSAC pipeline), continuous
+    ``(3,)`` ``[gas, brake, steer]`` actions (e.g. injected human demos) are
+    quantized to discrete indices at append time so the action column stays
+    homogeneous (mixed scalar/(3,) shapes would crash ``collate_torch``).
+    """
 
     def __init__(
         self,
@@ -47,8 +111,36 @@ class GenericTorchMemory(TorchMemory):
         device: str = "cpu",
         discrete_n_steer_bins: int = 0,
         n_step_return: int = 1,
+        gamma: float | None = None,
+        demo_min_batch_fraction: float = 0.0,
+        demo_max_batch_fraction: float = 1.0,
     ):
         configure_discrete_steer_bins(discrete_n_steer_bins)
+        self.discrete_n_steer_bins = int(discrete_n_steer_bins)
+        self._discrete_action_table: list[Any] | None = None
+        n_step_return = int(n_step_return)
+        if n_step_return < 1:
+            raise ValueError(f"n_step_return must be >= 1, got {n_step_return}")
+        if n_step_return > 1:
+            if gamma is None:
+                raise ValueError(
+                    "GenericTorchMemory requires gamma (the algorithm's discount factor) "
+                    "when n_step_return > 1, so memory-side n-step rewards are discounted "
+                    "consistently with the Bellman backup."
+                )
+            if crc_debug:
+                raise ValueError(
+                    "crc_debug is incompatible with n_step_return > 1 "
+                    "(CRC checks assume 1-step transitions)."
+                )
+        self.gamma = float(gamma) if gamma is not None else 1.0
+        self.demo_min_batch_fraction = max(0.0, min(1.0, float(demo_min_batch_fraction)))
+        self.demo_max_batch_fraction = max(0.0, min(1.0, float(demo_max_batch_fraction)))
+        if self.demo_max_batch_fraction < self.demo_min_batch_fraction:
+            self.demo_max_batch_fraction = self.demo_min_batch_fraction
+        self.last_sample_demo_fraction = 0.0
+        # Cached per-data-index demo flags; invalidated whenever self.data changes.
+        self._demo_flags_cache: np.ndarray | None = None
         super().__init__(
             memory_size=memory_size,
             batch_size=batch_size,
@@ -60,11 +152,60 @@ class GenericTorchMemory(TorchMemory):
             n_step_return=n_step_return,
         )
 
+    def _canonical_discrete_action(self, action: Any) -> Any:
+        """Quantize continuous ``(3,)`` actions to discrete indices (discrete pipeline only).
+
+        Worker rollouts already store scalar integer indices and pass through
+        unchanged; injected demos carry continuous ``[gas, brake, steer]`` rows.
+        """
+        a = np.asarray(action)
+        if a.ndim == 0 and np.issubdtype(a.dtype, np.integer):
+            return action
+        flat = a.reshape(-1)
+        if flat.size == 1 and np.issubdtype(a.dtype, np.integer):
+            return np.int64(flat[0])
+        if flat.size == 3:
+            from tmrl.custom.tm.utils.discrete_control import (
+                build_brake_tap_action_table,
+                continuous_control_to_discrete_index,
+            )
+
+            if self._discrete_action_table is None:
+                _, self._discrete_action_table = build_brake_tap_action_table(
+                    n_steer=self.discrete_n_steer_bins
+                )
+            idx = continuous_control_to_discrete_index(
+                flat.astype(np.float32), self._discrete_action_table
+            )
+            return np.int64(idx)
+        raise ValueError(
+            "GenericTorchMemory (discrete pipeline) received an action that is neither a "
+            f"scalar integer index nor a (3,) control vector: shape={a.shape}, dtype={a.dtype}."
+        )
+
+    def _stored_action(self, idx: int) -> Any:
+        """Read an action from storage, healing legacy continuous rows in place.
+
+        Buffers pickled into checkpoints before append-time quantization existed
+        can still hold ``(3,)`` demo actions; fix them lazily on first read.
+        """
+        action = self.data[GenericField.ACTIONS][idx]
+        if self.discrete_n_steer_bins > 0:
+            a = np.asarray(action)
+            if not (a.ndim == 0 and np.issubdtype(a.dtype, np.integer)):
+                action = self._canonical_discrete_action(action)
+                self.data[GenericField.ACTIONS][idx] = action
+        return action
+
     def append_buffer(self, buffer: Any) -> None:
         """Append a buffer of samples to the memory."""
         bf = BufferField
+        if self.discrete_n_steer_bins > 0:
+            actions = [self._canonical_discrete_action(b[bf.ACTION]) for b in buffer.memory]
+        else:
+            actions = [b[bf.ACTION] for b in buffer.memory]
         data_fields = [
-            [b[bf.ACTION] for b in buffer.memory],
+            actions,
             [b[bf.OBSERVATION] for b in buffer.memory],
             [b[bf.REWARD] for b in buffer.memory],
             [b[bf.TERMINATED] for b in buffer.memory],
@@ -83,6 +224,7 @@ class GenericTorchMemory(TorchMemory):
         if to_trim > 0:
             for i in range(len(data_fields)):
                 self.data[i] = self.data[i][to_trim:]
+        self._demo_flags_cache = None
 
     def __len__(self) -> int:
         """Return the number of valid transitions in memory."""
@@ -94,17 +236,89 @@ class GenericTorchMemory(TorchMemory):
     def clear(self) -> None:
         """Remove all transitions from the memory."""
         self.data = []
+        self._demo_flags_cache = None
+        self.last_sample_demo_fraction = 0.0
+
+    def mark_episode_boundary(self) -> None:
+        """Mark the last stored entry as an episode end (truncation).
+
+        Called by the trainer around demo injection so 1-step transitions and
+        n-step windows never span the seam between unrelated streams (worker
+        rollouts vs injected demo laps).
+        """
+        field = GenericField
+        if len(self.data) == 0 or len(self.data[field.TRUNCATED]) == 0:
+            return
+        self.data[field.TRUNCATED][-1] = True
+        self.data[field.DONE][-1] = True
+
+    def _demo_flags(self) -> np.ndarray:
+        """Boolean demo flag per data index (cached until the data changes)."""
+        if self._demo_flags_cache is None:
+            infos = self.data[GenericField.INFO] if len(self.data) > 0 else []
+            self._demo_flags_cache = np.fromiter(
+                (isinstance(e, dict) and bool(e.get("is_demo", False)) for e in infos),
+                dtype=bool,
+                count=len(infos),
+            )
+        return self._demo_flags_cache
+
+    def _item_demo_flags(self, max_item: int) -> np.ndarray:
+        """Boolean demo flag per item index in [0, max_item)."""
+        # Item ``i`` is the transition into data index ``i + 1``.
+        return self._demo_flags()[1 : max_item + 1]
+
+    def _max_start_item(self) -> int:
+        """Exclusive upper bound for valid transition start indices."""
+        length = self.__len__()
+        if self.n_step_return > 1:
+            return max(0, length - self.n_step_return + 1)
+        return length
+
+    def sample_indices(self):
+        """Sample transition start indices, enforcing the demo batch fraction."""
+        max_start = self._max_start_item()
+        if max_start <= 0:
+            self.last_sample_demo_fraction = 0.0
+            return ()
+        result = np.random.randint(0, max_start, size=self.batch_size, dtype=np.int64)
+        item_flags = self._item_demo_flags(max_start)
+        result = enforce_demo_batch_fraction(
+            result,
+            item_flags,
+            self.demo_min_batch_fraction,
+            self.demo_max_batch_fraction,
+        )
+        self.last_sample_demo_fraction = (
+            float(item_flags[result].mean()) if len(result) > 0 else 0.0
+        )
+        return result
 
     def get_transition(self, item: int) -> tuple:
-        """Get a single transition from the memory."""
+        """Get a transition (1-step, or aggregated n-step when n_step_return > 1)."""
         field = GenericField
+        n = int(self.n_step_return)
+        resample_high = max(1, self._max_start_item())
 
         # Bounded retries to avoid excessive loops on large buffers
         max_retries = min(100, max(10, self.__len__()))
+        item_flags = self._item_demo_flags(resample_high)
+        want_demo = bool(item_flags[item]) if item < len(item_flags) else None
+        if want_demo is True:
+            resample_candidates = np.flatnonzero(item_flags)
+        elif want_demo is False:
+            resample_candidates = np.flatnonzero(~item_flags)
+        else:
+            resample_candidates = None
         for _attempt in range(max_retries):
             if not self.data[field.DONE][item]:
                 break
-            item = np.random.randint(0, self.__len__() - 1)
+            if resample_candidates is None:
+                item = np.random.randint(0, resample_high)
+            elif resample_candidates.size > 0:
+                item = int(np.random.choice(resample_candidates))
+            else:
+                item = np.random.randint(0, resample_high)
         else:
             # Provide detailed error message for debugging
             done_count = sum(self.data[field.DONE])
@@ -116,16 +330,48 @@ class GenericTorchMemory(TorchMemory):
             )
 
         idx_last = item
-        idx_now = item + 1
 
+        if n <= 1:
+            idx_now = item + 1
+            info = self.data[field.INFO][idx_now]
+            info = dict(info) if isinstance(info, dict) else {}
+            info["n_step_effective"] = 1
+            return (
+                self.data[field.OBSERVATIONS][idx_last],
+                self._stored_action(idx_now),
+                self.data[field.REWARDS][idx_now],
+                self.data[field.OBSERVATIONS][idx_now],
+                self.data[field.TERMINATED][idx_now],
+                self.data[field.TRUNCATED][idx_now],
+                info,
+            )
+
+        # Accumulate discounted rewards forward from idx_last, stopping at the
+        # episode boundary so returns never leak across episodes.
+        rewards = self.data[field.REWARDS]
+        dones = self.data[field.DONE]
+        n_step_reward = 0.0
+        n_eff = 0
+        for k in range(n):
+            idx_k = idx_last + 1 + k
+            n_step_reward += (self.gamma**k) * float(rewards[idx_k])
+            n_eff = k + 1
+            if dones[idx_k]:
+                break
+        idx_now = idx_last + n_eff
+
+        # info of the first step in the window labels the transition (is_demo etc.).
+        info = self.data[field.INFO][idx_last + 1]
+        info = dict(info) if isinstance(info, dict) else {}
+        info["n_step_effective"] = n_eff
         return (
             self.data[field.OBSERVATIONS][idx_last],
-            self.data[field.ACTIONS][idx_now],
-            self.data[field.REWARDS][idx_now],
+            self._stored_action(idx_last + 1),
+            np.float32(n_step_reward),
             self.data[field.OBSERVATIONS][idx_now],
             self.data[field.TERMINATED][idx_now],
             self.data[field.TRUNCATED][idx_now],
-            self.data[field.INFO][idx_now],
+            info,
         )
 
 
@@ -228,49 +474,12 @@ class MemoryTM(TorchMemory):
 
         demo_min = self.demo_min_batch_fraction
         demo_max = self.demo_max_batch_fraction
-        info_field_index = self._info_field_index()
-        if info_field_index is None or (demo_min <= 0.0 and demo_max >= 1.0):
-            result = np.random.randint(0, length, size=self.batch_size, dtype=np.int64)
-            self._set_last_sample_demo_fraction(result)
-            return result
-
-        batch_size = int(self.batch_size)
-        result = np.random.randint(0, length, size=batch_size, dtype=np.int64)
-        demo_positions = [pos for pos, idx in enumerate(result) if self._item_is_demo(int(idx))]
-        non_demo_positions = [
-            pos for pos, idx in enumerate(result) if not self._item_is_demo(int(idx))
-        ]
-        demo_items = [idx for idx in range(length) if self._item_is_demo(idx)]
-        non_demo_items = [idx for idx in range(length) if not self._item_is_demo(idx)]
-        if not demo_items or not non_demo_items:
-            self._set_last_sample_demo_fraction(result)
-            return result
-
-        min_demo = int(np.ceil(demo_min * batch_size))
-        max_demo = int(np.floor(demo_max * batch_size))
-        max_demo = max(min_demo, min(max_demo, batch_size))
-
-        if len(demo_positions) < min_demo and non_demo_positions:
-            need = min(min_demo - len(demo_positions), len(non_demo_positions))
-            replace_positions = np.random.choice(non_demo_positions, size=need, replace=False)
-            replacements = np.random.choice(
-                demo_items,
-                size=need,
-                replace=len(demo_items) < need,
+        result = np.random.randint(0, length, size=self.batch_size, dtype=np.int64)
+        if self._info_field_index() is not None and (demo_min > 0.0 or demo_max < 1.0):
+            item_flags = np.fromiter(
+                (self._item_is_demo(i) for i in range(length)), dtype=bool, count=length
             )
-            result[replace_positions] = replacements
-            demo_positions = [pos for pos, idx in enumerate(result) if self._item_is_demo(int(idx))]
-
-        if len(demo_positions) > max_demo and non_demo_items:
-            excess = len(demo_positions) - max_demo
-            replace_positions = np.random.choice(demo_positions, size=excess, replace=False)
-            replacements = np.random.choice(
-                non_demo_items,
-                size=excess,
-                replace=len(non_demo_items) < excess,
-            )
-            result[replace_positions] = replacements
-
+            result = enforce_demo_batch_fraction(result, item_flags, demo_min, demo_max)
         self._set_last_sample_demo_fraction(result)
         return result
 

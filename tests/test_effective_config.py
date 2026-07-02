@@ -131,3 +131,20 @@ def test_unsupported_explain_text_contains_warning():
     text = explain_active_config_text(cfg)
     assert "WARNING" in text
     assert "unsupported" in text
+
+
+def test_reward_normalize_scale_rejects_stale_divide_by_n_values():
+    with pytest.raises(ValueError, match="reward_normalize_scale"):
+        _validate_with(algorithm={"reward_normalize_scale": 200.0})
+
+
+def test_iqn_lr_total_steps_must_exceed_warmup_when_cosine_decay_enabled():
+    with pytest.raises(ValueError, match="iqn_lr_total_steps"):
+        _validate_with(
+            algorithm={
+                "name": "IQN",
+                "iqn_lr_cosine_decay": True,
+                "iqn_lr_warmup_steps": 50_000,
+                "iqn_lr_total_steps": 50_000,
+            }
+        )

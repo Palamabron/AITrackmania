@@ -80,7 +80,7 @@ def test_boundary_ahead_slice_at_track_end_is_directional():
     assert float(np.std(lx)) > 1.0
 
 
-def _make_reward_fn(tmp_path: Path, n_points: int = 100):
+def _make_reward_fn(tmp_path: Path, n_points: int = 100, extra_config: dict | None = None):
     reward_mod = _load_module(_REWARD_PATH, "tmrl_reward_test")
     reward_function_cls = reward_mod.RewardFunction
     near_finish_progress_threshold = reward_mod.NEAR_FINISH_PROGRESS_THRESHOLD
@@ -105,13 +105,17 @@ def _make_reward_fn(tmp_path: Path, n_points: int = 100):
     with open(right_pkl, "wb") as f:
         pickle.dump(right, f)
 
+    reward_config = {
+        "min_seconds_before_failure": 10.0,
+        "speed_reward_weight": 1.0,
+        "max_speed_kmh": 300.0,
+    }
+    if extra_config:
+        reward_config.update(extra_config)
+
     rf = reward_function_cls(
         reward_data_path=str(reward_pkl),
-        reward_config={
-            "min_seconds_before_failure": 10.0,
-            "speed_reward_weight": 1.0,
-            "max_speed_kmh": 300.0,
-        },
+        reward_config=reward_config,
         time_step_duration=0.05,
         track_path_left=str(left_pkl),
         track_path_right=str(right_pkl),
@@ -154,3 +158,192 @@ def test_near_finish_grace_does_not_apply_mid_track():
         assert terminated
         assert rf._term_reason == "no_progress_timeout"
         assert rf.furthest_race_progress < progress_threshold
+
+
+def test_terminal_failure_penalty_applied_once_on_timeout():
+    with tempfile.TemporaryDirectory() as tmp:
+        rf, _ = _make_reward_fn(Path(tmp), extra_config={"terminal_failure_penalty": 3.0})
+        start_pos = rf.data[0].copy()
+        rewards: list[float] = []
+        terminated = False
+        for _ in range(rf._max_no_progress_steps + 5):
+            r, terminated, _, _ = rf.compute_reward(pos=start_pos, speed=0.0, end_of_track=False)
+            rewards.append(float(r))
+            if terminated:
+                break
+
+        assert terminated
+        assert rf._term_reason == "no_progress_timeout"
+        # Only the terminal step carries the one-time -3.0; preceding stall
+        # steps are unaffected.
+        assert abs(rewards[-1] - (rewards[-2] - 3.0)) < 1e-6
+
+
+def test_terminal_failure_penalty_not_applied_on_finish():
+    with tempfile.TemporaryDirectory() as tmp:
+        rf, _ = _make_reward_fn(Path(tmp), extra_config={"terminal_failure_penalty": 3.0})
+        start_pos = rf.data[0].copy()
+        # Stand still until the very step the timeout fires, but finish on it:
+        # end_of_track must suppress the failure penalty.
+        for _ in range(rf._max_no_progress_steps - 1):
+            _, terminated, _, _ = rf.compute_reward(pos=start_pos, speed=0.0, end_of_track=False)
+            assert not terminated
+        r_final, _, _, _ = rf.compute_reward(pos=start_pos, speed=0.0, end_of_track=True)
+        # Finish bonus (+ remaining-distance progress payout) with no -3.0.
+        assert r_final > 0.0
+
+
+def test_slow_progress_terminates_creep_that_evades_binary_timer():
+    """Creep advancing one trajectory index every ~40 steps resets the binary
+    no-progress timer forever; the rate-based cutoff must catch it."""
+    with tempfile.TemporaryDirectory() as tmp:
+        rf, _ = _make_reward_fn(
+            Path(tmp),
+            extra_config={
+                "min_progress_rate": 3.0,
+                "slow_progress_window_seconds": 2.0,
+            },
+        )
+        pos = rf.data[0].copy()
+        terminated = False
+        steps = 0
+        for _ in range(600):
+            pos = pos + np.array([0.05, 0.0, 0.0])  # 1 m/s creep (points are 2 m apart)
+            _, terminated, _, _ = rf.compute_reward(pos=pos, speed=4.0, end_of_track=False)
+            steps += 1
+            if terminated:
+                break
+
+        assert terminated, "slow creep must be terminated by the rate-based cutoff"
+        assert rf._term_reason == "slow_progress"
+        # Window is 2 s = 40 steps; termination should fire shortly after.
+        assert steps <= 80
+
+
+def test_slow_progress_does_not_fire_when_driving_fast():
+    with tempfile.TemporaryDirectory() as tmp:
+        rf, _ = _make_reward_fn(
+            Path(tmp),
+            extra_config={
+                "min_progress_rate": 3.0,
+                "slow_progress_window_seconds": 2.0,
+            },
+        )
+        pos = rf.data[0].copy()
+        for _ in range(150):
+            pos = pos + np.array([1.0, 0.0, 0.0])  # 20 m/s
+            if pos[0] >= rf.data[-1][0]:
+                break
+            _, terminated, _, _ = rf.compute_reward(pos=pos, speed=72.0, end_of_track=False)
+            assert not terminated, f"unexpected termination: {rf._term_reason}"
+
+
+def test_slow_progress_disabled_by_default():
+    with tempfile.TemporaryDirectory() as tmp:
+        rf, _ = _make_reward_fn(Path(tmp))
+        pos = rf.data[0].copy()
+        for _ in range(120):
+            pos = pos + np.array([0.05, 0.0, 0.0])
+            _, terminated, _, _ = rf.compute_reward(pos=pos, speed=4.0, end_of_track=False)
+            assert not terminated or rf._term_reason != "slow_progress"
+
+
+def test_terminal_failure_penalty_default_off():
+    with tempfile.TemporaryDirectory() as tmp:
+        rf, _ = _make_reward_fn(Path(tmp))
+        start_pos = rf.data[0].copy()
+        rewards: list[float] = []
+        terminated = False
+        for _ in range(rf._max_no_progress_steps + 5):
+            r, terminated, _, _ = rf.compute_reward(pos=start_pos, speed=0.0, end_of_track=False)
+            rewards.append(float(r))
+            if terminated:
+                break
+
+        assert terminated
+        assert abs(rewards[-1] - rewards[-2]) < 1e-6
+
+
+def test_boundary_shaping_disabled_by_default():
+    with tempfile.TemporaryDirectory() as tmp:
+        rf, _ = _make_reward_fn(Path(tmp))
+        assert rf._boundary_penalty_weight == 0.0
+        assert rf._boundary_crash_penalty == 0.0
+        assert rf._wall_hug_penalty_factor == 0.0
+
+        on_track = rf.data[10].copy()
+        for _ in range(12):
+            rf.compute_reward(pos=on_track, speed=50.0, end_of_track=False)
+
+        off_track = on_track.copy()
+        off_track[2] = 12.0
+        _, terminated, _, _ = rf.compute_reward(pos=off_track, speed=50.0, end_of_track=False)
+        assert not terminated or rf._term_reason != "boundary_crash"
+
+
+def test_boundary_crash_penalty_subtracted_on_wall_exit():
+    with tempfile.TemporaryDirectory() as tmp:
+        rf, _ = _make_reward_fn(
+            Path(tmp),
+            extra_config={
+                "boundary_crash_penalty": 5.0,
+                "boundary_penalty_weight": 0.0,
+            },
+        )
+        on_track = rf.data[10].copy()
+        for _ in range(12):
+            rf.compute_reward(pos=on_track, speed=50.0, end_of_track=False)
+
+        off_track = on_track.copy()
+        off_track[2] = 12.0
+        r, terminated, _, _ = rf.compute_reward(pos=off_track, speed=50.0, end_of_track=False)
+        assert terminated
+        assert rf._term_reason == "boundary_crash"
+        assert r <= -4.9
+
+
+def test_boundary_crash_penalty_not_clipped_by_reward_floor():
+    """One-time crash penalty must survive reward_clip_floor (default 5.0)."""
+    with tempfile.TemporaryDirectory() as tmp:
+        rf, _ = _make_reward_fn(
+            Path(tmp),
+            extra_config={
+                "boundary_crash_penalty": 10.0,
+                "boundary_penalty_weight": 0.0,
+                "reward_clip_floor": 5.0,
+            },
+        )
+        on_track = rf.data[10].copy()
+        for _ in range(12):
+            rf.compute_reward(pos=on_track, speed=50.0, end_of_track=False)
+
+        off_track = on_track.copy()
+        off_track[2] = 12.0
+        r, terminated, _, _ = rf.compute_reward(pos=off_track, speed=50.0, end_of_track=False)
+        assert terminated
+        assert rf._term_reason == "boundary_crash"
+        assert r <= -9.9
+
+
+def test_boundary_soft_penalty_applied_inside_wall():
+    with tempfile.TemporaryDirectory() as tmp:
+        rf, _ = _make_reward_fn(
+            Path(tmp),
+            extra_config={
+                "boundary_penalty_weight": 2.0,
+                "boundary_penalty_start": 0.5,
+                "boundary_crash_penalty": 0.0,
+            },
+        )
+        on_track = rf.data[10].copy()
+        for _ in range(12):
+            _, terminated, _, _ = rf.compute_reward(pos=on_track, speed=50.0, end_of_track=False)
+            assert not terminated
+
+        near_wall = on_track.copy()
+        near_wall[2] = 0.45
+        r_near, terminated, _, _ = rf.compute_reward(
+            pos=near_wall, speed=50.0, end_of_track=False
+        )
+        assert not terminated
+        assert r_near < 0.0

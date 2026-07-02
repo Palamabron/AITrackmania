@@ -14,6 +14,7 @@ import shutil
 import socket
 import tempfile
 import uuid
+from collections import deque
 from dataclasses import dataclass
 from typing import Any, ClassVar
 
@@ -124,8 +125,8 @@ class RewardFunction:
     """Reward and termination logic for TrackMania 2020 RL.
 
     Uses OpenPlanet API data. Rewards progress along a reference trajectory,
-    speed along the track, and applies penalties for crash, steering jerk,
-    and constant penalty. Handles termination (stall, off-track, end-of-track).
+    speed along the track, and applies penalties for crash and constant penalty.
+    Handles termination (stall, off-track, end-of-track).
     """
 
     def __init__(
@@ -199,8 +200,6 @@ class RewardFunction:
                 with open(track_path_right, "rb") as f:
                     self.right_track = np.asarray(pickle.load(f), dtype=np.float64)
 
-        # When boundaries were extended beyond the recorded reward trajectory,
-        # keep reward points consistent instead of shrinking boundaries.
         if len(self.data) >= 2 and len(self.left_track) >= 2 and len(self.right_track) >= 2:
             reward_len_m = _polyline_length(self.data)
             left_len_m = _polyline_length(self.left_track)
@@ -225,19 +224,41 @@ class RewardFunction:
             len(self.left_track) >= 2 and len(self.right_track) >= 2 and self.datalen >= 2
         )
         if self._has_boundaries:
+            # Keep raw XZ coords before resampling for trajectory-aligned
+            # boundary lookup (the resampled versions are only used by
+            # track_features.py for observation computation).
+            _raw_left_xz = self.left_track[:, [0, 2]].astype(np.float64).copy()
+            _raw_right_xz = self.right_track[:, [0, 2]].astype(np.float64).copy()
+
             if len(self.left_track) != self.datalen:
                 self.left_track = _resample_polyline_by_arc_length(self.left_track, self.datalen)
             if len(self.right_track) != self.datalen:
                 self.right_track = _resample_polyline_by_arc_length(self.right_track, self.datalen)
             self._left_xz = self.left_track[:, [0, 2]].astype(np.float64).copy()
             self._right_xz = self.right_track[:, [0, 2]].astype(np.float64).copy()
-            self._road_center_xz = (self._left_xz + self._right_xz) / 2.0
-            self._road_half_widths = np.linalg.norm(self._left_xz - self._right_xz, axis=1) / 2.0
+
+            # Align boundary geometry to the reward trajectory so that
+            # _road_center_xz[i] represents the road cross-section at the
+            # same physical location as self.data[i].  Without this, arc-
+            # length resampled boundaries can be misaligned with the
+            # trajectory (e.g. different starting direction) and indexing
+            # by best_index gives the wrong road segment.
+            from scipy.spatial import cKDTree
+
+            traj_xz = self.data[:, [0, 2]].astype(np.float64)
+            _, left_nn = cKDTree(_raw_left_xz).query(traj_xz)
+            _, right_nn = cKDTree(_raw_right_xz).query(traj_xz)
+            aligned_left = _raw_left_xz[left_nn]
+            aligned_right = _raw_right_xz[right_nn]
+            self._road_center_xz = (aligned_left + aligned_right) / 2.0
+            self._road_half_widths = (
+                np.linalg.norm(aligned_left - aligned_right, axis=1) / 2.0
+            )
             self._road_half_widths = np.maximum(self._road_half_widths, MIN_ROAD_HALF_WIDTH_M)
             _hw = self._road_half_widths
             logger.info(
                 "Track boundaries loaded: {} points, road half-width "
-                "min={:.1f}m mean={:.1f}m max={:.1f}m",
+                "min={:.1f}m mean={:.1f}m max={:.1f}m (aligned to trajectory via KDTree)",
                 self.datalen,
                 float(_hw.min()),
                 float(_hw.mean()),
@@ -305,6 +326,29 @@ class RewardFunction:
                 config_file_path,
             )
 
+        # Slow-progress cutoff: terminate when the car gains less track distance
+        # than min_progress_rate (m/s) averaged over a sliding window. The binary
+        # no-progress timeout above is evaded by arbitrarily slow creep (any
+        # reward_progress > 0 resets its timer); a rate-based check is not.
+        self._min_progress_rate_mps = max(0.0, float(rc.get("min_progress_rate", 0.0)))
+        _spw_sec = float(rc.get("slow_progress_window_seconds", 5.0))
+        if self._min_progress_rate_mps > 0.0 and _spw_sec > 0.0:
+            self._slow_progress_window_steps = max(
+                1, round(_spw_sec / self._time_step_duration)
+            )
+            logger.info(
+                "Reward: slow-progress cutoff below {:.1f} m/s averaged over {:.1f}s "
+                "(~{} env steps).",
+                self._min_progress_rate_mps,
+                _spw_sec,
+                self._slow_progress_window_steps,
+            )
+        else:
+            self._slow_progress_window_steps = 0
+        self._slow_progress_dist_history: deque[float] = deque(
+            maxlen=max(2, self._slow_progress_window_steps + 1)
+        )
+
         _ot_grace_sec = float(rc.get("off_track_seconds_before_failure", 0.5))
         if _ot_grace_sec <= 0.0:
             self._off_track_grace_steps = 0
@@ -347,8 +391,8 @@ class RewardFunction:
         self._reward_clip_floor = float(rc.get("reward_clip_floor", 5.0))
         self._reward_scale = float(rc.get("reward_scale", 1.0))
         self._end_of_track_reward = float(rc.get("end_of_track_reward", 10.0))
+        self._projected_velocity_scale = float(rc.get("projected_velocity_scale", 0.0))
         self._track_curvature_obs = bool(rc.get("track_curvature_obs", False))
-        # Legacy/no-op fields are accepted for old configs but not applied below.
         self._progress_min_alignment = float(rc.get("progress_min_alignment", 0.0))
         self._velocity_alignment_reward_weight = float(
             rc.get("velocity_alignment_reward_weight", 0.0)
@@ -360,13 +404,22 @@ class RewardFunction:
         self._drift_anneal_steps = int(rc.get("drift_anneal_steps", 0))
         self._rear_slip_activation = float(rc.get("REAR_SLIP_ACTIVATION", 0.5))
 
-        # Cornering speed bonus: reward for maintaining speed through curves
         self._cornering_speed_bonus = float(rc.get("cornering_speed_bonus", 0.0))
         self._cornering_curvature_threshold = float(rc.get("cornering_curvature_threshold", 0.01))
 
-        # Progress acceleration bonus: reward for increasing rate of progress
         self._progress_accel_bonus = float(rc.get("progress_acceleration_bonus", 0.0))
         self._progress_ema: float = 0.0
+
+        self._cte_penalty_weight = float(rc.get("cte_penalty_weight", 0.0))
+        self._cte_penalty_exponent = float(rc.get("cte_penalty_exponent", 2.0))
+
+        self._boundary_penalty_weight = float(rc.get("boundary_penalty_weight", 0.0))
+        self._boundary_penalty_start = float(rc.get("boundary_penalty_start", 0.85))
+        self._boundary_crash_penalty = float(rc.get("boundary_crash_penalty", 0.0))
+        self._wall_hug_penalty_factor = float(rc.get("wall_hug_penalty_factor", 0.0))
+        self._wall_hug_speed_threshold = float(rc.get("wall_hug_speed_threshold", 10.0))
+        self._wall_hug_lateral_threshold = float(rc.get("wall_hug_lateral_threshold", 0.85))
+        self._terminal_failure_penalty = float(rc.get("terminal_failure_penalty", 0.0))
 
         self._global_env_steps: int = 0
 
@@ -504,6 +557,10 @@ class RewardFunction:
         self._dbg_speeds_kmh = []
         self._dbg_speed_rewards = []
         self._dbg_progress_rewards = []
+        self._dbg_projected_rewards = []
+        self._dbg_cte_penalties = []
+        self._dbg_boundary_penalties = []
+        self._dbg_lateral_ratios = []
         self._dbg_crash_steps = 0
         self._dbg_end_of_track_awarded = False
 
@@ -535,18 +592,37 @@ class RewardFunction:
             float(np.sum(self._dbg_progress_rewards)) if self._dbg_progress_rewards else 0.0
         )
         speed_sum = float(np.sum(self._dbg_speed_rewards)) if self._dbg_speed_rewards else 0.0
+        projected_sum = (
+            float(np.sum(self._dbg_projected_rewards)) if self._dbg_projected_rewards else 0.0
+        )
 
         const_sum = -self._constant_penalty * steps
+        boundary_sum = (
+            float(np.sum(self._dbg_boundary_penalties)) if self._dbg_boundary_penalties else 0.0
+        )
         eot = (
             self._end_of_track_reward if getattr(self, "_dbg_end_of_track_awarded", False) else 0.0
         )
 
         logger.info(
             f"  progress: {progress_sum:+.1f}  |  speed: {speed_sum:+.1f}  |"
-            f"  constant: {const_sum:+.1f}"
+            f"  projected_v: {projected_sum:+.1f}  |  constant: {const_sum:+.1f}"
+            f"  |  boundary: {boundary_sum:+.1f}"
         )
-        approx = progress_sum + speed_sum + const_sum + eot
+        approx = progress_sum + speed_sum + projected_sum + const_sum + boundary_sum + eot
         logger.info(f"  end_of_track: {eot:+.1f}  |  approx_total: {approx:+.1f}")
+
+        if self._dbg_lateral_ratios:
+            lr = np.array(self._dbg_lateral_ratios)
+            n_over_05 = int(np.sum(lr > 0.5))
+            n_over_07 = int(np.sum(lr > 0.7))
+            n_over_085 = int(np.sum(lr > 0.85))
+            n_over_10 = int(np.sum(lr > 1.0))
+            logger.info(
+                f"  boundary detail: {len(lr)} steps checked, "
+                f"lateral_ratio mean={float(np.mean(lr)):.3f} max={float(np.max(lr)):.3f}  |  "
+                f">0.5: {n_over_05}  |  >0.7: {n_over_07}  |  >0.85: {n_over_085}  |  >1.0: {n_over_10} steps"
+            )
 
     def _current_drift_weight(self) -> float:
         if self._drift_anneal_steps > 0:
@@ -658,7 +734,6 @@ class RewardFunction:
         elif heading_xz is not None:
             car_dir = heading_xz
         else:
-            # Fall back to position-delta direction from previous step.
             if self._prev_pos is not None:
                 delta = (pos - self._prev_pos)[[0, 2]]
                 delta_norm = np.linalg.norm(delta)
@@ -683,6 +758,7 @@ class RewardFunction:
 
         next_idx = min(best_index + 1, self.datalen - 1)
         alignment_effective = 0.0
+        track_alignment = 0.0
         if next_idx > best_index:
             track_vec = self.data[next_idx] - self.data[best_index]
         elif best_index > 0:
@@ -695,6 +771,7 @@ class RewardFunction:
             if norm > 0:
                 track_dir = track_vec_xz / norm
                 alignment = np.dot(track_dir, car_dir)
+                track_alignment = float(alignment)
                 base_alignment = max(
                     getattr(self, "_speed_reward_alignment_floor", 0.0),
                     max(0.0, alignment),
@@ -703,10 +780,29 @@ class RewardFunction:
 
         reward = reward_progress
 
+        _projected_velocity_reward = 0.0
+        # Speed-shaped components are gated by progress: only credit when the
+        # agent covers new ground (reward_progress > 0). Otherwise fast motion
+        # over already-visited track is farmable.
+        if (
+            self._projected_velocity_scale > 0.0
+            and _speed_kmh != 0.0
+            and reward_progress > 0.0
+        ):
+            speed_ms = _speed_kmh / 3.6
+            _projected_velocity_reward = (
+                self._projected_velocity_scale
+                * speed_ms
+                * track_alignment
+                * self._time_step_duration
+            )
+            reward += _projected_velocity_reward
+
         if (
             _speed_kmh > SPEED_REWARD_MIN_KMH
             and min_dist <= self.max_dist_from_traj
             and self._speed_reward_weight > 0
+            and reward_progress > 0.0
         ):
             useful_speed_factor = (_speed_kmh / self._max_speed_kmh) * alignment_effective
             if useful_speed_factor > 0:
@@ -791,9 +887,83 @@ class RewardFunction:
             terminated = True
             self._term_reason = "no_progress_timeout"
 
+        # Rate-based stall detection: catches slow creep that resets the binary
+        # timer above on every tiny forward gain. Uses the cumulative distance at
+        # the furthest reached index (monotone, immune to backward jitter).
+        if self._slow_progress_window_steps > 0 and self.datalen > 1:
+            idx_f = min(self.furthest_reached_idx, self.datalen - 1)
+            hist = self._slow_progress_dist_history
+            hist.append(float(self._cumulative_dist[idx_f]))
+            near_finish_grace = (
+                race_progress >= NEAR_FINISH_PROGRESS_THRESHOLD
+                and _speed_kmh >= NEAR_FINISH_MIN_SPEED_KMH
+            )
+            window_required_m = (
+                self._min_progress_rate_mps
+                * self._slow_progress_window_steps
+                * self._time_step_duration
+            )
+            if (
+                len(hist) == hist.maxlen
+                and not end_of_track
+                and not near_finish_grace
+                and (hist[-1] - hist[0]) < window_required_m
+            ):
+                terminated = True
+                self._term_reason = "slow_progress"
+
         if min_dist > self._max_track_width and self.step_counter > self._off_track_grace_steps:
             terminated = True
             self._term_reason = "off_track"
+
+        cte_penalty = 0.0
+        if self._cte_penalty_weight > 0.0:
+            norm_dist = min_dist / max(1.0, self._max_track_width / 2.0)
+            cte_penalty = self._cte_penalty_weight * (norm_dist ** self._cte_penalty_exponent)
+            reward -= cte_penalty
+
+        # --- Boundary proximity penalties (requires loaded track boundary geometry) ---
+        # Grace period: skip boundary penalties for the first ~1s so the spawn
+        # position (which may sit outside the boundary polyline) doesn't
+        # immediately terminate or dominate the reward signal.
+        _boundary_soft_pen = 0.0
+        _boundary_crash_pen = 0.0
+        _boundary_grace = self.step_counter <= self._off_track_grace_steps
+        if self._has_boundaries and not _boundary_grace and (
+            self._boundary_penalty_weight > 0
+            or self._boundary_crash_penalty > 0
+            or self._wall_hug_penalty_factor > 0
+        ):
+            pos_xz = pos[[0, 2]]
+            bi = min(best_index, len(self._road_center_xz) - 1)
+            center = self._road_center_xz[bi]
+            half_w = float(self._road_half_widths[bi])
+
+            dist_from_center = float(np.linalg.norm(pos_xz - center))
+            lateral_ratio = dist_from_center / max(half_w, MIN_ROAD_HALF_WIDTH_M)
+
+            _bp_start = self._boundary_penalty_start
+            if self._boundary_penalty_weight > 0 and lateral_ratio > _bp_start:
+                frac = (lateral_ratio - _bp_start) / (1.0 - _bp_start)
+                _boundary_soft_pen += self._boundary_penalty_weight * frac * frac
+
+            if lateral_ratio > 1.0 and self._boundary_crash_penalty > 0:
+                terminated = True
+                self._term_reason = "boundary_crash"
+                _boundary_crash_pen = self._boundary_crash_penalty
+
+            if (
+                self._wall_hug_penalty_factor > 0
+                and _speed_kmh >= self._wall_hug_speed_threshold
+                and lateral_ratio > self._wall_hug_lateral_threshold
+            ):
+                _boundary_soft_pen += (
+                    self._wall_hug_penalty_factor * _speed_kmh / self._max_speed_kmh
+                )
+
+            reward -= _boundary_soft_pen
+            if self._debug_reward:
+                self._dbg_lateral_ratios.append(lateral_ratio)
 
         if crashed:
             reward -= abs(self.crash_penalty)
@@ -815,8 +985,24 @@ class RewardFunction:
             self._dbg_speeds_kmh.append(_speed_kmh)
             self._dbg_progress_rewards.append(reward_progress)
             self._dbg_speed_rewards.append(_speed_reward_added)
-
+            self._dbg_projected_rewards.append(_projected_velocity_reward)
+            self._dbg_cte_penalties.append(-cte_penalty)
+            self._dbg_boundary_penalties.append(-(_boundary_soft_pen + _boundary_crash_pen))
         reward = max(-self._reward_clip_floor, reward)
+        # Failure terminations must not be free: without a terminal cost,
+        # "creep until the no-progress timeout" bootstraps to V~0 and remains a
+        # safe local optimum (v7 collapsed into exactly this). Applied after the
+        # clip floor: the floor bounds accumulated per-step shaping, not
+        # one-time terminal events. end_of_track is never penalized.
+        if (
+            terminated
+            and not end_of_track
+            and self._term_reason == "boundary_crash"
+            and _boundary_crash_pen > 0.0
+        ):
+            reward -= _boundary_crash_pen
+        if terminated and not end_of_track and self._terminal_failure_penalty > 0.0:
+            reward -= self._terminal_failure_penalty
         reward = reward * self._reward_scale
 
         if terminated and self._term_reason is None:
@@ -900,5 +1086,6 @@ class RewardFunction:
         """Reset reward state for a new episode."""
         self._set_episode_state(EpisodeState(lap_cur_cooldown=self._lap_cooldown_init))
         self._progress_ema = 0.0
+        self._slow_progress_dist_history.clear()
         if self._debug_reward:
             self._reset_debug_accumulators()

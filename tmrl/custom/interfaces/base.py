@@ -147,6 +147,9 @@ class TrackMania2020InterfaceBase(RealTimeGymInterface, ABC):
     def initialize_common(self):
         """Initializes the window interface, reward function, and game client."""
         self._crash_lock = threading.Lock()
+        self._brake_tap_lock = threading.Lock()
+        self._brake_tap_timer = None
+        self._brake_tap_seq = 0
         self._async_rumble_event = False
         if self.gamepad:
             try:
@@ -259,6 +262,43 @@ class TrackMania2020InterfaceBase(RealTimeGymInterface, ABC):
         """Convert speed from m/s to km/h."""
         return speed * MPS_TO_KMPH
 
+    def _cancel_brake_tap_release_unlocked(self):
+        """Cancel a pending brake-tap release timer (caller must hold ``_brake_tap_lock``)."""
+        timer = self._brake_tap_timer
+        if timer is not None:
+            timer.cancel()
+            self._brake_tap_timer = None
+        self._brake_tap_seq += 1
+
+    def _cancel_brake_tap_release(self):
+        """Cancel a pending brake-tap release timer, if any."""
+        with self._brake_tap_lock:
+            self._cancel_brake_tap_release_unlocked()
+
+    def _schedule_brake_tap_release_unlocked(self, release_ctrl):
+        """Release brake after BRAKE_TAP_DURATION_S unless superseded (caller holds lock)."""
+        seq = self._brake_tap_seq
+
+        def _release():
+            with self._brake_tap_lock:
+                if self._brake_tap_seq != seq:
+                    return
+                j = self.j
+                if j is None:
+                    return
+                control_gamepad(j, release_ctrl)
+                self._brake_tap_timer = None
+
+        timer = threading.Timer(BRAKE_TAP_DURATION_S, _release)
+        timer.daemon = True
+        self._brake_tap_timer = timer
+        timer.start()
+
+    def _schedule_brake_tap_release(self, release_ctrl):
+        """Release brake after BRAKE_TAP_DURATION_S unless superseded."""
+        with self._brake_tap_lock:
+            self._schedule_brake_tap_release_unlocked(release_ctrl)
+
     def send_control(self, control):
         if self.record_human:
             return
@@ -286,14 +326,23 @@ class TrackMania2020InterfaceBase(RealTimeGymInterface, ABC):
                         f"steer={steer:.2f} (virtual gamepad)"
                     )
                 if is_brake_tap(control):
+                    # Press now, release via a background timer: a blocking
+                    # sleep here would stall the rtgym control thread for
+                    # BRAKE_TAP_DURATION_S (20% of a 50 ms control period).
                     tap_ctrl = control.copy()
                     tap_ctrl[1] = 1.0
-                    control_gamepad(self.j, tap_ctrl)
-                    time.sleep(BRAKE_TAP_DURATION_S)
-                    tap_ctrl[1] = 0.0
-                    control_gamepad(self.j, tap_ctrl)
+                    release_ctrl = tap_ctrl.copy()
+                    release_ctrl[1] = 0.0
+                    with self._brake_tap_lock:
+                        self._cancel_brake_tap_release_unlocked()
+                        control_gamepad(self.j, tap_ctrl)
+                        self._schedule_brake_tap_release_unlocked(release_ctrl)
                 else:
-                    control_gamepad(self.j, control)
+                    # A newer control supersedes any pending tap release; letting
+                    # the stale release fire would overwrite gas/steer state.
+                    with self._brake_tap_lock:
+                        self._cancel_brake_tap_release_unlocked()
+                        control_gamepad(self.j, control)
         else:
             if control is not None:
                 actions = []

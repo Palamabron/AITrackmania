@@ -145,13 +145,17 @@ class AlgorithmConfig(BaseModel):
         default=1.0,
         description="Global L2 grad norm cap for critics; 0 disables clipping.",
     )
-    backup_clip_range: Annotated[float, Field(gt=0.0)] = Field(
+    backup_clip_range: Annotated[float, Field(ge=0.0)] = Field(
         default=100.0,
-        description="Symmetric clamp applied to TD targets for numerical stability.",
+        description=(
+            "Symmetric clamp applied to TD targets for numerical stability; 0 disables. "
+            "Must sit well above the largest plausible discounted return, otherwise "
+            "targets saturate and the Q-function loses its action ranking signal."
+        ),
     )
     reward_normalize_scale: Annotated[float, Field(gt=0.0)] = Field(
         default=1.0,
-        description="Divide rewards by this constant before the Bellman backup (1.0 disables).",
+        description="Multiply rewards by this constant before the Bellman backup (1.0 disables, <1 shrinks).",
     )
     mean_penalty_coef: Annotated[float, Field(ge=0.0)] = Field(
         default=0.05,
@@ -234,6 +238,15 @@ class AlgorithmConfig(BaseModel):
         default=2_000_000,
         ge=0,
         description="Global environment step index where BC annealing ends.",
+    )
+    bc_margin: Annotated[float, Field(ge=0.0)] = Field(
+        default=0.5,
+        description=(
+            "IQN/DQfD large-margin classification margin on demo samples (in Q units AFTER "
+            "reward_normalize_scale). The margin loss pushes Q(s, a_demo) above every other "
+            "action by at least this much; weighted by bc_lambda (annealed via bc_lambda_start/"
+            "end and bc_anneal_steps_start/end)."
+        ),
     )
     mixed_precision: bool = Field(
         default=True,
@@ -341,6 +354,30 @@ class AlgorithmConfig(BaseModel):
         default=1e-4,
         description="Adam learning rate for IQN quantile regression heads.",
     )
+    iqn_lr_warmup_steps: Annotated[int, Field(ge=0)] = Field(
+        default=0,
+        description=(
+            "Linear LR warmup over this many gradient steps (0 disables warmup). Recommended "
+            "100k-150k when introducing the GTN encoder to avoid early attention-entropy collapse."
+        ),
+    )
+    iqn_lr_cosine_decay: bool = Field(
+        default=False,
+        description=(
+            "After warmup, cosine-decay the LR toward iqn_lr_min over iqn_lr_total_steps."
+        ),
+    )
+    iqn_lr_total_steps: Annotated[int, Field(ge=0)] = Field(
+        default=0,
+        description=(
+            "Cosine decay horizon (T_max) in gradient steps. Set 0 to auto-derive from the "
+            "training horizon (max_epochs * rounds_per_epoch * training_steps_per_round)."
+        ),
+    )
+    iqn_lr_min: Annotated[float, Field(ge=0.0)] = Field(
+        default=1e-6,
+        description="Minimum LR floor reached at the bottom of the cosine decay.",
+    )
     iqn_epsilon_schedule_mode: str = Field(
         default="cosine",
         description="Schedule shape for epsilon-greedy decay (linear, cosine, ...).",
@@ -405,6 +442,19 @@ class AlgorithmConfig(BaseModel):
         default=10.0,
         description="Global grad norm cap for IQN; set 0 to disable.",
     )
+    iqn_grad_stabilizer_enabled: bool = Field(
+        default=True,
+        description=(
+            "Apply the EMA gradient stabilizer AFTER hard clipping. When enabled it rescales "
+            "any gradient whose norm exceeds the running EMA back down to the EMA magnitude, "
+            "which acts as a second magnitude limiter on top of iqn_grad_clip. Disable when "
+            "loosening iqn_grad_clip so the optimizer can actually follow the true gradient."
+        ),
+    )
+    iqn_grad_stabilizer_ema_decay: Annotated[float, Field(gt=0.0, lt=1.0)] = Field(
+        default=0.995,
+        description="EMA decay for the gradient-norm stabilizer (only used when enabled).",
+    )
     iqn_huber_kappa: Annotated[float, Field(gt=0.0)] = Field(
         default=1.0,
         description="Huber threshold κ for IQN quantile regression.",
@@ -412,7 +462,9 @@ class AlgorithmConfig(BaseModel):
     iqn_use_value_rescaling: bool = Field(
         default=True,
         description=(
-            "Apply signed value rescaling h(x) in IQN loss to damp large targets/TD errors."
+            "Currently unused: value rescaling is intentionally NOT applied to IQN "
+            "quantiles (it would distort the learned return distribution). Kept for "
+            "config compatibility only."
         ),
     )
     iqn_value_rescaling_eps: Annotated[float, Field(gt=0.0)] = Field(
@@ -433,8 +485,10 @@ class AlgorithmConfig(BaseModel):
     iqn_sort_quantiles: bool = Field(
         default=False,
         description=(
-            "Sort sampled IQN quantile fractions before forward pass for more stable "
-            "monotonic regularization and diagnostics."
+            "Sort sampled IQN quantile fractions (tau) before the forward pass so "
+            "monotonicity regularization and crossing diagnostics are meaningful. "
+            "Network outputs are never re-sorted: each output quantile stays paired "
+            "with its tau in the quantile-Huber loss."
         ),
     )
     iqn_monotonicity_regularization: bool = Field(
@@ -480,6 +534,14 @@ class AlgorithmConfig(BaseModel):
     iqn_noisy_std_init: Annotated[float, Field(ge=0.0)] = Field(
         default=0.5,
         description="Initial sigma for NoisyLinear factorized Gaussian noise (paper default 0.5).",
+    )
+    iqn_noisy_eval_std: Annotated[float, Field(ge=0.0)] = Field(
+        default=0.01,
+        description=(
+            "Residual NoisyNet scale used during test/eval rollouts (stochastic evaluation). "
+            "Set 0.0 to fall back to deterministic mean-weight eval (which can trap the policy "
+            "in unforgiving environments). Only used when iqn_noisy_linear is true."
+        ),
     )
     iqn_noisy_scale_start: Annotated[float, Field(ge=0.0, le=1.0)] = Field(
         default=1.0,
@@ -530,6 +592,19 @@ class AlgorithmConfig(BaseModel):
             raise ValueError("iqn_munchausen_clip_min must be <= iqn_munchausen_clip_max")
         if self.iqn_monotonicity_regularization and not self.iqn_sort_quantiles:
             raise ValueError("iqn_monotonicity_regularization requires iqn_sort_quantiles=true")
+        if self.reward_normalize_scale > 10.0:
+            raise ValueError(
+                f"reward_normalize_scale={self.reward_normalize_scale} looks like a stale "
+                "divide-by-N config. Semantics changed: values now MULTIPLY rewards "
+                "(<1 shrinks, 1.0 disables). Use e.g. 0.005 instead of 200."
+            )
+        if self.iqn_lr_cosine_decay and self.iqn_lr_total_steps > 0:
+            if self.iqn_lr_total_steps <= self.iqn_lr_warmup_steps:
+                raise ValueError(
+                    f"iqn_lr_total_steps ({self.iqn_lr_total_steps}) must be > "
+                    f"iqn_lr_warmup_steps ({self.iqn_lr_warmup_steps}) when "
+                    "iqn_lr_cosine_decay is enabled"
+                )
 
         expected = self.iqn_n_steer_bins * BRAKE_TAP_TABLE_N_GAS * BRAKE_TAP_TABLE_N_BRAKE
         if self.iqn_n_actions != expected:

@@ -262,11 +262,16 @@ class MemoryR2D2woImages(R2D2Memory):
 
     def _openplanet_tuple_obs_space(self):
         if not hasattr(self, "_cached_openplanet_obs_space"):
+            import tmrl.config.constants as cfg
             from tmrl.custom.tm.openplanet_observation_space import (
                 build_openplanet_tuple_observation_space,
             )
 
-            self._cached_openplanet_obs_space = build_openplanet_tuple_observation_space()
+            # Include the curvature box when the live obs carries it, so
+            # alignment does not silently strip that channel from replay.
+            self._cached_openplanet_obs_space = build_openplanet_tuple_observation_space(
+                track_curvature_obs=bool(cfg.REWARD_CONFIG.get("track_curvature_obs", False))
+            )
         return self._cached_openplanet_obs_space
 
     def get_transition(self, item: int):

@@ -5,6 +5,7 @@ from __future__ import annotations
 import itertools
 from pathlib import Path
 
+import gymnasium
 import numpy as np
 from loguru import logger
 
@@ -88,6 +89,47 @@ def _collect_human_episode(env, max_samples, obs_preprocessor, crc_debug):
     return buffer_memory, ret, steps
 
 
+def _rewrite_discrete_action_slots(samples: list, act_buf_len: int) -> list:
+    """Replace recorded obs action-buffer slots with the human's quantized actions.
+
+    During recording the env receives a neutral placeholder action, so rtgym's
+    ``act_in_obs`` slots would claim the previous action was the placeholder
+    (later trimmed by space alignment to index 0 = full-left). Rewriting them
+    with the quantized human controls keeps demo observations consistent with
+    worker rollouts, scaled like ``obs_preprocessor_lidar_act_in_obs`` scales
+    live action slots.
+    """
+    if act_buf_len <= 0 or not samples:
+        return samples
+
+    from tmrl.custom.tm.tm_preprocessors import discrete_action_index_scale
+    from tmrl.custom.tm.utils.discrete_control import (
+        build_brake_tap_action_table,
+        continuous_control_to_discrete_index,
+    )
+
+    _, table = build_brake_tap_action_table(n_steer=cfg.IQN_N_STEER_BINS)
+    scale = discrete_action_index_scale()
+    indices = [
+        continuous_control_to_discrete_index(np.asarray(s[0], dtype=np.float32), table)
+        for s in samples
+    ]
+    out = []
+    for i, s in enumerate(samples):
+        obs = list(s[1])
+        if len(obs) <= act_buf_len:
+            out.append(s)
+            continue
+        # rtgym act_buf is oldest -> newest; the last slot is the action that
+        # produced this observation. The first sample has no predecessor, so its
+        # own action fills the older slots.
+        window = [indices[max(0, i - k)] for k in range(act_buf_len - 1, -1, -1)]
+        for slot, idx in zip(range(-act_buf_len, 0), window, strict=True):
+            obs[slot] = np.asarray(float(idx) * scale, dtype=np.float32)
+        out.append((s[0], tuple(obs), s[2], s[3], s[4], s[5]))
+    return out
+
+
 def _maybe_apply_finish_time_bonus(samples: list) -> tuple[list, float]:
     """Align with ``RolloutWorker.collect_train_episode``: spread ``time_bonus_scale`` on finish."""
     if not samples:
@@ -165,6 +207,8 @@ def record_episode(
                 crc_debug=cfg.CRC_DEBUG,
             )
             samples, ep_return = _maybe_apply_finish_time_bonus(samples)
+            if isinstance(env.action_space, gymnasium.spaces.Discrete):
+                samples = _rewrite_discrete_action_slots(samples, int(cfg.ACT_BUF_LEN))
 
             obs_space = env.observation_space
             samples = [

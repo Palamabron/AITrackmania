@@ -194,7 +194,9 @@ class TM2020InterfaceBoundary(TM2020Interface):
         steering_angle = spaces.Box(low=-1, high=1.0, shape=(1,))
         slipping_tires = spaces.Box(low=0.0, high=1, shape=(4,))
         crash = spaces.Box(low=0.0, high=1, shape=(1,))
-        failure_counter = spaces.Box(low=0.0, high=15, shape=(1,))
+        # Fraction of the no-progress timeout already consumed (0 = progressing,
+        # 1 = about to be terminated). Normalized in get_obs_rew_terminated_info.
+        failure_counter = spaces.Box(low=0.0, high=1.0, shape=(1,))
         return spaces.Tuple(
             (
                 track_information,
@@ -332,7 +334,13 @@ class TM2020InterfaceBoundary(TM2020Interface):
             end_of_track_for_reward,
             terminated,
         )
-        fc_scalar = float(fc_int)
+        # Normalize the no-progress counter to the fraction of the timeout horizon
+        # already consumed (0 = progressing, 1 = about to terminate). Raw counts
+        # reach ~max_no_progress_steps (e.g. 200 at a 10 s timeout) and would
+        # saturate any fixed divisor.
+        max_no_progress = float(getattr(self.reward_function, "_max_no_progress_steps", 0) or 0)
+        fc_scalar = float(fc_int) / max_no_progress if max_no_progress > 0 else 0.0
+        fc_scalar = min(1.0, max(0.0, fc_scalar))
         if eot_accepted:
             fc_scalar = 0.0
             if self.save_replays:
@@ -368,7 +376,18 @@ class TM2020InterfaceBoundary(TM2020Interface):
         self._bd_prev_speed_kmh = 0.0
         self._bd_prev_acc_kmh = 0.0
         self._steps_since_reset = 0
-        track_information = np.full((BOUNDARY_OBS_DIM,), 0, dtype=np.float32)
+        # Real boundary geometry at spawn (same path as step observations); an
+        # all-zero track channel would make the first decision of the episode
+        # blind and store that blind sample in replay.
+        dir_xyz = (
+            float(data[TmrlDataPlugin.DIR_X]),
+            float(data[TmrlDataPlugin.DIR_Y]),
+            float(data[TmrlDataPlugin.DIR_Z]),
+        )
+        yaw, _ = yaw_pitch_from_dir_xyz(dir_xyz)
+        car_position = [data[TmrlDataPlugin.POS_X], data[TmrlDataPlugin.POS_Z]]
+        self.last_pos = car_position
+        track_information = self._track_information_vector(car_position, yaw)
         speed_kmh = float(data[TmrlDataPlugin.SPEED_MPS]) * MPS_TO_KMPH
         speed = np.array([speed_kmh], dtype=np.float32)
         gear = np.array([data[TmrlDataPlugin.ENGINE_GEAR]], dtype=np.float32)

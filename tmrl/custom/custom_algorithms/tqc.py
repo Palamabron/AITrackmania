@@ -381,9 +381,9 @@ class TQCAgent(TrainingAgent):
             r = self._sanitize_tensor(r)
             d = self._sanitize_tensor(d)
 
-        # Reward scaling for Q-value stability (raw rewards ~200 -> ~1-2 when scale=200)
+        # Scale rewards before Bellman backup: r = r * scale (<1 shrinks).
         if self.reward_normalize_scale != 1.0 and self.reward_normalize_scale > 0:
-            r = r / self.reward_normalize_scale
+            r = r * self.reward_normalize_scale
 
         def autocast_ctx():
             return autocast_context(self.use_mixed_precision, self.amp_dtype)

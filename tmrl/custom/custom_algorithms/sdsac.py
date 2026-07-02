@@ -333,7 +333,7 @@ class SDSACAgent(TrainingAgent):
 
         reward_scale = float(self.reward_normalize_scale)
         if reward_scale != 1.0 and reward_scale > 0:
-            r = r / reward_scale
+            r = r * reward_scale
 
         # -- Sequence-aware n-step returns --
         burn_in_len = int(self.r2d2_burn_in)

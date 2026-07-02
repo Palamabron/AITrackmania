@@ -353,6 +353,7 @@ R2D2_BURN_IN = A.r2d2_burn_in
 PER_TD_BETA = float(A.per_td_beta)
 FOG_DECAY_TEMPERATURE = float(A.fog_decay_temperature)
 IQN_N_STEER_BINS = int(A.iqn_n_steer_bins)
+IQN_N_ACTIONS = int(A.iqn_n_actions)
 MIXED_PRECISION = bool(A.mixed_precision)
 MIXED_PRECISION_DTYPE = str(A.mixed_precision_dtype)
 WEIGHT_CLIPPING_ENABLED = A.clipping_weights

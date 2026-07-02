@@ -147,10 +147,30 @@ def _model_arch_kwargs() -> dict[str, Any]:
         "r2d2_sequence_length": int(algorithm.r2d2_sequence_length),
         "r2d2_burn_in": int(algorithm.r2d2_burn_in),
         "quantiles_number": int(algorithm.quantiles_number),
-        "init_gas_bias": 0.0,
+        "init_gas_bias": float(M.environment.init_gas_bias),
         "rnn_sizes": list(arch.rnn_sizes),
         "rnn_lens": list(arch.rnn_lens),
         "rnn_dropout": arch.rnn_dropout,
+    }
+
+
+def _iqn_dqn_actor_kwargs() -> dict[str, Any]:
+    """Kwargs for worker DQNActor; must stay aligned with IQNAgent._iqn_network_kwargs()."""
+    alg = algorithm
+    arch = model_cfg
+    return {
+        "hidden_dim": arch.residual_mlp_hidden_dim,
+        "num_blocks": arch.residual_mlp_num_blocks,
+        "n_cos": alg.iqn_n_cos,
+        "dueling": alg.iqn_dueling,
+        "n_actions": alg.iqn_n_actions,
+        "n_quantiles_eval": alg.iqn_num_quantiles_eval,
+        "epsilon": alg.iqn_epsilon_start,
+        "explore_repeat_steps": alg.iqn_explore_repeat_steps,
+        "noisy": bool(alg.iqn_noisy_linear),
+        "noisy_std_init": float(alg.iqn_noisy_std_init),
+        "noisy_eval_std": float(alg.iqn_noisy_eval_std),
+        **_model_arch_kwargs(),
     }
 
 
@@ -170,18 +190,7 @@ def _train_model_and_policy() -> tuple[Any, Any]:
 
     if _lidar_geometry_interface():
         if ALG_NAME in ("IQN", "SDSAC"):
-            iqn_kw = {
-                "hidden_dim": arch.residual_mlp_hidden_dim,
-                "num_blocks": arch.residual_mlp_num_blocks,
-                "n_cos": alg.iqn_n_cos,
-                "dueling": alg.iqn_dueling,
-                "n_actions": alg.iqn_n_actions,
-                "n_quantiles_eval": alg.iqn_num_quantiles_eval,
-                "epsilon": alg.iqn_epsilon_start,
-                "explore_repeat_steps": alg.iqn_explore_repeat_steps,
-                **_arch_kw,
-            }
-            return None, partial(dqn_actor_cls, **iqn_kw)
+            return None, partial(dqn_actor_cls, **_iqn_dqn_actor_kwargs())
         if (cfg.USE_LIDAR_IMAGES) and ALG_NAME == "SAC":
             lidar_images_sac_kw = {
                 "image_index": 3,
@@ -215,18 +224,7 @@ def _train_model_and_policy() -> tuple[Any, Any]:
 
     if cfg.USE_IMAGES_R2D2_SEQUENCE_BUFFER:
         if ALG_NAME in ("IQN", "SDSAC"):
-            iqn_kw = {
-                "hidden_dim": arch.residual_mlp_hidden_dim,
-                "num_blocks": arch.residual_mlp_num_blocks,
-                "n_cos": alg.iqn_n_cos,
-                "dueling": alg.iqn_dueling,
-                "n_actions": alg.iqn_n_actions,
-                "n_quantiles_eval": alg.iqn_num_quantiles_eval,
-                "epsilon": alg.iqn_epsilon_start,
-                "explore_repeat_steps": alg.iqn_explore_repeat_steps,
-                **_arch_kw,
-            }
-            return None, partial(dqn_actor_cls, **iqn_kw)
+            return None, partial(dqn_actor_cls, **_iqn_dqn_actor_kwargs())
         if (
             cfg.USE_IMAGES
             and not cfg.USE_OBS_WORLD_TELEMETRY_LAYOUT
@@ -485,9 +483,14 @@ _memory_kwargs: dict[str, Any] = {
 if _mem_name != "generic":
     _memory_kwargs["imgs_obs"] = cfg.IMG_HIST_LEN
     _memory_kwargs["act_buf_len"] = cfg.ACT_BUF_LEN
+else:
+    # GenericTorchMemory aggregates n-step returns at sample time and needs the
+    # algorithm's discount factor for consistent reward discounting.
+    _memory_kwargs["gamma"] = float(algorithm.gamma)
 
 _is_r2d2_memory = _mem_name.startswith("r2d2")
 _supports_demo_fraction = _is_r2d2_memory or _mem_name in {
+    "generic",
     "lidar_images",
     "full",
     "best",
@@ -623,6 +626,13 @@ def _build_agent() -> Any:
         iqn_cls = ALGORITHMS.get("IQN")
         _iqn_arch_kw = _model_arch_kwargs()
         _rnn_hs = _iqn_arch_kw.get("rnn_hidden_size")
+        # Cosine T_max defaults to the full gradient-step horizon when unset (0), so the
+        # LR does not flatline before the run ends.
+        _iqn_lr_total_steps = int(alg.iqn_lr_total_steps) or (
+            int(M.training.max_epochs)
+            * int(M.training.rounds_per_epoch)
+            * int(M.training.training_steps_per_round)
+        )
         return partial(
             iqn_cls,
             device=_device,
@@ -634,6 +644,10 @@ def _build_agent() -> Any:
             n_quantiles_eval=alg.iqn_num_quantiles_eval,
             n_cos=alg.iqn_n_cos,
             lr=alg.iqn_lr,
+            lr_warmup_steps=int(alg.iqn_lr_warmup_steps),
+            lr_cosine_decay=bool(alg.iqn_lr_cosine_decay),
+            lr_total_steps=_iqn_lr_total_steps,
+            lr_min=float(alg.iqn_lr_min),
             gamma=alg.gamma,
             epsilon_start=alg.iqn_epsilon_start,
             epsilon_end=alg.iqn_epsilon_end,
@@ -663,9 +677,17 @@ def _build_agent() -> Any:
             munchausen_tau=float(alg.iqn_munchausen_tau),
             munchausen_clip_min=float(alg.iqn_munchausen_clip_min),
             munchausen_clip_max=float(alg.iqn_munchausen_clip_max),
+            bc_lambda=float(alg.bc_lambda),
+            bc_lambda_start=float(alg.bc_lambda_start),
+            bc_lambda_end=float(alg.bc_lambda_end),
+            bc_anneal_steps_start=int(alg.bc_anneal_steps_start),
+            bc_anneal_steps_end=int(alg.bc_anneal_steps_end),
+            bc_margin=float(alg.bc_margin),
             weight_decay=float(alg.weight_decay),
             adam_eps=float(alg.adam_eps),
             grad_clip=float(alg.iqn_grad_clip),
+            grad_stabilizer_enabled=bool(alg.iqn_grad_stabilizer_enabled),
+            grad_stabilizer_ema_decay=float(alg.iqn_grad_stabilizer_ema_decay),
             iqn_n_steer_bins=int(alg.iqn_n_steer_bins),
             reward_normalize_scale=float(alg.reward_normalize_scale),
             backup_clip_range=float(alg.backup_clip_range),
@@ -673,6 +695,7 @@ def _build_agent() -> Any:
             mixed_precision_dtype=str(alg.mixed_precision_dtype),
             noisy_linear=bool(alg.iqn_noisy_linear),
             noisy_std_init=float(alg.iqn_noisy_std_init),
+            noisy_eval_std=float(alg.iqn_noisy_eval_std),
             noisy_scale_start=float(alg.iqn_noisy_scale_start),
             noisy_scale_end=float(alg.iqn_noisy_scale_end),
             noisy_scale_decay_steps=int(alg.iqn_noisy_scale_decay_steps),

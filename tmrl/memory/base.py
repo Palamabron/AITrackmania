@@ -143,6 +143,11 @@ class Memory(ABC):
 
     def sample(self):
         indices = self.sample_indices()
+        if len(indices) == 0:
+            raise RuntimeError(
+                f"Cannot sample batch: replay has {len(self)} transition(s) but "
+                f"n_step_return={self.n_step_return} requires more data (or buffer is empty)."
+            )
         batch = [self[idx] for idx in indices]
         batch = self.collate(batch, self.device)
         return batch
@@ -188,9 +193,13 @@ class Memory(ABC):
             )
         terminated = np.float32(terminated)
         truncated = np.float32(truncated)
-        # Only pass tensor-serializable keys (is_demo); skip strings (demo_source, demo_run_id)
+        # Only pass tensor-serializable keys; skip strings (demo_source, demo_run_id).
+        # n_step_effective is the per-sample n-step window length set by memories
+        # implementing memory-side n-step returns (1 for plain 1-step transitions).
         info_raw = dict(info) if isinstance(info, dict) else {}
-        info = {"is_demo": bool(info_raw.get("is_demo", False))}
+        info: dict[str, Any] = {"is_demo": bool(info_raw.get("is_demo", False))}
+        if "n_step_effective" in info_raw:
+            info["n_step_effective"] = int(info_raw["n_step_effective"])
         return prev_obs, new_act, rew, new_obs, terminated, truncated, info
 
     def sample_indices(self):

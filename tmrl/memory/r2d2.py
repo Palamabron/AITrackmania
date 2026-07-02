@@ -6,6 +6,7 @@ from collections.abc import Callable
 from typing import Any
 
 import numpy as np
+from loguru import logger
 
 from tmrl.custom.memories.utils import canonical_replay_action_vector, configure_discrete_steer_bins
 from tmrl.memory.base import Memory
@@ -553,6 +554,18 @@ class R2D2Memory(Memory, ABC):
                 raise RuntimeError("Cannot sample from empty replay memory")
             batch_size = min(self.batch_size, n)
             indices = tuple(random.sample(range(n), batch_size))
+            if int(getattr(self, "n_step_return", 1)) > 1 and not getattr(
+                self, "_warned_iid_nstep", False
+            ):
+                logger.warning(
+                    "R2D2 memory fell back to i.i.d. sampling while n_step_return={} > 1: "
+                    "batch rows are not consecutive transitions, so algorithms computing "
+                    "n-step returns along the batch axis (TQC/SDSAC) would mix unrelated "
+                    "samples. Ensure sequence sampling preconditions hold (num_sequences * "
+                    "sequence_length == batch_size and enough complete episodes).",
+                    self.n_step_return,
+                )
+                self._warned_iid_nstep = True
         per_td = self.per_td_enabled
         is_weights = getattr(self, "_last_per_is_weights", [])
         batch = []

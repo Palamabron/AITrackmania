@@ -92,7 +92,7 @@ def _compose_hydra_dict() -> dict[str, Any]:
 def _load_local_overrides() -> dict[str, Any] | None:
     if not LOCAL_OVERRIDE_PATH.is_file():
         return None
-    with open(LOCAL_OVERRIDE_PATH) as f:
+    with open(LOCAL_OVERRIDE_PATH, encoding="utf-8") as f:
         data = yaml.safe_load(f)
     if data is None:
         return None

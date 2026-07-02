@@ -123,7 +123,12 @@ class TM2020RLInterface(TM2020Interface):
             build_openplanet_tuple_observation_space,
         )
 
-        base_spaces = build_openplanet_tuple_observation_space(self.points_number)
+        # Keep the declared space in lockstep with the live obs tuple: curvature
+        # is appended by get_obs_rew_terminated_info iff the reward flag is on.
+        base_spaces = build_openplanet_tuple_observation_space(
+            self.points_number,
+            track_curvature_obs=bool(cfg.REWARD_CONFIG.get("track_curvature_obs", False)),
+        )
         if not self.include_camera_images:
             return base_spaces
         spaces_list = list(base_spaces.spaces)
@@ -164,8 +169,13 @@ class TM2020RLInterface(TM2020Interface):
         right_track = track_result[2]
         curvature_list = track_result[3] if len(track_result) >= 4 else None
         log_distance_list = track_result[4] if len(track_result) >= 5 else None
+        # get_track_info always returns a curvature list (zeros when disabled);
+        # only surface it in the observation when the feature is enabled, so the
+        # obs tuple matches get_observation_space.
+        if not bool(cfg.REWARD_CONFIG.get("track_curvature_obs", False)):
+            curvature_list = None
 
-        if bool(cfg.REWARD_CONFIG.get("TRACK_LOCAL_FRAME", False)):
+        if bool(cfg.REWARD_CONFIG.get("track_local_frame", False)):
             cos_y, sin_y = np.cos(yaw), np.sin(yaw)
 
             def _rotate(pairs):

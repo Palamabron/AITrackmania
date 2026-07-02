@@ -17,6 +17,7 @@ from typing import Any
 
 import gymnasium
 import torch
+from einops import rearrange, repeat
 from loguru import logger
 from torch.optim import Adam
 
@@ -28,7 +29,6 @@ except ImportError:
     wandb = None  # type: ignore[assignment]
 
 from tmrl.custom.custom_algorithms._common import (
-    _compute_n_step_return_and_bootstrap_mask,
     _tensor_to_scalar,
     amp_setup,
     autocast_context,
@@ -190,8 +190,6 @@ def _quantile_huber_loss(
     if target_quantiles.dim() == 2:
         target_quantiles = target_quantiles.unsqueeze(1)
 
-    from einops import rearrange
-
     delta = target_quantiles - current_quantiles
     abs_delta = delta.abs()
 
@@ -264,10 +262,15 @@ class IQNAgent(TrainingAgent):
     supplied explicitly by the config pipeline (no hidden numeric defaults).
 
     Critical Implementation Notes:
+        - **N-step returns**: Computed memory-side (e.g. GenericTorchMemory with
+          n_step_return > 1). The sampled reward is already the discounted n-step sum,
+          next_obs is the window-end observation, and batch info carries
+          ``n_step_effective`` so the bootstrap uses gamma**n_eff per sample.
         - **Value rescaling**: NEVER applied to quantiles during training (would distort
           distributional relationships). Quantile regression must occur in original value space.
-        - **Munchausen bonus**: Added to immediate rewards BEFORE n-step return computation
-          (per Vieillard et al. 2020). Uses online network for current policy.
+        - **Munchausen bonus**: Added once to the (already aggregated) sampled reward,
+          equivalent to adding it to the first reward of the window (gamma^0 = 1, per
+          Vieillard et al. 2020). Uses online network for current policy.
         - **PER IS weights**: Expected to be pre-normalized by max(w) in the training loop
           before being passed to this agent's train() method.
         - **SimbaV2 projection**: Weights are projected BEFORE target update to ensure
@@ -346,6 +349,20 @@ class IQNAgent(TrainingAgent):
     # Structural defaults (None = auto-detect)
     device: str | None = None
 
+    # DQfD large-margin classification loss on demo samples:
+    #   J_E = max_a [Q(s,a) + bc_margin*1{a != a_E}] - Q(s,a_E)
+    # Demos otherwise influence learning only through TD backups on their batch
+    # share, which is far too slow to steer the argmax over 78 actions.
+    # bc_lambda anneals from bc_lambda_start to bc_lambda_end over
+    # [bc_anneal_steps_start, bc_anneal_steps_end] training steps;
+    # bc_anneal_steps_end <= 0 uses the static bc_lambda (0.0 = off).
+    bc_lambda: float = 0.0
+    bc_lambda_start: float = 1.0
+    bc_lambda_end: float = 0.01
+    bc_anneal_steps_start: int = 0
+    bc_anneal_steps_end: int = 0
+    bc_margin: float = 0.5
+
     # Backbone architecture kwargs (must match worker — forwarded to IQNQNetwork)
     split_track_observation: bool = True
     track_encoder: str = "conv1d"
@@ -361,9 +378,20 @@ class IQNAgent(TrainingAgent):
     # NoisyNet: factorized Gaussian noise on DuelingHead output layers
     noisy_linear: bool = False
     noisy_std_init: float = 0.5
+    noisy_eval_std: float = 0.01
     noisy_scale_start: float = 1.0
     noisy_scale_end: float = 0.05
     noisy_scale_decay_steps: int = 1_000_000
+
+    # Gradient stabilizer (EMA rescale applied AFTER hard grad clip)
+    grad_stabilizer_enabled: bool = True
+    grad_stabilizer_ema_decay: float = 0.995
+
+    # LR schedule: linear warmup then optional cosine decay (driven by training step count)
+    lr_warmup_steps: int = 0
+    lr_cosine_decay: bool = False
+    lr_total_steps: int = 0
+    lr_min: float = 1e-6
 
     model_nograd = cached_property(lambda self: no_grad(copy_shared(self.model)))
 
@@ -391,6 +419,8 @@ class IQNAgent(TrainingAgent):
 
     def __post_init__(self) -> None:
         set_seed(self.seed)
+        if int(self.n_steps) < 1:
+            raise ValueError(f"IQN n_steps must be >= 1, got {self.n_steps}")
         if self.monotonicity_regularization and not self.sort_quantiles:
             raise ValueError("IQN monotonicity_regularization requires sort_quantiles=True.")
         device = self.device or ("cuda" if torch.cuda.is_available() else "cpu")
@@ -410,14 +440,20 @@ class IQNAgent(TrainingAgent):
         )
 
         self._training_step = 0
+        self._warned_missing_n_step_metadata = False
         self._epsilon = self.epsilon_start
         self._noise_scale = float(self.noisy_scale_start)
-        self._grad_stabilizer = GradientStabilizer(ema_decay=0.995)
+        self._grad_stabilizer = (
+            GradientStabilizer(ema_decay=float(self.grad_stabilizer_ema_decay))
+            if self.grad_stabilizer_enabled
+            else None
+        )
+        self._lr_scheduler = self._build_lr_scheduler()
         logger.info(
             "IQNAgent: n_actions={}, dueling={}, double={}, n_steps={}, gamma={:.3f}, "
             "eps mode={}, decay_steps={}, t0={}, tmult={}, decay={}, init_amp={}, "
-            "floor_frac={}, floor_steps={}, huber_kappa={}, value_rescaling={}, "
-            "rescale_eps={}, soft_target_tau={}, sort_quantiles={}, monotonicity={}, "
+            "floor_frac={}, floor_steps={}, huber_kappa={}, "
+            "soft_target_tau={}, sort_quantiles={}, monotonicity={}, "
             "monotonicity_lambda={}, munchausen={}",
             self.n_actions,
             self.dueling,
@@ -433,8 +469,6 @@ class IQNAgent(TrainingAgent):
             self.epsilon_cosine_floor_fraction,
             self.epsilon_cosine_floor_steps,
             self.huber_kappa,
-            self.use_value_rescaling,
-            self.value_rescaling_eps,
             self.soft_target_tau,
             self.sort_quantiles,
             self.monotonicity_regularization,
@@ -461,6 +495,40 @@ class IQNAgent(TrainingAgent):
                 self.noisy_scale_decay_steps,
             )
 
+    def _build_lr_scheduler(self):
+        """Build a linear-warmup (+ optional cosine decay) LR scheduler, or None.
+
+        The schedule is driven by the trainer's gradient-step counter (one ``.step()``
+        per ``train()`` call). Returns None when neither warmup nor cosine decay is enabled,
+        so the default behaviour (fixed ``iqn_lr``) is preserved.
+        """
+        if self.lr_warmup_steps <= 0 and not self.lr_cosine_decay:
+            return None
+        from torch.optim.lr_scheduler import LambdaLR
+
+        return LambdaLR(self.optimizer, lr_lambda=self._lr_lambda)
+
+    def _lr_lambda(self, step: int) -> float:
+        """Multiplicative LR factor on the base ``iqn_lr`` for a given gradient step."""
+        warmup = max(0, int(self.lr_warmup_steps))
+        if warmup > 0 and step < warmup:
+            return float(step + 1) / float(warmup)
+        if self.lr_cosine_decay and self.lr_total_steps > warmup:
+            progress = (step - warmup) / float(max(1, self.lr_total_steps - warmup))
+            progress = min(1.0, max(0.0, progress))
+            floor = (self.lr_min / self.lr) if self.lr > 0 else 0.0
+            return floor + (1.0 - floor) * 0.5 * (1.0 + math.cos(math.pi * progress))
+        return 1.0
+
+    def _stabilize_grads(self, fallback_norm: float) -> float:
+        """Run the EMA gradient stabilizer if enabled, else return the post-clip norm."""
+        if self._grad_stabilizer is None:
+            return fallback_norm
+        return self._grad_stabilizer.step(self.model.parameters())
+
+    def _grad_ema_norm(self) -> float:
+        return self._grad_stabilizer.ema_norm if self._grad_stabilizer is not None else 0.0
+
     def _update_noise_scale(self) -> float:
         """Linearly decay noise scale from start to end over decay steps."""
         if not self.noisy_linear or self.noisy_scale_decay_steps <= 0:
@@ -471,6 +539,25 @@ class IQNAgent(TrainingAgent):
             self.noisy_scale_end - self.noisy_scale_start
         )
         return self._noise_scale
+
+    def _get_bc_lambda(self) -> float:
+        """Current demo-margin coefficient: constant, or linear anneal START->END over steps."""
+        base = float(self.bc_lambda)
+        if base <= 0.0:
+            return 0.0
+        step_end = int(self.bc_anneal_steps_end)
+        if step_end <= 0:
+            return base
+        start_val = float(self.bc_lambda_start)
+        end_val = float(self.bc_lambda_end)
+        step_start = int(self.bc_anneal_steps_start)
+        step = self._training_step
+        if step <= step_start:
+            return start_val
+        if step >= step_end:
+            return end_val
+        frac = (step - step_start) / max(1, step_end - step_start)
+        return start_val + (end_val - start_val) * frac
 
     def _update_epsilon(self) -> float:
         """Update and return current epsilon value based on configured schedule.
@@ -542,9 +629,12 @@ class IQNAgent(TrainingAgent):
             epsilon=self._epsilon,
             n_quantiles_eval=self.n_quantiles_eval,
             explore_repeat_steps=self.explore_repeat_steps,
+            noisy_eval_std=self.noisy_eval_std,
         )
         wrapper.q_net.load_state_dict(self.model_nograd.state_dict())
         wrapper.set_epsilon(self._epsilon)
+        if self.noisy_linear:
+            wrapper.set_noise_scale(self._noise_scale)
         return wrapper
 
     _sanitize_tensor = staticmethod(sanitize_tensor)
@@ -581,8 +671,6 @@ class IQNAgent(TrainingAgent):
             - SimbaV2 projection: Weights are projected BEFORE target update to ensure
               target receives valid projected weights.
         """
-        from einops import rearrange, repeat
-
         self._training_step += 1
         eps = self._update_epsilon()
 
@@ -619,6 +707,11 @@ class IQNAgent(TrainingAgent):
             a = torch.from_numpy(idx).to(device=a.device, dtype=torch.long)
         actions = a.long().squeeze(-1)
 
+        # Scale rewards before the Bellman backup: r = r * scale.
+        # Values < 1 shrink rewards (e.g. 0.005 → 0.5 % of original).
+        if self.reward_normalize_scale != 1.0 and self.reward_normalize_scale > 0:
+            r = r * self.reward_normalize_scale
+
         if self.munchausen_enabled:
             with torch.no_grad():
                 q_curr = self.model.q_values(o, n_quantiles=self.n_quantiles_eval)
@@ -629,29 +722,64 @@ class IQNAgent(TrainingAgent):
                     clip_min=float(self.munchausen_clip_min),
                     clip_max=float(self.munchausen_clip_max),
                 )
-                r = r + float(self.munchausen_alpha) * munchausen_bonus.unsqueeze(-1)
+                # Bonus is computed from Q-values in scaled reward space; add after scaling.
+                # Reshape to r's exact shape: r can be (b,) or (b, 1) depending on
+                # the memory; a blind unsqueeze would broadcast (b,) + (b, 1) to (b, b).
+                # Match r's dtype too (q_curr may be bf16 under autocast).
+                r = r + float(self.munchausen_alpha) * munchausen_bonus.to(dtype=r.dtype).reshape(
+                    r.shape
+                )
         else:
             munchausen_bonus = torch.zeros(batch_size, device=device)
 
-        if self.reward_normalize_scale != 1.0 and self.reward_normalize_scale > 0:
-            r = r * self.reward_normalize_scale
-
-        if self.n_steps > 1:
-            n_step_return, bootstrap_mask = _compute_n_step_return_and_bootstrap_mask(
-                r, d, self.gamma, self.n_steps
+        # Memory-side n-step: ``r`` is already the discounted n-step return,
+        # ``o2`` the observation at the end of the window, and ``d`` the
+        # terminated flag of the window's last step (episode boundaries are
+        # handled by the memory, which never accumulates across them).
+        # ``n_step_effective`` carries the per-sample window length (1 for
+        # plain 1-step transitions). Bootstrap through truncation, never
+        # through termination.
+        n_eff = None
+        if len(batch) >= 7 and isinstance(batch[6], dict):
+            n_eff = batch[6].get("n_step_effective", None)
+        if n_eff is not None and self.n_steps > 1 and not self._warned_missing_n_step_metadata:
+            n_eff_t = torch.as_tensor(n_eff).float().reshape(-1)
+            if n_eff_t.numel() > 0 and bool((n_eff_t <= 1.0).all()):
+                logger.warning(
+                    "IQN n_steps={} but replay batches carry n_step_effective=1 only "
+                    "(memory does not implement memory-side n-step returns); "
+                    "training with 1-step targets instead.",
+                    self.n_steps,
+                )
+                self._warned_missing_n_step_metadata = True
+        elif n_eff is None and self.n_steps > 1 and not self._warned_missing_n_step_metadata:
+            logger.warning(
+                "IQN n_steps={} but the replay batch carries no 'n_step_effective' metadata "
+                "(this memory does not implement memory-side n-step returns); "
+                "training with 1-step targets instead.",
+                self.n_steps,
             )
-            n_step_return = n_step_return.squeeze(-1)
-            bootstrap_mask = bootstrap_mask.squeeze(-1)
-            gamma_n = self.gamma**self.n_steps
+            self._warned_missing_n_step_metadata = True
+
+        n_step_return = r.squeeze(-1)
+        bootstrap_mask = 1.0 - d.squeeze(-1)
+        if n_eff is not None:
+            n_eff_t = torch.as_tensor(n_eff, device=n_step_return.device).float().clamp(min=1.0)
+            gamma_n = torch.pow(
+                torch.tensor(float(self.gamma), device=n_step_return.device), n_eff_t
+            )
         else:
-            n_step_return = r.squeeze(-1)
-            bootstrap_mask = 1.0 - d.squeeze(-1)
-            gamma_n = self.gamma
+            gamma_n = torch.full_like(bootstrap_mask, float(self.gamma))
 
         def autocast_ctx():
             return autocast_context(self.use_mixed_precision, self.amp_dtype)
 
         with autocast_ctx():
+            # sort_quantiles only sorts the sampled fractions BEFORE the forward
+            # pass (stable diagnostics / monotonicity regularization). Network
+            # outputs must NOT be re-sorted afterwards: each output quantile is
+            # paired with its tau in the quantile-Huber loss, and sorting outputs
+            # would assign gradients to the wrong fractions.
             tau = torch.rand(batch_size, self.n_quantiles_train, device=device)
             if self.sort_quantiles:
                 tau, _ = torch.sort(tau, dim=1)
@@ -660,8 +788,6 @@ class IQNAgent(TrainingAgent):
             )
             action_idx = repeat(actions, "b -> b n 1", n=self.n_quantiles_train)
             current_q = current_quantiles.gather(2, action_idx).squeeze(2)
-            if self.sort_quantiles:
-                current_q, _ = torch.sort(current_q, dim=1)
 
         with torch.no_grad():
             tau_prime = torch.rand(batch_size, self.n_quantiles_target, device=device)
@@ -681,19 +807,20 @@ class IQNAgent(TrainingAgent):
                 target_quantiles, _ = self.model_target(o2, tau=tau_prime)
             next_action_idx = repeat(next_actions, "b -> b n 1", n=self.n_quantiles_target)
             next_q = target_quantiles.gather(2, next_action_idx).squeeze(2)
-            if self.sort_quantiles:
-                next_q, _ = torch.sort(next_q, dim=1)
 
             target = (
                 rearrange(n_step_return, "b -> b 1")
-                + gamma_n * rearrange(bootstrap_mask, "b -> b 1") * next_q
+                + rearrange(gamma_n * bootstrap_mask, "b -> b 1") * next_q
             )
             backup_clip = float(self.backup_clip_range)
             if backup_clip > 0.0:
                 target = target.clamp(min=-backup_clip, max=backup_clip)
 
-        current_for_loss = current_q
-        target_for_loss = target
+        # Compute the quantile-Huber loss in fp32 regardless of the autocast
+        # dtype: the squared-delta term loses precision in bf16/fp16 and the
+        # loss gradients are the training signal. (Matches the TQC critic.)
+        current_for_loss = current_q.float()
+        target_for_loss = target.float()
 
         is_weights = None
         if len(batch) >= 7 and isinstance(batch[6], dict):
@@ -743,7 +870,36 @@ class IQNAgent(TrainingAgent):
             crossing_magnitude = torch.zeros((), device=current_q.device, dtype=current_q.dtype)
             crossing_rate = torch.zeros((), device=current_q.device, dtype=current_q.dtype)
 
-        loss = loss_iqn + float(self.monotonicity_lambda) * monotonic_penalty
+        # DQfD large-margin loss on demo samples: push Q(s, a_demo) above every
+        # other action by at least bc_margin. TD backups alone propagate demo
+        # values too slowly to move the argmax across 78 actions.
+        bc_lam = self._get_bc_lambda()
+        bc_loss = torch.zeros((), device=current_q.device, dtype=torch.float32)
+        demo_argmax_match = float("nan")
+        demo_mask = None
+        if len(batch) >= 7 and isinstance(batch[6], dict):
+            raw_mask = batch[6].get("is_demo", None)
+            if raw_mask is not None:
+                demo_mask = torch.as_tensor(raw_mask, device=current_q.device).reshape(-1).bool()
+        if bc_lam > 0.0 and demo_mask is not None and bool(demo_mask.any()):
+            q_all = current_quantiles.float().mean(dim=1)  # (b, n_actions)
+            a_col = actions.reshape(-1, 1)
+            q_demo_action = q_all.gather(1, a_col).squeeze(1)
+            # Margin added to every action except the demo action (where the
+            # entry is replaced by Q(s,a_E) itself, so J_E >= 0 by construction).
+            margined = (q_all + float(self.bc_margin)).scatter(
+                1, a_col, q_demo_action.unsqueeze(1)
+            )
+            per_sample_margin = margined.max(dim=1).values - q_demo_action
+            bc_loss = per_sample_margin[demo_mask].mean()
+            with torch.no_grad():
+                demo_argmax_match = float(
+                    (q_all.argmax(dim=1) == actions.reshape(-1))[demo_mask].float().mean()
+                )
+
+        loss = (
+            loss_iqn + float(self.monotonicity_lambda) * monotonic_penalty + bc_lam * bc_loss
+        )
 
         if torch.isnan(loss).any() or torch.isinf(loss).any():
             logger.error("NaN/Inf in total loss after monotonicity penalty, skipping update")
@@ -758,34 +914,38 @@ class IQNAgent(TrainingAgent):
                 "debug/nan_detected": 1.0,
             }
 
+        # Single grad-norm pass: clip_grad_norm_ returns the total norm BEFORE
+        # clipping and rescales in place when it exceeds the threshold, so the
+        # post-clip norm is exactly min(pre, clip_val) — no extra passes needed.
+        # clip_val=inf measures without scaling (grad_clip disabled).
+        clip_val = float(self.grad_clip) if self.grad_clip > 0.0 else float("inf")
         self.optimizer.zero_grad()
+        optimizer_stepped = False
         if self.use_mixed_precision:
             self.grad_scaler.scale(loss).backward()
             # Always unscale before grad norms / stabilizer / clip (even when grad_clip==0).
             self.grad_scaler.unscale_(self.optimizer)
             grad_norm_pre_clip = float(
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(), float("inf"))
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), clip_val)
             )
-            if self.grad_clip > 0.0:
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(), float(self.grad_clip))
-            grad_norm_post_clip = float(
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(), float("inf"))
-            )
-            grad_norm = self._grad_stabilizer.step(self.model.parameters())
+            grad_norm_post_clip = min(grad_norm_pre_clip, clip_val)
+            grad_norm = self._stabilize_grads(grad_norm_post_clip)
+            scale_before = float(self.grad_scaler.get_scale())
             self.grad_scaler.step(self.optimizer)
             self.grad_scaler.update()
+            optimizer_stepped = float(self.grad_scaler.get_scale()) >= scale_before
         else:
             loss.backward()
             grad_norm_pre_clip = float(
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(), float("inf"))
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), clip_val)
             )
-            if self.grad_clip > 0.0:
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(), float(self.grad_clip))
-            grad_norm_post_clip = float(
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(), float("inf"))
-            )
-            grad_norm = self._grad_stabilizer.step(self.model.parameters())
+            grad_norm_post_clip = min(grad_norm_pre_clip, clip_val)
+            grad_norm = self._stabilize_grads(grad_norm_post_clip)
             self.optimizer.step()
+            optimizer_stepped = True
+
+        if self._lr_scheduler is not None and optimizer_stepped:
+            self._lr_scheduler.step()
 
         backbone = getattr(self.model, "backbone", None)
         if backbone is not None:
@@ -799,7 +959,7 @@ class IQNAgent(TrainingAgent):
                 for p_tgt, p_src in zip(
                     self.model_target.parameters(), self.model.parameters(), strict=False
                 ):
-                    p_tgt.data.lerp_(p_src.data, tau_polyak)
+                    p_tgt.lerp_(p_src, tau_polyak)
         elif self._training_step % self.target_update_freq == 0:
             self.model_target.load_state_dict(self.model.state_dict())
             for p in self.model_target.parameters():
@@ -811,6 +971,8 @@ class IQNAgent(TrainingAgent):
             "loss/iqn_loss": iqn_loss_scalar,
             "loss/total_loss": _tensor_to_scalar(loss),
             "loss/monotonicity_penalty": _tensor_to_scalar(monotonic_penalty),
+            "loss/bc_margin": _tensor_to_scalar(bc_loss),
+            "bc/bc_lambda": bc_lam,
             "exploration/epsilon": eps,
             "q/mean_q": _tensor_to_scalar(current_q.mean()),
             "q/max_q": _tensor_to_scalar(current_q.max()),
@@ -827,11 +989,14 @@ class IQNAgent(TrainingAgent):
             "debug/grad_norm_pre_clip": grad_norm_pre_clip,
             "debug/grad_norm_post_clip": grad_norm_post_clip,
             "debug/grad_norm": grad_norm,
-            "debug/grad_ema_norm": self._grad_stabilizer.ema_norm,
+            "debug/grad_ema_norm": self._grad_ema_norm(),
+            "train/lr": float(self.optimizer.param_groups[0]["lr"]),
             "train/step": self._training_step,
         }
         if self.noisy_linear:
             ret["exploration/noise_scale"] = self._noise_scale
+        if demo_argmax_match == demo_argmax_match:  # not NaN: demos present in batch
+            ret["debug/demo_argmax_match"] = demo_argmax_match
         if dueling_head_stats is not None:
             value = dueling_head_stats["value"]
             advantage = dueling_head_stats["advantage"]

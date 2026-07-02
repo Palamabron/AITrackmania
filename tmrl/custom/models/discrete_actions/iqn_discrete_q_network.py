@@ -162,6 +162,17 @@ class IQNFeatureBackbone(nn.Module):
         if self._use_track_conv:
             dim_track_first = math.prod(observation_space[0].shape)
             if dim_track_first % self._track_channels != 0:
+                from loguru import logger
+
+                logger.warning(
+                    "split_track_observation requested but track dim {} is not divisible by "
+                    "{} channels (encoder={!r}); falling back to a flat MLP over the whole "
+                    "observation. Use a matching track_encoder (e.g. 'gtn' for 7-channel "
+                    "world-telemetry track) if you want the split branch.",
+                    dim_track_first,
+                    self._track_channels,
+                    track_encoder,
+                )
                 self._use_track_conv = False
 
         if self._use_track_conv:
@@ -543,6 +554,7 @@ class DQNActor(TorchActorModule):
         explore_repeat_steps: int = 1,
         noisy: bool = False,
         noisy_std_init: float = 0.5,
+        noisy_eval_std: float = 0.01,
         **backbone_kwargs,
     ):
         super().__init__(observation_space, action_space)
@@ -560,11 +572,47 @@ class DQNActor(TorchActorModule):
         # Store epsilon as a buffer so it is included in state_dict and
         # survives save_to_bytes/load_from_bytes serialization.
         self.register_buffer("_epsilon_buf", torch.tensor(epsilon, dtype=torch.float32))
+        self.register_buffer("_noise_scale_buf", torch.tensor(1.0, dtype=torch.float32))
+        self._noisy = bool(noisy)
+        self._noisy_eval_std = float(noisy_eval_std)
         self.n_actions = n_actions
         self.n_quantiles_eval = n_quantiles_eval
         self.explore_repeat_steps = max(1, int(explore_repeat_steps))
         self._current_explore_count = 0
         self._last_explore_action: np.ndarray | None = None
+
+    @property
+    def noise_scale(self) -> float:
+        b = cast(Any, self._noise_scale_buf)
+        scalars = b.detach().cpu().reshape(-1).tolist()
+        return float(scalars[0])
+
+    def set_noise_scale(self, value: float | int) -> None:
+        """Sync NoisyNet exploration scale from trainer (buffer + DuelingHead)."""
+        b = cast(Any, self._noise_scale_buf)
+        scale = float(value)
+        with torch.no_grad():
+            b.copy_(torch.tensor(scale, dtype=b.dtype, device=b.device))
+        head = getattr(self.q_net, "head", None)
+        if head is not None and hasattr(head, "set_noise_scale"):
+            head.set_noise_scale(scale)
+
+    def reset_noise(self, batch_size: int = 1) -> None:
+        """Resample NoisyLinear noise (worker rollout / episode reset)."""
+        del batch_size  # API compat with other actors; IQN uses batch_size=1
+        if not self._noisy:
+            return
+        head = getattr(self.q_net, "head", None)
+        if head is not None and hasattr(head, "set_noise_scale"):
+            head.set_noise_scale(self.noise_scale)
+        if head is not None and hasattr(head, "reset_noise"):
+            head.reset_noise()
+
+    def reset_explore_state(self) -> None:
+        """Clear the explore-repeat hold so a held random action never leaks
+        from the previous episode into the first steps of a new one."""
+        self._current_explore_count = 0
+        self._last_explore_action = None
 
     @property
     def epsilon(self) -> float:
@@ -607,6 +655,24 @@ class DQNActor(TorchActorModule):
         if not test and self._current_explore_count > 0 and self._last_explore_action is not None:
             self._current_explore_count -= 1
             return self._last_explore_action
+
+        # torchrl NoisyLinear only injects noise when module.training is True.
+        # Scope train/eval to the dueling head only so backbone layers with
+        # dropout/batchnorm are not accidentally left in train mode.
+        head = getattr(self.q_net, "head", None) if self._noisy else None
+        if self._noisy and head is not None:
+            if test:
+                if self._noisy_eval_std > 0.0:
+                    head.train()
+                    if hasattr(head, "set_noise_scale"):
+                        head.set_noise_scale(self._noisy_eval_std)
+                    if hasattr(head, "reset_noise"):
+                        head.reset_noise()
+                else:
+                    head.eval()
+            else:
+                head.train()
+                self.reset_noise()
 
         with torch.no_grad():
             q_vals = self.forward(obs)  # (1, n_actions)
