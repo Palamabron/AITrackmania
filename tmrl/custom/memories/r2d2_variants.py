@@ -6,13 +6,13 @@ from typing import Any
 import numpy as np
 from loguru import logger
 
-from tmrl.custom.memories.enums import (
+from tmrl.custom.memories._internal.enums import (
     BufferField,
     R2D2SophyField,
     R2D2SophyObsField,
     R2D2woImagesTrailingField,
 )
-from tmrl.custom.memories.sampling_utils import (
+from tmrl.custom.memories._internal.sampling_utils import (
     canonical_replay_action_vector,
     normalize_stored_replay_actions_slice,
 )

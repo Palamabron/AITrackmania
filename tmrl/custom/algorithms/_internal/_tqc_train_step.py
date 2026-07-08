@@ -6,7 +6,7 @@ import math
 import numpy as np
 import torch
 
-from tmrl.custom.algorithms._common import (
+from tmrl.custom.algorithms._internal._common import (
     _compute_n_step_return_and_bootstrap_mask,
     _tensor_to_scalar,
     autocast_context,

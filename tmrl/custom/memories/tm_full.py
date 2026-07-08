@@ -5,8 +5,8 @@ import random
 import numpy as np
 
 from tmrl.custom.memories.base import MemoryTM, last_true_in_list, replace_hist_before_eoe
-from tmrl.custom.memories.enums import BufferField, TMFullField, TMFullObsField
-from tmrl.custom.memories.sampling_utils import (
+from tmrl.custom.memories._internal.enums import BufferField, TMFullField, TMFullObsField
+from tmrl.custom.memories._internal.sampling_utils import (
     canonical_replay_action_vector,
     normalize_stored_replay_actions_slice,
 )

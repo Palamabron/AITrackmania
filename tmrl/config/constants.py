@@ -15,11 +15,11 @@ from tmrl.config.paths import (
     TRACK_PATH_LEFT,
     TRACK_PATH_RIGHT,
 )
-from tmrl.config.rtgym_boundary_iface import (
+from tmrl.config._internal.rtgym_boundary_iface import (
     rtgym_discrete_boundary_lidar_images,
     rtgym_discrete_boundary_lidar_vec,
 )
-from tmrl.config.spacing_lookahead import (
+from tmrl.config._internal.spacing_lookahead import (
     points_number_from_spacing_config,
     polyline_arc_length_m,
 )

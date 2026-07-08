@@ -9,7 +9,7 @@ try:
 except ImportError:
     wandb = None  # type: ignore[assignment]
 
-from tmrl.custom.algorithms._common import (
+from tmrl.custom.algorithms._internal._common import (
     _tensor_to_scalar,
     autocast_context,
     project_simbav2_weights,

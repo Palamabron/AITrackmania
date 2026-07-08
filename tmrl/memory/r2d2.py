@@ -8,7 +8,7 @@ from typing import Any
 import numpy as np
 from loguru import logger
 
-from tmrl.custom.memories.sampling_utils import (
+from tmrl.custom.memories._internal.sampling_utils import (
     canonical_replay_action_vector,
     configure_discrete_steer_bins,
 )

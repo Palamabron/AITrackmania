@@ -21,7 +21,7 @@ from typing import Any, ClassVar
 import numpy as np
 from loguru import logger
 
-from tmrl.config.spacing_lookahead import points_number_from_spacing_config
+from tmrl.config._internal.spacing_lookahead import points_number_from_spacing_config
 from tmrl.custom.tm.utils.track_features import TrackFeatureProvider, discrete_curvature_xz
 
 OFF_TRACK_PROGRESS_ZERO_MULTIPLIER = 2.0

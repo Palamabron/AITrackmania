@@ -22,7 +22,7 @@ from tmrl.tools.diagnostics.check_environment import (
     check_env_tm20_boundary,
     check_env_tm20full,
 )
-from tmrl.tools.recording.import_player_runs import import_player_runs
+from tmrl.tools.recording.replay_io import import_player_runs
 from tmrl.tools.recording.record_reward import record_reward_dist
 from tmrl.util import partial
 

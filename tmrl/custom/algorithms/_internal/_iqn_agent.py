@@ -20,7 +20,7 @@ import torch
 from loguru import logger
 from torch.optim import Adam
 
-from tmrl.custom.algorithms._common import (
+from tmrl.custom.algorithms._internal._common import (
     amp_setup,
     sanitize_obs,
     sanitize_tensor,

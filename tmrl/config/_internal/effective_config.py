@@ -27,7 +27,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from tmrl.config.rtgym_boundary_iface import (
+from tmrl.config._internal.rtgym_boundary_iface import (
     rtgym_discrete_boundary_lidar_family,
     rtgym_discrete_boundary_lidar_images,
 )

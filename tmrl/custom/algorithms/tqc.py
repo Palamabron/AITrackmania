@@ -19,7 +19,7 @@ try:
 except ImportError:
     wandb = None  # type: ignore[assignment]
 
-from tmrl.custom.algorithms._common import (
+from tmrl.custom.algorithms._internal._common import (
     _amp_dtype,
     _amp_enabled,
     _make_optimizer,

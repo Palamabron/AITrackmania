@@ -6,13 +6,13 @@ from tmrl.custom.memories.base import (
     last_true_in_list,
     replace_hist_before_eoe,
 )
-from tmrl.custom.memories.compressors import (
+from tmrl.custom.memories._internal.compressors import (
     get_local_buffer_sample_lidar,
     get_local_buffer_sample_lidar_images,
     get_local_buffer_sample_mobilenet,
     get_local_buffer_sample_tm20_imgs,
 )
-from tmrl.custom.memories.enums import (
+from tmrl.custom.memories._internal.enums import (
     BufferField,
     GenericField,
     R2D2Field,
@@ -32,7 +32,7 @@ from tmrl.custom.memories.r2d2 import (
     MemoryR2D2Sophy,
     MemoryR2D2woImages,
 )
-from tmrl.custom.memories.sampling_utils import (
+from tmrl.custom.memories._internal.sampling_utils import (
     ACTION_STEER_INDEX,
     fog_recency_resample,
 )

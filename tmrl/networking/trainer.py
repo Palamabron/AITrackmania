@@ -132,7 +132,7 @@ def iterate_epochs(
             logger.info("=== specification ".ljust(70, "="))
             run_instance = run_cls()
             dump_run_instance_fn(run_instance, checkpoint_path)
-            from tmrl.config.run_artifacts import write_run_repro_bundle
+            from tmrl.config._internal.run_artifacts import write_run_repro_bundle
 
             write_run_repro_bundle(checkpoint_path)
             logger.info("")

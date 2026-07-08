@@ -8,7 +8,7 @@ Backward compatibility note:
 New code should prefer ``tmrl.config.active_config_explainer``.
 """
 
-from tmrl.config.effective_config import (
+from tmrl.config._internal.effective_config import (
     FIELD_IGNORE_HINTS,
     ROUTE_ACTIVE_MODEL_FIELDS,
     InterfaceContext,

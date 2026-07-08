@@ -7,7 +7,7 @@ import warnings
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from tmrl.config.rtgym_boundary_iface import rtgym_discrete_boundary_lidar_family
+from tmrl.config._internal.rtgym_boundary_iface import rtgym_discrete_boundary_lidar_family
 from tmrl.config.schema.algorithm import AlgorithmConfig
 from tmrl.config.schema.distributed import DistributedConfig
 from tmrl.config.schema.environment import EnvironmentConfig
