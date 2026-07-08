@@ -942,7 +942,7 @@ class RewardFunction:
             lateral_ratio = dist_from_center / max(half_w, MIN_ROAD_HALF_WIDTH_M)
 
             _bp_start = self._boundary_penalty_start
-            if self._boundary_penalty_weight > 0 and lateral_ratio > _bp_start:
+            if self._boundary_penalty_weight > 0 and _bp_start < lateral_ratio <= 1.0:
                 frac = (lateral_ratio - _bp_start) / (1.0 - _bp_start)
                 _boundary_soft_pen += self._boundary_penalty_weight * frac * frac
 
@@ -1000,11 +1000,11 @@ class RewardFunction:
             and _boundary_crash_pen > 0.0
         ):
             reward -= _boundary_crash_pen
-        if (
+        elif (
             terminated
             and not end_of_track
             and self._terminal_failure_penalty > 0.0
-            and self._term_reason != "boundary_crash"
+            and (self._term_reason != "boundary_crash" or self._boundary_crash_penalty <= 0.0)
         ):
             reward -= self._terminal_failure_penalty
         reward = reward * self._reward_scale

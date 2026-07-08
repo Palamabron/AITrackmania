@@ -294,6 +294,15 @@ class SDSACAgent(TrainingAgent):
             self.use_entropy_penalty,
         )
 
+        if self.reward_normalize_scale != 1.0:
+            logger.warning(
+                "SDSACAgent: reward_normalize_scale={:.4g} — rewards are MULTIPLIED by this "
+                "factor. Previous versions divided; if you are loading an old config that "
+                "used a large scale (e.g. 200) to shrink rewards, use the reciprocal "
+                "(1/200 ≈ 0.005) to preserve the original effect.",
+                self.reward_normalize_scale,
+            )
+
     def get_actor(self) -> DiscreteSACActor:
         actor = DiscreteSACActor(
             self.observation_space,

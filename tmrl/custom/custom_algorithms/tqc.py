@@ -193,6 +193,15 @@ class TQCAgent(TrainingAgent):
         self._consecutive_low_grad_steps = 0
         self._trunc_var_history: deque[float] = deque(maxlen=500)
 
+        if self.reward_normalize_scale != 1.0:
+            logger.warning(
+                "TQCAgent: reward_normalize_scale={:.4g} — rewards are MULTIPLIED by this "
+                "factor. Previous versions divided; if you are loading an old config that "
+                "used a large scale (e.g. 200) to shrink rewards, use the reciprocal "
+                "(1/200 ≈ 0.005) to preserve the original effect.",
+                self.reward_normalize_scale,
+            )
+
     def _build_model_and_optimizers(self, device: str) -> None:
         """(Re)create model, target, optimizers, quantile counts, and grad scaler.
 

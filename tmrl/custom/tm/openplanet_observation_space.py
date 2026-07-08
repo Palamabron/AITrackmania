@@ -43,7 +43,7 @@ def build_openplanet_tuple_observation_space(
     aim_pitch = spaces.Box(low=-1.0, high=1.0, shape=(1,))
     steer_angle = spaces.Box(low=-30.0, high=30.0, shape=(2,))
     slip_coef = spaces.Box(low=0.0, high=1.0, shape=(2,))
-    failure_counter = spaces.Box(low=0.0, high=15, shape=(1,))
+    failure_counter = spaces.Box(low=0.0, high=1.0, shape=(1,))
     spaces_list = [
         track,
         speed,

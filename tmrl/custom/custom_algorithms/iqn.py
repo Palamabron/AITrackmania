@@ -427,6 +427,7 @@ class IQNAgent(TrainingAgent):
         self._warned_n_step_all_one = False
         self._epsilon = self.epsilon_start
         self._noise_scale = float(self.noisy_scale_start)
+        self._legacy_action_table: list | None = None
         self._grad_stabilizer = (
             GradientStabilizer(ema_decay=float(self.grad_stabilizer_ema_decay))
             if self.grad_stabilizer_enabled
@@ -478,6 +479,17 @@ class IQNAgent(TrainingAgent):
                     expected_q_scale,
                     self.reward_normalize_scale,
                 )
+        if self.bc_lambda > 0.0 and int(self.bc_anneal_steps_end) > 0:
+            logger.warning(
+                "IQNAgent: bc_anneal_steps_end={} is set — during the anneal window bc_lambda "
+                "acts only as an on/off gate (nonzero = enabled); the effective weight ranges "
+                "from bc_lambda_start={:.4g} to bc_lambda_end={:.4g}. "
+                "Set bc_anneal_steps_end=0 to use bc_lambda={:.4g} as a static weight.",
+                self.bc_anneal_steps_end,
+                self.bc_lambda_start,
+                self.bc_lambda_end,
+                self.bc_lambda,
+            )
         _obs = self.observation_space
         _obs_dim = (
             sum(math.prod(s.shape or ()) for s in _obs.spaces)
@@ -709,9 +721,13 @@ class IQNAgent(TrainingAgent):
                 continuous_control_to_discrete_indices_batch,
             )
 
-            n_steer = int(self.iqn_n_steer_bins)
-            _, table = build_brake_tap_action_table(n_steer=n_steer)
-            idx = continuous_control_to_discrete_indices_batch(a.cpu().numpy(), table)
+            if self._legacy_action_table is None:
+                _, self._legacy_action_table = build_brake_tap_action_table(
+                    n_steer=int(self.iqn_n_steer_bins)
+                )
+            idx = continuous_control_to_discrete_indices_batch(
+                a.cpu().numpy(), self._legacy_action_table
+            )
             a = torch.from_numpy(idx).to(device=a.device, dtype=torch.long)
         actions = a.long().squeeze(-1)
 
