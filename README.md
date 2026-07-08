@@ -78,9 +78,9 @@ _Note: In the context of RL, an AI is called a policy._
 ### User features (TrackMania example pipeline):
 
 * **Training algorithms:**
-`tmrl` comes with a readily implemented example pipeline that lets you easily train policies in TrackMania 2020 with state-of-the-art Deep Reinforcement Learning algorithms such as [Soft Actor-Critic](https://www.youtube.com/watch?v=LN29DDlHp1U) (SAC) and [Randomized Ensembled Double Q-Learning](https://arxiv.org/abs/2101.05982) (REDQ).
+`tmrl` comes with a readily implemented example pipeline that lets you easily train policies in TrackMania 2020 with state-of-the-art Deep Reinforcement Learning algorithms such as [Soft Actor-Critic](https://www.youtube.com/watch?v=LN29DDlHp1U) (SAC), [Randomized Ensembled Double Q-Learning](https://arxiv.org/abs/2101.05982) (REDQ), and [Implicit Quantile Networks](https://arxiv.org/abs/1806.06923) (IQN) for discrete action spaces.
 These algorithms store collected samples in a large dataset, called a replay memory.
-In parallel, these samples are used to train an artificial neural network (policy) that maps observations (images, speed...) to relevant actions (gas, break, steering angle...).
+In parallel, these samples are used to train an artificial neural network (policy) that maps observations (images, speed...) to relevant actions (gas, brake, steering angle...).
 
 * **Analog control from screenshots:**
 The `tmrl` example pipeline trains policies that are able to drive from raw screenshots captured in real-time.
@@ -402,11 +402,13 @@ environment:
     speed_reward_exponent: 1.0  # Emphasize high-speed segments
     max_speed_kmh: 300.0  # Normalization reference
 
-    # Drift rewards (experimental)
+    # Drift/cornering rewards (only active when reward_progress > 0 — forward progress required)
     drift_reward_weight: 0.0  # Enable drift shaping
+    cornering_speed_bonus: 0.0  # Bonus for fast cornering
 
     # Penalties and termination
-    crash_penalty: 0.5
+    crash_penalty: 0.5           # Applied on boundary crashes
+    terminal_failure_penalty: 0.0  # Applied on non-boundary terminal failures (e.g. timeout)
     constant_penalty: 0.0  # Per-step penalty
     min_seconds_before_failure: 3.5  # Terminate after 3.5s without progress
     off_track_seconds_before_failure: 0.5  # Grace period after reset
@@ -508,6 +510,35 @@ Other supported algorithms:
 - **TQC**: Truncated Quantile Critics
 - **IQN**: Implicit Quantile Networks (discrete actions)
 - **SDSAC**: Sophy-inspired SAC variant
+
+### Implicit Quantile Network (IQN)
+
+([Full paper](https://arxiv.org/abs/1806.06923))
+
+IQN is a distributional RL algorithm for **discrete action spaces**.
+Rather than learning a single expected Q-value per action, IQN learns the full return distribution by sampling implicit quantile levels at training time, which leads to more robust value estimates and better exploration.
+
+IQN uses Double DQN-style action selection (online network selects the action, target network evaluates it) and a quantile Huber loss aggregated over sampled quantile pairs.
+It pairs naturally with n-step returns, Munchausen RL, and demo-guided learning via a behavioral cloning loss.
+
+To use IQN, set the algorithm in your configuration:
+
+```yaml
+# ~/TmrlData/config/local.yaml
+algorithm:
+  name: IQN
+  iqn_n_steer_bins: 13      # Discrete steering resolution (odd number)
+  gamma: 0.99
+  n_steps: 3                # N-step returns (requires memory_type: generic)
+  n_quantiles: 8            # Quantile samples for training targets
+  n_quantiles_eval: 32      # Quantile samples for action selection
+  double_dqn: true
+  munchausen_enabled: false
+  bc_lambda: 0.0            # Demo behavioral cloning weight
+  reward_normalize_scale: 1.0
+```
+
+**Note:** IQN requires `memory.memory_type: generic` when using `n_steps > 1`, since only the generic memory implements proper n-step return accumulation.
 
 ### A clever reward
 
