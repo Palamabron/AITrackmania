@@ -17,7 +17,7 @@ from gymnasium import spaces
 from loguru import logger
 
 import tmrl.config as cfg
-from tmrl.custom.interfaces.base import MPS_TO_KMPH
+from tmrl.custom.interfaces.base import MPS_TO_KMPH, gate_end_of_track_for_reward
 from tmrl.custom.interfaces.telemetry_indices import (
     TMRL_GRABDATA_FLOAT_COUNT,
     TmrlDataPlugin,
@@ -119,9 +119,16 @@ class TM2020RLInterface(TM2020Interface):
         self.initialized = True
 
     def get_observation_space(self):
-        from tmrl.custom.tm.tqc_observation_space import build_tqc_sophy_tuple_observation_space
+        from tmrl.custom.tm.openplanet_observation_space import (
+            build_openplanet_tuple_observation_space,
+        )
 
-        base_spaces = build_tqc_sophy_tuple_observation_space(self.points_number)
+        # Keep the declared space in lockstep with the live obs tuple: curvature
+        # is appended by get_obs_rew_terminated_info iff the reward flag is on.
+        base_spaces = build_openplanet_tuple_observation_space(
+            self.points_number,
+            track_curvature_obs=bool(cfg.REWARD_CONFIG.get("track_curvature_obs", False)),
+        )
         if not self.include_camera_images:
             return base_spaces
         spaces_list = list(base_spaces.spaces)
@@ -154,13 +161,21 @@ class TM2020RLInterface(TM2020Interface):
 
     def _track_observation(self, pos, yaw):
         assert self.reward_function is not None
-        track_result = self.reward_function.get_track_info(pos, self.points_number)
+        track_result = self.reward_function.track_feature_provider.get_track_info(
+            pos, self.points_number
+        )
         left_track = track_result[0]
         center_track = track_result[1]
         right_track = track_result[2]
         curvature_list = track_result[3] if len(track_result) >= 4 else None
+        log_distance_list = track_result[4] if len(track_result) >= 5 else None
+        # get_track_info always returns a curvature list (zeros when disabled);
+        # only surface it in the observation when the feature is enabled, so the
+        # obs tuple matches get_observation_space.
+        if not bool(cfg.REWARD_CONFIG.get("track_curvature_obs", False)):
+            curvature_list = None
 
-        if bool(cfg.REWARD_CONFIG.get("TRACK_LOCAL_FRAME", False)):
+        if bool(cfg.REWARD_CONFIG.get("track_local_frame", False)):
             cos_y, sin_y = np.cos(yaw), np.sin(yaw)
 
             def _rotate(pairs):
@@ -176,6 +191,8 @@ class TM2020RLInterface(TM2020Interface):
             right_track = _rotate(right_track)
 
         track_list = left_track + center_track + right_track
+        if log_distance_list is not None:
+            track_list += log_distance_list
         if cfg.OBS_TRACK_SCALE != 1.0:
             track_list = [x / cfg.OBS_TRACK_SCALE for x in track_list]
         return np.array(track_list, dtype=np.float32), curvature_list
@@ -192,6 +209,9 @@ class TM2020RLInterface(TM2020Interface):
         cur_cp = int(data[TmrlDataPlugin.CHECKPOINTS_PASSED])
         cur_lap = int(data[TmrlDataPlugin.CURRENT_LAP])
         end_of_track = bool(data[TmrlDataPlugin.FINISH_UI_ACTIVE])
+        end_of_track_for_reward = gate_end_of_track_for_reward(
+            getattr(self, "_steps_since_reset", 0) + 1, end_of_track
+        )
 
         speed_kmh = float(data[TmrlDataPlugin.SPEED_MPS]) * MPS_TO_KMPH
         speed = np.array([speed_kmh / cfg.OBS_SPEED_SCALE], dtype=np.float32)
@@ -229,6 +249,9 @@ class TM2020RLInterface(TM2020Interface):
             [data[TmrlDataPlugin.SLIP_FL], data[TmrlDataPlugin.SLIP_FR]], dtype=np.float32
         )
         gear = np.array([data[TmrlDataPlugin.ENGINE_GEAR]], dtype=np.float32)
+        engine_rpm = np.array([data[TmrlDataPlugin.ENGINE_RPM]], dtype=np.float32)
+        skidding_count = np.array([data[TmrlDataPlugin.WHEELS_SKIDDING_COUNT]], dtype=np.float32)
+        adherence_coef = np.array([data[TmrlDataPlugin.ADHERENCE_COEF]], dtype=np.float32)
         wheel_slips = [
             float(data[TmrlDataPlugin.SLIP_FL]),
             float(data[TmrlDataPlugin.SLIP_FR]),
@@ -252,7 +275,7 @@ class TM2020RLInterface(TM2020Interface):
             speed=speed_kmh,
             next_cp=self.cur_checkpoint < cur_cp,
             next_lap=self.cur_lap < cur_lap,
-            end_of_track=end_of_track,
+            end_of_track=end_of_track_for_reward,
             input_brake=float(data[TmrlDataPlugin.INPUT_BRAKE]),
             aim_yaw=float(yaw_val),
             input_steer=float(data[TmrlDataPlugin.INPUT_STEER]),
@@ -272,12 +295,8 @@ class TM2020RLInterface(TM2020Interface):
         race_progress_scalar = self.reward_function.compute_race_progress()
 
         self._steps_since_reset = getattr(self, "_steps_since_reset", 0) + 1
-        min_steps_before_finish = max(
-            _DEFAULT_MIN_STEPS_END_OF_TRACK,
-            int(cfg.REWARD_CONFIG.get("MIN_STEPS", _DEFAULT_MIN_STEPS_END_OF_TRACK)),
-        )
         fc_for_norm = float(failure_counter)
-        if end_of_track and self._steps_since_reset >= min_steps_before_finish:
+        if end_of_track_for_reward:
             terminated = True
             fc_for_norm = 0.0
             if self.save_replays:
@@ -313,6 +332,9 @@ class TM2020RLInterface(TM2020Interface):
             input_gas_pedal,
             input_brake,
             gear,
+            engine_rpm,
+            skidding_count,
+            adherence_coef,
             aim_yaw,
             aim_pitch,
             steer_angle,
@@ -390,6 +412,9 @@ class TM2020RLInterface(TM2020Interface):
             [data[TmrlDataPlugin.SLIP_FL], data[TmrlDataPlugin.SLIP_FR]], dtype=np.float32
         )
         gear = np.array([data[TmrlDataPlugin.ENGINE_GEAR]], dtype=np.float32)
+        engine_rpm = np.array([data[TmrlDataPlugin.ENGINE_RPM]], dtype=np.float32)
+        skidding_count = np.array([data[TmrlDataPlugin.WHEELS_SKIDDING_COUNT]], dtype=np.float32)
+        adherence_coef = np.array([data[TmrlDataPlugin.ADHERENCE_COEF]], dtype=np.float32)
         track_yaw = yaw_val
         self._prev_speed_for_kinematics = speed_kmh
         self._prev_acc_for_kinematics = 0.0
@@ -408,6 +433,9 @@ class TM2020RLInterface(TM2020Interface):
             input_gas_pedal,
             input_brake,
             gear,
+            engine_rpm,
+            skidding_count,
+            adherence_coef,
             aim_yaw,
             aim_pitch,
             steer_angle,

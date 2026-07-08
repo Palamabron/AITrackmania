@@ -58,19 +58,19 @@ def test_lidar_iqn_route():
 
 def test_lidar_sac_plain_mlp_route():
     """TM20LIDAR + SAC without residual MLP selects lidar_plain_mlp."""
-    cfg = _validate_with(model={"use_residual_mlp": False})
+    cfg = _validate_with(algorithm={"name": "SAC"}, model={"use_residual_mlp": False})
     assert model_policy_route(cfg) == "lidar_plain_mlp"
 
 
 def test_lidar_residual_route():
     """TM20LIDAR + SAC with use_residual_mlp=True selects lidar_residual."""
-    cfg = _validate_with(model={"use_residual_mlp": True})
+    cfg = _validate_with(algorithm={"name": "SAC"}, model={"use_residual_mlp": True})
     assert model_policy_route(cfg) == "lidar_residual"
 
 
 def test_vanilla_gray_route():
     """Non-lidar, non-advanced interface + SAC + img_grayscale=True → vanilla_gray."""
-    cfg = _validate_with(environment={"rtgym_interface": "TM20STANDARD"})
+    cfg = _validate_with(algorithm={"name": "SAC"}, environment={"rtgym_interface": "TM20STANDARD"})
     assert model_policy_route(cfg) == "vanilla_gray"
 
 
@@ -131,3 +131,20 @@ def test_unsupported_explain_text_contains_warning():
     text = explain_active_config_text(cfg)
     assert "WARNING" in text
     assert "unsupported" in text
+
+
+def test_reward_normalize_scale_rejects_stale_divide_by_n_values():
+    with pytest.raises(ValueError, match="reward_normalize_scale"):
+        _validate_with(algorithm={"reward_normalize_scale": 200.0})
+
+
+def test_iqn_lr_total_steps_must_exceed_warmup_when_cosine_decay_enabled():
+    with pytest.raises(ValueError, match="iqn_lr_total_steps"):
+        _validate_with(
+            algorithm={
+                "name": "IQN",
+                "iqn_lr_cosine_decay": True,
+                "iqn_lr_warmup_steps": 50_000,
+                "iqn_lr_total_steps": 50_000,
+            }
+        )

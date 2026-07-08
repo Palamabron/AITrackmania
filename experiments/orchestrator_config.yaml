@@ -1,0 +1,32 @@
+# Orchestrator configuration for autonomous experiment tuning.
+
+# --- Target ---
+target_finish_time_s: 36.0
+target_metric: eval/finish_time_test_s
+
+# --- Timing ---
+smoke_check_minutes: 5
+check_interval_minutes: 60
+max_consecutive_failures: 3
+
+# Tiered duration: if best_finish_time reaches a threshold within the current
+# time limit, the experiment gets extended to the next tier's max hours.
+# Evaluated top-to-bottom; first matching threshold wins.
+# Default (no threshold met within 4h) -> experiment stops at 4h.
+duration_tiers:
+  - threshold_s: 80.0
+    max_hours: 30
+  - threshold_s: 60.0
+    max_hours: 36
+  - threshold_s: 45.0
+    max_hours: 48
+  - threshold_s: 40.0
+    max_hours: 48
+base_max_hours: 24
+
+# --- Infrastructure ---
+cursor_api_key_env: CURSOR_API_KEY
+wandb_entity: dsc-pjatk-warsaw
+wandb_project: tmrlv2
+# Leave empty to use default .venv (same as manual `uv run`)
+uv_env: ""

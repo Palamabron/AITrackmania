@@ -4,7 +4,10 @@ import numpy as np
 
 from tmrl.custom.memories.base import MemoryTM, last_true_in_list, replace_hist_before_eoe
 from tmrl.custom.memories.enums import BufferField, TMBestField, TMBestObsField
-from tmrl.custom.memories.utils import canonical_replay_action_vector
+from tmrl.custom.memories.utils import (
+    canonical_replay_action_vector,
+    normalize_stored_replay_actions_slice,
+)
 from tmrl.registry import MEMORIES
 
 
@@ -120,16 +123,20 @@ class MemoryTMBest(MemoryTM):
         res = self.data[TMBestField.ACTIONS][
             (item + self.start_acts_offset) : (item + self.start_acts_offset + self.act_buf_len + 1)
         ]
-        return res
+        return normalize_stored_replay_actions_slice(res, self.discrete_n_steer_bins)
 
     def append_buffer(self, buffer):
-        """Append a buffer of samples to the memory."""
+        """Append a buffer of samples to the memory.
+
+        Column order MUST match ``TMBestField`` exactly: ``get_transition`` reads
+        columns by enum index. CRASHED_LIST from the raw observation is not
+        persisted (no enum slot; storing it used to shift columns 13-23 by one).
+        """
         f = TMBestField
         first_data_idx = self.data[f.INDEXES][-1] + 1 if self.__len__() > 0 else 0
         bf = BufferField
 
         o = TMBestObsField
-        crashed_list = [b[bf.OBSERVATION][o.CRASHED_LIST].tolist() for b in buffer.memory]
 
         data_fields = [
             [first_data_idx + i for i, _ in enumerate(buffer.memory)],
@@ -148,6 +155,7 @@ class MemoryTMBest(MemoryTM):
             [np.array([b[bf.OBSERVATION][o.GEAR]]) for b in buffer.memory],
             [np.array([b[bf.OBSERVATION][o.AIM_YAW]]) for b in buffer.memory],
             [np.array([b[bf.OBSERVATION][o.AIM_PITCH]]) for b in buffer.memory],
+            [np.array([b[bf.OBSERVATION][o.SURFACE_ID]]) for b in buffer.memory],
             [np.array([b[bf.OBSERVATION][o.STEER_ANGLE][0]]) for b in buffer.memory],
             [np.array([b[bf.OBSERVATION][o.WHEEL_ROT][0]]) for b in buffer.memory],
             [np.array([b[bf.OBSERVATION][o.WHEEL_ROT_SPEED][0]]) for b in buffer.memory],
@@ -158,7 +166,6 @@ class MemoryTMBest(MemoryTM):
             [np.array([b[bf.OBSERVATION][o.REACTOR_AIR_CONTROL]]) for b in buffer.memory],
             [np.array(b[bf.OBSERVATION][o.GROUND_DIST]) for b in buffer.memory],
             [np.array([b[bf.OBSERVATION][o.CRASHED]]) for b in buffer.memory],
-            [np.array([el]) for el in crashed_list],
             [np.array([b[bf.OBSERVATION][o.FAILURE_COUNTER]]) for b in buffer.memory],
             [b[bf.OBSERVATION][o.IMGS] for b in buffer.memory],
             [b[bf.TERMINATED] or b[bf.TRUNCATED] for b in buffer.memory],
@@ -179,4 +186,5 @@ class MemoryTMBest(MemoryTM):
             for i in range(len(data_fields)):
                 self.data[i] = self.data[i][to_trim:]
 
+        self._demo_flags_cache = None
         return self

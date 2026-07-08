@@ -20,6 +20,9 @@ if TYPE_CHECKING:
     from tmrl.networking import Buffer
 
 PLAYER_RUN_FORMAT = "tmrl_player_run_v1"
+# v2: failure counter normalized to [0,1] in the interface; discrete action slots
+# scaled by 1/(n_actions-1) in preprocessors (legacy files lack this marker).
+PLAYER_RUN_OBS_SCALE_VERSION = 2
 
 # State for poll_player_runs_for_injection one-time warnings (avoid spamming logs)
 _poll_warned_missing_paths: set[str] = set()
@@ -202,6 +205,7 @@ def save_player_run(
     run_uid = run_id or f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid4().hex[:8]}"
     payload = {
         "format": PLAYER_RUN_FORMAT,
+        "obs_scale_version": PLAYER_RUN_OBS_SCALE_VERSION,
         "run_id": run_uid,
         "recorded_at": _utc_now_iso(),
         "metadata": metadata or {},
@@ -390,6 +394,16 @@ def poll_player_runs_for_injection(
             )
             continue
         run_id = str(payload.get("run_id") or path.stem)
+        obs_scale_version = int(payload.get("obs_scale_version", 1))
+        if obs_scale_version < PLAYER_RUN_OBS_SCALE_VERSION:
+            logger.warning(
+                "Player run '{}' has obs_scale_version={} (current {}). "
+                "Failure-counter and discrete action-slot scales may mismatch; "
+                "re-record with a current build.",
+                path,
+                obs_scale_version,
+                PLAYER_RUN_OBS_SCALE_VERSION,
+            )
         if run_id in seen_run_ids:
             continue
         try:

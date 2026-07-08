@@ -97,7 +97,7 @@ class BaseModelConfig(BaseModel):
         default=True,
         description=(
             "When true, the first observation tuple element (discretized track polyline) is "
-            "encoded with track_encoder (conv1d | gnn | spline_mlp); remaining elements are "
+            "encoded with track_encoder (conv1d | gtn | spline_mlp); remaining elements are "
             "telemetry (speed, etc.) merged after projection. When false, all observation "
             "components are flattened into one MLP path (track_encoder unused)."
         ),
@@ -108,7 +108,7 @@ class BaseModelConfig(BaseModel):
     )
     track_encoder: str = Field(
         default="conv1d",
-        description="Track feature encoder family: conv1d, gnn, etc.",
+        description=("Track feature encoder family: conv1d, gtn, spline_mlp."),
     )
     gnn_layers: PositiveInt = Field(
         default=3,
@@ -120,7 +120,11 @@ class BaseModelConfig(BaseModel):
     )
     binary_brake: bool = Field(
         default=False,
-        description="Snap continuous brake output to {0,1} at the final policy layer.",
+        description=(
+            "Snap continuous brake output to {0,1} at the final policy layer. "
+            "Only affects continuous Sophy-style actors; no-op for discrete IQN/SDSAC "
+            "(their action table already has binary gas/brake plus a tap mode)."
+        ),
     )
     use_rnn: bool = Field(
         default=False,

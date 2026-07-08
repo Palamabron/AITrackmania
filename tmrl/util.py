@@ -99,10 +99,20 @@ def collate_torch(batch: Sequence[Any], device: Any = None) -> Any:
         except ValueError:
             shapes = [b.shape for b in batch]
             unique_shapes = set(shapes)
+            shape_counts = {s: shapes.count(s) for s in unique_shapes}
+            examples = {}
+            for s in unique_shapes:
+                idx = next(i for i, b in enumerate(batch) if b.shape == s)
+                examples[s] = (
+                    idx,
+                    batch[idx].dtype,
+                    batch[idx].flat[:4].tolist() if batch[idx].size > 0 else [],
+                )
             raise ValueError(
                 "collate_torch: mismatched ndarray shapes in batch; "
                 f"refusing to auto-pad to avoid silent data corruption. "
-                f"unique_shapes={sorted(unique_shapes)}"
+                f"unique_shapes={sorted(unique_shapes)}, "
+                f"counts={shape_counts}, examples={examples}"
             ) from None
         tensor = torch.as_tensor(arr)
         # Use pinned memory for async GPU transfers when non_blocking is enabled
@@ -115,8 +125,23 @@ def collate_torch(batch: Sequence[Any], device: Any = None) -> Any:
             tensors = [t.pin_memory() for t in tensors]
         return torch.stack([t.to(device, non_blocking=non_blocking) for t in tensors], 0)
     elif isinstance(elem, (list, tuple)):
-        transposed = zip(*batch, strict=True)
-        return type(elem)(collate_torch(samples, device) for samples in transposed)
+        transposed = list(zip(*batch, strict=True))
+        results = []
+        for field_idx, samples in enumerate(transposed):
+            try:
+                results.append(collate_torch(samples, device))
+            except (ValueError, RuntimeError) as e:
+                sample_shapes = []
+                for s in samples[:8]:
+                    if isinstance(s, (np.ndarray, torch.Tensor)):
+                        sample_shapes.append(f"{type(s).__name__}{tuple(s.shape)}")
+                    else:
+                        sample_shapes.append(f"{type(s).__name__}={s!r}"[:60])
+                raise type(e)(
+                    f"collate_torch failed at tuple field_idx={field_idx}/{len(transposed)}: "
+                    f"{e}. First samples: {sample_shapes}"
+                ) from None
+        return type(elem)(results)
     elif isinstance(elem, dict):
         return {key: collate_torch(tuple(d[key] for d in batch), device) for key in elem}
     else:

@@ -11,6 +11,7 @@ _REMOVED_REWARD_FIELDS = frozenset(
         "barrier_touch_penalty",
         "barrier_touch_radius",
         "barrier_touch_min_speed_kmh",
+        "steering_delta_penalty",
     }
 )
 
@@ -89,7 +90,7 @@ class RewardConfig(BaseModel):
                 names = ", ".join(removed)
                 raise ValueError(
                     f"Removed reward config field(s): {names}. "
-                    "Barrier-touch reward shaping is no longer implemented."
+                    "These reward shaping terms are no longer implemented."
                 )
         return data
 
@@ -112,11 +113,16 @@ class RewardConfig(BaseModel):
     min_progress_rate: float = Field(
         default=0.0,
         ge=0.0,
-        description="Legacy/no-op: not used by the current RewardFunction.",
+        description=(
+            "Terminate ('slow_progress') when track distance gained averaged over "
+            "slow_progress_window_seconds falls below this rate in m/s (0 disables). Catches "
+            "slow creep that evades the binary no-progress timeout, which is reset by any "
+            "forward gain however small."
+        ),
     )
     slow_progress_window_seconds: Annotated[float, Field(gt=0.0)] = Field(
         default=5.0,
-        description="Legacy/no-op companion for min_progress_rate.",
+        description="Sliding-window length (sim seconds) for the min_progress_rate check.",
     )
     debug_reward_components: bool = Field(
         default=False,
@@ -129,6 +135,16 @@ class RewardConfig(BaseModel):
     constant_penalty: float = Field(
         default=0.0,
         description="Small per-step penalty discouraging stagnation or encouraging efficiency.",
+    )
+    terminal_failure_penalty: float = Field(
+        default=0.0,
+        ge=0.0,
+        description=(
+            "One-time penalty (pre reward_scale) applied when an episode ends in a failure "
+            "termination (no_progress_timeout / off_track / boundary_crash). Without it, "
+            "'creep then stall' bootstraps to V~0 and is a free local optimum. Applied after "
+            "reward_clip_floor on purpose (the floor bounds per-step shaping, not terminal events)."
+        ),
     )
     check_forward: PositiveInt = Field(
         default=500,
@@ -157,7 +173,10 @@ class RewardConfig(BaseModel):
     speed_reward_weight: float = Field(
         default=0.0,
         ge=0.0,
-        description="Scale for aligning speed with the track tangent.",
+        description=(
+            "Scale for aligning speed with the track tangent. "
+            "Credited only when reward_progress > 0 (new ground covered)."
+        ),
     )
     speed_reward_exponent: Annotated[float, Field(gt=0.0)] = Field(
         default=1.0,
@@ -206,7 +225,11 @@ class RewardConfig(BaseModel):
     )
     projected_velocity_scale: float = Field(
         default=0.0,
-        description="Weight on velocity projected onto the local track tangent.",
+        description=(
+            "Weight on velocity projected onto the local track tangent (v*cos(theta)*dt). "
+            "Dense per-step speed-along-track signal; main lap-time lever in the SOTA reward. "
+            "Credited only when reward_progress > 0 (new ground covered)."
+        ),
     )
     track_look_ahead_pct: float = Field(
         default=0.0,
@@ -285,19 +308,28 @@ class RewardConfig(BaseModel):
         description="Speed threshold (km/h) for proximity / wall-hug penalties.",
     )
     wall_hug_penalty_factor: float = Field(
-        default=0.005,
+        default=0.0,
         ge=0.0,
-        description="Scale for wall-hug shaping.",
+        description=(
+            "Scale for wall-hug shaping when lateral_ratio exceeds "
+            "wall_hug_lateral_threshold at speed >= wall_hug_speed_threshold (0 disables)."
+        ),
     )
     boundary_penalty_weight: float = Field(
-        default=4.0,
+        default=0.0,
         ge=0.0,
-        description="Soft boundary distance penalty.",
+        description=(
+            "Soft quadratic penalty when lateral_ratio exceeds boundary_penalty_start "
+            "(requires loaded boundary geometry; 0 disables)."
+        ),
     )
     boundary_crash_penalty: float = Field(
-        default=10.0,
+        default=0.0,
         ge=0.0,
-        description="Penalty for leaving drivable corridor.",
+        description=(
+            "Terminate and subtract this amount when lateral_ratio > 1.0 "
+            "(requires loaded boundary geometry; 0 disables)."
+        ),
     )
     conditional_penalty_when_braking: bool = Field(
         default=False,
@@ -312,10 +344,14 @@ class RewardConfig(BaseModel):
     cte_penalty_weight: float = Field(
         default=0.0,
         ge=0.0,
-        description="Legacy/no-op: no cross-track error penalty is applied.",
+        description=(
+            "Cross-track error penalty: weight * (norm_dist ** cte_penalty_exponent) "
+            "where norm_dist is distance from trajectory / half track width (0 disables)."
+        ),
     )
     cte_penalty_exponent: Annotated[float, Field(gt=0.0)] = Field(
-        default=2.0, description="Legacy/no-op companion for cte_penalty_weight."
+        default=2.0,
+        description="Exponent on normalized cross-track distance for cte_penalty_weight.",
     )
     proximity_reward_shaping: float = Field(
         default=0.0,

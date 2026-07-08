@@ -1,0 +1,6 @@
+algorithm:
+  adam_eps: 1.0e-07
+  iqn_lr: 4.0e-05
+  iqn_grad_clip: 4.0
+training:
+  batch_size: 512

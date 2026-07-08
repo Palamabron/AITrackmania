@@ -57,6 +57,25 @@ def fog_recency_resample(
     return tuple(int(x) for x in resampled)
 
 
+def normalize_stored_replay_actions_slice(seq, discrete_n_steer_bins: int):
+    """Normalize actions read from replay storage to ``(3,)`` float32 vectors.
+
+    Legacy buffers (or resumed pickles) may mix scalar discrete indices with
+    continuous ``(3,)`` rows; ``collate_torch`` requires one shape per batch slot.
+    """
+    n = int(discrete_n_steer_bins)
+    if seq is None:
+        return seq
+    if isinstance(seq, np.ndarray):
+        if seq.ndim == 2 and seq.shape[-1] == 3:
+            return seq.astype(np.float32, copy=False)
+        return canonical_replay_action_vector(seq, n)
+    if isinstance(seq, (list, tuple)):
+        out = [canonical_replay_action_vector(a, n) for a in seq]
+        return type(seq)(out)
+    return canonical_replay_action_vector(seq, n)
+
+
 def canonical_replay_action_vector(action, discrete_n_steer_bins: int) -> np.ndarray:
     """Normalize a rollout action to ``(3,)`` float32 for replay *append* only.
 

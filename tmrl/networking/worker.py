@@ -182,6 +182,8 @@ class RolloutWorker:
 
         if hasattr(self.actor, "reset_noise"):
             self.actor.reset_noise(1)
+        if hasattr(self.actor, "reset_explore_state"):
+            self.actor.reset_explore_state()
         self.sde_step_counter = 0
 
         new_obs, info = self.env.reset()
@@ -237,7 +239,7 @@ class RolloutWorker:
         new_obs, rew, terminated, truncated, info = self.env.step(act)
         if isinstance(info, dict) and info.get("crashed", False):
             penalty = float(info.get("crash_penalty", cfg.REWARD_CONFIG.get("crash_penalty", 0.5)))
-            logger.info("Car crashed: -{} reward", penalty)
+            logger.info("Car crashed (penalty -{} already applied by the reward function)", penalty)
 
         if self.obs_preprocessor is not None:
             new_obs = self.obs_preprocessor(new_obs)
@@ -292,6 +294,11 @@ class RolloutWorker:
                 break
         self.buffer.stat_train_return = ret
         self.buffer.stat_train_steps = steps
+        self._maybe_apply_finish_time_bonus()
+
+    def _maybe_apply_finish_time_bonus(self):
+        """Spread the finish-time speed bonus over the buffered episode when it
+        ended on the finish line (no-op unless reward.time_bonus_scale > 0)."""
         if self.buffer.memory and self.buffer.stat_train_steps > 0:
             last_info = self.buffer.memory[-1][5]
             if isinstance(last_info, dict) and last_info.get("end_of_track", False):
@@ -654,6 +661,8 @@ class RolloutWorker:
 
             self.buffer.stat_train_return = ret
             self.buffer.stat_train_steps = steps
+            if done and end_episodes:
+                self._maybe_apply_finish_time_bonus()
             if verbose:
                 logger.info(
                     f"Sending buffer - DEBUG ratio {ratio} iteration {iteration} i_model {i_model}"

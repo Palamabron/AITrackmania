@@ -14,10 +14,16 @@ import numpy as np
 from gymnasium import spaces
 
 import tmrl.config as cfg
-from tmrl.custom.interfaces.base import MPS_TO_KMPH, TrackMania2020InterfaceBase
+from tmrl.custom.interfaces.base import (
+    MPS_TO_KMPH,
+    TrackMania2020InterfaceBase,
+    apply_episode_length_guards,
+    gate_end_of_track_for_reward,
+)
 from tmrl.custom.interfaces.telemetry_indices import (
     TmrlDataPlugin,
     tmrl_grabdata_payload_nb_floats,
+    yaw_pitch_from_dir_xyz,
 )
 from tmrl.custom.tm.utils.compute_reward import RewardFunction
 from tmrl.custom.tm.utils.control_mouse import mouse_save_replay_tm20
@@ -78,6 +84,7 @@ class TM2020Interface(TrackMania2020InterfaceBase):
         self.save_replays = save_replays
         self.grayscale = grayscale
         self.resize_to = resize_to
+        # Legacy ctor arg; finish bonuses come from RewardFunction (reward.end_of_track_reward).
         self.finish_reward = finish_reward if finish_reward is not None else cfg.END_OF_TRACK_REWARD
         self.constant_penalty = (
             constant_penalty
@@ -103,6 +110,9 @@ class TM2020Interface(TrackMania2020InterfaceBase):
         self._gear_arr = np.zeros((1,), dtype=np.float32)
         self._rpm_arr = np.zeros((1,), dtype=np.float32)
         self._last_speed_kmh: float = 0.0
+        self._steps_since_reset = 0
+        self._iface_prev_speed_kmh: float = 0.0
+        self._iface_prev_acc_kmh: float = 0.0
 
     def initialize(self):
         self.initialize_common()
@@ -144,13 +154,48 @@ class TM2020Interface(TrackMania2020InterfaceBase):
         imgs = self._get_img_hist_array()
         obs = [self._speed_arr.copy(), self._gear_arr.copy(), self._rpm_arr.copy(), imgs]
         self.reward_function.reset()
+        self._steps_since_reset = 0
+        self._iface_prev_speed_kmh = 0.0
+        self._iface_prev_acc_kmh = 0.0
         return obs, {}
 
     def get_obs_rew_terminated_info(self):
         assert self.reward_function is not None
         data, img = self.grab_data_and_img()
         self._update_telemetry_arrays(data)
-        reward, terminated, _failure_counter, _ = self.reward_function.compute_reward(
+        speed_kmh = self._last_speed_kmh
+        acc_val = speed_kmh - self._iface_prev_speed_kmh
+        jerk_val = acc_val - self._iface_prev_acc_kmh
+        self._iface_prev_speed_kmh = speed_kmh
+        self._iface_prev_acc_kmh = acc_val
+        self._sync_crash_state()
+        self.crash_fallback(current_speed=speed_kmh, jerk=jerk_val)
+
+        dir_xyz_t = (
+            float(data[TmrlDataPlugin.DIR_X]),
+            float(data[TmrlDataPlugin.DIR_Y]),
+            float(data[TmrlDataPlugin.DIR_Z]),
+        )
+        yaw_val, _ = yaw_pitch_from_dir_xyz(dir_xyz_t)
+        end_of_track = bool(data[TmrlDataPlugin.FINISH_UI_ACTIVE])
+        end_of_track_for_reward = gate_end_of_track_for_reward(
+            self._steps_since_reset + 1, end_of_track
+        )
+
+        wheel_slips = [
+            float(data[TmrlDataPlugin.SLIP_FL]),
+            float(data[TmrlDataPlugin.SLIP_FR]),
+            float(data[TmrlDataPlugin.SLIP_RL]),
+            float(data[TmrlDataPlugin.SLIP_RR]),
+        ]
+        surface_materials = [
+            int(data[TmrlDataPlugin.MAT_FL]),
+            int(data[TmrlDataPlugin.MAT_FR]),
+            int(data[TmrlDataPlugin.MAT_RL]),
+            int(data[TmrlDataPlugin.MAT_RR]),
+        ]
+
+        reward, terminated, _failure_counter, reward_sum = self.reward_function.compute_reward(
             pos=np.array(
                 [data[TmrlDataPlugin.POS_X], data[TmrlDataPlugin.POS_Y], data[TmrlDataPlugin.POS_Z]]
             ),
@@ -159,25 +204,42 @@ class TM2020Interface(TrackMania2020InterfaceBase):
                 float(data[TmrlDataPlugin.VEL_Y]),
                 float(data[TmrlDataPlugin.VEL_Z]),
             ),
-            dir_xyz=(
-                float(data[TmrlDataPlugin.DIR_X]),
-                float(data[TmrlDataPlugin.DIR_Y]),
-                float(data[TmrlDataPlugin.DIR_Z]),
-            ),
-            speed=self._last_speed_kmh,
+            dir_xyz=dir_xyz_t,
+            surface_materials=surface_materials,
+            wheel_slips=wheel_slips,
+            crashed=bool(self.is_crashed),
+            speed=speed_kmh,
+            end_of_track=end_of_track_for_reward,
+            input_brake=float(data[TmrlDataPlugin.INPUT_BRAKE]),
+            aim_yaw=float(yaw_val),
+            input_steer=float(data[TmrlDataPlugin.INPUT_STEER]),
+            gear=float(data[TmrlDataPlugin.ENGINE_GEAR]),
+            slip_angle_deg=None,
         )
+
+        self._steps_since_reset += 1
+        terminated, eot_accepted = apply_episode_length_guards(
+            self._steps_since_reset,
+            end_of_track_for_reward,
+            terminated,
+        )
+        if eot_accepted and self.save_replays:
+            mouse_save_replay_tm20(True)
+
         self._push_img(img)
         imgs = self._get_img_hist_array()
         observation = [self._speed_arr.copy(), self._gear_arr.copy(), self._rpm_arr.copy(), imgs]
-        end_of_track = bool(data[TmrlDataPlugin.FINISH_UI_ACTIVE])
-        info = {"end_of_track": end_of_track}
-        if end_of_track:
-            terminated = True
-            reward += self.finish_reward
-            if self.save_replays:
-                mouse_save_replay_tm20(True)
+        info = {
+            "end_of_track": end_of_track,
+            "reward_sum": reward_sum,
+            "crashed": bool(self.is_crashed),
+            "crash_penalty": float(self.crash_penalty),
+        }
 
-        self.reward_function.log_model_run(terminated=bool(terminated), end_of_track=end_of_track)
+        self.cooldown_control()
+        self.reward_function.log_model_run(
+            terminated=bool(terminated), end_of_track=end_of_track_for_reward
+        )
         reward_out = np.float32(reward)
         return observation, reward_out, terminated, info
 

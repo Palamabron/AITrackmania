@@ -1,16 +1,17 @@
 .PHONY: fmt lint types check test tests install-dev server trainer worker record-episode \
 	record-reward record-track-boundaries extend-boundaries build-centerline-reward \
-	interpolate-reward plot-boundaries check-env explain-config import-player-runs
+	interpolate-reward plot-boundaries check-env explain-config import-player-runs \
+	kill-all kill-all-python orchestrator
 
 fmt:
-	.venv/bin/ruff format .
-	.venv/bin/ruff check --fix .
+	uv run ruff format .
+	uv run ruff check --fix .
 
 lint:
-	.venv/bin/ruff check .
+	uv run ruff check .
 
 types:
-	.venv/bin/mypy tmrl
+	uv run mypy tmrl
 
 check: lint types
 
@@ -87,6 +88,7 @@ else
 TMRL_PWSH_EXE := powershell.exe
 endif
 TMRL_KILL_PS1 := $(subst \,/,$(dir $(abspath $(lastword $(MAKEFILE_LIST))))scripts/platform/kill_tcp_port.ps1)
+TMRL_KILL_ALL_PS1 := $(subst \,/,$(dir $(abspath $(lastword $(MAKEFILE_LIST))))scripts/platform/kill_tmrl_processes.ps1)
 
 ifneq ($(TMRL_IS_WINDOWS),)
 SHELL := $(TMRL_PWSH_EXE)
@@ -186,6 +188,31 @@ explain-config:
 import-player-runs:
 	@test -n "$(strip $(PLAYER_RUNS_PATHS))" || (echo "Set PLAYER_RUNS_PATHS to a comma-separated list of player-run .pkl files" >&2; exit 1)
 	@UV_PROJECT_ENVIRONMENT=$(TMRL_UV_ENV) uv run python -m tmrl --import-player-runs --player-runs-paths $(PLAYER_RUNS_PATHS)
+endif
+
+# --- Orchestrator (autonomous experiment loop) ---
+# Optional: EXP_ID=some-experiment-name to resume a specific experiment.
+EXP_ID ?=
+
+ifneq ($(TMRL_IS_WINDOWS),)
+kill-all:
+	@& "$(TMRL_PWSH_EXE)" -NoProfile -ExecutionPolicy Bypass -File "$(TMRL_KILL_ALL_PS1)"; if ($$LASTEXITCODE -ne 0) { exit $$LASTEXITCODE }
+
+# Nuclear option: every python*/uv* on the machine (closes unrelated Python too).
+kill-all-python:
+	@& "$(TMRL_PWSH_EXE)" -NoProfile -ExecutionPolicy Bypass -File "$(TMRL_KILL_ALL_PS1)" -AllPython; if ($$LASTEXITCODE -ne 0) { exit $$LASTEXITCODE }
+
+orchestrator: kill-all
+	@$$env:UV_PROJECT_ENVIRONMENT = '$(strip $(TMRL_UV_ENV))'; $$expArg = '$(strip $(EXP_ID))'; if ($$expArg -ne '') { uv run python -m tmrl.tools.orchestrator --exp-id $$expArg } else { uv run python -m tmrl.tools.orchestrator }
+else
+kill-all:
+	@echo "Killing all tmrl python processes..."
+	-@pkill -f "tmrl" 2>/dev/null || true
+	@sleep 2
+	@echo "Done."
+
+orchestrator: kill-all
+	@UV_PROJECT_ENVIRONMENT=$(TMRL_UV_ENV) uv run python -m tmrl.tools.orchestrator $(if $(strip $(EXP_ID)),--exp-id $(EXP_ID),)
 endif
 
 # Allow syntax like: make record-episode 5

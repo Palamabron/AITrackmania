@@ -6,7 +6,10 @@ import numpy as np
 
 from tmrl.custom.memories.base import MemoryTM, last_true_in_list, replace_hist_before_eoe
 from tmrl.custom.memories.enums import BufferField, TMFullField, TMFullObsField
-from tmrl.custom.memories.utils import canonical_replay_action_vector
+from tmrl.custom.memories.utils import (
+    canonical_replay_action_vector,
+    normalize_stored_replay_actions_slice,
+)
 from tmrl.registry import MEMORIES
 
 
@@ -94,7 +97,7 @@ class MemoryTMFull(MemoryTM):
         res = self.data[TMFullField.ACTIONS][
             (item + self.start_acts_offset) : (item + self.start_acts_offset + self.act_buf_len + 1)
         ]
-        return res
+        return normalize_stored_replay_actions_slice(res, self.discrete_n_steer_bins)
 
     def append_buffer(self, buffer):
         """Append a buffer of samples to the memory."""
@@ -132,4 +135,5 @@ class MemoryTMFull(MemoryTM):
             for i in range(len(data_fields)):
                 self.data[i] = self.data[i][to_trim:]
 
+        self._demo_flags_cache = None
         return self

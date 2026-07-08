@@ -6,8 +6,9 @@ from collections.abc import Callable
 from typing import Any
 
 import numpy as np
+from loguru import logger
 
-from tmrl.custom.memories.utils import configure_discrete_steer_bins
+from tmrl.custom.memories.utils import canonical_replay_action_vector, configure_discrete_steer_bins
 from tmrl.memory.base import Memory
 from tmrl.util import collate_torch
 
@@ -89,6 +90,11 @@ class R2D2Memory(Memory, ABC):
         self._last_per_is_weights: list[float] = []
         if len(self.data) > 0 and len(self.data[0]) > 0:
             self.priorities = [1.0] * len(self.data[0])
+
+    def __getitem__(self, item):
+        prev_obs, new_act, rew, new_obs, terminated, truncated, info = super().__getitem__(item)
+        new_act = canonical_replay_action_vector(new_act, self.discrete_n_steer_bins)
+        return prev_obs, new_act, rew, new_obs, terminated, truncated, info
 
     def _extend_priorities(self, n: int) -> None:
         """Extend priorities for n new buffer entries (max of current or 1.0)."""
@@ -548,6 +554,18 @@ class R2D2Memory(Memory, ABC):
                 raise RuntimeError("Cannot sample from empty replay memory")
             batch_size = min(self.batch_size, n)
             indices = tuple(random.sample(range(n), batch_size))
+            if int(getattr(self, "n_step_return", 1)) > 1 and not getattr(
+                self, "_warned_iid_nstep", False
+            ):
+                logger.warning(
+                    "R2D2 memory fell back to i.i.d. sampling while n_step_return={} > 1: "
+                    "batch rows are not consecutive transitions, so algorithms computing "
+                    "n-step returns along the batch axis (TQC/SDSAC) would mix unrelated "
+                    "samples. Ensure sequence sampling preconditions hold (num_sequences * "
+                    "sequence_length == batch_size and enough complete episodes).",
+                    self.n_step_return,
+                )
+                self._warned_iid_nstep = True
         per_td = self.per_td_enabled
         is_weights = getattr(self, "_last_per_is_weights", [])
         batch = []
