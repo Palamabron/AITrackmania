@@ -21,8 +21,6 @@ from einops import rearrange, repeat
 from loguru import logger
 from torch.optim import Adam
 
-from tmrl.custom.models.shared.blocks import SimbaV2Backbone
-
 try:
     import wandb
 except ImportError:
@@ -32,6 +30,7 @@ from tmrl.custom.custom_algorithms._common import (
     _tensor_to_scalar,
     amp_setup,
     autocast_context,
+    project_simbav2_weights,
     sanitize_obs,
     sanitize_tensor,
     set_seed,
@@ -434,6 +433,14 @@ class IQNAgent(TrainingAgent):
             else None
         )
         self._lr_scheduler = self._build_lr_scheduler()
+        if self.munchausen_enabled and self.reward_normalize_scale != 1.0:
+            logger.warning(
+                "IQNAgent: munchausen_enabled=True with reward_normalize_scale={:.4g}. "
+                "Q-values are trained in scaled-reward space; munchausen_tau={:.4g} should "
+                "be calibrated relative to expected scaled Q-value magnitudes, not raw rewards.",
+                self.reward_normalize_scale,
+                self.munchausen_tau,
+            )
         logger.info(
             "IQNAgent: n_actions={}, dueling={}, double={}, n_steps={}, gamma={:.3f}, "
             "eps mode={}, decay_steps={}, t0={}, tmult={}, decay={}, init_amp={}, "
@@ -460,6 +467,17 @@ class IQNAgent(TrainingAgent):
             self.monotonicity_lambda,
             self.munchausen_enabled,
         )
+        if self.bc_lambda > 0.0 and self.reward_normalize_scale != 1.0:
+            expected_q_scale = self.reward_normalize_scale / max(1e-9, 1.0 - float(self.gamma))
+            if self.bc_margin > expected_q_scale:
+                logger.warning(
+                    "IQNAgent: bc_margin={:.4g} may be too large relative to expected Q-value "
+                    "scale (~{:.4g}) with reward_normalize_scale={:.4g}; "
+                    "consider scaling bc_margin proportionally.",
+                    self.bc_margin,
+                    expected_q_scale,
+                    self.reward_normalize_scale,
+                )
         _obs = self.observation_space
         _obs_dim = (
             sum(math.prod(s.shape or ()) for s in _obs.spaces)
@@ -681,7 +699,9 @@ class IQNAgent(TrainingAgent):
         r = self._sanitize_tensor(r)
         d = self._sanitize_tensor(d)
 
-        info_dict: dict | None = batch[6] if len(batch) >= 7 and isinstance(batch[6], dict) else None
+        info_dict: dict | None = (
+            batch[6] if len(batch) >= 7 and isinstance(batch[6], dict) else None
+        )
 
         if a.dim() >= 2 and a.shape[-1] == 3:
             from tmrl.custom.tm.utils.discrete_control import (
@@ -698,7 +718,7 @@ class IQNAgent(TrainingAgent):
         # Munchausen bonus added in raw reward space, before any scale is applied,
         # so that bonus and environment reward are in the same units and both are
         # compressed together by reward_normalize_scale.  Applying the bonus after
-        # scaling would leave it unscaled (up to 180× larger than the scaled reward
+        # scaling would leave it unscaled (up to 180x larger than the scaled reward
         # when reward_normalize_scale is small, e.g. 0.005).
         if self.munchausen_enabled:
             with torch.no_grad():
@@ -733,7 +753,7 @@ class IQNAgent(TrainingAgent):
         # through termination.
         n_eff = info_dict.get("n_step_effective", None) if info_dict is not None else None
         if n_eff is not None and self.n_steps > 1 and not self._warned_n_step_all_one:
-            n_eff_t = torch.as_tensor(n_eff).float().reshape(-1)
+            n_eff_t = torch.as_tensor(n_eff).float().reshape(-1).cpu()
             if n_eff_t.numel() > 0 and bool((n_eff_t <= 1.0).all()):
                 logger.warning(
                     "IQN n_steps={} but all sampled windows have n_step_effective=1 "
@@ -879,9 +899,7 @@ class IQNAgent(TrainingAgent):
             q_demo_action = q_all.gather(1, a_col).squeeze(1)
             # Margin added to every action except the demo action (where the
             # entry is replaced by Q(s,a_E) itself, so J_E >= 0 by construction).
-            margined = (q_all + float(self.bc_margin)).scatter(
-                1, a_col, q_demo_action.unsqueeze(1)
-            )
+            margined = (q_all + float(self.bc_margin)).scatter(1, a_col, q_demo_action.unsqueeze(1))
             per_sample_margin = margined.max(dim=1).values - q_demo_action
             bc_loss = per_sample_margin[demo_mask].mean()
             with torch.no_grad():
@@ -889,9 +907,7 @@ class IQNAgent(TrainingAgent):
                     (q_all.argmax(dim=1) == actions.reshape(-1))[demo_mask].float().mean()
                 )
 
-        loss = (
-            loss_iqn + float(self.monotonicity_lambda) * monotonic_penalty + bc_lam * bc_loss
-        )
+        loss = loss_iqn + float(self.monotonicity_lambda) * monotonic_penalty + bc_lam * bc_loss
 
         if torch.isnan(loss).any() or torch.isinf(loss).any():
             logger.error("NaN/Inf in total loss after monotonicity penalty, skipping update")
@@ -939,11 +955,7 @@ class IQNAgent(TrainingAgent):
         if self._lr_scheduler is not None and optimizer_stepped:
             self._lr_scheduler.step()
 
-        backbone = getattr(self.model, "backbone", None)
-        if backbone is not None:
-            inner = getattr(backbone, "backbone", backbone)
-            if isinstance(inner, SimbaV2Backbone):
-                inner.project_weights()
+        project_simbav2_weights(self.model)
 
         if self.soft_target_tau > 0.0:
             tau_polyak = float(self.soft_target_tau)

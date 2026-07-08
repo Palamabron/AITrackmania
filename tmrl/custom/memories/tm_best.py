@@ -186,4 +186,5 @@ class MemoryTMBest(MemoryTM):
             for i in range(len(data_fields)):
                 self.data[i] = self.data[i][to_trim:]
 
+        self._demo_flags_cache = None
         return self

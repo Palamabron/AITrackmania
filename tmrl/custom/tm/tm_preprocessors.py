@@ -136,9 +136,7 @@ def make_world_telemetry_obs_preprocessor(track_coords_divisor: float):
         # The interface already normalizes the failure counter by the no-progress
         # timeout horizon (car_state.py: fc / max_no_progress_steps in [0, 1]);
         # dividing by 15 again would crush the signal to ~[0, 0.07].
-        obs[_Obs.FAILURE_COUNTER] = np.clip(
-            obs[_Obs.FAILURE_COUNTER].astype(np.float32), 0.0, 1.0
-        )
+        obs[_Obs.FAILURE_COUNTER] = np.clip(obs[_Obs.FAILURE_COUNTER].astype(np.float32), 0.0, 1.0)
         return tuple(obs)
 
     return _preprocess

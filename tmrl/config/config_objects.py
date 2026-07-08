@@ -478,6 +478,12 @@ if int(algorithm.n_steps) > 1 and _mem_name not in _NSTEP_CAPABLE_MEMORIES:
         f"(the '{_mem_name}' memory does not accumulate n-step returns); "
         "set memory.memory_type='generic' or set algorithm.n_steps=1."
     )
+if float(algorithm.gamma) == 0.0 and int(algorithm.n_steps) > 1:
+    raise ValueError(
+        f"algorithm.gamma=0.0 with algorithm.n_steps={algorithm.n_steps} makes "
+        "n-step returns degenerate to 1-step (all future terms vanish); "
+        "set gamma > 0 or set algorithm.n_steps=1."
+    )
 
 _memory_kwargs: dict[str, Any] = {
     "memory_size": cfg.MEMORY_SIZE,

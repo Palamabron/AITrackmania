@@ -103,7 +103,11 @@ def collate_torch(batch: Sequence[Any], device: Any = None) -> Any:
             examples = {}
             for s in unique_shapes:
                 idx = next(i for i, b in enumerate(batch) if b.shape == s)
-                examples[s] = (idx, batch[idx].dtype, batch[idx].flat[:4].tolist() if batch[idx].size > 0 else [])
+                examples[s] = (
+                    idx,
+                    batch[idx].dtype,
+                    batch[idx].flat[:4].tolist() if batch[idx].size > 0 else [],
+                )
             raise ValueError(
                 "collate_torch: mismatched ndarray shapes in batch; "
                 f"refusing to auto-pad to avoid silent data corruption. "

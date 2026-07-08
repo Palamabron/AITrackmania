@@ -5,14 +5,12 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-
 from tmrl.custom.memories.enums import TMBestField, TMBestObsField
 from tmrl.custom.memories.tm_best import MemoryTMBest
 from tmrl.custom.tm.observation_constants import WorldTelemetryObsIndex as WObs
 from tmrl.custom.tm.openplanet_observation_space import build_openplanet_tuple_observation_space
 from tmrl.custom.tm.tm_preprocessors import make_world_telemetry_obs_preprocessor
 from tmrl.networking import Buffer
-
 
 # ---------------------------------------------------------------------------
 # MemoryTMBest: storage columns must match TMBestField (was off-by-one 13-23)
@@ -158,8 +156,6 @@ def test_world_telemetry_failure_counter_not_double_normalized():
 
 def test_openplanet_space_includes_curvature_box_when_enabled():
     base = build_openplanet_tuple_observation_space(points_number=10)
-    with_curv = build_openplanet_tuple_observation_space(
-        points_number=10, track_curvature_obs=True
-    )
+    with_curv = build_openplanet_tuple_observation_space(points_number=10, track_curvature_obs=True)
     assert len(with_curv.spaces) == len(base.spaces) + 1
     assert with_curv.spaces[-1].shape == (10,)

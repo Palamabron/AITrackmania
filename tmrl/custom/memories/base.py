@@ -52,7 +52,7 @@ def enforce_demo_batch_fraction(
     Returns:
         The adjusted index array.
     """
-    batch_size = int(len(result))
+    batch_size = len(result)
     if batch_size == 0 or (demo_min <= 0.0 and demo_max >= 1.0):
         return result
     demo_items = np.flatnonzero(item_is_demo_flags)
@@ -460,12 +460,15 @@ class MemoryTM(TorchMemory):
             return False
         return self._is_demo_info_entry(info_stream[idx_now])
 
-    def _set_last_sample_demo_fraction(self, indices) -> None:
+    def _set_last_sample_demo_fraction(self, indices, flags: np.ndarray | None = None) -> None:
         if len(indices) == 0:
             self.last_sample_demo_fraction = 0.0
             return
-        demo_count = sum(1 for idx in indices if self._item_is_demo(int(idx)))
-        self.last_sample_demo_fraction = float(demo_count) / float(len(indices))
+        if flags is not None:
+            self.last_sample_demo_fraction = float(flags[indices].mean())
+        else:
+            demo_count = sum(1 for idx in indices if self._item_is_demo(int(idx)))
+            self.last_sample_demo_fraction = float(demo_count) / float(len(indices))
 
     def sample_indices(self):
         """Sample transitions, optionally enforcing demo floor/cap for TM memories."""
@@ -484,7 +487,9 @@ class MemoryTM(TorchMemory):
                 )
                 self._demo_flags_cache_len = length
             result = enforce_demo_batch_fraction(result, self._demo_flags_cache, demo_min, demo_max)
-        self._set_last_sample_demo_fraction(result)
+            self._set_last_sample_demo_fraction(result, flags=self._demo_flags_cache)
+        else:
+            self._set_last_sample_demo_fraction(result)
         return result
 
     def __getitem__(self, item):

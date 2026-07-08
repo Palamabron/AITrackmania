@@ -5,7 +5,6 @@ from __future__ import annotations
 import gymnasium.spaces as spaces
 import numpy as np
 import pytest
-
 from tmrl.custom.custom_algorithms.iqn import IQNAgent
 from tmrl.custom.memories.base import GenericTorchMemory
 from tmrl.networking import Buffer
@@ -80,8 +79,6 @@ def _make_agent(n_steps: int, lr: float = 3.0e-5, **overrides) -> IQNAgent:
         adam_eps=1e-8,
         grad_clip=2.0,
         huber_kappa=0.7,
-        use_value_rescaling=False,
-        value_rescaling_eps=1e-3,
         soft_target_tau=0.005,
         log_target_stats=True,
         sort_quantiles=True,

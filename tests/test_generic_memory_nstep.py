@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-
 from tmrl.custom.memories.base import GenericTorchMemory, enforce_demo_batch_fraction
 from tmrl.custom.memories.enums import GenericField
 from tmrl.networking import Buffer
@@ -379,7 +378,14 @@ def test_demo_action_quantization_roundtrip():
 
 def test_invalid_action_shape_raises():
     memory = _discrete_memory()
-    bad = (np.zeros(5, dtype=np.float32), (np.zeros(4, dtype=np.float32),), np.float32(0.0), False, False, {})
+    bad = (
+        np.zeros(5, dtype=np.float32),
+        (np.zeros(4, dtype=np.float32),),
+        np.float32(0.0),
+        False,
+        False,
+        {},
+    )
     buf = Buffer()
     buf.append_sample(bad)
     with pytest.raises(ValueError, match="neither a"):

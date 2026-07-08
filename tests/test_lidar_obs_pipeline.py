@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-
 from tmrl.custom.tm.tm_preprocessors import (
     discrete_action_index_scale,
     obs_preprocessor_lidar_act_in_obs,
@@ -71,11 +70,11 @@ def test_record_episode_rewrites_discrete_action_slots():
     controls = [[1.0, 0.0, 0.0], [0.0, 1.0, -1.0], [1.0, 0.0, 1.0]]
     samples = _rewrite_discrete_action_slots([sample(c) for c in controls], act_buf_len=2)
 
+    import tmrl.config as cfg
     from tmrl.custom.tm.utils.discrete_control import (
         build_brake_tap_action_table,
         continuous_control_to_discrete_indices_batch,
     )
-    import tmrl.config as cfg
 
     _, table = build_brake_tap_action_table(n_steer=cfg.IQN_N_STEER_BINS)
     expected_idx = continuous_control_to_discrete_indices_batch(

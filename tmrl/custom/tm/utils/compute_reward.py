@@ -251,9 +251,7 @@ class RewardFunction:
             aligned_left = _raw_left_xz[left_nn]
             aligned_right = _raw_right_xz[right_nn]
             self._road_center_xz = (aligned_left + aligned_right) / 2.0
-            self._road_half_widths = (
-                np.linalg.norm(aligned_left - aligned_right, axis=1) / 2.0
-            )
+            self._road_half_widths = np.linalg.norm(aligned_left - aligned_right, axis=1) / 2.0
             self._road_half_widths = np.maximum(self._road_half_widths, MIN_ROAD_HALF_WIDTH_M)
             _hw = self._road_half_widths
             logger.info(
@@ -333,9 +331,7 @@ class RewardFunction:
         self._min_progress_rate_mps = max(0.0, float(rc.get("min_progress_rate", 0.0)))
         _spw_sec = float(rc.get("slow_progress_window_seconds", 5.0))
         if self._min_progress_rate_mps > 0.0 and _spw_sec > 0.0:
-            self._slow_progress_window_steps = max(
-                1, round(_spw_sec / self._time_step_duration)
-            )
+            self._slow_progress_window_steps = max(1, round(_spw_sec / self._time_step_duration))
             logger.info(
                 "Reward: slow-progress cutoff below {:.1f} m/s averaged over {:.1f}s "
                 "(~{} env steps).",
@@ -784,11 +780,7 @@ class RewardFunction:
         # Speed-shaped components are gated by progress: only credit when the
         # agent covers new ground (reward_progress > 0). Otherwise fast motion
         # over already-visited track is farmable.
-        if (
-            self._projected_velocity_scale > 0.0
-            and _speed_kmh != 0.0
-            and reward_progress > 0.0
-        ):
+        if self._projected_velocity_scale > 0.0 and _speed_kmh != 0.0 and reward_progress > 0.0:
             speed_ms = _speed_kmh / 3.6
             _projected_velocity_reward = (
                 self._projected_velocity_scale
@@ -827,7 +819,8 @@ class RewardFunction:
         _effective_slip = slip_angle_deg if slip_angle_deg is not None else _computed_slip_deg
         allow_drift_bonus = track_curvature_abs >= self._drift_curvature_threshold
         if (
-            wheel_slips is not None
+            reward_progress > 0
+            and wheel_slips is not None
             and _speed_kmh >= self._drift_threshold_kmh
             and allow_drift_bonus
         ):
@@ -838,7 +831,8 @@ class RewardFunction:
                 if drift_w > 0 and rear_slip_avg > self._rear_slip_activation:
                     reward += drift_w * min(1.0, rear_slip_avg)
         elif (
-            _effective_slip is not None
+            reward_progress > 0
+            and _effective_slip is not None
             and _speed_kmh >= self._drift_threshold_kmh
             and allow_drift_bonus
         ):
@@ -854,7 +848,8 @@ class RewardFunction:
 
         # --- Cornering speed bonus ---
         if (
-            self._cornering_speed_bonus > 0
+            reward_progress > 0
+            and self._cornering_speed_bonus > 0
             and track_curvature_abs > self._cornering_curvature_threshold
         ):
             speed_frac = min(1.0, _speed_kmh / max(1.0, self._max_speed_kmh))
@@ -919,7 +914,7 @@ class RewardFunction:
         cte_penalty = 0.0
         if self._cte_penalty_weight > 0.0:
             norm_dist = min_dist / max(1.0, self._max_track_width / 2.0)
-            cte_penalty = self._cte_penalty_weight * (norm_dist ** self._cte_penalty_exponent)
+            cte_penalty = self._cte_penalty_weight * (norm_dist**self._cte_penalty_exponent)
             reward -= cte_penalty
 
         # --- Boundary proximity penalties (requires loaded track boundary geometry) ---
@@ -929,10 +924,14 @@ class RewardFunction:
         _boundary_soft_pen = 0.0
         _boundary_crash_pen = 0.0
         _boundary_grace = self.step_counter <= self._off_track_grace_steps
-        if self._has_boundaries and not _boundary_grace and (
-            self._boundary_penalty_weight > 0
-            or self._boundary_crash_penalty > 0
-            or self._wall_hug_penalty_factor > 0
+        if (
+            self._has_boundaries
+            and not _boundary_grace
+            and (
+                self._boundary_penalty_weight > 0
+                or self._boundary_crash_penalty > 0
+                or self._wall_hug_penalty_factor > 0
+            )
         ):
             pos_xz = pos[[0, 2]]
             bi = min(best_index, len(self._road_center_xz) - 1)
@@ -1001,7 +1000,12 @@ class RewardFunction:
             and _boundary_crash_pen > 0.0
         ):
             reward -= _boundary_crash_pen
-        if terminated and not end_of_track and self._terminal_failure_penalty > 0.0:
+        if (
+            terminated
+            and not end_of_track
+            and self._terminal_failure_penalty > 0.0
+            and self._term_reason != "boundary_crash"
+        ):
             reward -= self._terminal_failure_penalty
         reward = reward * self._reward_scale
 

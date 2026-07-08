@@ -108,9 +108,7 @@ class BaseModelConfig(BaseModel):
     )
     track_encoder: str = Field(
         default="conv1d",
-        description=(
-            "Track feature encoder family: conv1d, gtn, spline_mlp."
-        ),
+        description=("Track feature encoder family: conv1d, gtn, spline_mlp."),
     )
     gnn_layers: PositiveInt = Field(
         default=3,

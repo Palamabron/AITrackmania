@@ -342,8 +342,6 @@ def test_boundary_soft_penalty_applied_inside_wall():
 
         near_wall = on_track.copy()
         near_wall[2] = 0.45
-        r_near, terminated, _, _ = rf.compute_reward(
-            pos=near_wall, speed=50.0, end_of_track=False
-        )
+        r_near, terminated, _, _ = rf.compute_reward(pos=near_wall, speed=50.0, end_of_track=False)
         assert not terminated
         assert r_near < 0.0
