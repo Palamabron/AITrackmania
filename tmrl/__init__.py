@@ -12,10 +12,13 @@ except PackageNotFoundError:
 
 from loguru import logger
 
-from tmrl.actor import ActorModule, TorchActorModule
-from tmrl.plugins import discover_plugins, load_plugins
-from tmrl.registry import ALGORITHMS, INTERFACES, MEMORIES, MODELS, Registry
-from tmrl.training import TrainingAgent
+logger.remove()
+logger.add(sys.stdout, level="INFO")
+
+from tmrl.actor import ActorModule, TorchActorModule  # noqa: E402
+from tmrl.plugins import discover_plugins, load_plugins  # noqa: E402
+from tmrl.registry import ALGORITHMS, INTERFACES, MEMORIES, MODELS, Registry  # noqa: E402
+from tmrl.training import TrainingAgent  # noqa: E402
 
 __all__ = [
     "ALGORITHMS",
@@ -31,9 +34,6 @@ __all__ = [
     "get_environment",
     "load_plugins",
 ]
-
-logger.remove()
-logger.add(sys.stdout, level="INFO")
 
 if platform.system() == "Windows":
     try:
@@ -99,7 +99,4 @@ except Exception as exc:  # pragma: no cover - exercised only on broken setup
         exc,
     )
 
-try:
-    load_plugins()
-except Exception as _plugins_exc:  # pragma: no cover
-    logger.warning("TMRL plugin loading failed: {}.", _plugins_exc)
+load_plugins()

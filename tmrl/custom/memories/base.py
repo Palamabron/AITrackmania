@@ -89,6 +89,9 @@ def enforce_demo_batch_fraction(
 class GenericTorchMemory(TorchMemory):
     """Generic torch-based memory for simple replay buffer scenarios.
 
+    supports_nstep = True signals to config_objects that this memory implements
+    memory-side n-step return accumulation and may be used with algorithm.n_steps > 1.
+
     Supports memory-side n-step returns: when ``n_step_return > 1``, each sampled
     transition carries the discounted reward sum over up to n consecutive steps
     (never crossing episode boundaries), the observation n steps ahead, and the
@@ -99,6 +102,8 @@ class GenericTorchMemory(TorchMemory):
     quantized to discrete indices at append time so the action column stays
     homogeneous (mixed scalar/(3,) shapes would crash ``collate_torch``).
     """
+
+    supports_nstep: bool = True
 
     def __init__(
         self,

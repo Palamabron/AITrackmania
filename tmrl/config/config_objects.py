@@ -471,11 +471,10 @@ def _determine_memory_name() -> str:
 _mem_name = _determine_memory_name()
 MEM = MEMORIES.get(_mem_name)
 
-_NSTEP_CAPABLE_MEMORIES = {"generic"}
-if int(algorithm.n_steps) > 1 and _mem_name not in _NSTEP_CAPABLE_MEMORIES:
+if int(algorithm.n_steps) > 1 and not getattr(MEM, "supports_nstep", False):
     raise ValueError(
-        f"algorithm.n_steps={algorithm.n_steps} requires memory_type='generic' "
-        f"(the '{_mem_name}' memory does not accumulate n-step returns); "
+        f"algorithm.n_steps={algorithm.n_steps} requires a memory that sets "
+        f"supports_nstep=True ('{_mem_name}' does not); "
         "set memory.memory_type='generic' or set algorithm.n_steps=1."
     )
 if float(algorithm.gamma) == 0.0 and int(algorithm.n_steps) > 1:

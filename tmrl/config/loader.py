@@ -108,7 +108,18 @@ def _compose_hydra_dict() -> dict[str, Any]:
     # is a special Hydra built-in that does not require the append-override prefix.
     if extra_search_paths:
         joined = ",".join(f"file://{p}" for p in extra_search_paths)
-        hydra_overrides = [f"hydra.searchpath=[{joined}]", *hydra_overrides]
+        # Strip any existing hydra.searchpath from user overrides — Hydra rejects
+        # duplicate non-appendable keys; we merge paths here instead.
+        existing_sp = [o for o in hydra_overrides if o.startswith("hydra.searchpath=")]
+        hydra_overrides = [o for o in hydra_overrides if not o.startswith("hydra.searchpath=")]
+        if existing_sp:
+            # Extract existing paths from the first override (e.g. "hydra.searchpath=[a,b]")
+            existing_val = existing_sp[0].split("=", 1)[1].strip("[]")
+            all_paths = [joined, existing_val] if existing_val else [joined]
+            merged = ",".join(all_paths)
+        else:
+            merged = joined
+        hydra_overrides = [f"hydra.searchpath=[{merged}]", *hydra_overrides]
 
     if not _HYDRA_CONF_DIR.is_dir():
         raise RuntimeError(f"Missing Hydra config directory: {_HYDRA_CONF_DIR}")

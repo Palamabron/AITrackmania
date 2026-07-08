@@ -37,9 +37,6 @@ from tmrl.custom.memories.tm_full import MemoryTMFull
 from tmrl.custom.memories.tm_lidar_images import MemoryTMLidarImages
 from tmrl.custom.memories.utils import (
     ACTION_STEER_INDEX,
-    _hflip_action,
-    _hflip_discrete_action,
-    _is_discrete_action,
     fog_recency_resample,
 )
 
@@ -66,9 +63,6 @@ __all__ = [
     "TMFullObsField",
     "TMLidarImagesField",
     "TMLidarImagesObsField",
-    "_hflip_action",
-    "_hflip_discrete_action",
-    "_is_discrete_action",
     "fog_recency_resample",
     "get_local_buffer_sample_lidar",
     "get_local_buffer_sample_lidar_images",

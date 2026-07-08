@@ -15,7 +15,7 @@ warnings.warn(
     stacklevel=2,
 )
 
-from tmrl.custom.algorithms import (  # noqa: E402
+from tmrl.custom.algorithms import (  # noqa: E402 — imports after warnings.warn by design
     IQNAgent,
     REDQSACAgent,
     SDSACAgent,
