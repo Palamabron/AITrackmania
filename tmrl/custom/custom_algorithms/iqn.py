@@ -211,20 +211,6 @@ def _quantile_huber_loss(
     return per_sample_loss.mean()
 
 
-def _signed_value_rescale(x: torch.Tensor, eps: float) -> torch.Tensor:
-    """Signed value transform used to tame large bootstrap targets.
-
-    Args:
-        x: Input tensor to rescale.
-        eps: Small epsilon for linear component.
-
-    Returns:
-        Rescaled tensor with compressed large values.
-    """
-    abs_x = x.abs()
-    return torch.sign(x) * (torch.sqrt(abs_x + 1.0) - 1.0) + eps * x
-
-
 def _munchausen_bonus_from_q(
     q_values: torch.Tensor,
     actions: torch.Tensor,
@@ -321,8 +307,6 @@ class IQNAgent(TrainingAgent):
     adam_eps: float
     grad_clip: float
     huber_kappa: float
-    use_value_rescaling: bool
-    value_rescaling_eps: float
     soft_target_tau: float
     log_target_stats: bool
     sort_quantiles: bool
@@ -441,6 +425,7 @@ class IQNAgent(TrainingAgent):
 
         self._training_step = 0
         self._warned_missing_n_step_metadata = False
+        self._warned_n_step_all_one = False
         self._epsilon = self.epsilon_start
         self._noise_scale = float(self.noisy_scale_start)
         self._grad_stabilizer = (
@@ -661,8 +646,9 @@ class IQNAgent(TrainingAgent):
 
         Note:
             Critical implementation details:
-            - Munchausen RL: Bonus is added to immediate rewards BEFORE n-step computation,
-              as per Vieillard et al. 2020. Uses online network for current policy.
+            - Munchausen RL: Bonus is added to raw rewards BEFORE reward_normalize_scale
+              is applied, so both are compressed together (Vieillard et al. 2020).
+              Uses online network for current policy.
             - Value rescaling: NOT applied to quantiles during training to preserve
               distributional relationships. Quantile regression must occur in original
               value space. Rescaling would distort quantile relationships.
@@ -695,6 +681,8 @@ class IQNAgent(TrainingAgent):
         r = self._sanitize_tensor(r)
         d = self._sanitize_tensor(d)
 
+        info_dict: dict | None = batch[6] if len(batch) >= 7 and isinstance(batch[6], dict) else None
+
         if a.dim() >= 2 and a.shape[-1] == 3:
             from tmrl.custom.tm.utils.discrete_control import (
                 build_brake_tap_action_table,
@@ -707,11 +695,11 @@ class IQNAgent(TrainingAgent):
             a = torch.from_numpy(idx).to(device=a.device, dtype=torch.long)
         actions = a.long().squeeze(-1)
 
-        # Scale rewards before the Bellman backup: r = r * scale.
-        # Values < 1 shrink rewards (e.g. 0.005 → 0.5 % of original).
-        if self.reward_normalize_scale != 1.0 and self.reward_normalize_scale > 0:
-            r = r * self.reward_normalize_scale
-
+        # Munchausen bonus added in raw reward space, before any scale is applied,
+        # so that bonus and environment reward are in the same units and both are
+        # compressed together by reward_normalize_scale.  Applying the bonus after
+        # scaling would leave it unscaled (up to 180× larger than the scaled reward
+        # when reward_normalize_scale is small, e.g. 0.005).
         if self.munchausen_enabled:
             with torch.no_grad():
                 q_curr = self.model.q_values(o, n_quantiles=self.n_quantiles_eval)
@@ -722,7 +710,6 @@ class IQNAgent(TrainingAgent):
                     clip_min=float(self.munchausen_clip_min),
                     clip_max=float(self.munchausen_clip_max),
                 )
-                # Bonus is computed from Q-values in scaled reward space; add after scaling.
                 # Reshape to r's exact shape: r can be (b,) or (b, 1) depending on
                 # the memory; a blind unsqueeze would broadcast (b,) + (b, 1) to (b, b).
                 # Match r's dtype too (q_curr may be bf16 under autocast).
@@ -732,6 +719,11 @@ class IQNAgent(TrainingAgent):
         else:
             munchausen_bonus = torch.zeros(batch_size, device=device)
 
+        # Scale rewards (and Munchausen bonus) before the Bellman backup.
+        # Values < 1 shrink the combined signal (e.g. 0.005 → 0.5 % of original).
+        if self.reward_normalize_scale != 1.0 and self.reward_normalize_scale > 0:
+            r = r * self.reward_normalize_scale
+
         # Memory-side n-step: ``r`` is already the discounted n-step return,
         # ``o2`` the observation at the end of the window, and ``d`` the
         # terminated flag of the window's last step (episode boundaries are
@@ -739,19 +731,17 @@ class IQNAgent(TrainingAgent):
         # ``n_step_effective`` carries the per-sample window length (1 for
         # plain 1-step transitions). Bootstrap through truncation, never
         # through termination.
-        n_eff = None
-        if len(batch) >= 7 and isinstance(batch[6], dict):
-            n_eff = batch[6].get("n_step_effective", None)
-        if n_eff is not None and self.n_steps > 1 and not self._warned_missing_n_step_metadata:
+        n_eff = info_dict.get("n_step_effective", None) if info_dict is not None else None
+        if n_eff is not None and self.n_steps > 1 and not self._warned_n_step_all_one:
             n_eff_t = torch.as_tensor(n_eff).float().reshape(-1)
             if n_eff_t.numel() > 0 and bool((n_eff_t <= 1.0).all()):
                 logger.warning(
-                    "IQN n_steps={} but replay batches carry n_step_effective=1 only "
-                    "(memory does not implement memory-side n-step returns); "
-                    "training with 1-step targets instead.",
+                    "IQN n_steps={} but all sampled windows have n_step_effective=1 "
+                    "(frequent resets or very short episodes); using 1-step bootstrap "
+                    "for this batch. Will not repeat until a deeper regression occurs.",
                     self.n_steps,
                 )
-                self._warned_missing_n_step_metadata = True
+                self._warned_n_step_all_one = True
         elif n_eff is None and self.n_steps > 1 and not self._warned_missing_n_step_metadata:
             logger.warning(
                 "IQN n_steps={} but the replay batch carries no 'n_step_effective' metadata "
@@ -769,7 +759,7 @@ class IQNAgent(TrainingAgent):
                 torch.tensor(float(self.gamma), device=n_step_return.device), n_eff_t
             )
         else:
-            gamma_n = torch.full_like(bootstrap_mask, float(self.gamma))
+            gamma_n = torch.full_like(bootstrap_mask, float(self.gamma) ** self.n_steps)
 
         def autocast_ctx():
             return autocast_context(self.use_mixed_precision, self.amp_dtype)
@@ -798,13 +788,15 @@ class IQNAgent(TrainingAgent):
                 if self.double_dqn:
                     online_q_next = self.model.q_values(o2, n_quantiles=self.n_quantiles_eval)
                     next_actions = online_q_next.argmax(dim=-1)
-                else:
-                    target_q_next = self.model_target.q_values(
-                        o2, n_quantiles=self.n_quantiles_eval
-                    )
-                    next_actions = target_q_next.argmax(dim=-1)
 
                 target_quantiles, _ = self.model_target(o2, tau=tau_prime)
+
+            if not self.double_dqn:
+                # Reuse the already-computed target quantiles for action selection:
+                # mean over the tau_prime dimension → (B, N_actions) → argmax.
+                # This avoids a redundant second forward pass through the target network.
+                next_actions = target_quantiles.mean(dim=1).argmax(dim=-1)
+
             next_action_idx = repeat(next_actions, "b -> b n 1", n=self.n_quantiles_target)
             next_q = target_quantiles.gather(2, next_action_idx).squeeze(2)
 
@@ -823,8 +815,8 @@ class IQNAgent(TrainingAgent):
         target_for_loss = target.float()
 
         is_weights = None
-        if len(batch) >= 7 and isinstance(batch[6], dict):
-            is_weights = batch[6].get("is_weight", None)
+        if info_dict is not None:
+            is_weights = info_dict.get("is_weight", None)
             if is_weights is not None:
                 if not isinstance(is_weights, torch.Tensor):
                     is_weights = torch.as_tensor(is_weights, device=device, dtype=torch.float32)
@@ -877,8 +869,8 @@ class IQNAgent(TrainingAgent):
         bc_loss = torch.zeros((), device=current_q.device, dtype=torch.float32)
         demo_argmax_match = float("nan")
         demo_mask = None
-        if len(batch) >= 7 and isinstance(batch[6], dict):
-            raw_mask = batch[6].get("is_demo", None)
+        if info_dict is not None:
+            raw_mask = info_dict.get("is_demo", None)
             if raw_mask is not None:
                 demo_mask = torch.as_tensor(raw_mask, device=current_q.device).reshape(-1).bool()
         if bc_lam > 0.0 and demo_mask is not None and bool(demo_mask.any()):

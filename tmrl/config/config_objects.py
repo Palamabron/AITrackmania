@@ -471,6 +471,14 @@ def _determine_memory_name() -> str:
 _mem_name = _determine_memory_name()
 MEM = MEMORIES.get(_mem_name)
 
+_NSTEP_CAPABLE_MEMORIES = {"generic"}
+if int(algorithm.n_steps) > 1 and _mem_name not in _NSTEP_CAPABLE_MEMORIES:
+    raise ValueError(
+        f"algorithm.n_steps={algorithm.n_steps} requires memory_type='generic' "
+        f"(the '{_mem_name}' memory does not accumulate n-step returns); "
+        "set memory.memory_type='generic' or set algorithm.n_steps=1."
+    )
+
 _memory_kwargs: dict[str, Any] = {
     "memory_size": cfg.MEMORY_SIZE,
     "batch_size": cfg.BATCH_SIZE,
@@ -665,8 +673,6 @@ def _build_agent() -> Any:
             double_dqn=alg.iqn_double_dqn,
             dueling=alg.iqn_dueling,
             huber_kappa=float(alg.iqn_huber_kappa),
-            use_value_rescaling=bool(alg.iqn_use_value_rescaling),
-            value_rescaling_eps=float(alg.iqn_value_rescaling_eps),
             soft_target_tau=float(alg.iqn_soft_target_tau),
             log_target_stats=bool(alg.iqn_log_target_stats),
             sort_quantiles=bool(alg.iqn_sort_quantiles),

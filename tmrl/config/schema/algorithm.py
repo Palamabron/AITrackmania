@@ -459,18 +459,6 @@ class AlgorithmConfig(BaseModel):
         default=1.0,
         description="Huber threshold κ for IQN quantile regression.",
     )
-    iqn_use_value_rescaling: bool = Field(
-        default=True,
-        description=(
-            "Currently unused: value rescaling is intentionally NOT applied to IQN "
-            "quantiles (it would distort the learned return distribution). Kept for "
-            "config compatibility only."
-        ),
-    )
-    iqn_value_rescaling_eps: Annotated[float, Field(gt=0.0)] = Field(
-        default=1e-3,
-        description="Epsilon term in signed value rescaling h(x).",
-    )
     iqn_soft_target_tau: Annotated[float, Field(ge=0.0, le=1.0)] = Field(
         default=0.005,
         description=(

@@ -411,6 +411,8 @@ class MemoryTM(TorchMemory):
         if self.demo_max_batch_fraction < self.demo_min_batch_fraction:
             self.demo_max_batch_fraction = self.demo_min_batch_fraction
         self.last_sample_demo_fraction = 0.0
+        self._demo_flags_cache: np.ndarray | None = None
+        self._demo_flags_cache_len: int = 0
         super().__init__(
             memory_size=memory_size,
             batch_size=batch_size,
@@ -476,10 +478,12 @@ class MemoryTM(TorchMemory):
         demo_max = self.demo_max_batch_fraction
         result = np.random.randint(0, length, size=self.batch_size, dtype=np.int64)
         if self._info_field_index() is not None and (demo_min > 0.0 or demo_max < 1.0):
-            item_flags = np.fromiter(
-                (self._item_is_demo(i) for i in range(length)), dtype=bool, count=length
-            )
-            result = enforce_demo_batch_fraction(result, item_flags, demo_min, demo_max)
+            if self._demo_flags_cache is None or self._demo_flags_cache_len != length:
+                self._demo_flags_cache = np.fromiter(
+                    (self._item_is_demo(i) for i in range(length)), dtype=bool, count=length
+                )
+                self._demo_flags_cache_len = length
+            result = enforce_demo_batch_fraction(result, self._demo_flags_cache, demo_min, demo_max)
         self._set_last_sample_demo_fraction(result)
         return result
 

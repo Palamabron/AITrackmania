@@ -811,7 +811,7 @@ class RewardFunction:
                 reward += _speed_reward_added
 
         track_curvature_abs = 0.0
-        if self.datalen > 2:
+        if self.datalen > 2 and (self._drift_reward_weight > 0 or self._cornering_speed_bonus > 0):
             i0 = max(0, best_index - 1)
             i2 = min(self.datalen - 1, best_index + 1)
             if i0 < i2:
