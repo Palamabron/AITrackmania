@@ -29,7 +29,7 @@ from tmrl.custom.models.shared.track_encoders import (
     TRACK_CHANNELS_GTN,
     build_track_gtn_branch,
 )
-from tmrl.custom.utils.nn import GSDEModule
+from tmrl.custom.utils.nn_conv import GSDEModule
 from tmrl.registry import MODELS
 from tmrl.util import prod
 

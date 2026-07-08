@@ -67,7 +67,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from tmrl.actor import TorchActorModule
-from tmrl.custom.utils.nn import copy_shared, no_grad
+from tmrl.custom.utils.nn_utils import copy_shared, no_grad
 
 # The TMRL three main entities (i.e., the Trainer, the RolloutWorker and the central Server):
 from tmrl.networking import RolloutWorker, Server, Trainer

@@ -28,7 +28,7 @@ from tmrl.custom.models.shared.track_encoders import (
     build_track_gtn_branch,
     is_gtn_encoder,
 )
-from tmrl.custom.utils.nn import GSDEModule
+from tmrl.custom.utils.nn_conv import GSDEModule
 from tmrl.registry import MODELS
 
 _TRACK_CHANNELS_DEFAULT = TRACK_CHANNELS_DEFAULT

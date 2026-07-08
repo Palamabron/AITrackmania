@@ -10,7 +10,7 @@ import tmrl.config as cfg
 import torch
 import torch.nn.functional as F
 from tmrl.actor import TorchActorModule
-from tmrl.custom.utils.nn import copy_shared, no_grad
+from tmrl.custom.utils.nn_utils import copy_shared, no_grad
 from tmrl.networking import RolloutWorker, Server, Trainer
 from tmrl.training import TrainingAgent
 from tmrl.util import cached_property, partial, prod

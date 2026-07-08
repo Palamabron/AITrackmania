@@ -17,7 +17,7 @@ from tmrl.custom.algorithms._common import (
     polyak_update,
     set_seed,
 )
-from tmrl.custom.utils.nn import copy_shared, no_grad
+from tmrl.custom.utils.nn_utils import copy_shared, no_grad
 from tmrl.registry import ALGORITHMS
 from tmrl.training import TrainingAgent
 from tmrl.util import cached_property
