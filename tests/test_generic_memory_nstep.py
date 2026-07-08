@@ -357,7 +357,7 @@ def test_mixed_demo_and_worker_actions_are_homogeneous_and_collate():
 
 def test_demo_action_quantization_roundtrip():
     """Quantized demo actions map back to controls close to the originals."""
-    from tmrl.custom.tm.utils.discrete_control import (
+    from tmrl.custom.tm.utils.control.discrete import (
         build_brake_tap_action_table,
         discrete_index_to_control,
     )

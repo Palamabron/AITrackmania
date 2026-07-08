@@ -26,9 +26,9 @@ from tmrl.custom.interfaces.telemetry_indices import (
     yaw_pitch_from_dir_xyz,
 )
 from tmrl.custom.tm.utils.compute_reward import RewardFunction
-from tmrl.custom.tm.utils.control_mouse import mouse_save_replay_tm20
-from tmrl.custom.tm.utils.discrete_control import build_brake_tap_action_table
-from tmrl.custom.tm.utils.tools import TM2020OpenPlanetClient
+from tmrl.custom.tm.utils.control.discrete import build_brake_tap_action_table
+from tmrl.custom.tm.utils.control.mouse import mouse_save_replay_tm20
+from tmrl.custom.tm.utils.openplanet_client import TM2020OpenPlanetClient
 from tmrl.custom.tm.utils.window import WindowInterface
 from tmrl.registry import INTERFACES
 

@@ -17,19 +17,19 @@ import tmrl.config.loader as loader
 import tmrl.config.paths as cfg_paths
 from tmrl.custom.tm.utils.auto_drift import compute_drift_steer, is_auto_drift_action
 from tmrl.custom.tm.utils.compute_reward import RewardFunction
-from tmrl.custom.tm.utils.control_gamepad import (
-    control_gamepad,
-    gamepad_close_finish_pop_up_tm20,
-    gamepad_reset,
-)
-from tmrl.custom.tm.utils.control_keyboard import apply_control, keyres
-from tmrl.custom.tm.utils.control_mouse import mouse_close_finish_pop_up_tm20
-from tmrl.custom.tm.utils.discrete_control import (
+from tmrl.custom.tm.utils.control.discrete import (
     BRAKE_TAP_DURATION_S,
     discrete_index_to_control,
     is_brake_tap,
 )
-from tmrl.custom.tm.utils.tools import TM2020OpenPlanetClient, save_ghost
+from tmrl.custom.tm.utils.control.gamepad import (
+    control_gamepad,
+    gamepad_close_finish_pop_up_tm20,
+    gamepad_reset,
+)
+from tmrl.custom.tm.utils.control.keyboard import apply_control, keyres
+from tmrl.custom.tm.utils.control.mouse import mouse_close_finish_pop_up_tm20
+from tmrl.custom.tm.utils.openplanet_client import TM2020OpenPlanetClient, save_ghost
 from tmrl.custom.tm.utils.window import WindowInterface
 
 MPS_TO_KMPH = 3.6

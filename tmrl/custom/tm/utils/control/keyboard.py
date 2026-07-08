@@ -9,7 +9,7 @@ if platform.system() == "Windows":
     # standard library imports
     import ctypes
 
-    from tmrl.custom.tm.utils.control_mouse import (
+    from tmrl.custom.tm.utils.control.mouse import (
         mouse_change_name_replay_tm20,
         mouse_close_replay_window_tm20,
         mouse_save_replay_tm20,

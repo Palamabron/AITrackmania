@@ -571,7 +571,7 @@ class AlgorithmConfig(BaseModel):
             if betas is not None and len(betas) != 2:
                 raise ValueError(f"{beta_name} must contain exactly two floats when provided")
 
-        from tmrl.custom.tm.utils.discrete_control import (
+        from tmrl.custom.tm.utils.control.discrete import (
             BRAKE_TAP_TABLE_N_BRAKE,
             BRAKE_TAP_TABLE_N_GAS,
         )

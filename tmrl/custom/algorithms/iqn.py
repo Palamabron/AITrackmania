@@ -716,7 +716,7 @@ class IQNAgent(TrainingAgent):
         )
 
         if a.dim() >= 2 and a.shape[-1] == 3:
-            from tmrl.custom.tm.utils.discrete_control import (
+            from tmrl.custom.tm.utils.control.discrete import (
                 build_brake_tap_action_table,
                 continuous_control_to_discrete_indices_batch,
             )

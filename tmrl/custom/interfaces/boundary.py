@@ -28,7 +28,7 @@ from tmrl.custom.interfaces.base import (
 )
 from tmrl.custom.interfaces.telemetry_indices import TmrlDataPlugin, yaw_pitch_from_dir_xyz
 from tmrl.custom.interfaces.vision import TM2020Interface
-from tmrl.custom.tm.utils.control_mouse import mouse_save_replay_tm20
+from tmrl.custom.tm.utils.control.mouse import mouse_save_replay_tm20
 from tmrl.custom.tm.utils.window import WindowInterface
 from tmrl.registry import INTERFACES
 from tmrl.tools.track.geometry_utils import pad_polyline_xz_straight

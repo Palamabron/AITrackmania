@@ -10,7 +10,7 @@ from tmrl.custom.memories.enums import (
     TMLidarImagesField,
     TMLidarImagesObsField,
 )
-from tmrl.custom.memories.utils import canonical_replay_action_vector
+from tmrl.custom.memories.sampling_utils import canonical_replay_action_vector
 from tmrl.registry import MEMORIES
 
 

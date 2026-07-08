@@ -6,7 +6,10 @@ from typing import Any
 import numpy as np
 
 from tmrl.custom.memories.enums import BufferField, GenericField
-from tmrl.custom.memories.utils import canonical_replay_action_vector, configure_discrete_steer_bins
+from tmrl.custom.memories.sampling_utils import (
+    canonical_replay_action_vector,
+    configure_discrete_steer_bins,
+)
 from tmrl.memory import TorchMemory
 from tmrl.registry import MEMORIES
 
@@ -170,7 +173,7 @@ class GenericTorchMemory(TorchMemory):
         if flat.size == 1 and np.issubdtype(a.dtype, np.integer):
             return np.int64(flat[0])
         if flat.size == 3:
-            from tmrl.custom.tm.utils.discrete_control import (
+            from tmrl.custom.tm.utils.control.discrete import (
                 build_brake_tap_action_table,
                 continuous_control_to_discrete_index,
             )

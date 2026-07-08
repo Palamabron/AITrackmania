@@ -10,9 +10,9 @@ from loguru import logger
 from scipy.interpolate import CubicSpline
 
 from tmrl.custom.interfaces.telemetry_indices import tmrl_grabdata_payload_nb_floats
-from tmrl.custom.tm.utils.tools import TM2020OpenPlanetClient
+from tmrl.custom.tm.utils.openplanet_client import TM2020OpenPlanetClient
 from tmrl.tools.track.geometry_utils import smooth_points
-from tmrl.tools.track.telemetry import _is_lap_finished, _position_xyz
+from tmrl.tools.track.track_telemetry import _is_lap_finished, _position_xyz
 
 MIN_POSITIONS_FOR_TRACK = 50
 # Minimum distance (metres) driven before a lap-finish signal is accepted.

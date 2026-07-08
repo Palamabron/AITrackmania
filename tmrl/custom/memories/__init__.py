@@ -32,13 +32,13 @@ from tmrl.custom.memories.r2d2 import (
     MemoryR2D2Sophy,
     MemoryR2D2woImages,
 )
-from tmrl.custom.memories.tm_best import MemoryTMBest
-from tmrl.custom.memories.tm_full import MemoryTMFull
-from tmrl.custom.memories.tm_lidar_images import MemoryTMLidarImages
-from tmrl.custom.memories.utils import (
+from tmrl.custom.memories.sampling_utils import (
     ACTION_STEER_INDEX,
     fog_recency_resample,
 )
+from tmrl.custom.memories.tm_best import MemoryTMBest
+from tmrl.custom.memories.tm_full import MemoryTMFull
+from tmrl.custom.memories.tm_lidar_images import MemoryTMLidarImages
 
 __all__ = [
     "ACTION_STEER_INDEX",

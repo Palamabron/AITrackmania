@@ -85,7 +85,7 @@ def canonical_replay_action_vector(action, discrete_n_steer_bins: int) -> np.nda
     a = np.asarray(action)
     n_steer = int(discrete_n_steer_bins)
     if n_steer > 0 and a.size == 1 and np.issubdtype(a.dtype, np.integer):
-        from tmrl.custom.tm.utils.discrete_control import (
+        from tmrl.custom.tm.utils.control.discrete import (
             build_brake_tap_action_table,
             discrete_index_to_control,
         )
@@ -119,7 +119,7 @@ def _hflip_discrete_action(action_idx, n_steer: int | None = None):
         n_steer: Number of steer bins for composite discrete control. If omitted,
             uses bins configured via ``configure_discrete_steer_bins``.
     """
-    from tmrl.custom.tm.utils.discrete_control import BRAKE_TAP_TABLE_N_BRAKE, BRAKE_TAP_TABLE_N_GAS
+    from tmrl.custom.tm.utils.control.discrete import BRAKE_TAP_TABLE_N_BRAKE, BRAKE_TAP_TABLE_N_GAS
 
     n_steer = _DISCRETE_STEER_BINS if n_steer is None else int(n_steer)
     if n_steer is None:

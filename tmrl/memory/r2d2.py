@@ -8,7 +8,10 @@ from typing import Any
 import numpy as np
 from loguru import logger
 
-from tmrl.custom.memories.utils import canonical_replay_action_vector, configure_discrete_steer_bins
+from tmrl.custom.memories.sampling_utils import (
+    canonical_replay_action_vector,
+    configure_discrete_steer_bins,
+)
 from tmrl.memory.base import Memory
 from tmrl.util import collate_torch
 

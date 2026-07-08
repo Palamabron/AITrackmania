@@ -71,7 +71,7 @@ def test_record_episode_rewrites_discrete_action_slots():
     samples = _rewrite_discrete_action_slots([sample(c) for c in controls], act_buf_len=2)
 
     import tmrl.config as cfg
-    from tmrl.custom.tm.utils.discrete_control import (
+    from tmrl.custom.tm.utils.control.discrete import (
         build_brake_tap_action_table,
         continuous_control_to_discrete_indices_batch,
     )

@@ -15,7 +15,7 @@ from tmrl.custom.memories.enums import (
     R2D2SophyObsField,
     R2D2woImagesTrailingField,
 )
-from tmrl.custom.memories.utils import (
+from tmrl.custom.memories.sampling_utils import (
     canonical_replay_action_vector,
     normalize_stored_replay_actions_slice,
 )

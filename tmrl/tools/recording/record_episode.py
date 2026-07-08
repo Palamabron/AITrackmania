@@ -11,7 +11,7 @@ from loguru import logger
 
 import tmrl.config as cfg
 import tmrl.config.config_objects as cfg_obj
-from tmrl.custom.tm.utils.control_keyboard import is_del_pressed
+from tmrl.custom.tm.utils.control.keyboard import is_del_pressed
 from tmrl.envs import GenericGymEnv
 from tmrl.networking.buffer import Buffer
 from tmrl.tools.recording.player_runs import align_observation_to_space, save_player_run
@@ -103,7 +103,7 @@ def _rewrite_discrete_action_slots(samples: list, act_buf_len: int) -> list:
         return samples
 
     from tmrl.custom.tm.tm_preprocessors import discrete_action_index_scale
-    from tmrl.custom.tm.utils.discrete_control import (
+    from tmrl.custom.tm.utils.control.discrete import (
         build_brake_tap_action_table,
         continuous_control_to_discrete_index,
     )

@@ -62,7 +62,7 @@ def build_brake_tap_action_table_with_drift(
         table: list[np.array([gas, brake, steer])].
         auto_drift_start_idx: index of the first auto-drift action.
     """
-    from tmrl.custom.tm.utils.discrete_control import (
+    from tmrl.custom.tm.utils.control.discrete import (
         BRAKE_TAP_SENTINEL,
         build_brake_tap_action_table,
     )

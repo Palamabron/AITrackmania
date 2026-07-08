@@ -8,10 +8,10 @@ from scipy.interpolate import CubicSpline
 
 import tmrl.config as cfg
 from tmrl.custom.interfaces.telemetry_indices import tmrl_grabdata_payload_nb_floats
-from tmrl.custom.tm.utils.control_keyboard import keyres
-from tmrl.custom.tm.utils.tools import TM2020OpenPlanetClient
+from tmrl.custom.tm.utils.control.keyboard import keyres
+from tmrl.custom.tm.utils.openplanet_client import TM2020OpenPlanetClient
 from tmrl.tools.track.geometry_utils import interp_points_with_cubic_spline, line
-from tmrl.tools.track.telemetry import _is_lap_finished, _position_xyz
+from tmrl.tools.track.track_telemetry import _is_lap_finished, _position_xyz
 
 PATH_REWARD = cfg.REWARD_PATH
 
