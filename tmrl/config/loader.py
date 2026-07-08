@@ -34,6 +34,7 @@ if not TMRL_FOLDER.exists():
 CONFIG_DIR = TMRL_FOLDER / "config"
 LOCAL_OVERRIDE_PATH = CONFIG_DIR / "local.yaml"
 HYDRA_OVERRIDES_ENV = "TMRL_HYDRA_OVERRIDES"
+EXTRA_CONFIG_PATH_ENV = "TMRL_EXTRA_CONFIG_PATH"
 
 load_dotenv()
 load_dotenv(TMRL_FOLDER / ".env")
@@ -75,6 +76,40 @@ def _compose_hydra_dict() -> dict[str, Any]:
             hydra_overrides = [
                 item.strip() for item in hydra_overrides_raw.split(",") if item.strip()
             ]
+    # Resolve extra config search paths from TMRL_EXTRA_CONFIG_PATH.
+    # The env var is colon-separated on Unix and semicolon-separated on Windows.
+    # Each path is an absolute directory whose subdirectories mirror Hydra config
+    # groups (e.g. algorithm/, model/) so that plugin authors can drop extra YAML
+    # files in without touching library code.
+    extra_search_paths: list[str] = []
+    extra_raw = os.environ.get(EXTRA_CONFIG_PATH_ENV, "").strip()
+    if extra_raw:
+        sep = ";" if SYSTEM == "Windows" else ":"
+        for raw_path in extra_raw.split(sep):
+            raw_path = raw_path.strip()
+            if not raw_path:
+                continue
+            p = Path(raw_path)
+            if not p.is_dir():
+                logger.warning(
+                    "{} path does not exist or is not a directory, skipping: {}",
+                    EXTRA_CONFIG_PATH_ENV,
+                    p,
+                )
+                continue
+            extra_search_paths.append(str(p.resolve()))
+            logger.info(
+                "Added extra Hydra search path from {}: {}", EXTRA_CONFIG_PATH_ENV, p.resolve()
+            )
+
+    # Inject extra search paths as a Hydra searchpath override so that Hydra
+    # discovers config groups (e.g. algorithm/my_ppo.yaml) in those directories.
+    # Note: use bare "hydra.searchpath=..." (not "+hydra.searchpath") — this key
+    # is a special Hydra built-in that does not require the append-override prefix.
+    if extra_search_paths:
+        joined = ",".join(f"file://{p}" for p in extra_search_paths)
+        hydra_overrides = [f"hydra.searchpath=[{joined}]", *hydra_overrides]
+
     if not _HYDRA_CONF_DIR.is_dir():
         raise RuntimeError(f"Missing Hydra config directory: {_HYDRA_CONF_DIR}")
     with initialize_config_dir(version_base=None, config_dir=str(_HYDRA_CONF_DIR)):

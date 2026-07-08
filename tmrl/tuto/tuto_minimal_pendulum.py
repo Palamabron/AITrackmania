@@ -11,7 +11,7 @@ from threading import Thread
 from typing import Any
 
 import tmrl.config as cfg
-from tmrl.custom.custom_algorithms import SpinupSacAgent
+from tmrl.custom.algorithms import SpinupSacAgent
 from tmrl.custom.memories import GenericTorchMemory
 from tmrl.custom.models import MLPActor, MLPActorCritic
 from tmrl.envs import GenericGymEnv

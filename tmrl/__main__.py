@@ -18,12 +18,12 @@ import tmrl.config.config_objects as cfg_obj
 from tmrl.config.loader import format_merged_config_yaml_readable
 from tmrl.envs import GenericGymEnv
 from tmrl.networking import RolloutWorker, Server, Trainer
-from tmrl.tools.check_environment import (
+from tmrl.tools.diagnostics.check_environment import (
     check_env_tm20_boundary,
     check_env_tm20full,
 )
-from tmrl.tools.import_player_runs import import_player_runs
-from tmrl.tools.record_reward import record_reward_dist
+from tmrl.tools.recording.import_player_runs import import_player_runs
+from tmrl.tools.recording.record_reward import record_reward_dist
 from tmrl.util import partial
 
 
@@ -198,7 +198,7 @@ def main(cli: TmrlCli) -> None:
     elif cli.record_reward:
         record_reward_dist(path_reward=cfg.REWARD_PATH)
     elif cli.record_track:
-        from tmrl.tools.record_track import record_track
+        from tmrl.tools.recording.record_track import record_track
 
         side = cli.record_track_side.lower()
         if side not in ("l", "r", "left", "right"):
@@ -211,7 +211,7 @@ def main(cli: TmrlCli) -> None:
         else:
             check_env_tm20full()
     elif cli.record_episode:
-        from tmrl.tools.record_episode import record_episode
+        from tmrl.tools.recording.record_episode import record_episode
 
         record_episode(
             nb_episodes=cli.record_episode_count,

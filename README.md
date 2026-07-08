@@ -3,6 +3,7 @@
 [![PyPI version](https://badge.fury.io/py/tmrl.svg)](https://badge.fury.io/py/tmrl)
 [![PyPI - License](https://img.shields.io/pypi/l/tmrl?color=blue)](https://github.com/trackmania-rl/tmrl/blob/master/LICENSE)
 [![DOI](https://zenodo.org/badge/277973609.svg)](https://zenodo.org/badge/latestdoi/277973609)
+[![CI](https://github.com/trackmania-rl/tmrl/actions/workflows/ci.yml/badge.svg)](https://github.com/trackmania-rl/tmrl/actions/workflows/ci.yml)
 
 | **`API reference`**                                                                                                                         |
 |---------------------------------------------------------------------------------------------------------------------------------------------|
@@ -40,6 +41,7 @@
   - [Getting started](readme/get_started.md)
     - [Quick reference guide](readme/reference_guide.md)
   - [Changelog](CHANGELOG.md)
+  - [Contributing](CONTRIBUTING.md)
   - [Makefile (development & track pipeline)](#makefile-development--track-pipeline)
   - [TMRL python library for robot learning](readme/tuto_library.md)
     - [API reference](https://tmrl.readthedocs.io/en/latest/)
@@ -616,7 +618,45 @@ This project uses [Real-Time Gym](https://github.com/yannbouteiller/rtgym) (```r
 
 Time-steps are being elastically constrained to their nominal duration. When this elastic constraint cannot be satisfied, the previous time-step times out and the new time-step starts from the current timestamp.
 
-Custom `rtgym` interfaces for Trackmania used by `tmrl` are implemented in [`tmrl/custom/interfaces`](tmrl/custom/interfaces).
+Custom `rtgym` interfaces for Trackmania used by `tmrl` are accessible via the canonical namespace [`tmrl.interfaces`](tmrl/interfaces/__init__.py) (implementations in [`tmrl/custom/interfaces`](tmrl/custom/interfaces)).
+
+## Extending TMRL
+
+TMRL exposes four canonical namespaces that re-export all built-in components without moving files:
+
+| Namespace | Contents |
+|---|---|
+| `tmrl.algorithms` | SAC, REDQSAC, TQC, IQN, SDSAC training agents |
+| `tmrl.models` | MLP, ResidualMLP, CNN, EfficientNet, IMPALA, Sophy, IQN Q-networks, … |
+| `tmrl.interfaces` | `TM2020RLInterface`, `TM2020InterfaceBoundary`, … |
+| `tmrl.memories` | `MemoryTMBest`, `MemoryTMFull`, `MemoryR2D2`, `GenericTorchMemory`, … |
+| `tmrl.trackmania` | `Telemetry`, `WorldTelemetryObsIndex`, observation-space builders, pre-processors |
+
+**Adding a new algorithm, model, interface, or memory** can be done two ways:
+
+*In-repo:* use the `@register` decorator from `tmrl.registry`:
+```python
+from tmrl.registry import ALGORITHMS
+
+@ALGORITHMS.register("my_algo")
+class MyAlgo(TrainingAgent):
+    ...
+```
+
+*Third-party package (plugin):* declare a Python entry point and TMRL auto-discovers it on `import tmrl`:
+```toml
+[project.entry-points."tmrl.algorithms"]
+my_algo = "mypackage.module:MyAlgo"
+
+[project.entry-points."tmrl.models"]
+my_model = "mypackage.models:MyModel"
+
+[project.entry-points."tmrl.memories"]
+my_memory = "mypackage.memories:MyMemory"
+```
+
+No TMRL source modification needed — install your package and it appears in the registry.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the full workflow.
 
 ## Remote training architecture:
 

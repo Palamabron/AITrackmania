@@ -31,7 +31,7 @@ from tmrl.custom.interfaces.vision import TM2020Interface
 from tmrl.custom.tm.utils.control_mouse import mouse_save_replay_tm20
 from tmrl.custom.tm.utils.window import WindowInterface
 from tmrl.registry import INTERFACES
-from tmrl.tools.geometry_utils import pad_polyline_xz_straight
+from tmrl.tools.track.geometry_utils import pad_polyline_xz_straight
 
 BOUNDARY_LOOK_AHEAD = 15
 BOUNDARY_NEARBY_CORRECTION = 60

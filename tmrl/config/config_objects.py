@@ -12,11 +12,11 @@ import tmrl.config.loader as loader
 import tmrl.config.paths as cfg_paths
 
 # Side-effect imports: trigger @register decorators for interfaces, memories, and models
-import tmrl.custom.custom_algorithms.iqn
-import tmrl.custom.custom_algorithms.redq_sac
-import tmrl.custom.custom_algorithms.sac
-import tmrl.custom.custom_algorithms.sdsac
-import tmrl.custom.custom_algorithms.tqc
+import tmrl.custom.algorithms.iqn
+import tmrl.custom.algorithms.redq_sac
+import tmrl.custom.algorithms.sac
+import tmrl.custom.algorithms.sdsac
+import tmrl.custom.algorithms.tqc
 import tmrl.custom.interfaces.boundary
 import tmrl.custom.interfaces.car_state
 import tmrl.custom.interfaces.vision

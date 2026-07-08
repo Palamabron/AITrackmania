@@ -8,7 +8,7 @@ import tempfile
 from pathlib import Path
 
 import numpy as np
-from tmrl.tools.geometry_utils import pad_polyline_xz_straight
+from tmrl.tools.track.geometry_utils import pad_polyline_xz_straight
 
 _REWARD_PATH = (
     Path(__file__).resolve().parents[1] / "tmrl" / "custom" / "tm" / "utils" / "compute_reward.py"

@@ -276,7 +276,7 @@ class MemoryR2D2woImages(R2D2Memory):
 
     def get_transition(self, item: int):
         """Get a single transition."""
-        from tmrl.tools.player_runs import align_observation_to_space
+        from tmrl.tools.recording.player_runs import align_observation_to_space
 
         t = R2D2woImagesTrailingField
         idx_last = item + self.min_samples - 1
@@ -316,7 +316,7 @@ class MemoryR2D2woImages(R2D2Memory):
 
     def append_buffer(self, buffer):
         """Append a buffer of samples to the memory."""
-        from tmrl.tools.player_runs import (
+        from tmrl.tools.recording.player_runs import (
             align_observation_to_space,
             observation_matches_space,
         )

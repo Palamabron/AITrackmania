@@ -54,7 +54,7 @@ Three separate processes communicate via `tlspyo` (TCP or TLS):
 
 ```
 defaults/config.yaml  →  TMRL_HYDRA_OVERRIDES  →  ~/TmrlData/config/local.yaml
-  →  env secrets  →  TMRL_CONFIG_OVERRIDES (JSON)  →  Pydantic MainConfig
+  →  TMRL_EXTRA_CONFIG_PATH (YAML)  →  env secrets  →  TMRL_CONFIG_OVERRIDES (JSON)  →  Pydantic MainConfig
 ```
 
 | Layer | File | Purpose |
@@ -73,9 +73,18 @@ defaults/config.yaml  →  TMRL_HYDRA_OVERRIDES  →  ~/TmrlData/config/local.ya
 - Typed tree: `from tmrl.config import MAIN_CONFIG`
 - Runtime objects (trainer, memory, agent): `import tmrl.config.config_objects as cfg_obj`
 
-### Component registry
+### Component registry and plugins
 
-`tmrl/registry.py` provides `Registry[T]` — a string-keyed decorator registry. Four global instances: `ALGORITHMS`, `INTERFACES`, `MEMORIES`, `MODELS`. Registrations live in `tmrl/custom/custom_algorithms/`, `tmrl/custom/interfaces/`, `tmrl/custom/memories/`, `tmrl/custom/models/`.
+`tmrl/registry.py` provides `Registry[T]` — a string-keyed decorator registry. Four global instances: `ALGORITHMS`, `INTERFACES`, `MEMORIES`, `MODELS`. Registrations live in `tmrl/custom/algorithms/`, `tmrl/custom/interfaces/`, `tmrl/custom/memories/`, `tmrl/custom/models/`.
+
+`tmrl/plugins.py` auto-discovers third-party components via Python entry points (groups `tmrl.algorithms`, `tmrl.models`, `tmrl.interfaces`, `tmrl.memories`) on `import tmrl`. Library's own registrations always win over plugins.
+
+**Canonical public namespaces** (re-export facades, nothing moved):
+- `tmrl.algorithms` — all training agents
+- `tmrl.models` — all neural network architectures, organised by modality
+- `tmrl.interfaces` — all game interfaces
+- `tmrl.memories` — all replay memory implementations
+- `tmrl.trackmania` — TM2020-specific utilities (Telemetry, obs-space builders, pre-processors)
 
 ### Memory / replay buffer
 
@@ -83,7 +92,7 @@ Abstract base: `tmrl/memory/base.py::Memory`. Concrete implementations under `tm
 
 ### Algorithms and models
 
-Algorithms in `tmrl/custom/custom_algorithms/`: SAC, REDQSAC, TQC, IQN, SDSAC.
+Algorithms in `tmrl/custom/algorithms/`: SAC, REDQSAC, TQC, IQN, SDSAC.
 
 Models in `tmrl/custom/models/` organized by input modality:
 - `vector_input/` — MLP and residual MLP actors/critics (boundary LIDAR)

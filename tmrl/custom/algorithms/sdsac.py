@@ -32,7 +32,7 @@ try:
 except ImportError:
     wandb = None  # type: ignore[assignment]
 
-from tmrl.custom.custom_algorithms._common import (
+from tmrl.custom.algorithms._common import (
     _compute_n_step_return_and_bootstrap_mask,
     _tensor_to_scalar,
     amp_setup,

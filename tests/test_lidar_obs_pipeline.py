@@ -53,7 +53,7 @@ def test_continuous_action_tail_passthrough():
 
 
 def test_record_episode_rewrites_discrete_action_slots():
-    from tmrl.tools.record_episode import _rewrite_discrete_action_slots
+    from tmrl.tools.recording.record_episode import _rewrite_discrete_action_slots
 
     scale = discrete_action_index_scale()
     placeholder = np.zeros(3, dtype=np.float32)  # neutral action sent during recording

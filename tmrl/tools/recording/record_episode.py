@@ -14,7 +14,7 @@ import tmrl.config.config_objects as cfg_obj
 from tmrl.custom.tm.utils.control_keyboard import is_del_pressed
 from tmrl.envs import GenericGymEnv
 from tmrl.networking.buffer import Buffer
-from tmrl.tools.player_runs import align_observation_to_space, save_player_run
+from tmrl.tools.recording.player_runs import align_observation_to_space, save_player_run
 from tmrl.util import partial
 
 

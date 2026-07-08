@@ -155,7 +155,7 @@ class AlgorithmConfig(BaseModel):
     )
     reward_normalize_scale: Annotated[float, Field(gt=0.0)] = Field(
         default=1.0,
-        description="Multiply rewards by this constant before the Bellman backup (1.0 disables, <1 shrinks).",
+        description="Multiply rewards by this constant before the Bellman backup (1.0 disables, <1 shrinks).",  # noqa: E501
     )
     mean_penalty_coef: Annotated[float, Field(ge=0.0)] = Field(
         default=0.05,
@@ -586,13 +586,16 @@ class AlgorithmConfig(BaseModel):
                 "divide-by-N config. Semantics changed: values now MULTIPLY rewards "
                 "(<1 shrinks, 1.0 disables). Use e.g. 0.005 instead of 200."
             )
-        if self.iqn_lr_cosine_decay and self.iqn_lr_total_steps > 0:
-            if self.iqn_lr_total_steps <= self.iqn_lr_warmup_steps:
-                raise ValueError(
-                    f"iqn_lr_total_steps ({self.iqn_lr_total_steps}) must be > "
-                    f"iqn_lr_warmup_steps ({self.iqn_lr_warmup_steps}) when "
-                    "iqn_lr_cosine_decay is enabled"
-                )
+        if (
+            self.iqn_lr_cosine_decay
+            and self.iqn_lr_total_steps > 0
+            and self.iqn_lr_total_steps <= self.iqn_lr_warmup_steps
+        ):
+            raise ValueError(
+                f"iqn_lr_total_steps ({self.iqn_lr_total_steps}) must be > "
+                f"iqn_lr_warmup_steps ({self.iqn_lr_warmup_steps}) when "
+                "iqn_lr_cosine_decay is enabled"
+            )
 
         expected = self.iqn_n_steer_bins * BRAKE_TAP_TABLE_N_GAS * BRAKE_TAP_TABLE_N_BRAKE
         if self.iqn_n_actions != expected:

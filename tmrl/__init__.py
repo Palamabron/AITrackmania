@@ -2,9 +2,35 @@
 
 import platform
 import sys
+from importlib.metadata import PackageNotFoundError, version
 from typing import Any
 
+try:
+    __version__: str = version("tmrl")
+except PackageNotFoundError:
+    __version__ = "0.0.0.dev"
+
 from loguru import logger
+
+from tmrl.actor import ActorModule, TorchActorModule
+from tmrl.plugins import discover_plugins, load_plugins
+from tmrl.registry import ALGORITHMS, INTERFACES, MEMORIES, MODELS, Registry
+from tmrl.training import TrainingAgent
+
+__all__ = [
+    "ALGORITHMS",
+    "INTERFACES",
+    "MEMORIES",
+    "MODELS",
+    "ActorModule",
+    "Registry",
+    "TorchActorModule",
+    "TrainingAgent",
+    "__version__",
+    "discover_plugins",
+    "get_environment",
+    "load_plugins",
+]
 
 logger.remove()
 logger.add(sys.stdout, level="INFO")
@@ -72,3 +98,8 @@ except Exception as exc:  # pragma: no cover - exercised only on broken setup
         "TMRL startup imports deferred: {}. Run initialization and then call get_environment().",
         exc,
     )
+
+try:
+    load_plugins()
+except Exception as _plugins_exc:  # pragma: no cover
+    logger.warning("TMRL plugin loading failed: {}.", _plugins_exc)

@@ -9,7 +9,7 @@ import torch
 from loguru import logger
 from torch.optim import Adam
 
-from tmrl.custom.custom_algorithms._common import (
+from tmrl.custom.algorithms._common import (
     _amp_dtype,
     _amp_enabled,
     autocast_context,

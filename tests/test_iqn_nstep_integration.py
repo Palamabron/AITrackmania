@@ -5,7 +5,7 @@ from __future__ import annotations
 import gymnasium.spaces as spaces
 import numpy as np
 import pytest
-from tmrl.custom.custom_algorithms.iqn import IQNAgent
+from tmrl.custom.algorithms.iqn import IQNAgent
 from tmrl.custom.memories.base import GenericTorchMemory
 from tmrl.networking import Buffer
 

@@ -13,10 +13,14 @@ Usage::
 
 from __future__ import annotations
 
+import logging
 from collections.abc import KeysView
+from importlib.metadata import entry_points
 from typing import TypeVar
 
 T = TypeVar("T")
+
+_log = logging.getLogger(__name__)
 
 
 class Registry[T]:
@@ -59,6 +63,38 @@ class Registry[T]:
     def keys(self) -> KeysView[str]:
         """All registered keys."""
         return self._entries.keys()
+
+    def discover_entry_points(self, group: str) -> list[str]:
+        """Load entry points from *group* and register any new classes.
+
+        Iterates all entry points advertised under *group*, skips names that are
+        already registered, calls ``ep.load()`` for the rest, and registers
+        each successfully-loaded class.  Any entry point that fails to load is
+        skipped with a warning rather than raising.
+
+        Args:
+            group: The ``entry_points`` group name (e.g. ``"tmrl.algorithms"``).
+
+        Returns:
+            A list of the names that were newly registered in this call.
+        """
+        newly_registered: list[str] = []
+        for ep in entry_points(group=group):
+            if ep.name in self._entries:
+                continue
+            try:
+                cls = ep.load()
+            except Exception as exc:
+                _log.warning(
+                    "Failed to load entry point %r from group %r: %s",
+                    ep.name,
+                    group,
+                    exc,
+                )
+                continue
+            self._entries[ep.name] = cls
+            newly_registered.append(ep.name)
+        return newly_registered
 
     def __repr__(self) -> str:
         return f"Registry({self._name!r}, keys={sorted(self._entries)})"

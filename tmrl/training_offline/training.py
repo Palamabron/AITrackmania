@@ -15,7 +15,7 @@ from loguru import logger
 import tmrl.config.config_objects as cfg_obj
 import tmrl.config.constants as cfg
 import tmrl.config.paths as cfg_paths
-from tmrl.tools.player_runs import (
+from tmrl.tools.recording.player_runs import (
     align_buffer_observations_to_space,
     filter_buffer_samples_failing_obs_space,
     observation_matches_space,

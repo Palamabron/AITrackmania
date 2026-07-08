@@ -68,7 +68,6 @@ dependencies = [
     "vgamepad>=0.1.0; sys_platform == 'linux'",
     "pywin32>=303; sys_platform == 'win32'",
     "vgamepad; sys_platform == 'win32'",
-    "google-genai>=2.2.0",
 ]
 
 [project.optional-dependencies]
@@ -77,6 +76,9 @@ dev = [
     "ruff>=0.4",
     "pytest>=7.0",
     "types-PyYAML",
+]
+orchestrator = [
+    "google-genai>=2.2.0",
 ]
 
 [dependency-groups]
@@ -89,9 +91,9 @@ dev = [
 
 [project.scripts]
 tmrl = "tmrl.__main__:entrypoint"
-tmrl-build-centerline = "tmrl.tools.build_centerline_reward:main"
-tmrl-interpolate-reward = "tmrl.tools.interpolate_reward_trajectory:main"
-tmrl-plot-track = "tmrl.tools.plot_track_points:main"
+tmrl-build-centerline = "tmrl.tools.track.build_centerline_reward:main"
+tmrl-interpolate-reward = "tmrl.tools.track.interpolate_reward_trajectory:main"
+tmrl-plot-track = "tmrl.tools.track.plot_track_points:main"
 tmrl-inspect-wandb = "tmrl.tools.analysis.wandb_inspect_run:main"
 
 [project.urls]

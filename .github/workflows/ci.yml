@@ -1,0 +1,61 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - "feat/**"
+      - "fix/**"
+      - "refactor/**"
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  lint:
+    name: Lint and type-check
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Install dev dependencies
+        run: uv sync --group dev
+
+      - name: Check formatting (ruff format)
+        run: uv run ruff format --check .
+
+      - name: Lint (ruff check)
+        run: uv run ruff check .
+
+      - name: Type-check (mypy)
+        run: uv run mypy tmrl/
+
+  test:
+    name: Tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version:
+          - "3.12"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dev dependencies
+        run: uv sync --group dev
+
+      - name: Run tests
+        env:
+          TMRL_DISABLE_GAME: "1"
+        run: uv run pytest tests/ -v --tb=short -x

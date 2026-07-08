@@ -10,7 +10,7 @@ from loguru import logger
 
 import tmrl.config as cfg
 import tmrl.config.config_objects as cfg_obj
-from tmrl.tools.player_runs import import_player_runs_to_dataset
+from tmrl.tools.recording.player_runs import import_player_runs_to_dataset
 
 
 @dataclass

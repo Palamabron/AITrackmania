@@ -617,7 +617,7 @@ class RewardFunction:
             logger.info(
                 f"  boundary detail: {len(lr)} steps checked, "
                 f"lateral_ratio mean={float(np.mean(lr)):.3f} max={float(np.max(lr)):.3f}  |  "
-                f">0.5: {n_over_05}  |  >0.7: {n_over_07}  |  >0.85: {n_over_085}  |  >1.0: {n_over_10} steps"
+                f">0.5: {n_over_05}  |  >0.7: {n_over_07}  |  >0.85: {n_over_085}  |  >1.0: {n_over_10} steps"  # noqa: E501
             )
 
     def _current_drift_weight(self) -> float:
