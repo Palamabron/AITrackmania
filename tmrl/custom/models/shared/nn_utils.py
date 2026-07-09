@@ -1,12 +1,10 @@
 """Constants, basic NN utilities, obs-space helpers, and conv helpers."""
 
 from math import floor
-from typing import cast  # noqa: F401 — kept for potential downstream use
 
 import numpy as np
 import torch
 import torch.nn as nn
-import torch.nn.functional as F  # noqa: F401 — kept for potential downstream use
 from torch.nn import Conv2d
 
 from tmrl.util import prod
