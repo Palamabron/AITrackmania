@@ -197,10 +197,10 @@ class Memory(ABC):
         # n_step_effective is the per-sample n-step window length set by memories
         # implementing memory-side n-step returns (1 for plain 1-step transitions).
         info_raw = dict(info) if isinstance(info, dict) else {}
-        info: dict[str, Any] = {"is_demo": bool(info_raw.get("is_demo", False))}
+        info_out: dict[str, Any] = {"is_demo": bool(info_raw.get("is_demo", False))}
         if "n_step_effective" in info_raw:
-            info["n_step_effective"] = int(info_raw["n_step_effective"])
-        return prev_obs, new_act, rew, new_obs, terminated, truncated, info
+            info_out["n_step_effective"] = int(info_raw["n_step_effective"])
+        return prev_obs, new_act, rew, new_obs, terminated, truncated, info_out
 
     def sample_indices(self):
         length = len(self)

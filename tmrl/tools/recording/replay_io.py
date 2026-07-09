@@ -6,7 +6,6 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
-import tyro
 from loguru import logger
 
 import tmrl.config as cfg

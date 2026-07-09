@@ -4,13 +4,13 @@ import random
 
 import numpy as np
 
-from tmrl.custom.memories.base import MemoryTM
 from tmrl.custom.memories._internal.enums import (
     BufferField,
     TMLidarImagesField,
     TMLidarImagesObsField,
 )
 from tmrl.custom.memories._internal.sampling_utils import canonical_replay_action_vector
+from tmrl.custom.memories.base import MemoryTM
 from tmrl.registry import MEMORIES
 
 

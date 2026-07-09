@@ -167,7 +167,7 @@ class TM2020RLInterface(TM2020Interface):
         left_track = track_result[0]
         center_track = track_result[1]
         right_track = track_result[2]
-        curvature_list = track_result[3] if len(track_result) >= 4 else None
+        curvature_list: list[float] | None = track_result[3] if len(track_result) >= 4 else None
         log_distance_list = track_result[4] if len(track_result) >= 5 else None
         # get_track_info always returns a curvature list (zeros when disabled);
         # only surface it in the observation when the feature is enabled, so the

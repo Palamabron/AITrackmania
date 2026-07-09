@@ -7,14 +7,6 @@ import pickle
 
 from loguru import logger
 
-from tmrl.config.loader import MAIN_CONFIG
-from tmrl.config.paths import (
-    MAP_NAME,
-    PLAYER_RUNS_FOLDER,
-    REWARD_PATH,
-    TRACK_PATH_LEFT,
-    TRACK_PATH_RIGHT,
-)
 from tmrl.config._internal.rtgym_boundary_iface import (
     rtgym_discrete_boundary_lidar_images,
     rtgym_discrete_boundary_lidar_vec,
@@ -22,6 +14,14 @@ from tmrl.config._internal.rtgym_boundary_iface import (
 from tmrl.config._internal.spacing_lookahead import (
     points_number_from_spacing_config,
     polyline_arc_length_m,
+)
+from tmrl.config.loader import MAIN_CONFIG
+from tmrl.config.paths import (
+    MAP_NAME,
+    PLAYER_RUNS_FOLDER,
+    REWARD_PATH,
+    TRACK_PATH_LEFT,
+    TRACK_PATH_RIGHT,
 )
 
 M = MAIN_CONFIG

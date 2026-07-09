@@ -5,7 +5,6 @@ from typing import Any
 
 import numpy as np
 
-from tmrl.custom.memories.base import last_true_in_list, replace_hist_before_eoe
 from tmrl.custom.memories._internal.enums import (
     BufferField,
     R2D2Field,
@@ -15,6 +14,7 @@ from tmrl.custom.memories._internal.sampling_utils import (
     canonical_replay_action_vector,
     normalize_stored_replay_actions_slice,
 )
+from tmrl.custom.memories.base import last_true_in_list, replace_hist_before_eoe
 from tmrl.memory import R2D2Memory
 from tmrl.registry import MEMORIES
 

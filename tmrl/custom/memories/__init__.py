@@ -1,11 +1,5 @@
 """Memory implementations for TrackMania reinforcement learning."""
 
-from tmrl.custom.memories.base import (
-    GenericTorchMemory,
-    MemoryTM,
-    last_true_in_list,
-    replace_hist_before_eoe,
-)
 from tmrl.custom.memories._internal.compressors import (
     get_local_buffer_sample_lidar,
     get_local_buffer_sample_lidar_images,
@@ -27,14 +21,20 @@ from tmrl.custom.memories._internal.enums import (
     TMLidarImagesField,
     TMLidarImagesObsField,
 )
+from tmrl.custom.memories._internal.sampling_utils import (
+    ACTION_STEER_INDEX,
+    fog_recency_resample,
+)
+from tmrl.custom.memories.base import (
+    GenericTorchMemory,
+    MemoryTM,
+    last_true_in_list,
+    replace_hist_before_eoe,
+)
 from tmrl.custom.memories.r2d2 import (
     MemoryR2D2,
     MemoryR2D2Sophy,
     MemoryR2D2woImages,
-)
-from tmrl.custom.memories._internal.sampling_utils import (
-    ACTION_STEER_INDEX,
-    fog_recency_resample,
 )
 from tmrl.custom.memories.tm_best import MemoryTMBest
 from tmrl.custom.memories.tm_full import MemoryTMFull
