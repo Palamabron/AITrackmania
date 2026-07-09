@@ -356,7 +356,7 @@ The "overrides" dict must use EXACTLY these top-level section keys:
   rounds_per_epoch, environment_steps_before_training, etc.
 - "model" for: residual_mlp_hidden_dim, residual_mlp_num_blocks, gnn_layers, gnn_hidden, etc.
 - "environment" for: end_of_track_reward, reward (nested: crash_penalty, speed_reward_weight, etc.)
-- "player_runs" for: demo_sampling_weight, demo_max_batch_fraction, etc.
+- "player_runs" for: demo_max_batch_fraction, demo_min_batch_fraction, etc.
 - "run" for: buffers_maxlen, rw_max_samples_per_episode, etc.
 
 WRONG: {{"optimization": {{"algorithm.iqn_grad_clip": 5.0}}}}
