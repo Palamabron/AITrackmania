@@ -4,7 +4,7 @@ defaults:
   - _self_
 
 algorithm:
-  _target_: tmrl.custom.custom_algorithms.tqc.TQCAgent
+  _target_: tmrl.custom.algorithms.tqc.TQCAgent
   name: TQC
   quantiles_number: 25
   top_quantiles_to_drop: 2

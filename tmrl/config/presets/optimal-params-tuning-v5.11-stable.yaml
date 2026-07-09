@@ -43,7 +43,7 @@ model:
 
 algorithm:
   name: IQN
-  _target_: tmrl.custom.custom_algorithms.iqn.IQNAgent
+  _target_: tmrl.custom.algorithms.iqn.IQNAgent
   iqn_lr: 5.0e-5
   iqn_huber_kappa: 0.7
   iqn_sort_quantiles: true

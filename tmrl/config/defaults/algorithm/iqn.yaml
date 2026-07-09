@@ -4,7 +4,7 @@ defaults:
   - _self_
 
 algorithm:
-  _target_: tmrl.custom.custom_algorithms.iqn.IQNAgent
+  _target_: tmrl.custom.algorithms.iqn.IQNAgent
   name: IQN
   mixed_precision: true
   mixed_precision_dtype: bfloat16

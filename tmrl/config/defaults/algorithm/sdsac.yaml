@@ -4,7 +4,7 @@ defaults:
   - _self_
 
 algorithm:
-  _target_: tmrl.custom.custom_algorithms.sdsac.SDSACAgent
+  _target_: tmrl.custom.algorithms.sdsac.SDSACAgent
   name: SDSAC
   learn_entropy_coef: true
   n_steps: 3
