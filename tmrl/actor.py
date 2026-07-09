@@ -157,7 +157,6 @@ class TorchActorModule(ActorModule, torch.nn.Module, ABC):
                 `act` are collated
         """
         super().__init__(observation_space, action_space)  # ActorModule
-        # super().__init__()  # torch.nn.Module
         self.device = device
 
     def save(self, path):

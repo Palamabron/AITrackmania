@@ -21,7 +21,6 @@ if platform.system() in ("Windows", "Linux"):
         else:
             gamepad.right_trigger_float(value_float=0.0)
         if control[1] > 0.75:  # break
-            # mapped_value = 0.5 * control[0] + 0.5  # x0 = 1/2
             gamepad.left_trigger_float(value_float=control[1])
         else:
             gamepad.left_trigger_float(value_float=0.0)

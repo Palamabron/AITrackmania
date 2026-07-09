@@ -27,8 +27,8 @@ def check_env_tm20_boundary():
         logger.info(f"r:{r}, d:{d}")
 
         if d or t:
-            print("d: ", d)
-            print("t: ", t)
+            logger.debug("d: {}", d)
+            logger.debug("t: {}", t)
             _o, _ = env.reset()
 
 

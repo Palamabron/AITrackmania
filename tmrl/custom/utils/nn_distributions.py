@@ -82,6 +82,5 @@ class TanhNormalLayer(torch.nn.Module):
         log_std = self.lin_std(x)
         log_std = torch.clamp(log_std, -20, 2)
         std = torch.exp(log_std)
-        # a = TanhTransformedDist(Independent(Normal(m, std), 1))
         a = Independent(TanhNormal(mean, std), 1)
         return a

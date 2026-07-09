@@ -142,7 +142,6 @@ model_path = str(weights_folder / (my_run_name + "_t.tmod"))
 checkpoints_path = str(checkpoints_folder / (my_run_name + "_t.tcpt"))
 
 # Dummy environment OR (observation space, action space) tuple:
-# env_cls = partial(GenericGymEnv, id="real-time-gym-ts-v1", gym_kwargs={"config": my_rtgym_config})
 env_cls = (obs_space, act_space)
 
 # Memory:
