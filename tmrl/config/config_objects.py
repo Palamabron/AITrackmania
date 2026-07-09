@@ -71,8 +71,10 @@ model_cfg = M.model
 
 ALG_NAME = algorithm.name
 
-if ALG_NAME not in ("SAC", "REDQSAC", "TQC", "IQN", "SDSAC"):
-    raise ValueError(f"Unknown algorithm {ALG_NAME!r}. Supported: SAC, REDQSAC, TQC, IQN, SDSAC.")
+if ALG_NAME not in ALGORITHMS:
+    raise ValueError(
+        f"Unknown algorithm {ALG_NAME!r}. Registered algorithms: {sorted(ALGORITHMS.keys())}."
+    )
 
 _USE_IMAGES_MOBILENET_PIPELINE = cfg.USE_IMAGES_MOBILENET_PIPELINE
 _USE_MOBILENET_OR_R2D2_IMAGE_STACK = (
