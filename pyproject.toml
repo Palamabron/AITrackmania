@@ -133,7 +133,7 @@ include = ["tmrl*"]
 exclude = ["tests*"]
 
 [tool.setuptools.package-data]
-tmrl = ["config/defaults/**/*.yaml"]
+tmrl = ["py.typed", "config/defaults/**/*.yaml"]
 
 [tool.ruff]
 target-version = "py312"
