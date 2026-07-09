@@ -142,6 +142,18 @@ class Memory(ABC):
         raise NotImplementedError
 
     def sample(self):
+        """Sample a batch of transitions and collate them onto ``self.device``.
+
+        Calls :meth:`sample_indices` to draw indices, retrieves each transition via
+        ``__getitem__``, then colates the batch with :meth:`collate`.
+
+        Returns:
+            Tuple of tensors as returned by :meth:`collate`.
+
+        Raises:
+            RuntimeError: If the buffer does not have enough data to draw a valid batch
+                (e.g. fewer transitions than ``n_step_return``).
+        """
         indices = self.sample_indices()
         if len(indices) == 0:
             raise RuntimeError(
@@ -153,6 +165,14 @@ class Memory(ABC):
         return batch
 
     def append(self, buffer):
+        """Append a :class:`~tmrl.networking.Buffer` to the replay memory.
+
+        Copies episode statistics from ``buffer`` into ``self.stat_*`` fields
+        and delegates storage to :meth:`append_buffer`. No-ops if ``buffer`` is empty.
+
+        Args:
+            buffer (tmrl.networking.Buffer): Buffer of transitions received from a worker.
+        """
         if len(buffer) > 0:
             self.stat_train_return = buffer.stat_train_return
             self.stat_test_return = buffer.stat_test_return
@@ -203,6 +223,15 @@ class Memory(ABC):
         return prev_obs, new_act, rew, new_obs, terminated, truncated, info_out
 
     def sample_indices(self):
+        """Return a batch of randomly sampled transition indices.
+
+        When ``n_step_return > 1``, samples from ``[0, len - n_step_return]`` so that
+        ``n`` consecutive transitions are always available for each index.
+
+        Returns:
+            numpy.ndarray | tuple: Array of ``int64`` indices of length ``batch_size``,
+            or an empty tuple if the buffer has insufficient data.
+        """
         length = len(self)
         if length <= 0:
             return ()

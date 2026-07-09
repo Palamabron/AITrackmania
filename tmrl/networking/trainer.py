@@ -295,7 +295,20 @@ class TrainerInterface:
         hostname=cfg.HOSTNAME,
         model_path=cfg.MODEL_PATH_TRAINER,
     ):
+        """Connect to the relay server as the trainer endpoint.
 
+        Args:
+            server_ip (str | None): IP address of the relay server. Defaults to ``"127.0.0.1"``.
+            server_port (int): Public port of the relay server.
+            password (str): Shared password for the relay server.
+            local_com_port (int): Local port for the tlspyo endpoint.
+            header_size (int): Byte size of the tlspyo message header.
+            max_buf_len (int): Maximum buffer length for incoming messages.
+            security (str): Security mode (``"TLS"`` or ``"TCP"``).
+            keys_dir (str | Path): Directory containing TLS credentials.
+            hostname (str): Server hostname for TLS verification.
+            model_path (str | Path): Path used for temporary model weight files.
+        """
         self.model_path = model_path
         self.server_ip = server_ip if server_ip is not None else "127.0.0.1"
         self.__endpoint = Endpoint(
@@ -319,9 +332,13 @@ class TrainerInterface:
         self.__endpoint.notify(groups={"trainers": -1})
 
     def broadcast_model(self, model: ActorModule):
-        """
-        model must be an ActorModule
-        broadcasts the model's weights to all connected RolloutWorkers
+        """Serialize and broadcast model weights to all connected workers.
+
+        Prefers :meth:`~tmrl.actor.ActorModule.save_to_bytes` when available (in-memory,
+        no disk I/O). Falls back to saving to ``self.model_path`` and reading it back.
+
+        Args:
+            model (ActorModule): The actor whose weights to broadcast.
         """
         if hasattr(model, "save_to_bytes"):
             weights = model.save_to_bytes()
@@ -332,8 +349,11 @@ class TrainerInterface:
         self.__endpoint.broadcast(weights, "workers")
 
     def retrieve_buffer(self):
-        """
-        returns the TrainerInterface's buffer of training samples
+        """Receive all pending buffers from the server and merge them into one.
+
+        Returns:
+            tmrl.networking.Buffer: Merged buffer containing all received transitions.
+                Returns an empty ``Buffer`` if no data is available.
         """
         buffers = self.__endpoint.receive_all()
         res = Buffer()

@@ -10,6 +10,12 @@ __docformat__ = "google"
 
 
 class GenericGymEnv(gymnasium.Wrapper):
+    """Lightweight Gymnasium wrapper for use with the TMRL framework.
+
+    Optionally applies an affine observation rescaling and/or a float32 cast.
+    Use this when integrating arbitrary Gymnasium environments with TMRL.
+    """
+
     def __init__(
         self, id: str = "Pendulum-v0", gym_kwargs=None, obs_scale: float = 0.0, to_float32=False
     ):

@@ -8,6 +8,17 @@ import numpy as np
 
 
 class AffineObservationWrapper(gymnasium.ObservationWrapper):
+    """Gymnasium wrapper that applies an affine transform ``(obs + shift) * scale`` to observations.
+
+    Only ``gymnasium.spaces.Box`` observation spaces are supported. The observation
+    space bounds are transformed alongside the observations.
+
+    Args:
+        env: The environment to wrap.
+        shift: Value added to each observation before scaling.
+        scale: Value by which the shifted observation is multiplied.
+    """
+
     def __init__(self, env, shift, scale):
         super().__init__(env)
         assert isinstance(env.observation_space, gymnasium.spaces.Box)
@@ -20,6 +31,14 @@ class AffineObservationWrapper(gymnasium.ObservationWrapper):
         )
 
     def observation(self, observation):
+        """Apply the affine transform to a single observation.
+
+        Args:
+            observation: Raw observation from the wrapped environment.
+
+        Returns:
+            Transformed observation: ``(observation + self.shift) * self.scale``.
+        """
         return (observation + self.shift) * self.scale
 
 
@@ -86,6 +105,14 @@ def deepmap(f, m):
 
 
 def float64_to_float32(x):
+    """Cast a ``float64`` numpy array to ``float32``; return other dtypes unchanged.
+
+    Args:
+        x: A numpy array.
+
+    Returns:
+        numpy.ndarray: ``float32`` array if input dtype is ``float64``, otherwise ``x`` unchanged.
+    """
     return (
         np.asarray(
             [
@@ -99,6 +126,14 @@ def float64_to_float32(x):
 
 
 def float_to_float32(x):
+    """Wrap a Python float in a single-element ``float32`` numpy array.
+
+    Args:
+        x: A Python float or compatible scalar.
+
+    Returns:
+        numpy.ndarray: Shape ``(1,)`` array of dtype ``float32``.
+    """
     return np.asarray(
         [
             x,
@@ -108,6 +143,14 @@ def float_to_float32(x):
 
 
 def int_to_float32(x):
+    """Wrap a Python int in a single-element ``float32`` numpy array.
+
+    Args:
+        x: A Python int or compatible scalar.
+
+    Returns:
+        numpy.ndarray: Shape ``(1,)`` array of dtype ``float32``.
+    """
     return np.asarray(
         [
             float(x),

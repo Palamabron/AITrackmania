@@ -24,6 +24,17 @@ T = TypeVar("T")  # helps with type inference in some editors
 
 
 def pandas_dict(*args, **kwargs) -> pd.Series:
+    """Construct a ``pd.Series`` with object dtype from positional or keyword arguments.
+
+    A thin convenience wrapper around ``pd.Series(dict(...), dtype=object)``.
+
+    Args:
+        *args: Positional arguments forwarded to ``dict()``.
+        **kwargs: Keyword arguments forwarded to ``dict()``.
+
+    Returns:
+        pd.Series: Object-typed series keyed by the dict keys.
+    """
     return pd.Series(dict(*args, **kwargs), dtype=object)
 
 
@@ -55,6 +66,17 @@ def wandb_monotonic_step(proposed: int, run: Any | None = None) -> int:
 
 
 def shallow_copy[T](obj: T) -> T:
+    """Create a shallow copy of any object by copying its ``__dict__``.
+
+    Allocates a new instance of the same type without calling ``__init__``,
+    then copies all instance attributes. Does not recurse into attribute values.
+
+    Args:
+        obj: The object to copy.
+
+    Returns:
+        A new instance of the same type with the same ``__dict__`` entries.
+    """
     x = type(obj).__new__(type(obj))
     vars(x).update(vars(obj))
     return x
@@ -219,11 +241,38 @@ def partial_to_dict(partial_obj: functools.partial, version: str = "3") -> dict:
 
 
 def get_class_or_function(func):
+    """Import and return a class or function by its fully-qualified ``module:name`` string.
+
+    Args:
+        func: Dotted module path and name separated by ``:``, e.g. ``"tmrl.actor:ActorModule"``.
+
+    Returns:
+        The resolved class or function object.
+
+    Raises:
+        ImportError: If the module cannot be imported.
+        AttributeError: If the name does not exist in the module.
+    """
     module, name = func.split(":")
     return getattr(import_module(module), name)
 
 
 def partial_from_args(func: str | Callable[..., Any], kwargs: dict[str, str]):
+    """Build a ``functools.partial`` from a ``module:name`` string and a flat string dict.
+
+    Resolves nested parameters separated by ``.``, coerces values to their annotated types,
+    and handles ``bool`` and sub-``type`` parameters recursively.
+
+    Args:
+        func: A ``module:name`` string (resolved via :func:`get_class_or_function`) or a callable.
+        kwargs: Flat mapping of parameter names (or ``parent.child`` dotted paths) to string values.
+
+    Returns:
+        functools.partial: Partial with resolved and type-coerced keyword arguments.
+
+    Raises:
+        AssertionError: If a key in ``kwargs`` is not a valid parameter of ``func``.
+    """
     resolved: Callable[..., Any] = get_class_or_function(func) if isinstance(func, str) else func
     func = cast(Callable[..., Any], resolved)
     keys = {k.split(".")[0] for k in kwargs}
@@ -249,6 +298,16 @@ def partial_from_args(func: str | Callable[..., Any], kwargs: dict[str, str]):
 
 
 def get_output(*args, default="", **kwargs):
+    """Run a subprocess and return its stdout, or ``default`` if the process fails.
+
+    Args:
+        *args: Positional arguments forwarded to ``subprocess.check_output``.
+        default: Value to return when the subprocess exits with a non-zero status.
+        **kwargs: Keyword arguments forwarded to ``subprocess.check_output``.
+
+    Returns:
+        str: Stripped stdout of the subprocess, or ``default`` on ``CalledProcessError``.
+    """
     try:
         output = subprocess.check_output(*args, text=True, **kwargs)
         return output.rstrip("\n")  # skip trailing newlines as done in bash
@@ -327,6 +386,15 @@ def git_info(path=None):
 
 
 def dump(obj, path):
+    """Atomically pickle ``obj`` to ``path`` using a temporary file and ``os.replace``.
+
+    If called from the main thread, defers ``SIGINT``/``SIGTERM`` until the write completes
+    to prevent partial writes on interrupt.
+
+    Args:
+        obj: Any picklable Python object.
+        path: Destination file path (``str`` or ``pathlib.Path``).
+    """
     path = Path(path)
     tmp_path = path.with_suffix(".tmp")
     # DelayInterrupt uses signal.signal(), which only works in the main thread.
@@ -342,16 +410,38 @@ def dump(obj, path):
 
 
 def load(path):
+    """Unpickle and return an object from ``path``.
+
+    Args:
+        path: Source file path (``str`` or ``pathlib.Path``).
+
+    Returns:
+        The deserialized Python object.
+    """
     with open(path, "rb") as f:
         return pickle.load(f)
 
 
 def save_json(d, path):
+    """Serialize ``d`` to a JSON file at ``path`` with UTF-8 encoding and 2-space indentation.
+
+    Args:
+        d: A JSON-serializable object (dict, list, str, int, float, bool, or None).
+        path: Destination file path (``str`` or ``pathlib.Path``).
+    """
     with open(path, "w", encoding="utf-8") as f:
         json.dump(d, f, ensure_ascii=False, indent=2)
 
 
 def load_json(path):
+    """Deserialize and return a JSON object from ``path``.
+
+    Args:
+        path: Source file path (``str`` or ``pathlib.Path``).
+
+    Returns:
+        The deserialized Python object (dict, list, str, int, float, bool, or None).
+    """
     with open(path, encoding="utf-8") as f:
         return json.load(f)
 
@@ -380,4 +470,12 @@ class DelayInterrupt:
 
 
 def prod(iterable):
+    """Return the product of all elements in ``iterable``.
+
+    Args:
+        iterable: Any iterable of numeric values.
+
+    Returns:
+        The product of all elements, starting from 1 for an empty iterable.
+    """
     return functools.reduce(operator.mul, iterable, 1)

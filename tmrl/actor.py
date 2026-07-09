@@ -113,6 +113,19 @@ class ActorModule(ABC):
         raise NotImplementedError
 
     def act_(self, obs, test=False):
+        """Like :meth:`act`, but may apply pre/post-processing.
+
+        The base implementation simply delegates to :meth:`act`.
+        ``TorchActorModule`` overrides this to collate ``obs`` onto the device,
+        disable gradients, and clip the returned action to ``[-1, 1]``.
+
+        Args:
+            obs: The observation from the environment.
+            test (bool): True at test time, False during training.
+
+        Returns:
+            numpy.ndarray: The computed action.
+        """
         return self.act(obs, test=test)
 
 
@@ -148,14 +161,33 @@ class TorchActorModule(ActorModule, torch.nn.Module, ABC):
         self.device = device
 
     def save(self, path):
+        """Save model weights as a ``torch.save`` state dict.
+
+        Args:
+            path: Destination file path (``str`` or ``pathlib.Path``).
+        """
         torch.save(self.state_dict(), path)
 
     def load(self, path, device):
+        """Load state dict from ``path`` and move the model to ``device``.
+
+        Args:
+            path: Source file path (``str`` or ``pathlib.Path``).
+            device: PyTorch device string or object (e.g. ``"cpu"`` or ``"cuda:0"``).
+
+        Returns:
+            TorchActorModule: ``self`` with updated weights on ``device``.
+        """
         self.device = device
         self.load_state_dict(torch.load(path, map_location=self.device, weights_only=True))
         return self
 
     def save_to_bytes(self) -> bytes:
+        """Serialize model weights to bytes via an in-memory ``torch.save`` buffer.
+
+        Returns:
+            bytes: Serialized state dict, suitable for :meth:`load_from_bytes`.
+        """
         buffer = BytesIO()
         torch.save(self.state_dict(), buffer)
         return buffer.getvalue()
@@ -221,8 +253,26 @@ class TorchActorModule(ActorModule, torch.nn.Module, ABC):
 
     # noinspection PyMethodOverriding
     def to(self, device):  # type: ignore[override]
+        """Move the module to ``device`` and update ``self.device``.
+
+        Overrides ``torch.nn.Module.to`` to keep ``self.device`` in sync.
+
+        Args:
+            device: PyTorch device string or object.
+
+        Returns:
+            TorchActorModule: ``self`` moved to ``device``.
+        """
         self.device = device
         return super().to(device=device)
 
     def to_device(self, device):
+        """Move the module to ``device`` by delegating to :meth:`to`.
+
+        Args:
+            device: PyTorch device string or object.
+
+        Returns:
+            TorchActorModule: ``self`` moved to ``device``.
+        """
         return self.to(device)
