@@ -145,7 +145,7 @@ class Memory(ABC):
         """Sample a batch of transitions and collate them onto ``self.device``.
 
         Calls :meth:`sample_indices` to draw indices, retrieves each transition via
-        ``__getitem__``, then colates the batch with :meth:`collate`.
+        ``__getitem__``, then collates the batch with :meth:`collate`.
 
         Returns:
             Tuple of tensors as returned by :meth:`collate`.
