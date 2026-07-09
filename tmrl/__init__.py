@@ -86,6 +86,8 @@ def get_environment():
 CONFIG_DICT_CACHE: Any = None
 GENERIC_GYM_ENV_CLS: Any = None
 
+load_plugins()
+
 try:
     from tmrl.config.config_objects import CONFIG_DICT as _CONFIG_DICT_IMPORTED
     from tmrl.envs import GenericGymEnv as _GENERIC_GYM_ENV_CLS_IMPORTED  # noqa: N814
@@ -98,5 +100,3 @@ except Exception as exc:  # pragma: no cover - exercised only on broken setup
         "TMRL startup imports deferred: {}. Run initialization and then call get_environment().",
         exc,
     )
-
-load_plugins()

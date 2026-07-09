@@ -21,7 +21,8 @@ import tmrl.custom.interfaces.boundary
 import tmrl.custom.interfaces.car_state
 import tmrl.custom.interfaces.vision
 import tmrl.custom.memories.base
-import tmrl.custom.memories.r2d2
+import tmrl.custom.memories.r2d2_variants
+import tmrl.custom.memories.r2d2_with_images
 import tmrl.custom.memories.tm_best
 import tmrl.custom.memories.tm_full
 import tmrl.custom.memories.tm_lidar_images

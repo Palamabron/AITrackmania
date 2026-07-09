@@ -272,6 +272,6 @@ uv run pytest tests/test_buffer.py::test_name
 - **No hidden numeric defaults**: magic numbers must be named constants or config keys
   with explicit documentation. Do not hard-code learning rates, buffer sizes, or
   architectural dimensions inline.
-- **Docstrings**: NumPy style for public functions and classes.
+- **Docstrings**: Google style for public functions and classes.
 - **Tests**: place new tests under `tests/`. Name files `test_*.py` and functions
   `test_*`. Use `pytest` fixtures; avoid global state between tests.

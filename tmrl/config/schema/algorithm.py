@@ -318,7 +318,7 @@ class AlgorithmConfig(BaseModel):
         default=0.7,
         description="Per-cycle multiplicative shrink of the cosine entropy amplitude.",
     )
-    fog_decay_temperature: Annotated[float, Field(gt=0.0)] = Field(
+    fog_decay_temperature: Annotated[float, Field(ge=0.0)] = Field(
         default=3.0,
         description=(
             "FoG (forgetful observation gating) episode bias in R2D2-style memory sampling "
@@ -580,7 +580,7 @@ class AlgorithmConfig(BaseModel):
             raise ValueError("iqn_munchausen_clip_min must be <= iqn_munchausen_clip_max")
         if self.iqn_monotonicity_regularization and not self.iqn_sort_quantiles:
             raise ValueError("iqn_monotonicity_regularization requires iqn_sort_quantiles=true")
-        if self.reward_normalize_scale > 10.0:
+        if self.name == "IQN" and self.reward_normalize_scale > 10.0:
             raise ValueError(
                 f"reward_normalize_scale={self.reward_normalize_scale} looks like a stale "
                 "divide-by-N config. Semantics changed: values now MULTIPLY rewards "

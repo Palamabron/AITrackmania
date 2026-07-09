@@ -31,11 +31,8 @@ from tmrl.custom.memories.base import (
     last_true_in_list,
     replace_hist_before_eoe,
 )
-from tmrl.custom.memories.r2d2 import (
-    MemoryR2D2,
-    MemoryR2D2Sophy,
-    MemoryR2D2woImages,
-)
+from tmrl.custom.memories.r2d2_variants import MemoryR2D2Sophy, MemoryR2D2woImages
+from tmrl.custom.memories.r2d2_with_images import MemoryR2D2
 from tmrl.custom.memories.tm_best import MemoryTMBest
 from tmrl.custom.memories.tm_full import MemoryTMFull
 from tmrl.custom.memories.tm_lidar_images import MemoryTMLidarImages
