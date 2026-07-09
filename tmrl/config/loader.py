@@ -114,8 +114,8 @@ def _compose_hydra_dict() -> dict[str, Any]:
         hydra_overrides = [o for o in hydra_overrides if not o.startswith("hydra.searchpath=")]
         if existing_sp:
             # Extract existing paths from the first override (e.g. "hydra.searchpath=[a,b]")
-            existing_val = existing_sp[0].split("=", 1)[1].strip("[]")
-            all_paths = [joined, existing_val] if existing_val else [joined]
+            existing_val = existing_sp[0].split("=", 1)[1].removeprefix("[").removesuffix("]")
+            all_paths = [existing_val, joined] if existing_val else [joined]
             merged = ",".join(all_paths)
         else:
             merged = joined

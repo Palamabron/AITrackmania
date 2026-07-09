@@ -58,7 +58,6 @@ PARAM_TO_SECTION: dict[str, str] = {
     "crash_penalty": "environment",
     "speed_reward_weight": "environment",
     "constant_penalty": "environment",
-    "demo_sampling_weight": "player_runs",
     "demo_max_batch_fraction": "player_runs",
     "buffers_maxlen": "run",
     "rw_max_samples_per_episode": "run",
