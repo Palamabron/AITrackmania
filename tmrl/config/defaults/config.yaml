@@ -50,9 +50,6 @@ player_runs:
   consume_on_read: true
   max_files_per_update: 1
   demo_injection_repeat: 1
-  demo_sampling_weight: 1.0
-  demo_weight_decay_samples: 0
-  demo_weight_decay_slowdown: 1.0
   per_alpha: 0.6
   demo_max_batch_fraction: 1.0
   demo_min_batch_fraction: 0.0

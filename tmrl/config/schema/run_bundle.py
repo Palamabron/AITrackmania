@@ -172,22 +172,6 @@ class PlayerRunsConfig(BaseModel):
         default=1,
         description="How many times each demo transition is duplicated into mixed batches.",
     )
-    demo_sampling_weight: Annotated[float, Field(ge=0.0)] = Field(
-        default=1.0,
-        description=(
-            "DEPRECATED / unused: not read by any training or memory code path. "
-            "Demo exposure is controlled by demo_min/max_batch_fraction instead."
-        ),
-    )
-    demo_weight_decay_samples: int = Field(
-        default=0,
-        ge=0,
-        description=("DEPRECATED / unused: not read by any training or memory code path."),
-    )
-    demo_weight_decay_slowdown: Annotated[float, Field(ge=0.0)] = Field(
-        default=1.0,
-        description=("DEPRECATED / unused: not read by any training or memory code path."),
-    )
     per_alpha: Annotated[float, Field(ge=0.0, le=1.0)] = Field(
         default=0.6,
         description="PER-style prioritization exponent when mixing demos with prioritized replay.",

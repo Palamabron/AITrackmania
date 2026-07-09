@@ -382,12 +382,6 @@ reward_shaping:
 # DEMO / PLAYER RUNS
 # =============================================================================
 demos:
-  player_runs.demo_sampling_weight:
-    baseline: 1.2
-    range: [0.0, 5.0]
-    scale: linear
-    notes: Weight for sampling demo transitions. Higher = more demo influence.
-
   player_runs.demo_max_batch_fraction:
     baseline: 0.25
     range: [0.0, 0.5]
@@ -399,12 +393,6 @@ demos:
     range: [0.0, 0.25]
     scale: linear
     notes: Min fraction of batch from demos. Ensures some imitation.
-
-  player_runs.demo_weight_decay_samples:
-    baseline: 1500000
-    range: [500000, 5000000]
-    scale: log
-    notes: Steps over which demo weight decays. Longer = demos matter longer.
 
 # =============================================================================
 # ENVIRONMENT / INTERFACE

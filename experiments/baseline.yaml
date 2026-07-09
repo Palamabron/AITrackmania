@@ -74,9 +74,6 @@ algorithm:
 player_runs:
   online_injection: true
   max_files_per_update: 6
-  demo_sampling_weight: 1.2
-  demo_weight_decay_samples: 1500000
-  demo_weight_decay_slowdown: 1.5
   demo_max_batch_fraction: 0.25
   demo_min_batch_fraction: 0.10
 
