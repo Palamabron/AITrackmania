@@ -68,6 +68,16 @@ LOG_STD_MIN = -20
 
 
 def mlp(sizes, activation, output_activation=torch.nn.Identity):
+    """Build an MLP as a ``torch.nn.Sequential`` module.
+
+    Args:
+        sizes: List of layer widths from input to output dimension.
+        activation: Activation class applied between hidden layers (instantiated with no args).
+        output_activation: Activation class applied after the last linear layer.
+
+    Returns:
+        torch.nn.Sequential: MLP module with alternating Linear and activation layers.
+    """
     layers = []
     for j in range(len(sizes) - 1):
         act = activation if j < len(sizes) - 2 else output_activation
@@ -76,13 +86,23 @@ def mlp(sizes, activation, output_activation=torch.nn.Identity):
 
 
 class MyActorModule(TorchActorModule):
-    """
-    Directly adapted from the Spinup implementation of SAC
+    """Stochastic actor network adapted from the Spinup SAC implementation.
+
+    Processes flat observations through an MLP and outputs actions sampled
+    from a squashed Gaussian (tanh-normal) distribution.
     """
 
     def __init__(
         self, observation_space, action_space, hidden_sizes=(256, 256), activation=torch.nn.ReLU
     ):
+        """Initialize actor network layers.
+
+        Args:
+            observation_space: Gymnasium observation space (Tuple of Boxes).
+            action_space: Gymnasium action space (Box).
+            hidden_sizes: Widths of the hidden MLP layers.
+            activation: Activation class for hidden layers.
+        """
         super().__init__(observation_space, action_space)
         dim_obs = sum(prod(s for s in space.shape) for space in observation_space)
         dim_act = action_space.shape[0]
@@ -93,6 +113,18 @@ class MyActorModule(TorchActorModule):
         self.act_limit = act_limit
 
     def forward(self, obs, test=False, with_logprob=True):
+        """Compute an action and optional log-probability from an observation.
+
+        Args:
+            obs: Batched observation tuple; tensors are concatenated along the last dim.
+            test: If True, return the deterministic mean action; otherwise sample.
+            with_logprob: If True, compute the tanh-squashed log probability.
+
+        Returns:
+            Tuple[torch.Tensor, Optional[torch.Tensor]]:
+                ``(action, log_prob)`` where ``log_prob`` is ``None`` when
+                ``with_logprob`` is False.
+        """
         net_out = self.net(torch.cat(obs, -1))
         mu = self.mu_layer(net_out)
         log_std = self.log_std_layer(net_out)
@@ -111,6 +143,15 @@ class MyActorModule(TorchActorModule):
         return pi_action, logp_pi
 
     def act(self, obs, test=False):
+        """Sample an action from the policy without gradient tracking.
+
+        Args:
+            obs: Observation (list/tuple of tensors or numpy arrays).
+            test: If True, return the deterministic mean action.
+
+        Returns:
+            numpy.ndarray: Action array on CPU.
+        """
         with torch.no_grad():
             a, _ = self.forward(obs, test, False)
             return a.cpu().numpy()
@@ -222,8 +263,13 @@ env_cls = partial(GenericGymEnv, id="real-time-gym-ts-v1", gym_kwargs={"config":
 
 
 def last_true_in_list(li):
-    """
-    Returns the index of the last True element in list li, or None.
+    """Return the index of the last ``True`` element in ``li``, or ``None``.
+
+    Args:
+        li: A list of values tested for truthiness.
+
+    Returns:
+        int | None: Index of the last truthy element, or ``None`` if none exist.
     """
     for i in reversed(range(len(li))):
         if li[i]:
@@ -232,6 +278,8 @@ def last_true_in_list(li):
 
 
 class MyMemory(TorchMemory):
+    """Custom replay buffer storing RC-drone transitions decomposed into parallel lists."""
+
     def __init__(
         self,
         act_buf_len=None,
@@ -242,7 +290,17 @@ class MyMemory(TorchMemory):
         batch_size=32,
         dataset_path="",
     ):
+        """Initialize the replay buffer.
 
+        Args:
+            act_buf_len: Number of past actions appended to each observation.
+            device: Torch device for training tensors.
+            nb_steps: N-step return horizon (passed to base class).
+            sample_preprocessor: Optional callable for data augmentation.
+            memory_size: Maximum number of transitions stored.
+            batch_size: Number of transitions per training batch.
+            dataset_path: Path to a pre-existing dataset to load on initialization.
+        """
         self.act_buf_len = act_buf_len  # length of the action buffer
 
         super().__init__(
@@ -256,9 +314,13 @@ class MyMemory(TorchMemory):
         )
 
     def append_buffer(self, buffer):
-        """
-        buffer.memory: list of compressed (act_mod, new_obs_mod, rew_mod,
-            terminated_mod, truncated_mod, info_mod) samples.
+        """Decompress and append a batch of transitions from a network buffer.
+
+        Args:
+            buffer: Object whose ``.memory`` attribute is a list of compressed
+                ``(act, obs, rew, terminated, truncated, info)`` tuples, where
+                ``obs`` contains ``[x_pos, y_pos, x_target, y_target, ...]``
+                and only the first four elements are used (action buffer stripped).
         """
 
         # decompose compressed samples into their relevant components:
@@ -315,6 +377,15 @@ class MyMemory(TorchMemory):
             self.data[9] = self.data[9][to_trim:]
 
     def __len__(self):
+        """Return the number of complete, sampleable transitions.
+
+        A transition is sampleable only when there are enough preceding actions to
+        reconstruct the action buffer; transitions within ``act_buf_len`` of the
+        first stored sample are excluded.
+
+        Returns:
+            int: Number of transitions that can be returned by :meth:`get_transition`.
+        """
         if len(self.data) == 0:
             return 0  # self.data is empty
         result = len(self.data[0]) - self.act_buf_len - 1
@@ -324,11 +395,17 @@ class MyMemory(TorchMemory):
             return result  # we can reconstruct that many samples
 
     def get_transition(self, item):
-        """
+        """Reconstruct a full RL transition from the stored parallel lists.
+
+        Handles edge cases where the action buffer window crosses an episode boundary
+        by replacing out-of-episode actions with the last known action before the reset.
+
         Args:
-            item: int: indice of the transition that the Trainer wants to sample
+            item: Index of the transition to sample.
+
         Returns:
-            full transition: (last_obs, new_act, rew, new_obs, terminated, truncated, info)
+            Tuple: ``(last_obs, new_act, rew, new_obs, terminated, truncated, info)``
+            where each observation is a tuple of position, target, and action-buffer values.
         """
         while True:  # this enables modifying item in edge cases
             # if item corresponds to a transition from a terminal state to a reset state
@@ -419,24 +496,57 @@ memory_cls = partial(MyMemory, act_buf_len=my_config["act_buf_len"])
 
 
 class MyCriticModule(torch.nn.Module):
+    """Single Q-network for action-value estimation."""
+
     def __init__(
         self, observation_space, action_space, hidden_sizes=(256, 256), activation=torch.nn.ReLU
     ):
+        """Initialize the Q-network MLP.
+
+        Args:
+            observation_space: Gymnasium observation space (Tuple of Boxes).
+            action_space: Gymnasium action space (Box).
+            hidden_sizes: Hidden layer widths.
+            activation: Activation class for hidden layers.
+        """
         super().__init__()
         obs_dim = sum(prod(s for s in space.shape) for space in observation_space)
         act_dim = action_space.shape[0]
         self.q = mlp([obs_dim + act_dim, *list(hidden_sizes), 1], activation)
 
     def forward(self, obs, act):
+        """Estimate the scalar Q-value for a state-action pair.
+
+        Args:
+            obs: Batched observation tuple (concatenated internally with ``act``).
+            act: Batched action tensor.
+
+        Returns:
+            torch.Tensor: Shape ``(batch,)`` Q-value estimates.
+        """
         x = torch.cat((*obs, act), -1)
         q = self.q(x)
         return torch.squeeze(q, -1)
 
 
 class MyActorCriticModule(torch.nn.Module):
+    """Actor-critic container holding one actor and two parallel Q-networks.
+
+    Using two critics (Q1 and Q2) and taking the minimum mitigates Q-value
+    overestimation bias in SAC.
+    """
+
     def __init__(
         self, observation_space, action_space, hidden_sizes=(256, 256), activation=torch.nn.ReLU
     ):
+        """Initialize actor and twin critic networks.
+
+        Args:
+            observation_space: Gymnasium observation space.
+            action_space: Gymnasium action space.
+            hidden_sizes: Shared hidden layer widths for actor and critics.
+            activation: Activation class for all hidden layers.
+        """
         super().__init__()
         self.actor = MyActorModule(
             observation_space, action_space, hidden_sizes, activation
@@ -450,6 +560,12 @@ class MyActorCriticModule(torch.nn.Module):
 
 
 class MyTrainingAgent(TrainingAgent):
+    """SAC training agent for the TMRL tutorial.
+
+    Implements entropy-regularized actor-critic training (SAC v1 with optional v2
+    entropy autotuning) as described in Haarnoja et al. (2018).
+    """
+
     model_nograd = cached_property(lambda self: no_grad(copy_shared(self.model)))
 
     def __init__(
@@ -467,6 +583,22 @@ class MyTrainingAgent(TrainingAgent):
         learn_entropy_coef=True,  # if True, SAC v2 is used, else, SAC v1 is used
         target_entropy=None,
     ):  # if None, the target entropy for SAC v2 is set automatically
+        """Initialize SAC training components.
+
+        Args:
+            observation_space: Gymnasium observation space.
+            action_space: Gymnasium action space.
+            device: Torch device for model and optimizer tensors.
+            model_cls: Actor-critic module class to instantiate.
+            gamma: Discount factor for future rewards.
+            polyak: Soft-update factor for the target critic (``1`` = no update).
+            alpha: Entropy coefficient; fixed in SAC v1, initial value in SAC v2.
+            lr_actor: Learning rate for the actor optimizer.
+            lr_critic: Learning rate for the critic optimizer.
+            lr_entropy: Learning rate for the entropy coefficient optimizer (SAC v2 only).
+            learn_entropy_coef: If ``True``, use SAC v2 entropy autotuning.
+            target_entropy: Target entropy for SAC v2 (``None`` sets it to ``-dim(A)``).
+        """
         super().__init__(
             observation_space=observation_space, action_space=action_space, device=device
         )
@@ -497,9 +629,29 @@ class MyTrainingAgent(TrainingAgent):
             self.alpha_t = torch.tensor(float(self.alpha)).to(self.device)
 
     def get_actor(self):
+        """Return a no-gradient copy of the current actor for dispatch to workers.
+
+        Returns:
+            ActorModule: Detached actor module (no gradient tracking).
+        """
         return self.model_nograd.actor
 
     def train(self, batch, epoch=None, batch_index=None, iters=None):
+        """Perform one SAC update step from a batch of transitions.
+
+        Updates critics, actor, and (if SAC v2) the entropy coefficient.
+        Polyak-averages the target critic toward the live critic after each step.
+
+        Args:
+            batch: Tuple ``(obs, act, rew, obs2, terminated, truncated)``.
+            epoch: Current epoch index (unused; for API compatibility).
+            batch_index: Batch index within the epoch (unused).
+            iters: Total iterations so far (unused).
+
+        Returns:
+            dict: Training metrics — always includes ``loss_actor`` and ``loss_critic``;
+                SAC v2 also adds ``loss_entropy_coef`` and ``entropy_coef``.
+        """
         o, a, r, o2, d, _ = batch  # ignore the truncated signal
         pi, logp_pi = self.model.actor(o)
         loss_alpha = None
@@ -611,16 +763,26 @@ if __name__ == "__main__":
 
 
 def run_worker(worker):
+    """Run the rollout worker (blocking, intended for a daemon thread).
+
+    Args:
+        worker: RolloutWorker instance to run.
+    """
     worker.run(test_episode_interval=10)
 
 
 def run_trainer(trainer):
+    """Run the trainer until the epoch limit is reached (blocking).
+
+    Args:
+        trainer: Trainer instance to run.
+    """
     trainer.run()
 
 
 if __name__ == "__main__":
     daemon_thread_worker = Thread(target=run_worker, args=(my_worker,), kwargs={}, daemon=True)
-    daemon_thread_worker.start()  # start the worker daemon thread
+    daemon_thread_worker.start()
 
     run_trainer(my_trainer)
 

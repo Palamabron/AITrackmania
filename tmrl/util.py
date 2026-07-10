@@ -182,10 +182,29 @@ class cached_property:  # noqa: N801
     """
 
     def __init__(self, init=None):
+        """Store the optional initializer called on first access.
+
+        Args:
+            init: Callable ``(instance) -> value`` used to populate the cache
+                on first access. If ``None``, accessing an uncached attribute
+                raises ``AttributeError``.
+        """
         self.cache = {}
         self.init = init
 
     def __get__(self, instance, owner):
+        """Return the cached value, calling ``self.init`` to populate on first access.
+
+        Args:
+            instance: The owning object.
+            owner: The owning class (unused).
+
+        Returns:
+            The cached value for ``instance``.
+
+        Raises:
+            AttributeError: If the cache is empty and no initializer was provided.
+        """
         if id(instance) not in self.cache:
             if self.init is None:
                 raise AttributeError()
@@ -193,6 +212,12 @@ class cached_property:  # noqa: N801
         return self.cache[id(instance)][0]
 
     def __set__(self, instance, value):
+        """Store ``value`` for ``instance`` and register a weakref for cache cleanup on GC.
+
+        Args:
+            instance: The owning object.
+            value: The value to cache.
+        """
         self.cache[id(instance)] = (
             value,
             weakref.ref(instance, functools.partial(self.cache.pop, id(instance))),
@@ -456,14 +481,28 @@ class DelayInterrupt:
     signals = (signal.SIGINT, signal.SIGTERM)
 
     def __enter__(self):
+        """Install signal handlers that record interrupt requests rather than raising them."""
         self.default_handlers = [signal.getsignal(s) for s in self.signals]
         [signal.signal(s, self.on_signal) for s in self.signals]
 
     def on_signal(self, *args):
+        """Record that a signal was received; the interrupt is deferred until ``__exit__``.
+
+        Args:
+            *args: Signal number and current stack frame (provided by the signal module).
+        """
         logger.info("tmrl.util:DelayInterrupt -- Signal received! {}", args)
         self.signal_received = True
 
     def __exit__(self, *args):
+        """Restore original handlers and re-raise as ``KeyboardInterrupt`` if a signal was received.
+
+        Args:
+            *args: Exception info from the ``with`` block (ignored).
+
+        Raises:
+            KeyboardInterrupt: If a deferred SIGINT or SIGTERM was recorded.
+        """
         [signal.signal(s, d) for s, d in zip(self.signals, self.default_handlers, strict=True)]
         if self.signal_received:
             raise KeyboardInterrupt()

@@ -286,6 +286,14 @@ def mlp(sizes, activation, output_activation=nn.Identity):
 
 # The next utility computes the dimensionality of CNN feature maps when flattened together:
 def num_flat_features(x):
+    """Compute the number of non-batch features in a tensor.
+
+    Args:
+        x: A batched tensor with shape ``(batch, d1, d2, ...)``.
+
+    Returns:
+        int: Product of all dimensions except the leading batch dimension.
+    """
     size = x.size()[1:]  # dimension 0 is the batch dimension, so it is ignored
     num_features = 1
     for s in size:
@@ -295,6 +303,19 @@ def num_flat_features(x):
 
 # The next utility computes the dimensionality of the output in a 2D CNN layer:
 def conv2d_out_dims(conv_layer, h_in, w_in):
+    """Compute the output spatial dimensions of a 2D convolution layer.
+
+    Uses the standard PyTorch formula for output size given stride, padding,
+    dilation, and kernel size.
+
+    Args:
+        conv_layer: A ``torch.nn.Conv2d`` instance.
+        h_in: Input height in pixels.
+        w_in: Input width in pixels.
+
+    Returns:
+        Tuple[int, int]: ``(h_out, w_out)`` output height and width.
+    """
     h_out = floor(
         (
             h_in
@@ -436,9 +457,23 @@ class TorchJSONDecoder(json.JSONDecoder):
     """
 
     def __init__(self, *args, **kwargs):
+        """Initialize the decoder with a custom object hook for tensor reconstruction.
+
+        Args:
+            *args: Positional arguments forwarded to ``json.JSONDecoder``.
+            **kwargs: Keyword arguments forwarded to ``json.JSONDecoder``.
+        """
         super().__init__(object_hook=self.object_hook, *args, **kwargs)  # noqa: B026
 
     def object_hook(self, dct):
+        """Convert list values in the decoded JSON object to ``torch.Tensor`` instances.
+
+        Args:
+            dct: Decoded JSON object with string keys.
+
+        Returns:
+            dict: Same dict with list values replaced by ``torch.Tensor`` instances.
+        """
         for key in dct:
             if isinstance(dct[key], list):
                 dct[key] = torch.Tensor(dct[key])
@@ -595,6 +630,12 @@ class VanillaCNNQFunction(nn.Module):
     """
 
     def __init__(self, observation_space, action_space):
+        """Initialize the Q-network using a VanillaCNN backbone with ``q_net=True``.
+
+        Args:
+            observation_space: Gymnasium observation space.
+            action_space: Gymnasium action space.
+        """
         super().__init__()
         self.net = VanillaCNN(q_net=True)  # q_net is True for a critic module
 
@@ -627,6 +668,12 @@ class VanillaCNNActorCritic(nn.Module):
     """
 
     def __init__(self, observation_space, action_space):
+        """Initialize one actor and two parallel critic networks.
+
+        Args:
+            observation_space: Gymnasium observation space.
+            action_space: Gymnasium action space.
+        """
         super().__init__()
 
         # Policy network (actor):
@@ -684,6 +731,19 @@ class SACTrainingAgent(TrainingAgent):
         lr_actor=1e-3,  # Learning rate for the actor
         lr_critic=1e-3,
     ):  # Learning rate for the critic
+        """Initialize SAC training components.
+
+        Args:
+            observation_space: Gymnasium observation space (for superclass and model).
+            action_space: Gymnasium action space (for superclass and model).
+            device: Torch device for model tensors (e.g. ``"cuda:0"``).
+            model_cls: Actor-critic module class; defaults to ``VanillaCNNActorCritic``.
+            gamma: Discount factor for future rewards.
+            polyak: Soft-update factor for the target critic.
+            alpha: Fixed entropy coefficient (SAC v1; no autotuning in this agent).
+            lr_actor: Learning rate for the actor optimizer.
+            lr_critic: Learning rate for the critic optimizer.
+        """
 
         # required arguments passed to the superclass:
         super().__init__(
@@ -860,6 +920,8 @@ if __name__ == "__main__":
 
     @dataclass
     class CompetitionCli:
+        """Simple CLI for launching competition pipeline components."""
+
         server: bool = False
         trainer: bool = False
         worker: bool = False

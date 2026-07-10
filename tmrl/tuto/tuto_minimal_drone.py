@@ -5,7 +5,6 @@ This script works out-of-the-box for real-time environments with flat continuous
 observations and actions.
 """
 
-# tutorial imports:
 from threading import Thread
 from typing import Any
 
@@ -14,8 +13,6 @@ from tmrl.custom.algorithms import SpinupSacAgent
 from tmrl.custom.memories import GenericTorchMemory
 from tmrl.custom.models import MLPActor, MLPActorCritic
 from tmrl.envs import GenericGymEnv
-
-# TMRL imports:
 from tmrl.networking import RolloutWorker, Server, Trainer
 from tmrl.training_offline import TorchTrainingOffline
 from tmrl.util import partial
@@ -216,16 +213,26 @@ if __name__ == "__main__":
 
 
 def run_worker(worker):
+    """Run the rollout worker with periodic test episodes (blocking, for a daemon thread).
+
+    Args:
+        worker: RolloutWorker instance to run.
+    """
     worker.run(test_episode_interval=10, verbose=True)
 
 
 def run_trainer(trainer):
+    """Run the trainer until the epoch limit is reached (blocking).
+
+    Args:
+        trainer: Trainer instance to run.
+    """
     trainer.run()
 
 
 if __name__ == "__main__":
     daemon_thread_worker = Thread(target=run_worker, args=(my_worker,), kwargs={}, daemon=True)
-    daemon_thread_worker.start()  # start the worker daemon thread
+    daemon_thread_worker.start()
 
     run_trainer(my_trainer)
 

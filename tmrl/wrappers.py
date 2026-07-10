@@ -1,8 +1,6 @@
-# standard library imports
 from collections.abc import Mapping, Sequence
 from typing import Any, cast
 
-# third-party imports
 import gymnasium
 import numpy as np
 
@@ -64,11 +62,24 @@ class Float64ToFloat32(gymnasium.ObservationWrapper):
     """Converts np.float64 arrays in the observations to np.float32 arrays."""
 
     def __init__(self, env):
+        """Initialize the wrapper and convert float Box spaces to float32.
+
+        Args:
+            env: The environment to wrap.
+        """
         super().__init__(env)
         self.observation_space = _space_to_float32(env.observation_space)
         self.action_space = _space_to_float32(env.action_space)
 
     def observation(self, observation):
+        """Cast all float64 numpy arrays in the observation to float32.
+
+        Args:
+            observation: Raw observation from the wrapped environment.
+
+        Returns:
+            Observation with the same structure, but float64 arrays replaced by float32.
+        """
         observation = deepmap(
             {
                 np.ndarray: float64_to_float32,
@@ -82,6 +93,14 @@ class Float64ToFloat32(gymnasium.ObservationWrapper):
         return observation
 
     def step(self, action):
+        """Step the environment; observations are cast to float32 by :meth:`observation`.
+
+        Args:
+            action: Action to pass to the wrapped environment.
+
+        Returns:
+            Tuple of (observation, reward, done, terminated, info) with float32 observations.
+        """
         observation, reward, done, terminated, info = super().step(action)
         return observation, reward, done, terminated, info
 
