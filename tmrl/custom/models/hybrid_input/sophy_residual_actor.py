@@ -137,6 +137,39 @@ class SquashedActorSophyResidual(TorchActorModule):
         gnn_hidden: int = 64,
         gnn_layers: int = 3,
     ):
+        """Construct the Sophy residual actor.
+
+        When ``split_track_observation=True`` and the observation space has more than
+        one sub-space whose first slot is divisible by ``_track_channels``, a separate
+        Conv1d / spline-MLP / GNN branch encodes the track geometry; the remaining
+        physics sub-spaces are encoded by a linear projection; both are concatenated
+        before the residual MLP backbone.  Otherwise a flat LayerNorm + backbone path
+        is used.
+
+        Args:
+            observation_space: Gymnasium observation space; iterable of sub-spaces.
+            action_space: Gymnasium action space; shape determines output dimension.
+            hidden_dim: Hidden width for physics projection and residual backbone.
+            num_blocks: Number of residual blocks (or SimbaV2 blocks) in the backbone.
+            seed: Random seed applied at construction time.
+            use_sde: Enable generalized State-Dependent Exploration.
+            log_std_init: Initial log-std for the gSDE exploration matrix.
+            sde_clip_mean: Pre-tanh mean clipping bound when using gSDE.
+            split_track_observation: Whether to route obs[0] through a track encoder.
+            use_rnn: Whether to add a GRU over the joint track+physics embedding.
+            rnn_hidden_size: GRU hidden size (defaults to hidden_dim).
+            track_encoder: Track encoder type: "conv1d", "spline_mlp", or a GTN key.
+            api_layernorm: Apply LayerNorm to the flat input when split_track=False.
+            binary_brake: Treat the third action dimension as a discrete brake signal
+                sampled via Gumbel-softmax during training and argmax during test.
+            init_gas_bias: Initial bias for mu_layer[0] (gas/throttle output).
+            output_dropout: Dropout probability applied after the head projection.
+            r2d2_sequence_length: Sequence length for R2D2 burn-in protocol (0=off).
+            r2d2_burn_in: Burn-in length within each R2D2 sequence (0=off).
+            use_simbav2: Use SimbaV2 backbone instead of plain residual MLP.
+            gnn_hidden: Hidden dim for the GTN graph encoder (track_encoder="gtn").
+            gnn_layers: Number of GNN message-passing layers.
+        """
         super().__init__(observation_space, action_space)
         torch.manual_seed(seed)
 
@@ -231,6 +264,15 @@ class SquashedActorSophyResidual(TorchActorModule):
             self.sde.reset_noise(batch_size)
 
     def load_from_bytes(self, payload: bytes, device) -> bool:
+        """Load weights and re-sample the gSDE noise matrix if enabled.
+
+        Args:
+            payload: Serialised state dict bytes.
+            device: Target device for weight loading.
+
+        Returns:
+            True on success, False if loading was skipped.
+        """
         ok = super().load_from_bytes(payload, device)
         if ok:
             self.reset_noise()
@@ -347,8 +389,21 @@ class SquashedActorSophyResidual(TorchActorModule):
         logp -= corr.sum(axis=1)
         return logp
 
-    def _policy_head_standard(self, out, mu, test, with_logprob):
-        """Standard Gaussian + tanh policy head."""
+    def _policy_head_standard(
+        self, out: torch.Tensor, mu: torch.Tensor, test: bool, with_logprob: bool
+    ):
+        """Standard Gaussian + tanh policy head.
+
+        Args:
+            out: Backbone feature vector of shape (N, hidden_dim).
+            mu: Pre-tanh mean from mu_layer, shape (N, _cont_dim).
+            test: If True, use mu directly (no sampling).
+            with_logprob: If True, compute tanh-corrected log-probability.
+
+        Returns:
+            Tuple of (squashed_action, logp_pi, pre_tanh_action) where squashed_action
+            has shape (N, _cont_dim), logp_pi is a scalar tensor or None.
+        """
         log_std_layer = self.log_std_layer
         assert log_std_layer is not None
         log_std = log_std_layer(out)
@@ -385,7 +440,26 @@ class SquashedActorSophyResidual(TorchActorModule):
             logp_pi = self._squash_log_prob(logp_pi, pi_action)
         return torch.tanh(pi_action) * self.act_limit, logp_pi, pi_action
 
-    def forward(self, observation, test=False, with_logprob=True, **kwargs):
+    def forward(self, observation, test: bool = False, with_logprob: bool = True, **kwargs):
+        """Sample an action from the squashed Gaussian policy.
+
+        Delegates feature extraction to :meth:`_compute_features`, then routes through
+        either the standard or gSDE policy head depending on ``use_sde``.  When
+        ``binary_brake=True``, the brake dimension is treated as a discrete variable
+        (Gumbel-softmax during training, argmax during test) and fused with the
+        continuous gas/steer outputs.
+
+        Args:
+            observation: Observation tuple or tensor; layout depends on track encoder.
+            test: If True, return the deterministic (mean) action.
+            with_logprob: If True, compute and return the tanh-corrected log-probability.
+            **kwargs: Optional ``return_pre_tanh_mean`` (bool); if True, the tuple
+                (action, logp_pi, pre_tanh_mu) is returned for L2 mean regularisation.
+
+        Returns:
+            (action, logp_pi) or (action, logp_pi, mu) when return_pre_tanh_mean=True.
+            action has shape (dim_act,) after squeeze.
+        """
         out = self._compute_features(observation)
         mu = self.mu_layer(out)
 

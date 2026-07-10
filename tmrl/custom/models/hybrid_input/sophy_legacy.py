@@ -39,18 +39,13 @@ def mlp(sizes, dim_obs, activation=nn.ReLU):
         torch.nn.Sequential: The constructed MLP.
     """
 
-    # Start with the input layer size
     layers = [nn.Linear(dim_obs, sizes[0]), activation()]
 
-    # Create each layer and add to the list
     for i in range(1, len(sizes)):
         layers.append(nn.Linear(sizes[i - 1], sizes[i]))
         layers.append(activation())
 
-    # Build the sequential model
-    model = nn.Sequential(*layers)
-
-    return model
+    return nn.Sequential(*layers)
 
 
 @MODELS.register("sophy_critic")

@@ -40,7 +40,19 @@ _GNN_TRACK_FEATURES_PER_POINT = TRACK_CHANNELS_GTN
 def _gnn_effnet_sophy_residual_backbone(
     input_dim: int, hidden_dim: int, num_blocks: int
 ) -> nn.Module:
-    """Residual MLP with LN after input projection and each residual sum."""
+    """Residual MLP with LayerNorm after the input projection and each residual sum.
+
+    Scale factor ``1 / sqrt(num_blocks)`` keeps residual branch magnitudes bounded
+    as depth increases (following T-Fixup / μP intuition).
+
+    Args:
+        input_dim: Input feature dimension fed into the first linear layer.
+        hidden_dim: Width of all hidden layers and residual blocks.
+        num_blocks: Number of ``ResidualMLPBlock`` stages appended after the projection.
+
+    Returns:
+        Sequential module mapping (N, input_dim) -> (N, hidden_dim).
+    """
     scale = 1.0 / max(1, num_blocks) ** 0.5
     layers: list[nn.Module] = [
         nn.Linear(input_dim, hidden_dim),
@@ -71,7 +83,12 @@ def _ensure_image_4d(imgs: torch.Tensor, image_index: int) -> None:
 
 
 class _GnnEffNetJointFeaturesMixin:
-    """Shared feature extraction for GNN + EfficientNet + Sophy models."""
+    """Shared feature extraction for GNN + EfficientNet + Sophy models.
+
+    Provides :meth:`_joint_features` and :meth:`_apply_rnn` for both the actor
+    and critic to use without code duplication.  Concrete sub-classes must populate
+    the declared class attributes during ``__init__`` before calling these methods.
+    """
 
     _image_index: int
     _dim_track: int
@@ -85,6 +102,18 @@ class _GnnEffNetJointFeaturesMixin:
     layernorm_joint: nn.Module
 
     def _joint_features(self, obs, batch_size: int) -> torch.Tensor:
+        """Encode track (GNN), image (EffNet + proj), and physics (linear) and concatenate.
+
+        Observation layout: obs[0]=track, obs[1:image_index]=physics, obs[image_index]=image.
+        Track is reshaped to (N, _GNN_TRACK_FEATURES_PER_POINT, n_points) before the GNN.
+
+        Args:
+            obs: List of observation tensors for the current batch.
+            batch_size: Number of samples in the batch.
+
+        Returns:
+            Joint embedding of shape (N, track_hidden + embed_dim + physics_hidden).
+        """
         track = ensure_float(obs[0].view(batch_size, -1)).view(
             batch_size,
             _GNN_TRACK_FEATURES_PER_POINT,
@@ -99,6 +128,19 @@ class _GnnEffNetJointFeaturesMixin:
         return torch.cat([track_embed, img_embed, physics_embed], dim=-1)
 
     def _apply_rnn(self, joint: torch.Tensor, batch_size: int) -> torch.Tensor:
+        """Optionally pass the joint embedding through the GRU.
+
+        When ``r2d2_sequence_length > 0`` and ``batch_size`` is divisible by it,
+        the batch is reshaped to (num_sequences, seq_len, dim) for sequential GRU
+        processing.  Otherwise a single-step unsqueeze/squeeze is used.
+
+        Args:
+            joint: Joint embedding of shape (N, joint_dim).
+            batch_size: Number of samples (equals N).
+
+        Returns:
+            GRU output of shape (N, rnn_hidden) or the input unchanged if use_rnn=False.
+        """
         if not self._use_rnn or self.rnn is None:
             return joint
         seq_len = int(self._r2d2_sequence_length)
@@ -142,6 +184,34 @@ class SquashedActorGnnEffNetSophyResidual(_GnnEffNetJointFeaturesMixin, TorchAct
         init_gas_bias: float = 0.0,
         r2d2_sequence_length: int = 0,
     ):
+        """Construct the GNN + EffNet + Sophy residual actor.
+
+        Observation layout is inferred from the observation space:
+        index 0 is the track geometry (GNN input), the image is at ``image_index``
+        (auto-detected), and everything else is physics.
+
+        Args:
+            observation_space: Full observation space; iterable of sub-spaces.
+            action_space: Gymnasium action space.
+            hidden_dim: Hidden width for track GNN output, physics projection,
+                and residual backbone.
+            num_blocks: Number of residual blocks in the backbone.
+            embed_dim: EfficientNet encoder output dimension.
+            width_mult: EfficientNet channel multiplier.
+            variant: EfficientNet-V2 variant identifier.
+            use_dw_stem: Depthwise stem in EffNet.
+            use_frozen_effnet: If True, freeze EffNet weights.
+            seed: Random seed.
+            use_sde: Enable gSDE.
+            log_std_init: gSDE initial log-std.
+            sde_clip_mean: Pre-tanh mean clipping for gSDE.
+            use_rnn: Whether to add a GRU over the joint embedding.
+            rnn_hidden_size: GRU hidden size (defaults to hidden_dim).
+            binary_brake: Discrete brake head via Gumbel-softmax.
+            output_dropout: Dropout after head projection.
+            init_gas_bias: Initial bias for the gas (throttle) output.
+            r2d2_sequence_length: Sequence length for R2D2 GRU unrolling (0=off).
+        """
         super().__init__(observation_space, action_space)
         torch.manual_seed(seed)
         self.use_sde = use_sde
@@ -230,6 +300,16 @@ class SquashedActorGnnEffNetSophyResidual(_GnnEffNetJointFeaturesMixin, TorchAct
 
     @staticmethod
     def _squash_log_prob(logp: torch.Tensor, pre_tanh_action: torch.Tensor) -> torch.Tensor:
+        """Apply tanh squash correction to Gaussian log prob (SAC appendix C).
+
+        Args:
+            logp: Un-corrected log-probability tensor of shape (N,).
+            pre_tanh_action: Pre-tanh action sample of shape (N, dim_act),
+                already clamped to ``_SQUASH_LOGPROB_CLAMP`` by the caller.
+
+        Returns:
+            Corrected log-probability tensor of shape (N,).
+        """
         corr = 2 * (_LOG2 - pre_tanh_action - F.softplus(-2 * pre_tanh_action))
         logp -= corr.sum(dim=1)  # type: ignore[call-overload]
         return logp
@@ -237,7 +317,22 @@ class SquashedActorGnnEffNetSophyResidual(_GnnEffNetJointFeaturesMixin, TorchAct
     # Clamp pre-tanh to avoid -inf/NaN in squash log-prob correction when action is extreme
     _SQUASH_LOGPROB_CLAMP = 20.0
 
-    def _policy_head_standard(self, out, mu, test, with_logprob):
+    def _policy_head_standard(
+        self, out: torch.Tensor, mu: torch.Tensor, test: bool, with_logprob: bool
+    ):
+        """Standard Gaussian + tanh policy head.
+
+        Args:
+            out: Backbone feature vector of shape (N, hidden_dim).
+            mu: Pre-tanh mean from mu_layer, shape (N, _cont_dim).
+            test: If True, use mu directly (no sampling).
+            with_logprob: If True, compute tanh-corrected log-probability with
+                pre-tanh action clamped to ``_SQUASH_LOGPROB_CLAMP`` for numerical
+                stability.
+
+        Returns:
+            Tuple of (squashed_action, logp_pi, pre_tanh_action).
+        """
         log_std_layer = self.log_std_layer
         assert log_std_layer is not None
         log_std = log_std_layer(out).float()
@@ -278,7 +373,24 @@ class SquashedActorGnnEffNetSophyResidual(_GnnEffNetJointFeaturesMixin, TorchAct
             logp_pi = self._squash_log_prob(logp_pi, pi_action_for_corr)
         return torch.tanh(pi_action) * self.act_limit, logp_pi, pi_action
 
-    def forward(self, obs, test=False, with_logprob=True, **kwargs):
+    def forward(self, obs, test: bool = False, with_logprob: bool = True, **kwargs):
+        """Sample an action from the squashed Gaussian policy.
+
+        Extracts joint features via :meth:`_joint_features`, optionally passes them
+        through the GRU, normalises, runs the residual backbone, then routes through
+        the standard or gSDE policy head.  When ``binary_brake=True`` the brake
+        dimension is discrete.
+
+        Args:
+            obs: Observation tuple with track at [0], physics at [1:image_index], and
+                image at [image_index].
+            test: If True, return the deterministic mean action.
+            with_logprob: If True, compute and return the log-probability.
+            **kwargs: Optional ``return_pre_tanh_mean`` (bool).
+
+        Returns:
+            (action, logp_pi) or (action, logp_pi, mu). action shape: (dim_act,).
+        """
         if isinstance(obs, (tuple, list)):
             obs = list(obs)
         batch_size = obs[0].shape[0]
@@ -324,7 +436,16 @@ class SquashedActorGnnEffNetSophyResidual(_GnnEffNetJointFeaturesMixin, TorchAct
                 return pi_action.squeeze(), logp_pi, mu
             return pi_action.squeeze(), logp_pi
 
-    def act(self, obs, test=False):
+    def act(self, obs, test: bool = False):
+        """Return a numpy action for the rollout worker (no-grad, CPU).
+
+        Args:
+            obs: Observation tuple as expected by :meth:`forward`.
+            test: If True, use the deterministic mean action.
+
+        Returns:
+            numpy.ndarray of shape (dim_act,).
+        """
         obs_seq = list(obs)
         with torch.no_grad():
             a, _ = self.forward(obs_seq, test=test, with_logprob=False)
@@ -357,6 +478,26 @@ class QRCNNGnnEffNetSophyResidual(_GnnEffNetJointFeaturesMixin, nn.Module):
         output_dropout: float = 0.0,
         r2d2_sequence_length: int = 0,
     ):
+        """Construct the GNN + EffNet + Sophy residual critic.
+
+        Args:
+            observation_space: Full observation space; iterable of sub-spaces.
+            action_space: Gymnasium action space.
+            hidden_dim: Hidden width for track GNN, physics projection, and backbone.
+            num_blocks: Number of residual blocks in the backbone.
+            embed_dim: EfficientNet encoder output dimension.
+            width_mult: EfficientNet channel multiplier.
+            variant: EfficientNet-V2 variant identifier.
+            use_dw_stem: Depthwise stem in EffNet.
+            use_frozen_effnet: If True, freeze EffNet weights.
+            seed: Random seed.
+            quantiles_number: Number of quantile outputs per sample.
+            use_rnn: Add a GRU over the joint embedding.
+            rnn_hidden_size: GRU hidden size (defaults to hidden_dim).
+            noisy_linear_critic: Replace the output linear with NoisyLinear.
+            output_dropout: Dropout after head projection.
+            r2d2_sequence_length: Sequence length for R2D2 GRU unrolling (0=off).
+        """
         super().__init__()
         torch.manual_seed(seed)
         self._r2d2_sequence_length = r2d2_sequence_length
@@ -418,7 +559,20 @@ class QRCNNGnnEffNetSophyResidual(_GnnEffNetJointFeaturesMixin, nn.Module):
             self.model_out = nn.Linear(hidden_dim, self.num_quantiles)
         self.dropout = nn.Dropout(output_dropout) if output_dropout > 0.0 else None
 
-    def forward(self, observation, act):
+    def forward(self, observation, act: torch.Tensor) -> torch.Tensor:
+        """Compute quantile Q-values for an (observation, action) pair.
+
+        Encodes joint track + image + physics features, passes them through the
+        residual backbone, concatenates the action, and projects to quantile values.
+
+        Args:
+            observation: Observation tuple with track at [0], physics at [1:image_index],
+                and image at [image_index].
+            act: Action tensor of shape (N, dim_act).
+
+        Returns:
+            Q-value tensor of shape (N,) or (N, quantiles_number).
+        """
         if isinstance(observation, (tuple, list)):
             observation = list(observation)
         batch_size = observation[0].shape[0]
@@ -455,6 +609,24 @@ class GnnEffNetSophyResidualActorCritic(nn.Module):
         log_std_init: float = -3.0,
         sde_clip_mean: float = 2.0,
     ):
+        """Construct the actor-critic with one actor and two independent critics.
+
+        Args:
+            observation_space: Passed through to actor and both critics.
+            action_space: Passed through to actor and both critics.
+            hidden_dim: Residual backbone hidden width.
+            num_blocks_actor: Residual blocks in the actor backbone.
+            num_blocks_critic: Residual blocks in each critic backbone.
+            embed_dim: EfficientNet output dimension.
+            width_mult: EfficientNet channel multiplier.
+            variant: EfficientNet-V2 variant identifier.
+            use_dw_stem: Depthwise stem in EffNet.
+            use_frozen_effnet: Freeze EffNet weights.
+            seed: Base random seed (critics use seed+1 and seed+2).
+            use_sde: Enable gSDE in the actor.
+            log_std_init: gSDE initial log-std.
+            sde_clip_mean: Pre-tanh mean clipping for gSDE.
+        """
         super().__init__()
         self.actor = SquashedActorGnnEffNetSophyResidual(
             observation_space,
@@ -496,6 +668,15 @@ class GnnEffNetSophyResidualActorCritic(nn.Module):
             seed=seed + 2,
         )
 
-    def act(self, obs, test=False):
+    def act(self, obs, test: bool = False):
+        """Return a numpy action using the actor (no-grad, CPU).
+
+        Args:
+            obs: Observation tuple as expected by the actor.
+            test: If True, use the deterministic mean action.
+
+        Returns:
+            numpy.ndarray of shape (dim_act,).
+        """
         with torch.no_grad():
             return self.actor.act(obs, test=test)

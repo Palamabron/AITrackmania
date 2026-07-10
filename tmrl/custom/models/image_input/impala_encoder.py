@@ -1,3 +1,9 @@
+"""IMPALA-style CNN encoder registered as ``impala_cnn``.
+
+The encoder stacks residual convolutional blocks with inter-block skip connections,
+followed by a fully-connected projection to a fixed-size embedding.
+"""
+
 import random
 
 import numpy as np
@@ -10,6 +16,24 @@ from tmrl.registry import MODELS
 
 @MODELS.register("impala_cnn")
 class CNNModule(nn.Module):
+    """IMPALA-inspired residual CNN that encodes a stack of game frames to a 1-D embedding.
+
+    Each ``cnn_filters`` stage is a residual block with MaxPool downsampling followed by
+    two grouped convolution pairs. Skip connections are added every two stages when the
+    spatial dimensions still match. Weights are initialised with Kaiming-normal.
+
+    Pairs with ``impala_qr_actor`` / ``impala_qr_critic`` / ``impala_ac`` in the registry.
+
+    Args:
+        mlp_out_size: Width of the final linear projection (embedding dimension).
+        activation: Activation class used throughout the convolutional blocks.
+        seed: Random seed applied to Python, NumPy, and PyTorch for reproducibility.
+        img_height: Spatial height of the input image in pixels.
+        img_width: Spatial width of the input image in pixels.
+        img_hist_len: Number of stacked frames (input channels to the first conv).
+        cnn_filters: Channel widths for each residual stage. Defaults to [64, 64, 128, 128].
+    """
+
     def __init__(
         self,
         mlp_out_size: int = 256,
@@ -20,6 +44,21 @@ class CNNModule(nn.Module):
         img_hist_len: int = 4,
         cnn_filters: list[int] | None = None,
     ):
+        """Construct the IMPALA CNN encoder and compute the flattened feature dimension.
+
+        Builds each residual stage as an ``nn.Sequential`` stored in
+        ``self.conv_blocks``, then uses :meth:`flattendim` to derive the number of
+        flat features fed into ``self.fc1`` without running a dummy forward pass.
+
+        Args:
+            mlp_out_size: Output embedding dimension of the final linear layer.
+            activation: Activation class instantiated inside each residual block.
+            seed: Seed for Python, NumPy and PyTorch RNGs and cuDNN determinism flags.
+            img_height: Input image height in pixels.
+            img_width: Input image width in pixels.
+            img_hist_len: Number of stacked frames (first-layer input channels).
+            cnn_filters: Per-stage output channels. Defaults to [64, 64, 128, 128].
+        """
         super().__init__()
         torch.manual_seed(seed)
         np.random.seed(seed)
@@ -42,10 +81,10 @@ class CNNModule(nn.Module):
         filters = cnn_filters
 
         def calculate_output_size(h_w, kernel_size, stride, padding, pool_kernel=3, pool_stride=2):
+            """Compute (h, w) after one conv + one max-pool step."""
             h, w = h_w
             h = (h + 2 * padding - kernel_size) // stride + 1
             w = (w + 2 * padding - kernel_size) // stride + 1
-
             h = (h - pool_kernel) // pool_stride + 1
             w = (w - pool_kernel) // pool_stride + 1
             return h, w
@@ -110,7 +149,19 @@ class CNNModule(nn.Module):
         self.fc1 = nn.Linear(in_features=flat_features, out_features=mlp_out_size)
         self.initialize_weights()
 
-    def flattendim(self, input_shape):
+    def flattendim(self, input_shape: tuple) -> int:
+        """Trace tensor shapes through all conv/pool layers and return the flat feature count.
+
+        Does not allocate any tensors; walks the ``conv_blocks`` module tree and
+        applies the standard output-size formulae for ``nn.Conv2d`` and ``nn.MaxPool2d``,
+        including ``padding="same"`` expansion.
+
+        Args:
+            input_shape: (C, H, W) of the encoder input before any convolution.
+
+        Returns:
+            Total number of scalar features after flattening the final feature map.
+        """
         temp_shape = list(input_shape)
         for seq in self.conv_blocks:
             for module in seq:  # type: ignore[attr-defined]
@@ -158,13 +209,27 @@ class CNNModule(nn.Module):
 
         return int(np.prod(np.array(temp_shape)))
 
-    def initialize_weights(self):
+    def initialize_weights(self) -> None:
+        """Apply Kaiming-normal initialisation to all Conv2d layers and the final fc."""
         for m in self.conv_blocks:
             if isinstance(m, torch.nn.Conv2d):
                 init_kaiming(m)
         init_kaiming(self.fc1)
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Encode a batch of stacked frames to a fixed-length embedding.
+
+        Normalises pixel values to [0, 1], then passes through each residual stage.
+        A skip connection is added every two stages when the spatial dimensions still
+        match (checked per H and W independently), so the first stage never receives
+        a residual addition.
+
+        Args:
+            x: Input tensor of shape (N, img_hist_len, H, W), pixel values in [0, 255].
+
+        Returns:
+            Embedding tensor of shape (N, mlp_out_size) after ReLU activation.
+        """
         x /= 255.0
         residual = None
         for i, layer in enumerate(self.conv_blocks):

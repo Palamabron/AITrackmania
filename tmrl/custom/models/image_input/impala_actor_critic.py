@@ -1,3 +1,11 @@
+"""IMPALA QR-CNN actor-critic registered as ``impala_ac``.
+
+Combines the IMPALA CNN encoder (``CNNModule``) with a two-branch LSTM architecture:
+one branch processes flattened scalar observations via MLP + LSTM, the other fuses the
+CNN embedding and optionally an action vector through a second LSTM, and finally
+projects to quantile Q-values or a squashed Gaussian policy.
+"""
+
 import math
 import random
 
@@ -18,6 +26,15 @@ from tmrl.registry import MODELS
 
 @MODELS.register("impala_qr_critic")
 class QRCNNQFunction(nn.Module):
+    """Quantile-regression Q-function built on an IMPALA CNN encoder.
+
+    Architecture: CNN branch processes game frames; an MLP + LSTM branch processes
+    flattened scalar observations; both are fused through a second LSTM before a
+    linear head outputs ``quantiles_number`` quantile estimates per sample.
+
+    Pairs with ``SquashedActorQRCNN`` and ``QRCNNActorCritic`` in the registry.
+    """
+
     def __init__(
         self,
         observation_space,
@@ -35,6 +52,27 @@ class QRCNNQFunction(nn.Module):
         output_dropout: float = 0.0,
         grayscale: bool = False,
     ):
+        """Construct the QR-CNN Q-function.
+
+        The image observation is assumed to sit at index -3 of the observation tuple.
+        Its flattened dimension is subtracted from ``dim_obs`` before the scalar branch.
+
+        Args:
+            observation_space: Gymnasium observation space; iterable of sub-spaces.
+            action_space: Gymnasium action space; its shape determines the action dim.
+            rnn_sizes: Hidden sizes for the two LSTM layers. Defaults to [64, 64].
+            rnn_lens: Number of stacked layers for each LSTM. Defaults to [1, 1].
+            mlp_branch_sizes: Hidden widths of the scalar MLP branch. Defaults to [256].
+            activation: Activation class used in the MLP branch.
+            seed: Random seed for reproducibility (also sets cuDNN flags).
+            quantiles_number: Number of quantile outputs per sample.
+            api_layernorm: Apply LayerNorm to concatenated scalar observations.
+            mlp_layernorm: Apply LayerNorm after the scalar MLP branch.
+            rnn_dropout: Dropout between LSTM layers in the fusion LSTM.
+            noisy_linear_critic: Replace the output linear with NoisyLinear.
+            output_dropout: Dropout rate applied to the final output.
+            grayscale: If True, skip the (N,H,W,C) -> (N,C,H,W) permute.
+        """
         super().__init__()
         torch.manual_seed(seed)
         np.random.seed(seed)
@@ -95,7 +133,20 @@ class QRCNNQFunction(nn.Module):
         self.rnn_lens = list(rnn_lens)
         self.img_index = -3
 
-    def forward(self, observation, act, save_hidden=False):
+    def forward(self, observation, act: torch.Tensor, save_hidden: bool = False) -> torch.Tensor:
+        """Compute quantile Q-values for a batch of (observation, action) pairs.
+
+        Args:
+            observation: Observation tuple; index -3 must be the image tensor of shape
+                (N, H, W, C) for colour or (N, C, H, W) when grayscale=True.
+            act: Action tensor of shape (N, dim_act).
+            save_hidden: If True, persist LSTM hidden states across calls for
+                sequential rollout (worker side). If False, use zero initial states.
+
+        Returns:
+            Q-value tensor of shape (N,) or (N, quantiles_number) when
+            quantiles_number > 1.
+        """
         self.rnn_block_api.flatten_parameters()
         self.rnn_block_cat.flatten_parameters()
 
@@ -173,7 +224,14 @@ class QRCNNQFunction(nn.Module):
 
 @MODELS.register("impala_qr_actor")
 class SquashedActorQRCNN(TorchActorModule):
-    """Squashed Gaussian policy over QRCNN features; default args must match config."""
+    """Squashed Gaussian actor built on an IMPALA CNN encoder.
+
+    Mirrors the two-branch LSTM architecture of ``QRCNNQFunction`` but outputs
+    mean and log-std for a tanh-squashed Normal distribution instead of quantile values.
+    Stateful hidden-state caching is supported for sequential rollout via ``act()``.
+
+    Pairs with ``QRCNNQFunction`` inside ``QRCNNActorCritic``.
+    """
 
     def __init__(
         self,
@@ -191,6 +249,23 @@ class SquashedActorQRCNN(TorchActorModule):
         output_dropout: float = 0.0,
         grayscale: bool = False,
     ):
+        """Construct the QRCNN actor.
+
+        Args:
+            observation_space: Gymnasium observation space; iterable of sub-spaces.
+            action_space: Gymnasium action space; shape determines output dimension.
+            rnn_sizes: Hidden sizes for the two LSTM layers. Defaults to [64, 64].
+            rnn_lens: Number of stacked layers for each LSTM. Defaults to [1, 1].
+            mlp_branch_sizes: Hidden widths of the scalar MLP branch. Defaults to [256].
+            activation: Activation class used in the MLP branch.
+            seed: Random seed for reproducibility (also sets cuDNN flags).
+            api_layernorm: Apply LayerNorm to concatenated scalar observations.
+            mlp_layernorm: Apply LayerNorm after the scalar MLP branch.
+            rnn_dropout: Dropout between layers in the fusion LSTM.
+            noisy_linear_actor: Replace the output linear with NoisyLinear.
+            output_dropout: Dropout rate applied before the policy head.
+            grayscale: If True, skip the (N,H,W,C) -> (N,C,H,W) permute.
+        """
         super().__init__(observation_space, action_space)
         torch.manual_seed(seed)
         np.random.seed(seed)
@@ -256,7 +331,22 @@ class SquashedActorQRCNN(TorchActorModule):
         self.rnn_lens = list(rnn_lens)
         self.img_index = -3
 
-    def forward(self, observation, test=False, with_logprob=True, save_hidden=False):
+    def forward(
+        self, observation, test: bool = False, with_logprob: bool = True, save_hidden: bool = False
+    ):
+        """Sample an action from the squashed Gaussian policy.
+
+        Args:
+            observation: Observation tuple; index -3 must be the image tensor of shape
+                (N, H, W, C) for colour or (N, C, H, W) when grayscale=True.
+            test: If True, return the deterministic mean action instead of sampling.
+            with_logprob: If True, compute and return the tanh-corrected log-probability.
+            save_hidden: If True, persist LSTM hidden states for sequential rollout.
+
+        Returns:
+            Tuple of (action, logp_pi) where action has shape (dim_act,) after squeeze
+            and logp_pi is a scalar tensor or None when with_logprob=False.
+        """
         self.rnn_block_api.flatten_parameters()
         self.rnn_block_cat.flatten_parameters()
 
@@ -355,7 +445,16 @@ class SquashedActorQRCNN(TorchActorModule):
 
         return pi_action, logp_pi
 
-    def act(self, obs: tuple, test=False):
+    def act(self, obs: tuple, test: bool = False):
+        """Return a numpy action for the rollout worker (no-grad, stateful hidden states).
+
+        Args:
+            obs: Observation tuple as expected by :meth:`forward`.
+            test: If True, use the deterministic mean action.
+
+        Returns:
+            numpy.ndarray of shape (dim_act,).
+        """
         obs_seq = list(obs)
         with torch.no_grad():
             a, _ = self.forward(
@@ -378,6 +477,17 @@ class QRCNNActorCritic(nn.Module):
         activation=nn.ReLU,
         seed: int = 42,
     ):
+        """Construct the QRCNN actor-critic with one actor and two independent critics.
+
+        Args:
+            observation_space: Gymnasium observation space passed to actor and critics.
+            action_space: Gymnasium action space passed to actor and critics.
+            rnn_sizes: Hidden sizes for the LSTM layers (default [64, 64]).
+            rnn_lens: Number of stacked layers per LSTM (default [1, 1]).
+            mlp_branch_sizes: Hidden widths of the scalar MLP branch (default [256]).
+            activation: Activation class used throughout.
+            seed: Random seed applied to all three sub-networks (critics use seed+1/+2).
+        """
         super().__init__()
         torch.manual_seed(seed)
         np.random.seed(seed)
