@@ -17,12 +17,31 @@ from tmrl.util import collate_torch
 
 
 class R2D2Memory(Memory, ABC):
-    """
-    Partial implementation of the `Memory` class collating samples into batched torch tensors.
+    """Episode-aware replay memory for R2D2 and recurrent RL algorithms.
 
-    .. note::
-       When overriding `__init__`, don't forget to call `super().__init__` in the subclass.
-       Your `__init__` method needs to take at least all the arguments of the superclass.
+    Extends :class:`~tmrl.memory.base.Memory` with sequential episode sampling,
+    burn-in, prioritized experience replay (PER), and demo mixing.
+
+    Sampling strategy (evaluated in priority order):
+
+    1. **PER TD** (``per_td_enabled=True``): sequences sampled proportionally
+       to summed TD-error priorities raised to ``per_td_alpha``.
+    2. **I.i.d. sequences** (``r2d2_num_sequences > 0`` and
+       ``r2d2_sequence_length > 0``): ``r2d2_num_sequences`` independent
+       sub-sequences of ``r2d2_sequence_length`` steps drawn from distinct
+       episodes weighted by cumulative reward.
+    3. **Contiguous window** (fallback): a sliding window of ``batch_size``
+       consecutive transitions within a single episode, stepping forward by
+       ``batch_size * (1 - r2d2_rewind)`` each call.
+
+    Episode boundaries are detected by scanning the reward column at
+    ``rewards_index`` for zero-sum entries.  Subclasses must set this index
+    correctly in ``append_buffer``.
+
+    Note:
+        When subclassing, call ``super().__init__`` and accept at least all
+        arguments of this class.  Set ``self.min_samples`` *before* calling
+        ``super().__init__`` if your subclass requires it.
     """
 
     def __init__(
@@ -49,6 +68,45 @@ class R2D2Memory(Memory, ABC):
         discrete_n_steer_bins: int = 0,
         n_step_return: int = 1,
     ):
+        """Initialize R2D2Memory.
+
+        Args:
+            device: Device to collate output tensors to.
+            nb_steps: Number of steps per training round.
+            sample_preprocessor: Optional data-augmentation callable applied to
+                each sampled batch element.
+            memory_size: Maximum number of transitions in the circular buffer.
+            batch_size: Number of transitions per sampled batch.
+            dataset_path: Path to an offline dataset pickle to preload on init.
+            crc_debug: When ``True``, run CRC integrity checks on each sample.
+            rewards_index: Column index in ``self.data`` holding per-step reward
+                entries; zero-valued entries mark episode boundaries.
+            r2d2_rewind: Fraction of ``batch_size`` to step backward each call
+                in contiguous-window mode, creating overlap between consecutive
+                windows drawn from the same episode.  Must be in ``[0.1, 0.9]``.
+            per_td_enabled: Enable prioritized experience replay using TD errors.
+            per_td_alpha: Priority exponent for PER; higher values produce a more
+                heavily prioritized distribution.
+            per_td_beta: Importance-sampling correction exponent for PER.
+            per_td_eps: Small constant added to raw priorities to prevent zero
+                sampling probability.
+            r2d2_num_sequences: Number of independent sequences per batch in
+                i.i.d. sequence mode.  ``0`` disables i.i.d. sequence sampling.
+            r2d2_sequence_length: Length of each sequence in i.i.d. sequence
+                mode.  Must satisfy ``r2d2_num_sequences * r2d2_sequence_length
+                == batch_size`` when sequence mode is active.
+            player_runs_per_alpha: Exponent applied to per-episode reward weights
+                in i.i.d. sequence mode.  ``0.0`` = uniform weighting.
+            fog_decay_temperature: Temperature for Fog-of-the-Past recency
+                weighting of episodes.  ``0.0`` disables FoG.
+            demo_min_batch_fraction: Minimum fraction of demo-sourced sequences
+                in each batch.
+            demo_max_batch_fraction: Maximum fraction of demo-sourced sequences
+                in each batch.
+            discrete_n_steer_bins: Number of steer bins for the discrete action
+                pipeline.  ``0`` = continuous actions (no bin expansion).
+            n_step_return: Number of consecutive steps for n-step TD returns.
+        """
         configure_discrete_steer_bins(discrete_n_steer_bins)
         self.discrete_n_steer_bins = int(discrete_n_steer_bins)
         super().__init__(
@@ -95,6 +153,19 @@ class R2D2Memory(Memory, ABC):
             self.priorities = [1.0] * len(self.data[0])
 
     def __getitem__(self, item):
+        """Retrieve a transition, applying discrete action normalization.
+
+        Delegates to :meth:`~tmrl.memory.base.Memory.__getitem__` and then
+        converts ``new_act`` to the canonical ``(3,)`` float32 replay format
+        via :func:`canonical_replay_action_vector`.
+
+        Args:
+            item: Transition index.
+
+        Returns:
+            tuple: ``(prev_obs, new_act, rew, new_obs, terminated, truncated, info)``
+                with ``new_act`` as a ``(3,)`` float32 array.
+        """
         prev_obs, new_act, rew, new_obs, terminated, truncated, info = super().__getitem__(item)
         new_act = canonical_replay_action_vector(new_act, self.discrete_n_steer_bins)
         return prev_obs, new_act, rew, new_obs, terminated, truncated, info
@@ -201,12 +272,30 @@ class R2D2Memory(Memory, ABC):
 
     @staticmethod
     def _is_demo_info_entry(info_entry: Any) -> bool:
+        """Return True if an info dict entry carries ``is_demo=True``.
+
+        Args:
+            info_entry: Entry from the info column of ``self.data``.
+
+        Returns:
+            bool: ``True`` when ``info_entry`` is a dict with ``is_demo`` truthy.
+        """
         if not isinstance(info_entry, dict):
             return False
         value = info_entry.get("is_demo", False)
         return bool(value)
 
     def _set_last_sample_demo_fraction(self, indices: tuple[int, ...]) -> None:
+        """Update ``self.last_sample_demo_fraction`` from a tuple of sampled indices.
+
+        Scans the info column at ``rewards_index + 1`` (or ``rewards_index`` when
+        that column does not exist) for entries where ``is_demo`` is truthy, and
+        records the resulting fraction for external monitoring.
+
+        Args:
+            indices: Sampled item indices (not raw buffer indices; offset by
+                ``min_samples`` internally when reading ``self.data``).
+        """
         if len(indices) == 0 or len(self.data) <= self.rewards_index:
             self.last_sample_demo_fraction = 0.0
             return
@@ -228,18 +317,35 @@ class R2D2Memory(Memory, ABC):
         )
 
     def collate(self, batch, device):
-        """
-        Method in Memory and its subclasses.
-        Used to collate a batch of data onto a specified device.
-        Calls an external function collate_torch and returns its result.
+        """Collate a list of transition tuples into batched PyTorch tensors.
+
+        Args:
+            batch: List of ``(prev_obs, new_act, rew, new_obs, terminated,
+                truncated, info)`` tuples.
+            device: Target device for the resulting tensors.
+
+        Returns:
+            tuple: Batched tensors ``(prev_obs, new_act, rew, new_obs, terminated,
+                truncated)`` collated on ``device``.
         """
         return collate_torch(batch, device)
 
     @staticmethod
     def find_zero_rewards_indices(reward_sums):
-        """
-        Finds indices where reward sum transitions from non-zero to zero.
-        reward_sums can be a list of floats or a list of dicts with "reward_sum" key.
+        """Find buffer indices where cumulative episode reward resets to zero.
+
+        Detects episode boundaries by scanning for positions where the reward
+        entry transitions from a non-zero value to zero.  Entries may be plain
+        floats or dicts with a ``"reward_sum"`` key.
+
+        Args:
+            reward_sums: Sequence of per-step reward entries; each element is
+                either a ``float`` or a dict containing ``"reward_sum"``.
+
+        Returns:
+            list[int]: Indices (0-based) immediately before each zero-reward
+                transition, i.e. the last raw-buffer index of each completed
+                episode.
         """
         zero_rewards_indices = []
         prev_reward_sum = None
@@ -290,15 +396,33 @@ class R2D2Memory(Memory, ABC):
         self._episode_metadata_dirty = False
 
     def append(self, buffer):
+        """Append a buffer and mark episode metadata as dirty.
+
+        Delegates to :meth:`~tmrl.memory.base.Memory.append` for data ingestion
+        and stat copying, then sets ``_episode_metadata_dirty`` so the next
+        :meth:`_refresh_episode_metadata` call re-scans the reward column for
+        episode boundaries.
+
+        Args:
+            buffer: :class:`~tmrl.networking.Buffer` of transitions from a worker.
+        """
         super().append(buffer)
         if len(buffer) > 0:
             self._episode_metadata_dirty = True
 
     @staticmethod
     def normalize_list(input_list):
-        """
-        Normalizes a list of values between 0 and 1.
-        Handles cases where the range of values is zero to prevent division by zero.
+        """Normalize a list of numeric values to the ``[0, 1]`` range.
+
+        When all values are equal (zero range), returns all zeros to avoid
+        division by zero.
+
+        Args:
+            input_list: Non-empty list of numeric values.
+
+        Returns:
+            list[float]: Values linearly rescaled so the minimum maps to ``0.0``
+                and the maximum maps to ``1.0``.
         """
         min_val = min(input_list)
         max_val = max(input_list)
@@ -535,6 +659,16 @@ class R2D2Memory(Memory, ABC):
                     return result
 
     def __len__(self):
+        """Return the number of valid transitions in memory.
+
+        Accounts for the ``min_samples`` warm-up prefix: valid item indices run
+        from ``0`` to ``len - 1`` where the buffer holds
+        ``min_samples + len + 1`` raw entries.
+
+        Returns:
+            int: Number of sampleable transitions (``0`` when the buffer is
+                empty or holds only warm-up entries).
+        """
         if len(self.data) == 0:
             return 0
         res = len(self.data[0]) - self.min_samples - 1

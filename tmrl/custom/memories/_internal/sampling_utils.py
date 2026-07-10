@@ -16,6 +16,12 @@ def configure_discrete_steer_bins(n_steer: int) -> None:
 
 
 def _set_discrete_steer_bins(n_steer: int | None) -> None:
+    """Set the module-level ``_DISCRETE_STEER_BINS`` variable.
+
+    Args:
+        n_steer: Number of steer bins, or ``None`` to indicate continuous
+            actions.
+    """
     global _DISCRETE_STEER_BINS
     _DISCRETE_STEER_BINS = n_steer
 

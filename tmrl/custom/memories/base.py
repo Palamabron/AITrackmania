@@ -15,7 +15,19 @@ from tmrl.registry import MEMORIES
 
 
 def last_true_in_list(li: list[bool]) -> int | None:
-    """Find the index of the last True value in a list."""
+    """Find the index of the last ``True`` value in a boolean list.
+
+    Used to locate the most recent end-of-episode (EOE) marker within a
+    history window so that :func:`replace_hist_before_eoe` can pad the
+    observation/action history correctly.
+
+    Args:
+        li: List of boolean values to scan from right to left.
+
+    Returns:
+        int | None: Index of the last ``True`` entry, or ``None`` if no
+            ``True`` was found.
+    """
     for i in reversed(range(len(li))):
         if li[i]:
             return i
@@ -23,7 +35,27 @@ def last_true_in_list(li: list[bool]) -> int | None:
 
 
 def replace_hist_before_eoe(hist: list, eoe_idx_in_hist: int) -> None:
-    """Pad history before the End Of Episode (EOE) index."""
+    """Pad history entries before an episode boundary with the post-boundary value.
+
+    When a history window (image stack, action buffer) spans an episode boundary
+    at ``eoe_idx_in_hist``, entries before that boundary would otherwise carry
+    stale values from the previous episode.  This function overwrites them with
+    ``hist[eoe_idx_in_hist + 1]``, propagating the first post-boundary frame
+    backward so the network sees a clean start-of-episode context.
+
+    The in-place replacement walks backwards from ``eoe_idx_in_hist`` to index 0,
+    so all replaced entries receive the same post-boundary value (not a chain
+    from unrelated earlier history).
+
+    Args:
+        hist: List whose leading entries should be replaced; modified in place.
+        eoe_idx_in_hist: Index of the episode boundary within ``hist``.
+            Must satisfy ``0 <= eoe_idx_in_hist < len(hist)``.
+
+    Raises:
+        ValueError: If ``eoe_idx_in_hist`` is out of range (greater than
+            ``len(hist) - 1``).
+    """
     last_idx = len(hist) - 1
     if eoe_idx_in_hist > last_idx:
         raise ValueError(
@@ -123,6 +155,32 @@ class GenericTorchMemory(TorchMemory):
         demo_min_batch_fraction: float = 0.0,
         demo_max_batch_fraction: float = 1.0,
     ):
+        """Initialize GenericTorchMemory.
+
+        Args:
+            memory_size: Maximum number of transitions in the circular buffer.
+            batch_size: Number of transitions per sampled batch.
+            dataset_path: Path to an offline dataset pickle to preload on init.
+            nb_steps: Number of sampling steps per training round.
+            sample_preprocessor: Optional data-augmentation callable applied to
+                each sampled batch element.
+            crc_debug: When ``True``, run CRC integrity checks on each sample.
+                Incompatible with ``n_step_return > 1``.
+            device: Target device for the collated output tensors.
+            discrete_n_steer_bins: Number of steer bins for the discrete action
+                pipeline; ``0`` = continuous actions.
+            n_step_return: Number of consecutive steps for n-step TD returns.
+                When ``> 1``, ``gamma`` must be provided.
+            gamma: Discount factor for n-step reward accumulation.  Required
+                when ``n_step_return > 1``.
+            demo_min_batch_fraction: Minimum demo fraction of each sampled batch.
+            demo_max_batch_fraction: Maximum demo fraction of each sampled batch.
+
+        Raises:
+            ValueError: If ``n_step_return < 1``, or if ``n_step_return > 1``
+                and ``gamma`` is ``None``, or if ``crc_debug=True`` and
+                ``n_step_return > 1``.
+        """
         configure_discrete_steer_bins(discrete_n_steer_bins)
         self.discrete_n_steer_bins = int(discrete_n_steer_bins)
         self._discrete_action_table: list[Any] | None = None
@@ -284,7 +342,17 @@ class GenericTorchMemory(TorchMemory):
         return length
 
     def sample_indices(self):
-        """Sample transition start indices, enforcing the demo batch fraction."""
+        """Sample transition start indices, enforcing the demo batch fraction.
+
+        Draws ``batch_size`` uniform random indices from ``[0, max_start)`` and
+        then calls :func:`enforce_demo_batch_fraction` to swap indices until the
+        demo fraction of the batch satisfies
+        ``[demo_min_batch_fraction, demo_max_batch_fraction]``.
+
+        Returns:
+            numpy.ndarray | tuple: Array of ``int64`` start indices, or ``()``
+                when the buffer is empty.
+        """
         max_start = self._max_start_item()
         if max_start <= 0:
             self.last_sample_demo_fraction = 0.0
@@ -303,7 +371,30 @@ class GenericTorchMemory(TorchMemory):
         return result
 
     def get_transition(self, item: int) -> tuple:
-        """Get a transition (1-step, or aggregated n-step when n_step_return > 1)."""
+        """Get a transition, applying n-step accumulation when configured.
+
+        For ``n_step_return == 1`` returns the raw 1-step transition at ``item``.
+        For ``n_step_return > 1`` accumulates a discounted reward sum over up to
+        ``n`` consecutive steps forward from ``item``, stopping early at an
+        episode boundary (``done=True``).  The terminal observation and
+        ``terminated``/``truncated`` flags are taken from the last accumulated
+        step.
+
+        When the starting transition at ``item`` is terminal, the method
+        resamples from valid transitions (maintaining demo/non-demo category when
+        possible) up to ``max_retries`` times before raising.
+
+        Args:
+            item: Transition start index in ``[0, len(self))``.
+
+        Returns:
+            tuple: ``(prev_obs, new_act, rew, new_obs, terminated, truncated, info)``
+                where ``rew`` is a ``numpy.float32`` scalar.
+
+        Raises:
+            RuntimeError: If no non-terminal starting transition is found after
+                ``max_retries`` attempts.
+        """
         field = GenericField
         n = int(self.n_step_return)
         resample_high = max(1, self._max_start_item())
@@ -328,7 +419,6 @@ class GenericTorchMemory(TorchMemory):
             else:
                 item = np.random.randint(0, resample_high)
         else:
-            # Provide detailed error message for debugging
             done_count = sum(self.data[field.DONE])
             raise RuntimeError(
                 f"Failed to sample non-terminal transition after {max_retries} attempts. "
@@ -407,6 +497,29 @@ class MemoryTM(TorchMemory):
         demo_max_batch_fraction: float = 1.0,
         n_step_return: int = 1,
     ):
+        """Initialize MemoryTM.
+
+        Computes ``min_samples``, ``start_imgs_offset``, and ``start_acts_offset``
+        from ``imgs_obs`` and ``act_buf_len`` before calling ``super().__init__``.
+        These offsets govern the history-window alignment used in
+        ``get_transition`` implementations.
+
+        Args:
+            memory_size: Maximum number of transitions in the circular buffer.
+            batch_size: Number of transitions per sampled batch.
+            dataset_path: Path to an offline dataset pickle to preload on init.
+            imgs_obs: Number of consecutive image frames per observation.
+            act_buf_len: Number of past actions included per observation.
+            nb_steps: Number of sampling steps per training round.
+            sample_preprocessor: Optional data-augmentation callable.
+            crc_debug: When ``True``, run CRC integrity checks on each sample.
+            device: Target device for the collated output tensors.
+            discrete_n_steer_bins: Number of steer bins for the discrete action
+                pipeline; ``0`` = continuous actions.
+            demo_min_batch_fraction: Minimum demo fraction of each sampled batch.
+            demo_max_batch_fraction: Maximum demo fraction of each sampled batch.
+            n_step_return: Number of consecutive steps for n-step TD returns.
+        """
         configure_discrete_steer_bins(discrete_n_steer_bins)
         self.discrete_n_steer_bins = int(discrete_n_steer_bins)
         self.imgs_obs = imgs_obs
@@ -445,11 +558,28 @@ class MemoryTM(TorchMemory):
 
     @staticmethod
     def _is_demo_info_entry(info_entry: Any) -> bool:
+        """Return True if an info dict carries ``is_demo=True``.
+
+        Args:
+            info_entry: Entry from the info column of ``self.data``.
+
+        Returns:
+            bool: ``True`` when ``info_entry`` is a dict with ``is_demo`` truthy.
+        """
         if not isinstance(info_entry, dict):
             return False
         return bool(info_entry.get("is_demo", False))
 
     def _info_field_index(self) -> int | None:
+        """Return the validated info-column index, or ``None`` when unavailable.
+
+        Reads ``self.info_field_index``, casts to ``int``, and guards against
+        out-of-range values given the current ``self.data`` length.
+
+        Returns:
+            int | None: Validated column index, or ``None`` when
+                ``info_field_index`` is ``None`` or ``self.data`` is too short.
+        """
         idx = self.info_field_index
         if idx is None:
             return None
@@ -459,6 +589,18 @@ class MemoryTM(TorchMemory):
         return idx
 
     def _item_is_demo(self, item: int) -> bool:
+        """Return True if the transition at ``item`` is labelled as a demo.
+
+        Looks up ``self.data[info_field_index][item + min_samples]`` and
+        delegates to :meth:`_is_demo_info_entry`.
+
+        Args:
+            item: Transition item index in ``[0, len(self))``.
+
+        Returns:
+            bool: ``True`` when the transition is a demo, ``False`` otherwise
+                (including when the info column is unavailable or out of range).
+        """
         info_field_index = self._info_field_index()
         if info_field_index is None:
             return False
@@ -469,6 +611,15 @@ class MemoryTM(TorchMemory):
         return self._is_demo_info_entry(info_stream[idx_now])
 
     def _set_last_sample_demo_fraction(self, indices, flags: np.ndarray | None = None) -> None:
+        """Update ``self.last_sample_demo_fraction`` from a sample of indices.
+
+        Args:
+            indices: Sampled item indices.
+            flags: Optional pre-computed boolean demo-flag array indexed by item.
+                When provided, the fraction is computed as a vectorised mean.
+                When ``None``, each index is looked up individually via
+                :meth:`_item_is_demo`.
+        """
         if len(indices) == 0:
             self.last_sample_demo_fraction = 0.0
             return
@@ -479,7 +630,18 @@ class MemoryTM(TorchMemory):
             self.last_sample_demo_fraction = float(demo_count) / float(len(indices))
 
     def sample_indices(self):
-        """Sample transitions, optionally enforcing demo floor/cap for TM memories."""
+        """Sample transition indices, enforcing the configured demo batch fraction.
+
+        Draws ``batch_size`` uniform random indices from ``[0, length)`` and,
+        when a valid ``info_field_index`` is present and the demo fraction bounds
+        are non-trivial, calls :func:`enforce_demo_batch_fraction` to swap
+        indices until the demo share of the batch is within
+        ``[demo_min_batch_fraction, demo_max_batch_fraction]``.
+
+        Returns:
+            numpy.ndarray | tuple: Array of ``int64`` item indices, or ``()``
+                when the buffer is empty.
+        """
         length = len(self)
         if length <= 0:
             self.last_sample_demo_fraction = 0.0
@@ -501,10 +663,37 @@ class MemoryTM(TorchMemory):
         return result
 
     def __getitem__(self, item):
+        """Retrieve a transition and apply discrete action normalization.
+
+        Delegates to :meth:`~tmrl.memory.base.Memory.__getitem__` and then
+        converts ``new_act`` to the canonical ``(3,)`` float32 replay format
+        via :func:`canonical_replay_action_vector`.
+
+        Args:
+            item: Transition index.
+
+        Returns:
+            tuple: ``(prev_obs, new_act, rew, new_obs, terminated, truncated, info)``
+                with ``new_act`` as a ``(3,)`` float32 array.
+        """
         prev_obs, new_act, rew, new_obs, terminated, truncated, info = super().__getitem__(item)
         new_act = canonical_replay_action_vector(new_act, self.discrete_n_steer_bins)
         return prev_obs, new_act, rew, new_obs, terminated, truncated, info
 
     def get_transition(self, item: int):
-        """Get a single transition - must be implemented by subclasses."""
+        """Return a transition tuple at position ``item`` — implemented by subclasses.
+
+        Subclasses must read ``self.data`` fields using the appropriate enum and
+        handle episode-boundary padding via
+        :func:`~tmrl.custom.memories.base.replace_hist_before_eoe`.
+
+        Args:
+            item: Transition item index in ``[0, len(self))``.
+
+        Returns:
+            tuple: ``(prev_obs, new_act, rew, new_obs, terminated, truncated, info)``.
+
+        Raises:
+            NotImplementedError: Always — must be overridden by subclasses.
+        """
         raise NotImplementedError

@@ -11,7 +11,20 @@ import numpy as np
 
 
 def _compress_last_obs_image_to_uint8(obs):
-    """Compress image tensor in the last obs slot to uint8 when present."""
+    """Quantize the last element of an observation tuple to uint8.
+
+    Detects whether the image is in ``[0, 1]`` (float) or ``[0, 255]`` (scaled)
+    by checking whether the maximum value exceeds 1.5; scales up float images
+    before clipping and casting.  Returns ``obs`` unchanged when the last
+    element is not an array with at least 2 dimensions or is already uint8.
+
+    Args:
+        obs: Observation tuple or list whose last element may be an image array.
+
+    Returns:
+        tuple: Copy of ``obs`` with its last element replaced by a uint8 array,
+            or the original ``obs`` when no conversion was needed.
+    """
     if not isinstance(obs, (tuple, list)) or len(obs) == 0:
         return obs
     last = obs[-1]

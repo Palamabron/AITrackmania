@@ -39,6 +39,27 @@ class MemoryR2D2woImages(R2D2Memory):
         device: str = "cpu",
         **kwargs,
     ):
+        """Initialize MemoryR2D2woImages.
+
+        Sets ``min_samples``, ``start_imgs_offset``, and ``start_acts_offset``
+        before calling ``super().__init__``.  The number of observation columns
+        is dynamic (determined at append-time from the environment's observation
+        space), so ``self.data`` layout is not fixed at construction.
+
+        Args:
+            memory_size: Maximum number of transitions in the circular buffer.
+            batch_size: Number of transitions per sampled batch.
+            dataset_path: Path to an offline dataset pickle to preload on init.
+            imgs_obs: Nominal image-observation depth; governs ``min_samples``
+                even though no actual image columns are stored.
+            act_buf_len: Number of past actions included per observation.
+            nb_steps: Number of sampling steps per training round.
+            sample_preprocessor: Optional data-augmentation callable.
+            crc_debug: When ``True``, run CRC integrity checks on each sample.
+            device: Target device for the collated output tensors.
+            **kwargs: Additional keyword arguments forwarded to
+                :class:`~tmrl.memory.r2d2.R2D2Memory`.
+        """
         self.imgs_obs = imgs_obs
         self.act_buf_len = act_buf_len
         self.min_samples = max(self.imgs_obs, self.act_buf_len)
@@ -78,6 +99,16 @@ class MemoryR2D2woImages(R2D2Memory):
         self._cached_openplanet_obs_space = space
 
     def _openplanet_tuple_obs_space(self):
+        """Return the cached OpenPlanet tuple observation space.
+
+        Builds the space once from ``build_openplanet_tuple_observation_space``
+        (using the curvature-obs flag from config) and caches the result.
+        Call :meth:`set_observation_space` to provide the authoritative space
+        from the environment directly and bypass the config-based construction.
+
+        Returns:
+            gym.spaces.Tuple: The OpenPlanet tuple observation space.
+        """
         if not hasattr(self, "_cached_openplanet_obs_space"):
             import tmrl.config.constants as cfg
             from tmrl.custom.tm.openplanet_observation_space import (
@@ -92,7 +123,21 @@ class MemoryR2D2woImages(R2D2Memory):
         return self._cached_openplanet_obs_space
 
     def get_transition(self, item: int):
-        """Get a single transition."""
+        """Retrieve a single transition, aligning observations to the cached space.
+
+        Reads all observation columns between index 2 and ``obs_end``, aligns
+        them to the OpenPlanet observation space via
+        :func:`align_observation_to_space`, and assembles the transition tuple.
+        Trailing columns (eoes, rewards, infos, terminated, truncated) are
+        indexed via :class:`~tmrl.custom.memories._internal.enums.R2D2woImagesTrailingField`
+        offsets from ``obs_end``.
+
+        Args:
+            item: Transition item index in ``[0, len(self))``.
+
+        Returns:
+            tuple: ``(prev_obs, new_act, rew, new_obs, terminated, truncated, info)``.
+        """
         from tmrl.tools.recording.player_runs import align_observation_to_space
 
         t = R2D2woImagesTrailingField
@@ -118,21 +163,55 @@ class MemoryR2D2woImages(R2D2Memory):
         )
 
     def load_imgs(self, item: int):
-        """Placeholder for API compatibility."""
+        """Placeholder image loader retained for API compatibility with R2D2Memory.
+
+        This memory variant stores no image columns; this method loads the first
+        observation column (index 2) as a stacked array instead.
+
+        Args:
+            item: Transition item index.
+
+        Returns:
+            numpy.ndarray: Stacked array from the first observation column.
+        """
         res = self.data[2][
             (item + self.start_imgs_offset) : (item + self.start_imgs_offset + self.imgs_obs + 1)
         ]
         return np.stack(res)
 
     def load_acts(self, item: int):
-        """Load action sequence for a transition."""
+        """Load and normalise the action history window for transition ``item``.
+
+        Args:
+            item: Transition item index.
+
+        Returns:
+            list | tuple: Sequence of ``act_buf_len + 1`` normalised action
+                arrays.
+        """
         res = self.data[1][
             (item + self.start_acts_offset) : (item + self.start_acts_offset + self.act_buf_len + 1)
         ]
         return normalize_stored_replay_actions_slice(res, self.discrete_n_steer_bins)
 
     def append_buffer(self, buffer):
-        """Append a buffer of samples to the memory."""
+        """Append a buffer of samples, aligning and validating observations.
+
+        Each observation is aligned to the OpenPlanet tuple observation space via
+        :func:`align_observation_to_space`; samples that still do not match after
+        alignment are dropped with a warning.  The number of observation columns
+        is inferred from the first kept sample and may vary when the observation
+        space changes (triggering a buffer reset with a warning).
+
+        Updates ``self.rewards_index`` to point to the correct column after each
+        append.
+
+        Args:
+            buffer: :class:`~tmrl.networking.Buffer` of transitions from a worker.
+
+        Returns:
+            MemoryR2D2woImages: ``self`` (for chaining).
+        """
         from tmrl.tools.recording.player_runs import (
             align_observation_to_space,
             observation_matches_space,
@@ -220,6 +299,25 @@ class MemoryR2D2Sophy(R2D2Memory):
         device: str = "cpu",
         **kwargs,
     ):
+        """Initialize MemoryR2D2Sophy.
+
+        Sets ``min_samples``, ``start_imgs_offset``, and ``start_acts_offset``
+        before calling ``super().__init__``.
+
+        Args:
+            memory_size: Maximum number of transitions in the circular buffer.
+            batch_size: Number of transitions per sampled batch.
+            dataset_path: Path to an offline dataset pickle to preload on init.
+            imgs_obs: Nominal image-observation depth; governs ``min_samples``
+                even though no image columns are stored.
+            act_buf_len: Number of past actions included per observation.
+            nb_steps: Number of sampling steps per training round.
+            sample_preprocessor: Optional data-augmentation callable.
+            crc_debug: When ``True``, run CRC integrity checks on each sample.
+            device: Target device for the collated output tensors.
+            **kwargs: Additional keyword arguments forwarded to
+                :class:`~tmrl.memory.r2d2.R2D2Memory`.
+        """
         self.imgs_obs = imgs_obs
         self.act_buf_len = act_buf_len
         self.min_samples = max(self.imgs_obs, self.act_buf_len)
@@ -245,7 +343,21 @@ class MemoryR2D2Sophy(R2D2Memory):
         return max(0, res)
 
     def get_transition(self, item: int):
-        """Get a single transition."""
+        """Retrieve a single transition for the Sophy interface.
+
+        Reads all ``R2D2SophyField`` telemetry columns (track_info, speeds,
+        accelerations, jerks, race_progress, steering inputs, gear, aim angles,
+        steer_angle, slip_coef, failure_counter) at ``idx_last`` and ``idx_now``,
+        and includes the action history window from :meth:`load_acts`.
+
+        Args:
+            item: Transition item index in ``[0, len(self))``.
+
+        Returns:
+            tuple: ``(prev_obs, new_act, rew, new_obs, terminated, truncated, info)``
+                where each observation is a tuple of all Sophy telemetry fields
+                plus the action buffer.
+        """
         f = R2D2SophyField
 
         idx_last = item + self.min_samples - 1
@@ -296,21 +408,53 @@ class MemoryR2D2Sophy(R2D2Memory):
         )
 
     def load_imgs(self, item: int):
-        """Placeholder for API compatibility."""
+        """Placeholder image loader retained for API compatibility with R2D2Memory.
+
+        This Sophy memory variant stores no image columns; this method loads the
+        first observation column (index 2) as a stacked array instead.
+
+        Args:
+            item: Transition item index.
+
+        Returns:
+            numpy.ndarray: Stacked array from the first observation column.
+        """
         res = self.data[2][
             (item + self.start_imgs_offset) : (item + self.start_imgs_offset + self.imgs_obs + 1)
         ]
         return np.stack(res)
 
     def load_acts(self, item: int):
-        """Load action sequence for a transition."""
+        """Load and normalise the action history window for transition ``item``.
+
+        Args:
+            item: Transition item index.
+
+        Returns:
+            list | tuple: Sequence of ``act_buf_len + 1`` normalised action
+                arrays.
+        """
         res = self.data[R2D2SophyField.ACTIONS][
             (item + self.start_acts_offset) : (item + self.start_acts_offset + self.act_buf_len + 1)
         ]
         return normalize_stored_replay_actions_slice(res, self.discrete_n_steer_bins)
 
     def append_buffer(self, buffer):
-        """Append a buffer of samples to the memory."""
+        """Append a buffer of samples to the memory.
+
+        Extracts all ``R2D2SophyField`` columns (indexes, actions, track_info,
+        speeds, accelerations, jerks, race_progress, inputs, gear, aim angles,
+        steer_angle, slip_coef, failure_counter, eoes, rewards, infos,
+        terminated, truncated) from ``buffer.memory``.  Appends to existing data
+        columns or initialises ``self.data`` when the buffer is empty, and trims
+        oldest entries to respect ``memory_size``.
+
+        Args:
+            buffer: :class:`~tmrl.networking.Buffer` of transitions from a worker.
+
+        Returns:
+            MemoryR2D2Sophy: ``self`` (for chaining).
+        """
         f = R2D2SophyField
         first_data_idx = self.data[f.INDEXES][-1] + 1 if self.__len__() > 0 else 0
         bf = BufferField

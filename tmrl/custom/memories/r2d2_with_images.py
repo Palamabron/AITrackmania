@@ -38,6 +38,26 @@ class MemoryR2D2(R2D2Memory):
         device: str = "cpu",
         **kwargs,
     ):
+        """Initialize MemoryR2D2.
+
+        Sets ``min_samples``, ``start_imgs_offset``, and ``start_acts_offset``
+        from ``imgs_obs`` and ``act_buf_len`` *before* calling
+        ``super().__init__`` so that :class:`~tmrl.memory.r2d2.R2D2Memory` can
+        use them during optional dataset preload.
+
+        Args:
+            memory_size: Maximum number of transitions in the circular buffer.
+            batch_size: Number of transitions per sampled batch.
+            dataset_path: Path to an offline dataset pickle to preload on init.
+            imgs_obs: Number of consecutive image frames per observation.
+            act_buf_len: Number of past actions included per observation.
+            nb_steps: Number of sampling steps per training round.
+            sample_preprocessor: Optional data-augmentation callable.
+            crc_debug: When ``True``, run CRC integrity checks on each sample.
+            device: Target device for the collated output tensors.
+            **kwargs: Additional keyword arguments forwarded to
+                :class:`~tmrl.memory.r2d2.R2D2Memory`.
+        """
         self.imgs_obs = imgs_obs
         self.act_buf_len = act_buf_len
         self.min_samples = max(self.imgs_obs, self.act_buf_len)
@@ -63,7 +83,21 @@ class MemoryR2D2(R2D2Memory):
         return max(0, res)
 
     def get_transition(self, item: int):
-        """Get a single transition with proper episode boundary handling."""
+        """Retrieve a single transition with episode-boundary history padding.
+
+        Loads the image and action history windows, then calls
+        :func:`replace_hist_before_eoe` on both when a within-window EOE marker
+        is detected.  The observation includes the full R2D2 telemetry set plus
+        the padded image stack and action buffer.
+
+        Args:
+            item: Transition item index in ``[0, len(self))``.
+
+        Returns:
+            tuple: ``(prev_obs, new_act, rew, new_obs, terminated, truncated, info)``
+                where each observation is a tuple of telemetry fields followed
+                by the image stack and action buffer.
+        """
         f = R2D2Field
 
         idx_last = item + self.min_samples - 1
@@ -141,21 +175,51 @@ class MemoryR2D2(R2D2Memory):
         )
 
     def load_imgs(self, item: int):
-        """Load image sequence for a transition."""
+        """Load and normalise the image history window for transition ``item``.
+
+        Args:
+            item: Transition item index.
+
+        Returns:
+            numpy.ndarray: Shape ``(imgs_obs + 1, H, W, C)`` float32 array
+                with pixel values in ``[0, 1)``.
+        """
         res = self.data[R2D2Field.IMGS][
             (item + self.start_imgs_offset) : (item + self.start_imgs_offset + self.imgs_obs + 1)
         ]
         return np.stack(res).astype(np.float32) / 256.0
 
     def load_acts(self, item: int):
-        """Load action sequence for a transition."""
+        """Load and normalise the action history window for transition ``item``.
+
+        Args:
+            item: Transition item index.
+
+        Returns:
+            list | tuple: Sequence of ``act_buf_len + 1`` normalised action
+                arrays.
+        """
         res = self.data[R2D2Field.ACTIONS][
             (item + self.start_acts_offset) : (item + self.start_acts_offset + self.act_buf_len + 1)
         ]
         return normalize_stored_replay_actions_slice(res, self.discrete_n_steer_bins)
 
     def append_buffer(self, buffer):
-        """Append a buffer of samples to the memory."""
+        """Append a buffer of samples to the memory.
+
+        Extracts all ``R2D2Field`` columns (indexes, actions, checkpoints,
+        speeds, accelerations, jerks, race_progress, steering inputs, gear, aim
+        angles, steer_angle, slip_coef, failure_counter, images, eoes, rewards,
+        infos, terminated, truncated) from ``buffer.memory``.  Appends to
+        existing data columns or initialises ``self.data`` when the buffer is
+        empty, and trims oldest entries to respect ``memory_size``.
+
+        Args:
+            buffer: :class:`~tmrl.networking.Buffer` of transitions from a worker.
+
+        Returns:
+            MemoryR2D2: ``self`` (for chaining).
+        """
         f = R2D2Field
         first_data_idx = self.data[f.INDEXES][-1] + 1 if self.__len__() > 0 else 0
         bf = BufferField

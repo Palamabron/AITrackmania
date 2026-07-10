@@ -19,7 +19,22 @@ class MemoryTMBest(MemoryTM):
     info_field_index = TMBestField.INFOS
 
     def get_transition(self, item: int):
-        """Get a single transition with proper episode boundary handling."""
+        """Retrieve a single transition with episode-boundary history padding.
+
+        Computes ``idx_last = item + min_samples - 1`` and
+        ``idx_now = item + min_samples``, loads the image and action history
+        windows, then calls :func:`replace_hist_before_eoe` on both windows when
+        a within-window EOE marker is detected.  The resulting observation
+        contains ``imgs_obs`` padded frames and ``act_buf_len`` padded actions.
+
+        Args:
+            item: Transition item index in ``[0, len(self))``.
+
+        Returns:
+            tuple: ``(prev_obs, new_act, rew, new_obs, terminated, truncated, info)``
+                where each observation is a tuple of all ``TMBestField``
+                telemetry arrays plus the image stack and action buffer.
+        """
         f = TMBestField
 
         idx_last = item + self.min_samples - 1
@@ -113,14 +128,39 @@ class MemoryTMBest(MemoryTM):
         return last_obs, new_act, rew, new_obs, terminated, truncated, info
 
     def load_imgs(self, item: int):
-        """Load image sequence for a transition."""
+        """Load and normalise the image history window for transition ``item``.
+
+        Slices ``imgs_obs + 1`` consecutive frames from ``self.data[IMGS]``
+        starting at ``item + start_imgs_offset`` and converts to
+        ``float32 / 256``.
+
+        Args:
+            item: Transition item index.
+
+        Returns:
+            numpy.ndarray: Shape ``(imgs_obs + 1, H, W, C)`` float32 array
+                with pixel values in ``[0, 1)``.
+        """
         res = self.data[TMBestField.IMGS][
             (item + self.start_imgs_offset) : (item + self.start_imgs_offset + self.imgs_obs + 1)
         ]
         return np.stack(res).astype(np.float32) / 256.0
 
     def load_acts(self, item: int):
-        """Load action sequence for a transition."""
+        """Load and normalise the action history window for transition ``item``.
+
+        Slices ``act_buf_len + 1`` consecutive actions from
+        ``self.data[ACTIONS]`` starting at ``item + start_acts_offset`` and
+        normalises each entry to a ``(3,)`` float32 vector via
+        :func:`normalize_stored_replay_actions_slice`.
+
+        Args:
+            item: Transition item index.
+
+        Returns:
+            list | tuple: Sequence of ``act_buf_len + 1`` normalised action
+                arrays.
+        """
         res = self.data[TMBestField.ACTIONS][
             (item + self.start_acts_offset) : (item + self.start_acts_offset + self.act_buf_len + 1)
         ]

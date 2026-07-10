@@ -9,12 +9,16 @@ from tmrl.util import collate_torch
 
 
 class TorchMemory(Memory, ABC):
-    """
-    Partial implementation of the `Memory` class collating samples into batched torch tensors.
+    """Partial ``Memory`` implementation that collates samples into PyTorch tensors.
 
-    .. note::
-       When overriding `__init__`, don't forget to call `super().__init__` in the subclass.
-       Your `__init__` method needs to take at least all the arguments of the superclass.
+    Implements :meth:`collate` using :func:`~tmrl.util.collate_torch`, which
+    stacks each field of a sample list into a batched ``torch.Tensor`` and moves
+    the result to ``self.device``.  Subclasses must still implement
+    :meth:`append_buffer`, :meth:`__len__`, and :meth:`get_transition`.
+
+    Note:
+        When subclassing, call ``super().__init__`` and accept at least all
+        arguments of the base :class:`~tmrl.memory.base.Memory` class.
     """
 
     def __init__(
@@ -28,16 +32,19 @@ class TorchMemory(Memory, ABC):
         crc_debug=False,
         n_step_return=1,
     ):
-        """
+        """Initialize TorchMemory.
+
         Args:
-            device (str): output tensors will be collated to this device
-            nb_steps (int): number of steps per round
-            sample_preprocessor (callable): can be used for data augmentation
-            memory_size (int): size of the circular buffer
-            batch_size (int): batch size of the output tensors
-            dataset_path (str): an offline dataset may be provided here to initialize the memory
-            crc_debug (bool): False usually, True when using CRC debugging of the pipeline
-            n_step_return (int): number of steps for n-step TD returns (1 = single-step)
+            device: Device to which output tensors are collated (e.g. ``"cpu"``
+                or ``"cuda"``).
+            nb_steps: Number of sampling steps per training round.
+            sample_preprocessor: Optional data-augmentation callable applied to
+                each sampled batch element.
+            memory_size: Maximum number of transitions in the circular buffer.
+            batch_size: Number of transitions per sampled batch.
+            dataset_path: Path to an offline dataset pickle to preload on init.
+            crc_debug: When ``True``, run CRC integrity checks on each sample.
+            n_step_return: Number of consecutive steps for n-step TD returns.
         """
         super().__init__(
             memory_size=memory_size,
@@ -51,6 +58,17 @@ class TorchMemory(Memory, ABC):
         )
 
     def collate(self, batch, device):
+        """Collate a list of transition tuples into batched PyTorch tensors.
+
+        Args:
+            batch: List of ``(prev_obs, new_act, rew, new_obs, terminated,
+                truncated, info)`` tuples.
+            device: Target device for the resulting tensors.
+
+        Returns:
+            tuple: Batched tensors ``(prev_obs, new_act, rew, new_obs, terminated,
+                truncated)`` collated on ``device``.
+        """
         return collate_torch(batch, device)
 
     def clear(self) -> None:

@@ -4,9 +4,15 @@
 def load_and_print_pickle_file(
     path=r"C:\Users\Yann\Desktop\git\tmrl\data\data.pkl",
 ):
-    """
-    Loads and prints content from a pickle file specified by the path.
-    Reads the pickle file and displays the number of samples along with their content.
+    """Load and print the contents of a serialized replay dataset pickle file.
+
+    Prints the number of samples (``len(data[0])``), the first element of each
+    data component, and then each component in full.  Intended for offline
+    inspection and debugging of persisted replay buffer datasets.
+
+    Args:
+        path: Filesystem path to the pickle file.  Defaults to the original
+            developer's working path; pass an explicit path in practice.
     """
     import pickle
 

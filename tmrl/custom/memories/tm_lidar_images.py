@@ -22,6 +22,20 @@ class MemoryTMLidarImages(MemoryTM):
     info_field_index = TMLidarImagesField.INFOS
 
     def get_transition(self, item: int):
+        """Retrieve a single transition for the lidar+images observation modality.
+
+        When the entry at ``item + 1`` is an EOE marker, the item index is
+        randomly shifted by ±1 to avoid returning a terminal step.  Since this
+        memory has no multi-frame history (``min_samples = 1``), no history
+        padding is needed.
+
+        Args:
+            item: Transition item index in ``[0, len(self))``.
+
+        Returns:
+            tuple: ``(prev_obs, new_act, rew, new_obs, terminated, truncated, info)``
+                where each observation is ``(speeds, progress, track, images)``.
+        """
         f = TMLidarImagesField
 
         if self.data[f.EOES][item + 1]:
@@ -58,6 +72,20 @@ class MemoryTMLidarImages(MemoryTM):
         )
 
     def append_buffer(self, buffer):
+        """Append a buffer of samples to the memory.
+
+        Extracts all ``TMLidarImagesField`` columns (indexes, actions, speeds,
+        progress, track, images, eoes, rewards, infos, terminated, truncated)
+        from ``buffer.memory``.  Appends to existing data columns or initialises
+        ``self.data`` when the buffer is empty, and trims oldest entries to
+        respect ``memory_size``.
+
+        Args:
+            buffer: :class:`~tmrl.networking.Buffer` of transitions from a worker.
+
+        Returns:
+            MemoryTMLidarImages: ``self`` (for chaining).
+        """
         f = TMLidarImagesField
         first_data_idx = self.data[f.INDEXES][-1] + 1 if self.__len__() > 0 else 0
         bf = BufferField

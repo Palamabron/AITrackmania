@@ -21,7 +21,22 @@ class MemoryTMFull(MemoryTM):
     info_field_index = TMFullField.INFOS
 
     def get_transition(self, item: int):
-        """Get a single transition with proper episode boundary handling."""
+        """Retrieve a single transition with episode-boundary history padding.
+
+        When the entry immediately before ``idx_now`` is an EOE marker, the item
+        index is randomly shifted by ±1 to avoid returning a terminal step (which
+        has no valid speed/gear/rpm successor).  Both the action and image history
+        windows are then padded via :func:`replace_hist_before_eoe` when a
+        within-window EOE is detected.
+
+        Args:
+            item: Transition item index in ``[0, len(self))``.
+
+        Returns:
+            tuple: ``(prev_obs, new_act, rew, new_obs, terminated, truncated, info)``
+                where each observation is ``(speeds, gears, rpms, image_stack,
+                *act_buf)``.
+        """
         f = TMFullField
 
         if self.data[f.EOES][item + self.min_samples - 1]:
@@ -87,21 +102,50 @@ class MemoryTMFull(MemoryTM):
         )
 
     def load_imgs(self, item: int):
-        """Load image sequence for a transition."""
+        """Load and normalise the image history window for transition ``item``.
+
+        Args:
+            item: Transition item index.
+
+        Returns:
+            numpy.ndarray: Shape ``(imgs_obs + 1, H, W, C)`` float32 array
+                with pixel values in ``[0, 1)``.
+        """
         res = self.data[TMFullField.IMAGES][
             (item + self.start_imgs_offset) : (item + self.start_imgs_offset + self.imgs_obs + 1)
         ]
         return np.stack(res).astype(np.float32) / 256.0
 
     def load_acts(self, item: int):
-        """Load action sequence for a transition."""
+        """Load and normalise the action history window for transition ``item``.
+
+        Args:
+            item: Transition item index.
+
+        Returns:
+            list | tuple: Sequence of ``act_buf_len + 1`` normalised action
+                arrays.
+        """
         res = self.data[TMFullField.ACTIONS][
             (item + self.start_acts_offset) : (item + self.start_acts_offset + self.act_buf_len + 1)
         ]
         return normalize_stored_replay_actions_slice(res, self.discrete_n_steer_bins)
 
     def append_buffer(self, buffer):
-        """Append a buffer of samples to the memory."""
+        """Append a buffer of samples to the memory.
+
+        Extracts all ``TMFullField`` columns (indexes, actions, speeds, images,
+        eoes, rewards, infos, gears, rpms, terminated, truncated) from
+        ``buffer.memory``.  Appends to existing data columns or initialises
+        ``self.data`` when the buffer is empty, and trims oldest entries to
+        respect ``memory_size``.
+
+        Args:
+            buffer: :class:`~tmrl.networking.Buffer` of transitions from a worker.
+
+        Returns:
+            MemoryTMFull: ``self`` (for chaining).
+        """
         f = TMFullField
         first_data_idx = self.data[f.INDEXES][-1] + 1 if self.__len__() > 0 else 0
         bf = BufferField

@@ -79,6 +79,11 @@ class Memory(ABC):
             )
 
     def __iter__(self):
+        """Iterate over ``nb_steps`` sampled batches.
+
+        Yields:
+            tuple: Output of :meth:`sample` at each step.
+        """
         for _ in range(self.nb_steps):
             yield self.sample()
 
@@ -187,6 +192,20 @@ class Memory(ABC):
             self.append_buffer(buffer)
 
     def __getitem__(self, item):
+        """Retrieve and preprocess a single transition by index.
+
+        Retrieves the raw transition via :meth:`get_transition`, optionally verifies
+        round-trip integrity via CRC when ``crc_debug=True``, and applies
+        ``sample_preprocessor`` when set.  Converts ``terminated`` and ``truncated``
+        to ``numpy.float32`` and filters ``info`` to tensor-serialisable keys.
+
+        Args:
+            item: Transition index forwarded to :meth:`get_transition`.
+
+        Returns:
+            tuple: ``(prev_obs, new_act, rew, new_obs, terminated, truncated, info)``
+                where ``terminated`` and ``truncated`` are ``numpy.float32`` scalars.
+        """
         prev_obs, new_act, rew, new_obs, terminated, truncated, info = self.get_transition(item)
         if self.crc_debug:
             po, a, o, r, d, t = info["crc_sample"]
