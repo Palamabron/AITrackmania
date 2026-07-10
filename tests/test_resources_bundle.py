@@ -15,6 +15,7 @@ from tmrl.tools.init_package.resources_bundle import download_resources_zip, res
 
 
 def test_resources_zip_urls_include_fallback() -> None:
+    """resources_zip_urls returns at least one URL and includes the stable v0.6.0 fallback."""
     urls = resources_zip_urls()
     assert len(urls) >= 1
     assert any("v0.6.0" in u for u in urls)

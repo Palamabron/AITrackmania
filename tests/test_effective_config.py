@@ -14,6 +14,15 @@ from tmrl.config.schema.main import MainConfig
 
 
 def _validate_with(**overrides: dict) -> MainConfig:
+    """Deep-merge section-level overrides into MAIN_CONFIG and return a validated copy.
+
+    Args:
+        **overrides: Top-level config section names (e.g. ``algorithm``, ``model``)
+            mapped to dicts of field overrides to apply.
+
+    Returns:
+        A freshly validated ``MainConfig`` instance with the overrides applied.
+    """
     d = MAIN_CONFIG.model_dump()
     for section, patch in overrides.items():
         d[section].update(patch)
@@ -26,6 +35,7 @@ def _validate_with(**overrides: dict) -> MainConfig:
 
 
 def test_removed_interface_is_rejected():
+    """The retired TM20LIDARPROGRESS interface string raises ValueError at validation time."""
     env = MAIN_CONFIG.environment.model_copy(
         update={"rtgym_interface": "TM20LIDARPROGRESS", "use_images": False}
     )
@@ -34,11 +44,13 @@ def test_removed_interface_is_rejected():
 
 
 def test_model_route_is_not_unsupported_for_default_config():
+    """The unmodified default config produces a recognised (non-unsupported) model route."""
     route = model_policy_route(_validate_with())
     assert route != "unsupported"
 
 
 def test_redacted_snapshot_exposes_expected_top_level_keys():
+    """main_config_snapshot_redacted() returns a dict with schema_version and algorithm."""
     snapshot = main_config_snapshot_redacted()
     assert isinstance(snapshot, dict)
     assert "schema_version" in snapshot
@@ -134,11 +146,13 @@ def test_unsupported_explain_text_contains_warning():
 
 
 def test_reward_normalize_scale_rejects_stale_divide_by_n_values():
+    """Stale reward_normalize_scale values signalling the divide-by-N convention are rejected."""
     with pytest.raises(ValueError, match="reward_normalize_scale"):
         _validate_with(algorithm={"name": "IQN", "reward_normalize_scale": 201.0})
 
 
 def test_iqn_lr_total_steps_must_exceed_warmup_when_cosine_decay_enabled():
+    """iqn_lr_total_steps equal to warmup steps is rejected when cosine LR decay is enabled."""
     with pytest.raises(ValueError, match="iqn_lr_total_steps"):
         _validate_with(
             algorithm={

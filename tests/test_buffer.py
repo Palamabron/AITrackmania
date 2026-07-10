@@ -8,6 +8,7 @@ from tmrl.networking import Buffer
 
 
 def _make_sample(rew: float = 1.0):
+    """Return a minimal sample tuple (action, obs, reward, terminated, truncated, info)."""
     return (None, None, rew, False, False, {"reward_sum": rew})
 
 
@@ -17,6 +18,7 @@ def _make_sample(rew: float = 1.0):
 
 
 def test_append_and_overflow_clips_to_maxlen():
+    """Samples beyond maxlen are discarded; only the most recent maxlen entries are retained."""
     buf = Buffer(maxlen=3)
     for i in range(10):
         buf.append_sample(_make_sample(rew=float(i)))
@@ -25,6 +27,7 @@ def test_append_and_overflow_clips_to_maxlen():
 
 
 def test_clear_empties_buffer():
+    """clear() removes all samples, leaving the buffer with length zero."""
     buf = Buffer(maxlen=10)
     buf.append_sample(_make_sample())
     buf.clear()
@@ -32,6 +35,7 @@ def test_clear_empties_buffer():
 
 
 def test_speed_bonus_updates_rewards():
+    """apply_speed_bonus adds a speed-proportional bonus to every stored sample's reward."""
     buf = Buffer(maxlen=10)
     for _ in range(4):
         buf.append_sample(_make_sample(rew=1.0))

@@ -31,6 +31,14 @@ def _boundary_obs_space() -> spaces.Tuple:
 
 
 def _random_obs(rng: np.random.Generator) -> tuple:
+    """Sample a random observation matching the 11-element boundary obs space layout.
+
+    Args:
+        rng: NumPy random generator used to draw all values.
+
+    Returns:
+        A tuple of float32 arrays and scalars following the boundary obs space order.
+    """
     return (
         rng.uniform(-1, 1, size=60).astype(np.float32),
         rng.uniform(0, 1, size=1).astype(np.float32),
@@ -48,6 +56,16 @@ def _random_obs(rng: np.random.Generator) -> tuple:
 
 
 def _make_agent(n_steps: int, lr: float = 3.0e-5, **overrides) -> IQNAgent:
+    """Build an IQNAgent wired for boundary-lidar with compact hyperparameters for unit tests.
+
+    Args:
+        n_steps: n-step return horizon forwarded to the agent.
+        lr: Learning rate.
+        **overrides: Additional keyword arguments forwarded directly to ``IQNAgent.__init__``.
+
+    Returns:
+        A freshly constructed ``IQNAgent`` on CPU.
+    """
     return IQNAgent(
         observation_space=_boundary_obs_space(),
         action_space=spaces.Discrete(78),
@@ -109,6 +127,17 @@ def _filled_memory(
     demo: bool = False,
     demo_action: int | None = None,
 ) -> GenericTorchMemory:
+    """Create a GenericTorchMemory pre-loaded with 60 random transitions across two episodes.
+
+    Args:
+        n_step_return: n-step return window size for the memory.
+        batch_size: Sample batch size.
+        demo: If ``True``, every transition is flagged ``is_demo=True`` in info.
+        demo_action: When set, every action is this fixed integer instead of random.
+
+    Returns:
+        A populated ``GenericTorchMemory`` ready for ``sample()`` calls.
+    """
     memory = GenericTorchMemory(
         memory_size=10_000,
         batch_size=batch_size,
@@ -138,6 +167,7 @@ def _filled_memory(
 
 @pytest.mark.parametrize("n_steps", [1, 3])
 def test_iqn_train_step_on_generic_memory_batch(n_steps):
+    """IQNAgent.train() runs without NaN on a memory batch in both 1-step and n-step modes."""
     agent = _make_agent(n_steps=n_steps)
     memory = _filled_memory(n_step_return=n_steps, batch_size=16)
     np.random.seed(11)
@@ -155,11 +185,13 @@ def test_iqn_train_step_on_generic_memory_batch(n_steps):
 
 
 def test_iqn_rejects_invalid_n_steps():
+    """IQNAgent raises ValueError at construction time when n_steps is zero or negative."""
     with pytest.raises(ValueError, match="n_steps"):
         _make_agent(n_steps=0)
 
 
 def test_batch_info_carries_is_demo_flags():
+    """Sample batches expose an is_demo tensor of correct shape when all transitions are demos."""
     memory = _filled_memory(n_step_return=1, batch_size=16, demo=True)
     np.random.seed(3)
     batch = memory.sample()
@@ -201,6 +233,7 @@ def test_bc_margin_loss_aligns_argmax_to_demo_action():
 
 
 def test_bc_margin_disabled_by_default():
+    """Without bc_lambda override, the DQfD margin loss and bc_lambda in stats are both zero."""
     agent = _make_agent(n_steps=1)
     memory = _filled_memory(n_step_return=1, batch_size=16, demo=True)
     np.random.seed(9)

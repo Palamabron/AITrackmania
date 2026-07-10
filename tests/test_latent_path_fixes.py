@@ -61,6 +61,14 @@ def _tm_best_obs(i: float) -> tuple:
 
 
 def _filled_tm_best(n: int = 8) -> MemoryTMBest:
+    """Create a MemoryTMBest populated with n transitions encoded via _tm_best_obs(i).
+
+    Args:
+        n: Number of transitions to append.
+
+    Returns:
+        A populated ``MemoryTMBest`` ready for column-alignment assertions.
+    """
     memory = MemoryTMBest(
         memory_size=1000,
         batch_size=2,
@@ -133,6 +141,14 @@ def test_tm_best_get_transition_returns_aligned_fields():
 
 
 def _world_obs(fc: float) -> tuple:
+    """Build a minimal world-telemetry obs tuple with a given failure-counter value.
+
+    Args:
+        fc: Raw failure-counter scalar to inject at ``WObs.FAILURE_COUNTER``.
+
+    Returns:
+        A tuple of arrays matching the WorldTelemetryObsIndex layout.
+    """
     obs = [np.zeros(1, dtype=np.float32) for _ in range(len(WObs))]
     obs[WObs.TRACK_INFO] = np.zeros(70, dtype=np.float32)
     obs[WObs.STEER_ANGLE] = np.zeros(2, dtype=np.float32)
@@ -142,6 +158,7 @@ def _world_obs(fc: float) -> tuple:
 
 
 def test_world_telemetry_failure_counter_not_double_normalized():
+    """The preprocessor must not re-normalize the failure counter already normalized by the env."""
     pre = make_world_telemetry_obs_preprocessor(50.0)
     out = pre(_world_obs(0.6))  # env already normalized to [0, 1]
     assert float(out[WObs.FAILURE_COUNTER][0]) == pytest.approx(0.6)
@@ -155,6 +172,7 @@ def test_world_telemetry_failure_counter_not_double_normalized():
 
 
 def test_openplanet_space_includes_curvature_box_when_enabled():
+    """track_curvature_obs=True adds exactly one Box of shape (points_number,) to the space."""
     base = build_openplanet_tuple_observation_space(points_number=10)
     with_curv = build_openplanet_tuple_observation_space(points_number=10, track_curvature_obs=True)
     assert len(with_curv.spaces) == len(base.spaces) + 1

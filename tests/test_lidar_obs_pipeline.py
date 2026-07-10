@@ -35,6 +35,7 @@ def test_failure_counter_clipped_not_rescaled():
 
 
 def test_discrete_action_tail_scaled_to_unit_range():
+    """Discrete action-buffer slots are cast to float32 and scaled to [0, 1] by the preprocessor."""
     tail = (np.array(0, dtype=np.int64), np.array(77, dtype=np.int64))
     out = obs_preprocessor_lidar_act_in_obs(_raw_boundary_obs(act_tail=tail))
     assert len(out) == 11
@@ -53,6 +54,7 @@ def test_continuous_action_tail_passthrough():
 
 
 def test_record_episode_rewrites_discrete_action_slots():
+    """Demo recording replaces action slots with scaled discrete indices per recorded control."""
     from tmrl.tools.recording.record_episode import _rewrite_discrete_action_slots
 
     scale = discrete_action_index_scale()

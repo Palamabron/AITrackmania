@@ -16,6 +16,15 @@ _REWARD_PATH = (
 
 
 def _load_module(path: Path, name: str):
+    """Dynamically import a Python source file as a module.
+
+    Args:
+        path: Filesystem path to the ``.py`` file.
+        name: Module name to register in ``sys.modules``.
+
+    Returns:
+        The loaded module object.
+    """
     spec = importlib.util.spec_from_file_location(name, path)
     assert spec is not None
     assert spec.loader is not None
@@ -25,6 +34,15 @@ def _load_module(path: Path, name: str):
 
 
 def _straight_track(n: int = 50, spacing: float = 2.0) -> tuple[np.ndarray, np.ndarray]:
+    """Generate a straight track with n waypoints at the given spacing, ±5 units wide.
+
+    Args:
+        n: Number of waypoints.
+        spacing: Distance between consecutive waypoints in metres.
+
+    Returns:
+        ``(left, right)`` boundary arrays of shape ``(2, n)``.
+    """
     xs = np.arange(n, dtype=np.float64) * spacing
     left = np.stack([xs, xs * 0.0 + 5.0], axis=0)
     right = np.stack([xs, xs * 0.0 - 5.0], axis=0)
@@ -32,6 +50,15 @@ def _straight_track(n: int = 50, spacing: float = 2.0) -> tuple[np.ndarray, np.n
 
 
 def _repeat_padding_old(boundary: np.ndarray, n_pad: int) -> np.ndarray:
+    """Pad a boundary by repeating its last point — the degenerate behaviour the new code replaces.
+
+    Args:
+        boundary: Shape ``(2, n)`` boundary array.
+        n_pad: Number of additional repeated points to append.
+
+    Returns:
+        Shape ``(2, n + n_pad)`` array whose tail is collapsed to a single coordinate.
+    """
     extra = np.full((n_pad, 2), boundary.T[-1])
     return np.concatenate([boundary.T, extra], axis=0).T
 
@@ -40,6 +67,7 @@ BOUNDARY_LOOK_AHEAD = 15
 
 
 def test_pad_polyline_xz_straight_points_are_distinct():
+    """Extrapolated look-ahead points are distinct — not collapsed to a single coordinate."""
     left, _ = _straight_track(20)
     extended = pad_polyline_xz_straight(left, BOUNDARY_LOOK_AHEAD)
     tail = extended[:, -BOUNDARY_LOOK_AHEAD:]
@@ -48,6 +76,7 @@ def test_pad_polyline_xz_straight_points_are_distinct():
 
 
 def test_pad_polyline_fixes_degenerate_look_ahead_vs_old_repeat():
+    """The new padding extrapolates the tail ahead; the old approach repeated the last point."""
     left, _ = _straight_track(30)
     new_tail = pad_polyline_xz_straight(left, BOUNDARY_LOOK_AHEAD)[:, -BOUNDARY_LOOK_AHEAD:]
     new_spread = float(np.std(new_tail[0]) + np.std(new_tail[1]))
@@ -81,6 +110,17 @@ def test_boundary_ahead_slice_at_track_end_is_directional():
 
 
 def _make_reward_fn(tmp_path: Path, n_points: int = 100, extra_config: dict | None = None):
+    """Instantiate a RewardFunction from a temporary straight track and optional config overrides.
+
+    Args:
+        tmp_path: Temporary directory for reward and boundary pickle files.
+        n_points: Number of trajectory waypoints (spaced 2 m apart).
+        extra_config: Optional dict merged into the default reward_config before construction.
+
+    Returns:
+        ``(rf, near_finish_progress_threshold)`` where ``rf`` is a freshly constructed
+        ``RewardFunction`` and the threshold is read from the module-level constant.
+    """
     reward_mod = _load_module(_REWARD_PATH, "tmrl_reward_test")
     reward_function_cls = reward_mod.RewardFunction
     near_finish_progress_threshold = reward_mod.NEAR_FINISH_PROGRESS_THRESHOLD
@@ -124,6 +164,7 @@ def _make_reward_fn(tmp_path: Path, n_points: int = 100, extra_config: dict | No
 
 
 def test_near_finish_grace_prevents_no_progress_timeout():
+    """A car stalled near the finish line is not terminated by the no-progress timer."""
     with tempfile.TemporaryDirectory() as tmp:
         rf, progress_threshold = _make_reward_fn(Path(tmp))
         end_pos = rf.data[-1].copy()
@@ -145,6 +186,7 @@ def test_near_finish_grace_prevents_no_progress_timeout():
 
 
 def test_near_finish_grace_does_not_apply_mid_track():
+    """Stalling mid-track (below the near-finish threshold) still triggers no_progress_timeout."""
     with tempfile.TemporaryDirectory() as tmp:
         rf, progress_threshold = _make_reward_fn(Path(tmp))
         start_pos = rf.data[0].copy()
@@ -161,6 +203,7 @@ def test_near_finish_grace_does_not_apply_mid_track():
 
 
 def test_terminal_failure_penalty_applied_once_on_timeout():
+    """The terminal failure penalty is applied only on the final timeout step, not earlier."""
     with tempfile.TemporaryDirectory() as tmp:
         rf, _ = _make_reward_fn(Path(tmp), extra_config={"terminal_failure_penalty": 3.0})
         start_pos = rf.data[0].copy()
@@ -180,6 +223,7 @@ def test_terminal_failure_penalty_applied_once_on_timeout():
 
 
 def test_terminal_failure_penalty_not_applied_on_finish():
+    """end_of_track=True suppresses the failure penalty even when a timeout would otherwise fire."""
     with tempfile.TemporaryDirectory() as tmp:
         rf, _ = _make_reward_fn(Path(tmp), extra_config={"terminal_failure_penalty": 3.0})
         start_pos = rf.data[0].copy()
@@ -221,6 +265,7 @@ def test_slow_progress_terminates_creep_that_evades_binary_timer():
 
 
 def test_slow_progress_does_not_fire_when_driving_fast():
+    """The slow-progress cutoff is not triggered when the car advances at a fast, steady pace."""
     with tempfile.TemporaryDirectory() as tmp:
         rf, _ = _make_reward_fn(
             Path(tmp),
@@ -239,6 +284,7 @@ def test_slow_progress_does_not_fire_when_driving_fast():
 
 
 def test_slow_progress_disabled_by_default():
+    """The slow-progress cutoff does not activate when min_progress_rate is not configured."""
     with tempfile.TemporaryDirectory() as tmp:
         rf, _ = _make_reward_fn(Path(tmp))
         pos = rf.data[0].copy()
@@ -249,6 +295,7 @@ def test_slow_progress_disabled_by_default():
 
 
 def test_terminal_failure_penalty_default_off():
+    """Without terminal_failure_penalty, the timeout step reward equals the step before it."""
     with tempfile.TemporaryDirectory() as tmp:
         rf, _ = _make_reward_fn(Path(tmp))
         start_pos = rf.data[0].copy()
@@ -265,6 +312,7 @@ def test_terminal_failure_penalty_default_off():
 
 
 def test_boundary_shaping_disabled_by_default():
+    """All boundary-shaping parameters default to zero when not explicitly configured."""
     with tempfile.TemporaryDirectory() as tmp:
         rf, _ = _make_reward_fn(Path(tmp))
         assert rf._boundary_penalty_weight == 0.0
@@ -282,6 +330,7 @@ def test_boundary_shaping_disabled_by_default():
 
 
 def test_boundary_crash_penalty_subtracted_on_wall_exit():
+    """Crossing the boundary with boundary_crash_penalty set terminates with a negative reward."""
     with tempfile.TemporaryDirectory() as tmp:
         rf, _ = _make_reward_fn(
             Path(tmp),
@@ -326,6 +375,7 @@ def test_boundary_crash_penalty_not_clipped_by_reward_floor():
 
 
 def test_boundary_soft_penalty_applied_inside_wall():
+    """boundary_penalty_weight penalizes wall proximity continuously without a crash event."""
     with tempfile.TemporaryDirectory() as tmp:
         rf, _ = _make_reward_fn(
             Path(tmp),
