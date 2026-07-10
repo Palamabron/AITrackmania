@@ -254,6 +254,7 @@ def _tqc_train_step(
             td_errors_batch = td_errors_batch * valid_n_step.float()
 
     def _is_bad_loss(loss_tensor):
+        """Return True if loss_tensor is None or contains NaN/Inf."""
         if loss_tensor is None:
             return False
         return bool(torch.isnan(loss_tensor).any().item() or torch.isinf(loss_tensor).any().item())

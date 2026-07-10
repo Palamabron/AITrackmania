@@ -206,6 +206,7 @@ class IQNAgent(TrainingAgent):
         }
 
     def __post_init__(self) -> None:
+        """Build IQN model, target, optimizer, and all schedule/stabilizer state."""
         set_seed(self.seed)
         if int(self.n_steps) < 1:
             raise ValueError(f"IQN n_steps must be >= 1, got {self.n_steps}")
@@ -347,6 +348,7 @@ class IQNAgent(TrainingAgent):
         return self._grad_stabilizer.step(self.model.parameters())
 
     def _grad_ema_norm(self) -> float:
+        """Return the EMA gradient norm from the stabilizer, or 0.0 if disabled."""
         return self._grad_stabilizer.ema_norm if self._grad_stabilizer is not None else 0.0
 
     def _update_noise_scale(self) -> float:
@@ -467,4 +469,21 @@ class IQNAgent(TrainingAgent):
         batch_index: int | None = None,
         iters: int | None = None,
     ) -> dict:
+        """Perform one IQN training step on the given batch.
+
+        Delegates to ``_iqn_train_step`` for the full implementation.
+
+        Args:
+            batch: Tuple ``(obs, action, reward, next_obs, done, ...)``. May
+                include a dict at ``batch[6]`` with PER importance weights
+                (``"is_weight"``), demo flags (``"is_demo"``), and per-sample
+                n-step lengths (``"n_step_effective"``).
+            epoch: Unused; present for API compatibility.
+            batch_index: Unused; present for API compatibility.
+            iters: Unused; present for API compatibility.
+
+        Returns:
+            Dict of scalar metrics for logging (IQN loss, Q-statistics,
+            epsilon, gradient norms, etc.).
+        """
         return _iqn_train_step(self, batch)

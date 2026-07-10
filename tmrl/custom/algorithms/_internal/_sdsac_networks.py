@@ -16,6 +16,12 @@ class DiscreteQHead(nn.Module):
     """Simple Q-value head: maps features to per-action Q-values."""
 
     def __init__(self, hidden_dim: int, n_actions: int):
+        """Build the Q-value head layers.
+
+        Args:
+            hidden_dim: Width of the input feature layer and the hidden layer.
+            n_actions: Number of discrete actions (output dimension).
+        """
         super().__init__()
         self.net = nn.Sequential(
             nn.Linear(hidden_dim, hidden_dim),
@@ -24,6 +30,14 @@ class DiscreteQHead(nn.Module):
         )
 
     def forward(self, features: torch.Tensor) -> torch.Tensor:
+        """Map feature vector to per-action Q-values.
+
+        Args:
+            features: Feature tensor, shape ``(batch, hidden_dim)``.
+
+        Returns:
+            Q-value tensor, shape ``(batch, n_actions)``.
+        """
         return cast(torch.Tensor, self.net(features))
 
 
@@ -43,6 +57,16 @@ class DiscreteSACNetwork(nn.Module):
         num_blocks_critic: int = 4,
         n_cos: int = 64,
     ):
+        """Build actor and two independent critic backbones with separate heads.
+
+        Args:
+            observation_space: Observation space passed to ``IQNFeatureBackbone``.
+            n_actions: Number of discrete actions.
+            hidden_dim: Width of all feature layers.
+            num_blocks_actor: Number of residual blocks in the actor backbone.
+            num_blocks_critic: Number of residual blocks in each critic backbone.
+            n_cos: Number of cosine features in ``IQNFeatureBackbone``.
+        """
         super().__init__()
         from tmrl.custom.models.discrete_actions.iqn_discrete_q_network import IQNFeatureBackbone
 
@@ -80,12 +104,28 @@ class DiscreteSACNetwork(nn.Module):
         return cast(torch.Tensor, self.actor_head(features))
 
     def q1(self, obs) -> torch.Tensor:
+        """Compute Q1 values for all actions.
+
+        Args:
+            obs: Observation tuple; ``obs[0].shape[0]`` gives batch size.
+
+        Returns:
+            Q-value tensor, shape ``(batch, n_actions)``.
+        """
         batch_size = obs[0].shape[0]
         tau = self._dummy_tau(batch_size, obs[0].device)
         features = self.q1_backbone(obs, tau).squeeze(1)
         return cast(torch.Tensor, self.q1_head(features))
 
     def q2(self, obs) -> torch.Tensor:
+        """Compute Q2 values for all actions.
+
+        Args:
+            obs: Observation tuple; ``obs[0].shape[0]`` gives batch size.
+
+        Returns:
+            Q-value tensor, shape ``(batch, n_actions)``.
+        """
         batch_size = obs[0].shape[0]
         tau = self._dummy_tau(batch_size, obs[0].device)
         features = self.q2_backbone(obs, tau).squeeze(1)
@@ -105,6 +145,21 @@ class DiscreteSACActor(DQNActor):
         n_actions: int = 78,
         epsilon: float = 0.01,
     ):
+        """Build actor with shared backbone and a separate actor head.
+
+        Extends ``DQNActor`` by adding ``actor_head`` (a 2-layer MLP) that
+        produces the soft-policy logits used at rollout time, independent of
+        the Q-network head inherited from ``DQNActor``.
+
+        Args:
+            observation_space: Observation space for the backbone.
+            action_space: Action space (passed to ``DQNActor``).
+            hidden_dim: Feature width for all linear layers.
+            num_blocks: Number of residual blocks in the backbone.
+            n_cos: Number of cosine features.
+            n_actions: Number of discrete actions.
+            epsilon: Epsilon-greedy noise level (0.0 = pure softmax policy).
+        """
         super().__init__(
             observation_space,
             action_space,
@@ -123,6 +178,16 @@ class DiscreteSACActor(DQNActor):
         )
 
     def act(self, obs, test=False):
+        """Sample an action from the soft policy (or take the argmax in test mode).
+
+        Args:
+            obs: Observation tuple; ``obs[0].shape[0]`` gives batch size.
+            test: If True, return the greedy argmax action (deterministic);
+                if False, sample from the Categorical distribution.
+
+        Returns:
+            Integer action index as ``np.int64`` scalar or array.
+        """
         with torch.no_grad():
             batch_size = obs[0].shape[0]
             tau = torch.full((batch_size, 1), 0.5, device=obs[0].device)

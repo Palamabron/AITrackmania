@@ -112,6 +112,7 @@ class SDSACAgent(TrainingAgent):
     model_nograd = cached_property(lambda self: no_grad(copy_shared(self.model)))
 
     def __post_init__(self) -> None:
+        """Build model, target network, optimizers, and entropy coefficient."""
         set_seed(self.seed)
         device = self.device or ("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -182,6 +183,15 @@ class SDSACAgent(TrainingAgent):
             )
 
     def get_actor(self) -> DiscreteSACActor:
+        """Return a rollout actor with current backbone and actor-head weights.
+
+        Constructs a ``DiscreteSACActor``, copies the actor backbone and head
+        weights from the online model, and returns it for use by rollout workers.
+
+        Returns:
+            ``DiscreteSACActor`` with synchronized weights and ``epsilon=0``
+            (pure softmax policy at rollout time).
+        """
         actor = DiscreteSACActor(
             self.observation_space,
             self.action_space,
@@ -204,6 +214,27 @@ class SDSACAgent(TrainingAgent):
         batch_index: int | None = None,
         iters: int | None = None,
     ) -> dict[str, float]:
+        """Perform one SD-SAC training step on the given batch.
+
+        Applies the three stabilisation tricks from Zhou et al. (TMLR 2024):
+        Double Average Q (``use_avg_q``), Q-clip (``use_clip_q``), and Entropy
+        Penalty (``use_entropy_penalty``). Optionally supports n-step returns,
+        R2D2 sequence burn-in masking, and automatic entropy coefficient tuning.
+
+        Args:
+            batch: Tuple ``(obs, actions, rewards, next_obs, dones, ...)``.
+            epoch: Unused; present for API compatibility with the training loop.
+            batch_index: Unused; present for API compatibility.
+            iters: Unused; present for API compatibility.
+
+        Returns:
+            Dict of scalar metrics including ``loss/actor``, ``loss/critic``,
+            ``state/entropy``, ``state/q1``, ``state/q2``, ``state/q_target``,
+            gradient norms, ``alpha``, and ``train/step``.
+
+        Raises:
+            ValueError: If ``n_steps >= batch_size`` (invalid n-step configuration).
+        """
         self._training_step += 1
 
         o, a, r, o2, d = batch[0], batch[1], batch[2], batch[3], batch[4]

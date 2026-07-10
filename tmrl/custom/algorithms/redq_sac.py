@@ -66,7 +66,8 @@ class REDQSACAgent(TrainingAgent):
 
     model_nograd = cached_property(lambda self: no_grad(copy_shared(self.model)))
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
+        """Build model, target, per-Q optimizers, and entropy coefficient (if learned)."""
         set_seed(self.seed)
 
         observation_space, action_space = self.observation_space, self.action_space
@@ -102,11 +103,29 @@ class REDQSACAgent(TrainingAgent):
             self.alpha_t = torch.tensor(float(self.alpha)).to(self.device)
 
     def get_actor(self) -> Any:
+        """Return the current actor (policy) module for rollout workers."""
         return self.model_nograd.actor
 
     def train(  # type: ignore[override]
         self, batch: tuple, epoch: int, batch_index: int, iters: int
     ) -> dict[str, float]:
+        """Perform one REDQ-SAC training step on the given batch.
+
+        Critic updates every call; policy updates every
+        ``q_updates_per_policy_update`` calls (UTD ratio > 1). For the target
+        value a random subset of ``m`` networks is drawn from the ensemble of
+        ``n`` (Randomized Ensemble Double Q-learning).
+
+        Args:
+            batch: Tuple ``(obs, actions, rewards, next_obs, dones, ...)``.
+            epoch: Current epoch (unused, for API compatibility).
+            batch_index: Current batch index (unused).
+            iters: Total iterations (unused).
+
+        Returns:
+            Dict with ``losses/critic``, and optionally ``losses/actor``,
+            ``loss_entropy_coef``, ``entropy_coef`` when the policy update fires.
+        """
         self.i_update += 1
         update_policy = self.i_update % self.q_updates_per_policy_update == 0
 

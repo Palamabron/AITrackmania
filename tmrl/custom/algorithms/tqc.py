@@ -296,21 +296,50 @@ class TQCAgent(TrainingAgent):
 
     @staticmethod
     def calculate_huber_loss(td_errors: torch.Tensor, k: float = 1.0) -> torch.Tensor:
-        """Compute Huber loss element-wise."""
+        """Compute Huber loss element-wise.
+
+        Args:
+            td_errors: TD error tensor (any shape).
+            k: Huber threshold. Errors whose absolute value is at most ``k``
+               are squared; larger errors are linear.
+
+        Returns:
+            Element-wise Huber loss tensor, same shape as ``td_errors``.
+        """
         loss = torch.where(
             td_errors.abs() <= k, 0.5 * td_errors.pow(2), k * (td_errors.abs() - 0.5 * k)
         )
         return loss
 
     def quantile_huber_loss_f(self, quantiles: torch.Tensor, samples: torch.Tensor) -> torch.Tensor:
-        """Quantile Huber loss for TQC critic training. Uses FP32 for precision."""
+        """Quantile Huber loss for TQC critic training. Uses FP32 for precision.
+
+        Args:
+            quantiles: Current quantile predictions from the online critics,
+                shape ``(batch, n_networks, n_current_quantiles)``.
+            samples: Target quantile values (truncated sorted target outputs),
+                shape ``(batch, n_target_quantiles)``.
+
+        Returns:
+            Scalar mean quantile Huber loss over the batch.
+        """
         per_sample = self._quantile_huber_per_sample(quantiles, samples)
         return per_sample.mean()
 
     def _quantile_huber_per_sample(
         self, quantiles: torch.Tensor, samples: torch.Tensor
     ) -> torch.Tensor:
-        """Per-sample quantile Huber loss [batch]. Used for sequence-aware n-step masking."""
+        """Per-sample quantile Huber loss [batch]. Used for sequence-aware n-step masking.
+
+        Args:
+            quantiles: Current quantile predictions from the online critics,
+                shape ``(batch, n_networks, n_current_quantiles)``.
+            samples: Target quantile values (truncated sorted target outputs),
+                shape ``(batch, n_target_quantiles)``.
+
+        Returns:
+            Per-sample loss tensor, shape ``(batch,)``.
+        """
         quantiles = quantiles.float()
         samples = samples.float()
         pairwise_delta = samples[:, None, None, :] - quantiles[:, :, :, None]
@@ -340,4 +369,17 @@ class TQCAgent(TrainingAgent):
     def train(  # type: ignore[override]
         self, batch: tuple, epoch: int, batch_index: int, iters: int
     ) -> dict:
+        """Perform one TQC training step on the given batch.
+
+        Delegates to ``_tqc_train_step`` for the full implementation.
+
+        Args:
+            batch: Tuple ``(obs, actions, rewards, next_obs, dones, ...)``.
+            epoch: Current epoch number (passed to LR scheduler).
+            batch_index: Current batch index within the epoch (passed to LR scheduler).
+            iters: Total batches per epoch (passed to LR scheduler).
+
+        Returns:
+            Dict of scalar metrics for logging.
+        """
         return _tqc_train_step(self, batch, epoch, batch_index, iters)

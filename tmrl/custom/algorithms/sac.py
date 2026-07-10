@@ -206,7 +206,21 @@ class SpinupSacAgent(TrainingAgent):
         return self.alpha_t, None
 
     def _sac_compute_td_target(self, next_obs, rewards, dones, alpha_t):
-        """Compute Bellman backup (TD target) for Q-learning."""
+        """Compute Bellman backup (TD target) for Q-learning.
+
+        Evaluates the soft Bellman target using the frozen target network:
+        ``r + gamma*(1-d)*(min_Q_target(s', a') - alpha*log_pi(a'|s'))``.
+
+        Args:
+            next_obs: Next observation batch from the replay buffer.
+            rewards: Reward tensor, shape ``(batch,)`` or ``(batch, 1)``.
+            dones: Done flag tensor, shape ``(batch,)`` or ``(batch, 1)``.
+            alpha_t: Current entropy coefficient (scalar or 0-d tensor).
+
+        Returns:
+            TD target tensor, same shape as ``rewards``. Computed under
+            ``torch.no_grad()``.
+        """
         with torch.no_grad():
             with autocast_context(self.use_mixed_precision, self.amp_dtype):
                 next_actions, log_prob_next = self.model.actor(next_obs)
@@ -216,7 +230,21 @@ class SpinupSacAgent(TrainingAgent):
             return rewards + self.gamma * (1 - dones) * (min_q_next - alpha_t * log_prob_next)
 
     def _sac_build_return_dict(self, ctx: dict) -> dict:
-        """Build the dict of scalars to log (and optionally debug metrics)."""
+        """Build the dict of scalars returned from train() (and optionally debug metrics).
+
+        Args:
+            ctx: Dict of intermediate tensors from the train step, including:
+                ``loss_pi``, ``loss_q``, ``alpha_t``, ``loss_alpha``, ``obs``,
+                ``actions``, ``next_obs``, ``dones``, ``rewards``,
+                ``policy_actions``, ``log_prob_pi``, ``q1_pred``, ``q2_pred``,
+                ``q1_pi``, ``q2_pi``, ``q_pi``, ``td_target``.
+
+        Returns:
+            Dict with at minimum ``"losses/actor"`` and ``"losses/critic"``.
+            When ``debug_mode`` is True, includes extensive per-tensor mean/std
+            diagnostics. When ``learn_entropy_coef`` is True, also includes
+            ``"loss_entropy_coef"`` and ``"entropy_coef"``.
+        """
         loss_pi = ctx["loss_pi"]
         loss_q = ctx["loss_q"]
         alpha_t = ctx["alpha_t"]
