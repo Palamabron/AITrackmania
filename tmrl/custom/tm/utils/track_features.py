@@ -39,12 +39,33 @@ class TrackFeatureProvider:
     """Provides track boundary/lookahead features from RewardFunction state."""
 
     def __init__(self, reward_ctx: Any) -> None:
+        """Args:
+        reward_ctx: A :class:`RewardFunction` instance that exposes trajectory data
+            (``data``, ``left_track``, ``right_track``, ``cur_idx``,
+            ``_cumulative_dist``, etc.). The provider holds a live reference — it
+            does not copy — so any updates to ``reward_ctx`` are immediately visible.
+        """
         self._ctx = reward_ctx
 
     def get_n_next_checkpoints_xy(
         self, position: list[float] | np.ndarray, number_of_next_points: int
     ) -> list[float]:
-        """Next N checkpoint (x, z) coordinates relative to position, scaled by 10."""
+        """Return the next N look-ahead checkpoint XZ offsets, scaled by 10.
+
+        Coordinates are expressed in the XZ plane (TrackMania's horizontal plane; Y is
+        vertical). Each offset is multiplied by 10.0 so the values fall in the
+        ~[-300, 300] range for typical TM2020 track geometries, keeping them
+        commensurate with other observation channels.
+
+        Args:
+            position: Current car position as [x, y, z] in meters (world-frame).
+            number_of_next_points: Number of look-ahead checkpoints.
+
+        Returns:
+            Flat list of ``2 * number_of_next_points`` floats arranged as
+            [dx0, dz0, dx1, dz1, …], where each pair is the offset from
+            ``position`` to the checkpoint in game units * 10.
+        """
         max_idx = len(self._ctx.data) - 1
         next_indices = [
             min(self._ctx.cur_idx + step * self._ctx._checkpoint_stride, max_idx)
@@ -61,7 +82,31 @@ class TrackFeatureProvider:
     def get_track_info(
         self, position: list[float] | np.ndarray, points_number: int
     ) -> tuple[list[float], list[float], list[float], list[float], list[float]]:
-        """Track boundary observations relative to current position."""
+        """Compute track boundary and look-ahead geometry relative to current position.
+
+        Selects ``points_number`` look-ahead indices either by evenly-spaced arc-length
+        steps (when ``_ctx._point_spacing_m > 0``) or by fixed index strides.  For each
+        index the method returns left-boundary, center-line, and right-boundary XZ
+        offsets from ``position`` (in meters), a log-compressed arc-length distance, and
+        an optional discrete curvature value.
+
+        Args:
+            position: Current car position as [x, y, z] in meters (world-frame).
+            points_number: Number of look-ahead track points to compute.
+
+        Returns:
+            Five-tuple of lists:
+                left_positions: Flat list of 2 * points_number floats (x, z offsets in
+                    meters from ``position`` to the left boundary at each look-ahead point).
+                center_positions: Same layout for the track center-line.
+                right_positions: Same layout for the right boundary.
+                curvatures: List of points_number floats; signed discrete XZ curvature
+                    at each point (positive = left turn, rad/m). All zeros when
+                    ``_ctx._track_curvature_obs`` is False.
+                log_distances: List of points_number floats; ``log1p`` of the arc-length
+                    distance from the current trajectory index to each look-ahead point
+                    (in meters), providing a compressed distance encoding.
+        """
         max_idx = (
             min(len(self._ctx.data), len(self._ctx.left_track), len(self._ctx.right_track)) - 1
         )

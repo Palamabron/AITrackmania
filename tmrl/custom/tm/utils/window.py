@@ -1,3 +1,17 @@
+"""Platform-specific window management for screen capture and resize.
+
+Provides ``WindowInterface`` on both Windows (via win32gui/win32ui BitBlt) and
+Linux (via mss + xdotool). The class is defined conditionally on
+``platform.system()``. On platforms other than Windows or Linux no
+``WindowInterface`` is defined.
+
+Note:
+    Callers that import ``WindowInterface`` by name will receive an
+    ``ImportError`` on non-Windows platforms if the Linux branch also fails
+    (e.g. xdotool / mss not installed). This is a known limitation tracked
+    separately from this module.
+"""
+
 import platform
 
 import numpy as np
@@ -9,7 +23,22 @@ if platform.system() == "Windows":
     import win32ui
 
     class WindowInterface:
+        """Win32-backed window interface for screenshot capture and resize."""
+
         def __init__(self, window_name):
+            """Locate the named window and compute window-border offsets.
+
+            Polls until the window has a non-zero client area (handles the case where
+            the window is minimized at startup). Stores ``w_diff`` and ``h_diff`` (px)
+            — typically 16 and 39 px on Windows 10 — needed to convert client-area
+            dimensions to full-frame dimensions.
+
+            Args:
+                window_name: Exact title of the target window as shown in the taskbar.
+
+            Raises:
+                AssertionError: If no window with the given name is found.
+            """
             self.window_name = window_name
 
             hwnd = win32gui.FindWindow(None, self.window_name)
@@ -30,6 +59,17 @@ if platform.system() == "Windows":
             self.y_origin_offset = 0
 
         def screenshot(self):
+            """Capture the client area of the window as a NumPy array.
+
+            Uses Win32 GDI BitBlt for low-overhead screen capture. Polls until the
+            window has a positive client size to avoid zero-dimension arrays.
+
+            Returns:
+                uint8 array of shape ``(height, width, 4)`` in BGRA channel order.
+
+            Raises:
+                AssertionError: If the window cannot be found.
+            """
             hwnd = win32gui.FindWindow(None, self.window_name)
             assert hwnd != 0, f"Could not find a window named {self.window_name}."
 
@@ -56,6 +96,20 @@ if platform.system() == "Windows":
             return img
 
         def move_and_resize(self, x=1, y=0, w=None, h=None):
+            """Move and resize the window to the requested client-area dimensions.
+
+            Adjusts the requested client-area size by the stored border offsets so the
+            actual client area matches ``(w, h)`` exactly.
+
+            Args:
+                x: Target left edge of the client area in screen coordinates (px).
+                y: Target top edge of the client area in screen coordinates (px).
+                w: Target client-area width in px. Falls back to ``WINDOW_WIDTH`` config.
+                h: Target client-area height in px. Falls back to ``WINDOW_HEIGHT`` config.
+
+            Raises:
+                AssertionError: If the window cannot be found.
+            """
             from tmrl.config.constants import WINDOW_HEIGHT, WINDOW_WIDTH
 
             if w is None:
@@ -78,6 +132,17 @@ elif platform.system() == "Linux":
     import mss
 
     def get_window_id(name):
+        """Return the xdotool window ID for the first visible window with the given name.
+
+        Args:
+            name: Exact window title to search for.
+
+        Returns:
+            xdotool window ID string.
+
+        Raises:
+            NoSuchWindowError: If no matching visible window is found or xdotool fails.
+        """
         try:
             result = subprocess.run(
                 ["xdotool", "search", "--onlyvisible", "--name", "."],
@@ -145,17 +210,27 @@ elif platform.system() == "Linux":
             raise e
 
     class NoSuchWindowError(Exception):
-        """thrown if a named window can't be found"""
+        """Raised when a named window cannot be found via xdotool."""
 
         pass
 
     class GeometrySearchError(Exception):
-        """thrown if geometry search fails"""
+        """Raised when xdotool cannot retrieve a window's geometry."""
 
         pass
 
     class WindowInterface:  # type: ignore[no-redef]
+        """Linux window interface for screenshot capture and resize via mss + xdotool."""
+
         def __init__(self, window_name, linux_x_offset: int = 0, linux_y_offset: int = 0):
+            """Initialize the Linux window interface.
+
+            Args:
+                window_name: Exact title of the target window.
+                linux_x_offset: Horizontal pixel offset applied to every screenshot crop.
+                    Compensates for coordinate disagreements between xdotool and mss.
+                linux_y_offset: Vertical pixel offset applied to every screenshot crop.
+            """
             self.sct = mss.mss()
 
             self.window_name = window_name
@@ -175,10 +250,19 @@ elif platform.system() == "Linux":
             self.process: subprocess.Popen[bytes] | None = None
 
         def __del__(self):
+            """Release the mss screen-capture context."""
             pass
             self.sct.close()
 
         def execute_command(self, c):
+            """Write a shell command to the persistent bash subprocess stdin.
+
+            Lazily spawns a bash process if none is running. Commands are fire-and-forget;
+            no stdout/stderr is consumed.
+
+            Args:
+                c: Shell command string (must include a trailing newline).
+            """
             if self.process is None or self.process.poll() is not None:
                 self.process = subprocess.Popen(
                     "/bin/bash",
@@ -191,6 +275,15 @@ elif platform.system() == "Linux":
             self.process.stdin.flush()
 
         def screenshot(self):
+            """Capture the client area using mss at the stored window geometry.
+
+            Returns:
+                uint8 NumPy array of shape ``(height, width, 4)`` in BGRA channel order.
+
+            Raises:
+                AssertionError: If window geometry has not been set via
+                    :meth:`move_and_resize`.
+            """
             try:
                 x, y, w, h = self.x, self.y, self.w, self.h
                 assert x is not None
@@ -211,6 +304,18 @@ elif platform.system() == "Linux":
                 raise e
 
         def move_and_resize(self, x=0, y=0, w=None, h=None):
+            """Reposition and resize the window via xdotool and record the new geometry.
+
+            Sleeps 1 s after issuing the commands to give the window manager time to
+            apply the change before the next screenshot reads geometry. Uses a sleep
+            rather than ``xdotool --sync`` because ``--sync`` does not reliably return.
+
+            Args:
+                x: Target X coordinate in screen coordinates (px).
+                y: Target Y coordinate in screen coordinates (px).
+                w: Target width in px. Falls back to ``WINDOW_WIDTH`` config.
+                h: Target height in px. Falls back to ``WINDOW_HEIGHT`` config.
+            """
             from tmrl.config.constants import WINDOW_HEIGHT, WINDOW_WIDTH
 
             if w is None:
@@ -220,16 +325,13 @@ elif platform.system() == "Linux":
             logger.debug(f"prepare {self.window_name} to {w}x{h} @ {x}, {y}")
 
             try:
-                # debug
                 c_focus = f"xdotool windowfocus {self.window_id}\n"
                 self.execute_command(c_focus)
 
-                # move
                 logger.debug(f"move window {self.window_name!s}")
                 c_move = f"xdotool windowmove {self.window_id!s} {x!s} {y!s}\n"
                 self.execute_command(c_move)
 
-                # resize
                 logger.debug(f"resize window {self.window_name!s}")
                 c_resize = f"xdotool windowsize {self.window_id!s} {w!s} {h!s}\n"
                 self.execute_command(c_resize)
@@ -267,6 +369,11 @@ elif platform.system() == "Linux":
 
 
 def profile_screenshot():
+    """Profile screenshot throughput for the "Trackmania" window using pyinstrument.
+
+    Runs 5000 consecutive screenshot calls and prints a flamegraph to stdout.
+    Used for local performance benchmarking; not called during normal training.
+    """
     from pyinstrument import Profiler
 
     pro = Profiler()

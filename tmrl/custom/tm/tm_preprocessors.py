@@ -6,8 +6,17 @@ from tmrl.custom.tm.observation_constants import WorldTelemetryObsIndex as _Obs
 
 
 def obs_preprocessor_tm_act_in_obs(obs):
-    """
-    Preprocessor for TM2020 full environment with grayscale images
+    """Normalize raw obs from the full TM2020 image environment for neural network input.
+
+    Divides obs[0..2] by 1000, 10, and 10000 respectively to bring the scalar channels
+    into a bounded range. Normalizes grayscale images (obs[3]) from uint8 [0, 255] to
+    float32 [0, 1]. Action-in-obs slots (obs[4:]) pass through unchanged.
+
+    Args:
+        obs: Raw observation tuple from the TM2020 full-image rtgym environment.
+
+    Returns:
+        Normalized observation tuple with the same structure as the input.
     """
     grayscale_images = obs[3]
     grayscale_images = grayscale_images.astype(np.float32) / 255.0
@@ -86,6 +95,17 @@ def obs_preprocessor_lidar_images_act_in_obs(obs):
 
 
 def obs_preprocessor_mobilenet_act_in_obs(obs):
+    """Identity preprocessor for MobileNet-based observations; returns obs unchanged.
+
+    The MobileNet interface performs its own internal normalization, so no additional
+    scaling is applied here.
+
+    Args:
+        obs: Raw observation tuple.
+
+    Returns:
+        The input observation tuple unmodified.
+    """
     return obs
 
 
@@ -160,4 +180,14 @@ def obs_preprocessor_world_telemetry_act_in_obs(obs):
 
 
 def sample_preprocessor_lidar_act_in_obs(last_obs, act, rew, new_obs, terminated, truncated):
+    """Identity sample preprocessor for LIDAR observations; returns the sample unchanged.
+
+    Called on ``(last_obs, act, rew, new_obs, terminated, truncated)`` tuples drawn from
+    the replay memory. Provided as a hook for future data augmentation. CRC consistency
+    checks are NOT run after sample preprocessing, so any augmentation must preserve
+    the statistical properties of the transition.
+
+    Returns:
+        The six input arguments as a tuple, unmodified.
+    """
     return last_obs, act, rew, new_obs, terminated, truncated

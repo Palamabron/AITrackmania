@@ -86,7 +86,19 @@ def apply_episode_length_guards(
 
 
 class TrackMania2020InterfaceBase(RealTimeGymInterface, ABC):
-    """Control, window init, reward wiring, image ring buffer, and OpenPlanet client creation."""
+    """Shared infrastructure for all TrackMania 2020 rtgym interfaces.
+
+    Provides:
+    - Virtual gamepad (vgamepad) or keyboard control dispatch.
+    - Crash detection via gamepad rumble callback and a kinematic fallback.
+    - Brake-tap scheduling (background timer to avoid blocking the control thread).
+    - Image ring-buffer (``_push_img`` / ``_get_img_hist_array``) for frame stacking.
+    - OpenPlanet client creation and reward-function initialization.
+    - Episode-length gating and finish-UI suppression helpers.
+
+    Concrete subclasses must implement :meth:`reset`, :meth:`get_obs_rew_terminated_info`,
+    and :meth:`get_observation_space`.
+    """
 
     client: TM2020OpenPlanetClient | None = None
     record_human: bool = False
@@ -119,6 +131,16 @@ class TrackMania2020InterfaceBase(RealTimeGymInterface, ABC):
         return TM2020OpenPlanetClient()
 
     def _push_img(self, img: np.ndarray) -> None:
+        """Append one frame to the circular image history buffer.
+
+        Allocates or re-allocates the buffer if the image shape changes.
+        Frames are stored in insertion order; the oldest is overwritten once
+        the buffer reaches ``img_hist_len`` entries.
+
+        Args:
+            img: Single game frame as a NumPy array. Shape is arbitrary but
+                must be consistent across calls within an episode.
+        """
         if self._img_buf is None or self._img_buf.shape[1:] != img.shape:
             self._img_buf = np.zeros((self.img_hist_len, *img.shape), dtype=img.dtype)
             self._img_hist_count = 0
@@ -130,6 +152,16 @@ class TrackMania2020InterfaceBase(RealTimeGymInterface, ABC):
             self._img_hist_count += 1
 
     def _get_img_hist_array(self) -> np.ndarray:
+        """Return the full frame history as a ``(img_hist_len, *frame_shape)`` array.
+
+        When the buffer has not yet received ``img_hist_len`` frames (beginning of
+        episode), the oldest available frame is repeated to fill the leading slots.
+        Returns a zero array of shape ``(img_hist_len, 1, 1)`` if no frames have
+        been pushed yet.
+
+        Returns:
+            np.ndarray: Frame history in chronological order, oldest first.
+        """
         buf = self._img_buf
         if buf is None or self._img_hist_count == 0:
             return np.zeros((self.img_hist_len, 1, 1), dtype=np.uint8)
@@ -145,7 +177,20 @@ class TrackMania2020InterfaceBase(RealTimeGymInterface, ABC):
         return np.asarray(buf[idx])
 
     def initialize_common(self):
-        """Initializes the window interface, reward function, and game client."""
+        """Initialize shared resources: window, gamepad/keyboard, reward function, and client.
+
+        Must be called once (typically from ``initialize()``) before the first
+        ``reset()`` call. Sets up:
+        - Virtual gamepad (vgamepad ``VX360Gamepad``) or logs keyboard-mode notice.
+        - ``WindowInterface`` for screen capture and window positioning.
+        - ``RewardFunction`` wired to the active config paths and W&B settings.
+        - ``TM2020OpenPlanetClient`` (via ``_build_openplanet_client``) if not already set.
+        - Crash state and kinematics tracking fields.
+
+        Raises:
+            RuntimeError: If vgamepad is requested on Linux without libevdev, or on
+                Windows without the ViGEmBus driver.
+        """
         self._crash_lock = threading.Lock()
         self._brake_tap_lock = threading.Lock()
         self._brake_tap_timer = None
@@ -300,6 +345,18 @@ class TrackMania2020InterfaceBase(RealTimeGymInterface, ABC):
             self._schedule_brake_tap_release_unlocked(release_ctrl)
 
     def send_control(self, control):
+        """Dispatch a control action to the game via gamepad or keyboard.
+
+        Handles discrete action decoding (via ``discrete_action_table``),
+        auto-drift steer override, brake-tap scheduling (press now, timed release
+        via a background thread), and continuous gamepad or keyboard key mapping.
+        A no-op when ``record_human`` is True.
+
+        Args:
+            control: Action array ``[gas, brake, steer]`` in [-1, 1] each, or a
+                scalar discrete action index if ``discrete_action_table`` is set.
+                Pass ``None`` to send nothing.
+        """
         if self.record_human:
             return
         if control is not None and self.discrete_action_table is not None:
@@ -357,12 +414,21 @@ class TrackMania2020InterfaceBase(RealTimeGymInterface, ABC):
                 apply_control(actions)
 
     def reset_race(self):
+        """Trigger a race restart in the game (gamepad button or keyboard shortcut)."""
         if self.gamepad:
             gamepad_reset(self.j)
         else:
             keyres()
 
     def reset_common(self):
+        """Perform shared per-episode reset: lazy init, default action, race restart, sleep.
+
+        Sends the default action (or a null action in human-record mode),
+        triggers ``reset_race()``, clears crash state, and sleeps for the
+        configured reset wait time (slightly shorter for gamepad to account for
+        input latency). Subclass ``reset()`` methods call this before rebuilding
+        the initial observation.
+        """
         if not self.initialized:
             self.initialize()
         if self.record_human:
@@ -383,12 +449,16 @@ class TrackMania2020InterfaceBase(RealTimeGymInterface, ABC):
         time.sleep(time_sleep)
 
     def close_finish_pop_up_tm20(self):
+        """Dismiss the post-race finish pop-up dialog (gamepad button or mouse click)."""
         if self.gamepad:
             gamepad_close_finish_pop_up_tm20(self.j)
         else:
             mouse_close_finish_pop_up_tm20(small_window=self.small_window)
 
     def wait(self):
+        """Send a neutral action, optionally save a ghost replay, restart the race,
+        and close the finish pop-up.
+        """
         self.send_control(self.get_default_action())
         if self.save_replays:
             save_ghost()

@@ -23,6 +23,16 @@ class TM2020OpenPlanetClient:
     """
 
     def __init__(self, host="127.0.0.1", port=9000, struct_str=None, nb_floats=19):
+        """Configure the struct layout and launch the background receive thread.
+
+        Args:
+            host: IP address of the OpenPlanet plugin host. Default ``"127.0.0.1"``.
+            port: TCP port the plugin listens on. Default ``9000``.
+            struct_str: ``struct.unpack`` format string. Defaults to a little-endian
+                sequence of ``nb_floats`` 32-bit floats (``"<fff…"``).
+            nb_floats: Number of float fields when ``struct_str`` is omitted.
+                Ignored once ``struct_str`` is supplied.
+        """
         if struct_str is None:
             struct_str = "<" + "f" * nb_floats
         self._struct_str = struct_str
@@ -94,16 +104,33 @@ class TM2020OpenPlanetClient:
                 continue
 
     def retrieve_data(self, sleep_if_empty=0.01, timeout=10.0, first_packet_timeout=60.0):
-        """
-        Retrieves the most recently received data.
-        Blocks if nothing has been received so far.
-        Uses first_packet_timeout until the first packet is received (allows time for
-        connection/reconnect); then uses timeout for subsequent waits.
+        """Return the most recent decoded telemetry frame, blocking until one is available.
 
-        Timeouts and the post-return sanity check (speed range) are the first line of
-        defense against corrupted samples entering the replay buffer. The interface
-        should check _last_retrieve_invalid and _last_retrieve_position_patched and
-        terminate the episode or flag the transition when appropriate.
+        The background thread retains only the latest buffered frame, so the caller
+        always receives the freshest data even when its step rate lags the plugin emit rate.
+
+        Two timeout regimes apply:
+          - Before the first frame: ``first_packet_timeout`` (allows time for the user
+            to load a map and put the car on track).
+          - After the first frame: ``timeout`` (steady-state gap tolerance).
+
+        After returning, callers should inspect the public flags:
+          - ``_last_retrieve_position_patched``: position was replaced with the last good
+            sample because the plugin emitted a ``[0, 0, 0]`` glitch frame.
+          - ``_last_retrieve_invalid``: speed sanity check failed; the interface should
+            terminate the episode and discard the transition.
+
+        Args:
+            sleep_if_empty: Seconds to sleep between buffer polls (default 0.01 s).
+            timeout: Maximum seconds to wait for subsequent frames (default 10 s).
+            first_packet_timeout: Maximum seconds to wait for the very first frame
+                (default 60 s).
+
+        Returns:
+            Decoded telemetry tuple as returned by ``struct.unpack(struct_str, …)``.
+
+        Raises:
+            AssertionError: If no frame arrives within the applicable timeout.
         """
         c = True
         t_start = None
@@ -185,7 +212,15 @@ class TM2020OpenPlanetClient:
 
 
 def save_ghost(host="127.0.0.1", port=10000):
-    """Trigger a ghost save by opening a TCP connection to the ghost-saving server."""
+    """Trigger a ghost save by opening a TCP connection to the ghost-saving server.
+
+    The server saves the current ghost on connection; the connection is closed
+    immediately after. Requires a ghost-saving server to be running on the given port.
+
+    Args:
+        host: IP address of the ghost-saving server. Default ``"127.0.0.1"``.
+        port: TCP port of the ghost-saving server. Default ``10000``.
+    """
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.connect((host, port))
 

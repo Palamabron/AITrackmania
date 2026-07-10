@@ -15,6 +15,17 @@ from typing import NamedTuple
 
 
 class Telemetry(NamedTuple):
+    """Single-frame snapshot of raw telemetry from the OpenPlanet TMRL_GrabData plugin.
+
+    All numeric fields use game-native units:
+    - Positions (pos_x/y/z) in meters, world-frame.
+    - Speed in km/h.
+    - Acceleration in m/s² and jerk in m/s³ (derived from successive speed samples).
+    - Angles (aim_yaw, aim_pitch, fl/fr_steer_angle) in radians.
+    - Slip coefficients normalized to [0, 1] by the game engine.
+    - Gear: 0 = reverse, 1-6 = forward.
+    """
+
     cp: int
     lap: int
     speed: float

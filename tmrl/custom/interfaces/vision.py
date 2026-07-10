@@ -69,6 +69,28 @@ class TM2020Interface(TrackMania2020InterfaceBase):
         discrete_n_steer_bins: int = 0,
         **kwargs,
     ):
+        """Initialize instance variables; deferred hardware setup runs in ``initialize()``.
+
+        Args:
+            img_hist_len: Number of consecutive frames to stack in the image observation.
+            gamepad: Use virtual Xbox 360 gamepad (vgamepad) when True; keyboard otherwise.
+            save_replays: Save a ghost replay to disk after each completed lap.
+            grayscale: Convert screenshots to single-channel grayscale when True.
+            resize_to: ``(width, height)`` in pixels for screenshot downsampling.
+                ``None`` uses ``cfg.WINDOW_WIDTH`` x ``cfg.WINDOW_HEIGHT``.
+            finish_reward: Scalar bonus added when the finish UI activates.
+                Defaults to ``cfg.END_OF_TRACK_REWARD`` when ``None``.
+            constant_penalty: Per-step penalty subtracted from reward (km/h units
+                of time cost). Defaults to ``cfg.REWARD_CONFIG['CONSTANT_PENALTY']``.
+            crash_penalty: Scalar penalty applied on crash detection. Defaults to
+                ``cfg.CRASH_PENALTY`` when ``None``.
+            min_nb_steps_before_failure: Minimum steps without progress before the
+                episode is terminated. Defaults to 70 when ``None``.
+            record_human: When True, ``send_control`` is a no-op (human drives).
+            discrete_n_steer_bins: Number of steering bins for the discrete action
+                space. 0 disables discrete actions (continuous Box space used).
+            **kwargs: Forwarded to the rtgym ``RealTimeGymInterface`` base.
+        """
         self.is_crashed = False
         self.last_time = 0.0
         self.img_hist_len = img_hist_len
@@ -115,11 +137,20 @@ class TM2020Interface(TrackMania2020InterfaceBase):
         self._iface_prev_acc_kmh: float = 0.0
 
     def initialize(self):
+        """Run ``initialize_common()`` and mark the interface as ready."""
         self.initialize_common()
         self.small_window = True
         self.initialized = True
 
     def grab_data_and_img(self):
+        """Capture a screenshot and retrieve the current telemetry frame atomically.
+
+        Returns:
+            tuple: ``(data, img)`` where ``data`` is the raw telemetry float tuple
+                from the OpenPlanet client and ``img`` is a uint8 NumPy array of
+                shape ``(H, W)`` (grayscale) or ``(H, W, 3)`` (RGB) after
+                optional resize and color conversion.
+        """
         assert self.window_interface is not None
         assert self.client is not None
         img = self.window_interface.screenshot()[:, :, :3]  # BGR ordering
@@ -131,6 +162,14 @@ class TM2020Interface(TrackMania2020InterfaceBase):
         return data, img
 
     def _update_telemetry_arrays(self, data) -> None:
+        """Update the preallocated speed/gear/rpm scalar arrays from a telemetry frame.
+
+        Converts speed from m/s to km/h and caches the result in ``_last_speed_kmh``
+        for crash detection in the next step.
+
+        Args:
+            data: Raw float tuple from ``TM2020OpenPlanetClient.retrieve_data()``.
+        """
         speed_kmh = float(data[TmrlDataPlugin.SPEED_MPS]) * MPS_TO_KMPH
         self._speed_arr[0] = speed_kmh
         self._gear_arr[0] = data[TmrlDataPlugin.ENGINE_GEAR]
@@ -138,6 +177,22 @@ class TM2020Interface(TrackMania2020InterfaceBase):
         self._last_speed_kmh = speed_kmh
 
     def reset(self, seed=None, options=None):
+        """Reset the environment and return the initial observation.
+
+        Flushes any unlogged episode metrics, triggers ``reset_common()``,
+        grabs the first telemetry frame and screenshot, pre-fills the image
+        history buffer with copies of the initial frame, and resets kinematic
+        state.
+
+        Args:
+            seed: Unused; accepted for gymnasium API compatibility.
+            options: Unused; accepted for gymnasium API compatibility.
+
+        Returns:
+            tuple: ``(observation, info)`` where ``observation`` is
+                ``[speed (km/h), gear, rpm (float32 arrays), image_history]``
+                and ``info`` is an empty dict.
+        """
         rf = getattr(self, "reward_function", None)
         if (
             rf is not None
@@ -160,6 +215,17 @@ class TM2020Interface(TrackMania2020InterfaceBase):
         return obs, {}
 
     def get_obs_rew_terminated_info(self):
+        """Step the interface: capture telemetry + image, compute reward, return SARS tuple.
+
+        Returns:
+            tuple: ``(observation, reward, terminated, info)`` where:
+                - ``observation`` = ``[speed, gear, rpm, image_history]`` (float32 arrays).
+                - ``reward`` is float32.
+                - ``terminated`` is True when the reward function signals failure or
+                  finish (subject to minimum-episode-length guards).
+                - ``info`` contains ``end_of_track``, ``reward_sum``, ``crashed``,
+                  and ``crash_penalty``.
+        """
         assert self.reward_function is not None
         data, img = self.grab_data_and_img()
         self._update_telemetry_arrays(data)
@@ -244,6 +310,14 @@ class TM2020Interface(TrackMania2020InterfaceBase):
         return observation, reward_out, terminated, info
 
     def get_observation_space(self) -> spaces.Tuple:
+        """Return the gymnasium Tuple observation space for this interface.
+
+        Returns:
+            spaces.Tuple: ``(speed [0, 1000] km/h, gear [0, 6], rpm [0, ∞],
+                image_history [0, 255])``. Image shape is
+                ``(img_hist_len, H, W)`` for grayscale or ``(img_hist_len, H, W, 3)``
+                for RGB, where H x W matches ``resize_to``.
+        """
         speed = spaces.Box(low=0.0, high=1000.0, shape=(1,))
         gear = spaces.Box(low=0.0, high=6, shape=(1,))
         rpm = spaces.Box(low=0.0, high=np.inf, shape=(1,))
@@ -258,11 +332,24 @@ class TM2020Interface(TrackMania2020InterfaceBase):
         return spaces.Tuple((speed, gear, rpm, img))
 
     def get_action_space(self):
+        """Return the action space: Discrete when a table is set, else Box[-1, 1]^3.
+
+        Returns:
+            spaces.Discrete or spaces.Box: Discrete over the brake-tap action table
+                when ``discrete_n_steer_bins > 0``, otherwise a continuous
+                ``Box(low=-1, high=1, shape=(3,))`` for ``[gas, brake, steer]``.
+        """
         if self.discrete_action_table is not None:
             return spaces.Discrete(len(self.discrete_action_table))
         return spaces.Box(low=-1.0, high=1.0, shape=(3,))
 
     def get_default_action(self):
+        """Return the do-nothing action (index 0 for discrete, zero vector for continuous).
+
+        Returns:
+            np.ndarray: Scalar int64 index 0 for discrete action space, or
+                float32 array ``[0., 0., 0.]`` for continuous.
+        """
         if self.discrete_action_table is not None:
             return np.array(0, dtype=np.int64)
         return np.array([0.0, 0.0, 0.0], dtype=np.float32)

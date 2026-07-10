@@ -82,7 +82,25 @@ def _boundary_ahead(
 
 
 def _to_car_frame(l_x, l_z, r_x, r_z, car_position, yaw: float):
-    """Translate to the car's frame and rotate by ``yaw`` so points are car-relative."""
+    """Transform boundary points from world XZ coordinates to the car's local frame.
+
+    Subtracts the car position then applies a 2-D rotation by ``yaw`` so that
+    +X_local points right of the car and +Z_local points forward. The rotation
+    matrix used is the standard XZ plane rotation: ``[cos -sin; sin cos] * [dx; dz]``.
+
+    Args:
+        l_x: Left-boundary X coordinates in world space (meters).
+        l_z: Left-boundary Z coordinates in world space (meters).
+        r_x: Right-boundary X coordinates in world space (meters).
+        r_z: Right-boundary Z coordinates in world space (meters).
+        car_position: 2-element sequence ``[car_x, car_z]`` in world space (meters).
+        yaw: Car heading in radians (from :func:`yaw_pitch_from_dir_xyz`).
+
+    Returns:
+        tuple: ``(left_x, left_y, right_x, right_y)`` — four arrays of the same
+            length in car-local coordinates (meters). The ``_y`` suffix here
+            corresponds to the local Z (forward) axis, not world Y.
+    """
     left = (np.array([l_x, l_z]).T - car_position).T
     right = (np.array([r_x, r_z]).T - car_position).T
     cos_a, sin_a = np.cos(yaw), np.sin(yaw)
@@ -112,7 +130,16 @@ def _load_boundary_pkl(left_path: str, right_path: str):
 
 
 def _load_boundary_csv_or_fallback(path: str) -> np.ndarray:
-    """Load CSV boundaries when present, otherwise return a tiny fallback line."""
+    """Load a boundary CSV, or return a two-point dummy array if the file is absent.
+
+    Args:
+        path: Filesystem path to the CSV file (comma-delimited, shape ``(2, N)``).
+
+    Returns:
+        np.ndarray: Loaded boundary array, or ``[[0, 1], [0, 1]]`` when the file
+            does not exist. The dummy keeps the constructor robust for smoke tests
+            and fresh repos without generated CSVs.
+    """
     if os.path.exists(path):
         return np.loadtxt(path, delimiter=",")
     # Keep constructor robust for smoke tests and fresh repos without generated CSVs.
@@ -137,6 +164,22 @@ class TM2020InterfaceBoundary(TM2020Interface):
         save_replay: bool = False,
         **kwargs,
     ):
+        """Set up the boundary interface and load pre-recorded track boundaries.
+
+        Loads per-map pkl files (``cfg.TRACK_PATH_LEFT`` / ``cfg.TRACK_PATH_RIGHT``)
+        when present; falls back to generated CSV files when they are missing.
+
+        Args:
+            img_hist_len: Image history length forwarded to the parent class.
+            gamepad: Use virtual gamepad when True; keyboard otherwise.
+            min_nb_steps_before_failure: Minimum steps without progress before termination.
+                Defaults to 70 (20 Hz x 3.5 s).
+            record: When True, accumulates observed boundary slices in
+                ``_observed_boundaries`` for offline inspection. Not for production
+                use — the list grows unbounded.
+            save_replay: Save a ghost replay after each completed race.
+            **kwargs: Forwarded to :class:`TM2020Interface`.
+        """
         # RtGym merges ``interface_kwargs`` (e.g. ``save_replays``) into the constructor; avoid
         # passing ``save_replays`` twice to :class:`TM2020Interface`.
         save_replays_val = bool(kwargs.pop("save_replays", save_replay))
@@ -185,6 +228,15 @@ class TM2020InterfaceBoundary(TM2020Interface):
         self.initialized = True
 
     def get_observation_space(self):
+        """Return the gymnasium Tuple observation space for this interface.
+
+        Returns:
+            spaces.Tuple: ``(track_information, speed, gear, rpm, acceleration,
+                steering_angle, slipping_tires, crash, failure_counter)``.
+                Track information is placed first so that IQN's
+                ``split_track_observation`` and the GNN (which requires
+                ``dim % 3 == 0``) operate on a contiguous leading slice.
+        """
         # Track channel first so IQN ``split_track_observation`` + GNN (dim % 3 == 0) works.
         track_information = spaces.Box(low=-300, high=300, shape=(BOUNDARY_OBS_DIM,))
         speed = spaces.Box(low=0.0, high=1000.0, shape=(1,))
@@ -212,10 +264,33 @@ class TM2020InterfaceBoundary(TM2020Interface):
         )
 
     def grab_data(self):
+        """Retrieve the current telemetry frame from the OpenPlanet client.
+
+        Returns:
+            tuple: Raw float tuple of length ``TMRL_GRABDATA_FLOAT_COUNT`` (33)
+                indexed by :data:`TmrlDataPlugin`.
+        """
         assert self.client is not None
         return self.client.retrieve_data()
 
     def _track_information_vector(self, car_position, yaw):
+        """Build the 60-float car-relative boundary observation vector.
+
+        Looks up the ``BOUNDARY_LOOK_AHEAD`` boundary points ahead of the car from
+        the pre-recorded pkl/CSV, transforms them to the car's local XZ frame via
+        :func:`_to_car_frame`, and optionally records them in
+        ``_observed_boundaries`` when recording mode is active.
+
+        Args:
+            car_position: 2-element list ``[x, z]`` of the car's world position (meters).
+            yaw: Car heading in radians (from :func:`yaw_pitch_from_dir_xyz`).
+
+        Returns:
+            np.ndarray: Float32 array of shape ``(BOUNDARY_OBS_DIM,)`` = 60 =
+                ``4 x BOUNDARY_LOOK_AHEAD`` values interleaved as
+                ``[left_x * 15, left_y * 15, right_x * 15, right_y * 15]``
+                in car-local coordinates (meters).
+        """
         l_x, l_z, r_x, r_z = _boundary_ahead(
             self.left_boundary,
             self.right_boundary,
@@ -233,6 +308,19 @@ class TM2020InterfaceBoundary(TM2020Interface):
         return np.concatenate([l_x, l_y, r_x, r_y]).astype(np.float32)
 
     def get_obs_rew_terminated_info(self):
+        """Step the interface: grab telemetry, compute reward, return SARS tuple.
+
+        Returns:
+            tuple: ``(observation, reward, terminated, info)`` where:
+                - ``observation`` = ``[track_information, speed, gear, rpm,
+                  acceleration, steering_angle, slipping_tires, crash,
+                  failure_counter]`` (float32 arrays).
+                - ``reward`` is float32.
+                - ``terminated`` is True on failure or end-of-track (subject to
+                  minimum-episode-length guards).
+                - ``info`` contains ``end_of_track``, ``crashed``, ``crash_penalty``,
+                  ``reward_sum``, and optionally ``human_control_vec`` in record mode.
+        """
         data = self.grab_data()
         dir_xyz = (
             float(data[TmrlDataPlugin.DIR_X]),
@@ -364,6 +452,21 @@ class TM2020InterfaceBoundary(TM2020Interface):
         return obs, np.float32(rew), terminated, info
 
     def reset(self, seed=None, options=None):
+        """Reset the environment and return the initial observation.
+
+        Flushes unlogged episode metrics, triggers ``reset_common()``, reads the
+        first telemetry frame, and computes the boundary observation at the spawn
+        position so the first replay sample has real geometry rather than zeros.
+
+        Args:
+            seed: Unused; accepted for gymnasium API compatibility.
+            options: Unused; accepted for gymnasium API compatibility.
+
+        Returns:
+            tuple: ``(observation, info)`` where ``observation`` matches the
+                space declared by :meth:`get_observation_space` and ``info``
+                is an empty dict.
+        """
         rf = getattr(self, "reward_function", None)
         if (
             rf is not None
@@ -439,6 +542,25 @@ class TM2020InterfaceBoundaryImages(TM2020Interface):
         save_replays: bool = False,
         **kwargs,
     ):
+        """Set up the boundary+image interface and load per-map pkl boundaries.
+
+        Args:
+            img_hist_len: Number of consecutive frames to stack in the image observation.
+            gamepad: Use virtual gamepad when True; keyboard otherwise.
+            grayscale: Convert screenshots to single-channel grayscale when True.
+            resize_to: ``(width, height)`` in pixels for screenshot downsampling.
+                Defaults to ``(cfg.IMG_WIDTH, cfg.IMG_HEIGHT)`` when ``None``.
+            min_nb_steps_before_failure: Minimum steps without progress before termination.
+                Defaults to 70 (20 Hz x 3.5 s).
+            save_replays: Save a ghost replay after each completed race.
+            **kwargs: Forwarded to :class:`TM2020Interface`.
+
+        Raises:
+            FileNotFoundError or pickle error: If the per-map pkl files at
+                ``cfg.TRACK_PATH_LEFT`` / ``cfg.TRACK_PATH_RIGHT`` are absent
+                or corrupt (unlike :class:`TM2020InterfaceBoundary`, no CSV
+                fallback is performed here).
+        """
         save_replays_val = bool(kwargs.pop("save_replays", save_replays))
         super().__init__(
             img_hist_len=img_hist_len,
@@ -460,11 +582,28 @@ class TM2020InterfaceBoundaryImages(TM2020Interface):
         self._bdimg_prev_acc_kmh: float = 0.0
 
     def initialize(self):
+        """Run ``initialize_common()`` and mark the interface as ready (full-size window)."""
         self.initialize_common()
         self.small_window = False
         self.initialized = True
 
     def _grab_speed_track_and_image(self):
+        """Capture telemetry, compute boundary observation, and grab a processed screenshot.
+
+        Performs all three I/O operations in one call to keep them as close to
+        simultaneous as possible. The image is resized to ``resize_to``, converted
+        to grayscale or RGB, normalized to [0, 1], and given a leading channel
+        dimension so it can be stacked directly.
+
+        Returns:
+            tuple: ``(speed, data, track_information, img)`` where:
+                - ``speed``: float32 array of shape ``(1,)`` in km/h.
+                - ``data``: raw telemetry float tuple indexed by :data:`TmrlDataPlugin`.
+                - ``track_information``: float32 array of shape ``(BOUNDARY_OBS_DIM,)``
+                  in car-local coordinates (meters).
+                - ``img``: float32 array of shape ``(1, H, W)`` (grayscale) or
+                  ``(3, H, W)`` (RGB), values in [0, 1].
+        """
         assert self.window_interface is not None
         assert self.client is not None
         raw_img = self.window_interface.screenshot()[:, :, :3]
@@ -497,6 +636,20 @@ class TM2020InterfaceBoundaryImages(TM2020Interface):
         return speed, data, track_information, img
 
     def reset(self, seed=None, options=None):
+        """Reset the environment and return the initial observation.
+
+        Flushes unlogged episode metrics, triggers ``reset_common()``, grabs the
+        initial telemetry + image, pre-fills the image history with copies of the
+        first frame, and resets kinematic state.
+
+        Args:
+            seed: Unused; accepted for gymnasium API compatibility.
+            options: Unused; accepted for gymnasium API compatibility.
+
+        Returns:
+            tuple: ``([speed, progress, track_information, images], {})`` matching
+                :meth:`get_observation_space`. ``progress`` is initialized to 0.
+        """
         rf = getattr(self, "reward_function", None)
         if (
             rf is not None
@@ -517,6 +670,18 @@ class TM2020InterfaceBoundaryImages(TM2020Interface):
         return [speed, progress, track_information, images], {}
 
     def get_obs_rew_terminated_info(self):
+        """Step the interface: grab telemetry+image, compute reward, return SARS tuple.
+
+        Returns:
+            tuple: ``(observation, reward, terminated, info)`` where:
+                - ``observation`` = ``[speed (km/h), progress (fraction), track_information,
+                  images]`` (float32 arrays).
+                - ``reward`` is float32.
+                - ``terminated`` is True on failure or end-of-track (subject to
+                  minimum-episode-length guards).
+                - ``info`` contains ``end_of_track``, ``reward_sum``, ``crashed``,
+                  and ``crash_penalty``.
+        """
         assert self.reward_function is not None
         speed, data, track_information, img = self._grab_speed_track_and_image()
         skmh = float(speed[0])
@@ -603,6 +768,14 @@ class TM2020InterfaceBoundaryImages(TM2020Interface):
         return obs, np.float32(rew), terminated, info
 
     def get_observation_space(self):
+        """Return the gymnasium Tuple observation space for this interface.
+
+        Returns:
+            spaces.Tuple: ``(speed [0, 1000] km/h, progress [0, 1],
+                track_information [-300, 300] meters in car-local frame,
+                images [0, 1] normalized)`` where images have shape
+                ``(img_hist_len, C, H, W)`` with C=1 for grayscale or C=3 for RGB.
+        """
         c = 1 if self.grayscale else 3
         h, w = self.resize_to[1], self.resize_to[0]
         speed = spaces.Box(low=0.0, high=1000.0, shape=(1,))

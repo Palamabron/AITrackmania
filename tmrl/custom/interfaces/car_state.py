@@ -59,6 +59,32 @@ class TM2020RLInterface(TM2020Interface):
         include_camera_images: bool = False,
         **kwargs,
     ):
+        """Configure the unified RL interface for 33-float TMRL_GrabData telemetry.
+
+        Args:
+            img_hist_len: Image history length; only used when ``include_camera_images``
+                is True.
+            gamepad: Use virtual Xbox 360 gamepad when True; keyboard otherwise.
+            min_nb_steps_before_failure: Steps without progress before episode termination.
+            record: Unused field; kept for forward compatibility.
+            save_replay: Alias for ``save_replays``; the latter takes precedence
+                when both are given.
+            save_replays: Save a ghost replay after each completed race when True.
+            grayscale: Convert camera screenshots to grayscale when True (only
+                relevant if ``include_camera_images=True``).
+            resize_to: ``(width, height)`` in pixels for camera screenshot
+                downsampling (only used when ``include_camera_images=True``).
+            finish_reward: Scalar bonus added on end-of-track. Defaults to
+                ``cfg.END_OF_TRACK_REWARD``.
+            constant_penalty: Per-step time-cost penalty subtracted from reward.
+            crash_penalty: Scalar penalty applied on crash detection.
+            checkpoint_reward: Bonus added each time a new checkpoint is crossed.
+            lap_reward: Bonus added each time a new lap is started.
+            record_human: When True, ``send_control`` is a no-op.
+            include_camera_images: Append a processed screenshot history as the
+                last element of the observation tuple when True.
+            **kwargs: Forwarded to :class:`TM2020Interface`.
+        """
         if save_replays is not None:
             save_replay = save_replays
         super().__init__(
@@ -109,16 +135,36 @@ class TM2020RLInterface(TM2020Interface):
         )
 
     def _build_openplanet_client(self):
+        """Create the OpenPlanet client with the TMRL_GrabData float count from config.
+
+        Returns:
+            TM2020OpenPlanetClient: Client configured for port 9000 and the
+                float count resolved from ``cfg.REWARD_CONFIG``.
+        """
         return TM2020OpenPlanetClient(
             port=OPENPLANET_PORT, nb_floats=tmrl_grabdata_payload_nb_floats(cfg.REWARD_CONFIG)
         )
 
     def initialize(self):
+        """Run ``initialize_common()`` and mark the interface as ready."""
         self.initialize_common()
         self.small_window = True
         self.initialized = True
 
     def get_observation_space(self):
+        """Return the gymnasium Tuple observation space for this interface.
+
+        Builds the base space from ``build_openplanet_tuple_observation_space``
+        and optionally appends an image-history space when
+        ``include_camera_images`` is True.
+
+        Returns:
+            spaces.Tuple: Contains track information, scalar telemetry fields
+                (speed km/h, acceleration, jerk, race progress, inputs, gear,
+                RPM, skidding, adherence, yaw rad, pitch rad, steer-angle,
+                slip coefficients, failure counter), an optional curvature array,
+                and an optional image-history array when camera images are enabled.
+        """
         from tmrl.custom.tm.openplanet_observation_space import (
             build_openplanet_tuple_observation_space,
         )
@@ -146,10 +192,27 @@ class TM2020RLInterface(TM2020Interface):
         return spaces.Tuple(tuple(spaces_list))
 
     def grab_data(self):
+        """Retrieve the current telemetry frame from the OpenPlanet client.
+
+        Returns:
+            tuple: Raw float tuple of length ``TMRL_GRABDATA_FLOAT_COUNT`` (33)
+                indexed by :data:`TmrlDataPlugin`.
+        """
         assert self.client is not None
         return self.client.retrieve_data()
 
     def _capture_and_process_image(self, raw_bgr: np.ndarray | None = None):
+        """Resize and color-convert a game screenshot for the image-history buffer.
+
+        Args:
+            raw_bgr: Pre-captured BGR image array, or ``None`` to take a fresh
+                screenshot from ``window_interface``. Shape ``(H_orig, W_orig, 3)``.
+
+        Returns:
+            np.ndarray: Float32 array of shape ``(H, W)`` (grayscale) or
+                ``(H, W, 3)`` (RGB) after resizing to ``_camera_rgb_resize``
+                and optional grayscale conversion.
+        """
         assert self.window_interface is not None
         img = raw_bgr if raw_bgr is not None else self.window_interface.screenshot()[:, :, :3]
         w, h = self._camera_rgb_resize
@@ -160,6 +223,27 @@ class TM2020RLInterface(TM2020Interface):
         return img.astype(np.float32)
 
     def _track_observation(self, pos, yaw):
+        """Query the reward function's track provider for the ahead-of-car track geometry.
+
+        Retrieves left, center, and right track positions relative to the car's
+        world position. When ``track_local_frame`` is enabled in the reward config,
+        the XZ coordinate pairs are rotated by ``yaw`` so they are expressed in
+        the car's heading frame (forward = local +Z, right = local +X). When
+        ``track_curvature_obs`` is enabled, a curvature array is also returned.
+
+        Args:
+            pos: World position of the car as a float32 array ``[x, y, z]`` (meters).
+            yaw: Car heading in radians from :func:`yaw_pitch_from_dir_xyz`.
+                Used only when ``track_local_frame`` is True.
+
+        Returns:
+            tuple: ``(track_info_arr, curvature_list)`` where:
+                - ``track_info_arr`` is a float32 array of concatenated
+                  ``[left, center, right]`` XZ point pairs (optionally scaled
+                  by ``cfg.OBS_TRACK_SCALE``).
+                - ``curvature_list`` is a list of float curvature values (one per
+                  ahead point), or ``None`` when ``track_curvature_obs`` is False.
+        """
         assert self.reward_function is not None
         track_result = self.reward_function.track_feature_provider.get_track_info(
             pos, self.points_number
@@ -198,6 +282,31 @@ class TM2020RLInterface(TM2020Interface):
         return np.array(track_list, dtype=np.float32), curvature_list
 
     def get_obs_rew_terminated_info(self):
+        """Step the interface: parse 33-float telemetry, compute reward, return SARS tuple.
+
+        Computes per-step kinematics (speed in km/h, acceleration, jerk) from
+        consecutive telemetry frames, runs crash detection (gamepad rumble +
+        kinematic fallback), queries the reward function, builds the track
+        observation, and assembles the full observation tuple.
+
+        Returns:
+            tuple: ``(observation, reward, terminated, info)`` where:
+                - ``observation`` = ``[track_info, speed, acceleration, jerk,
+                  race_progress, input_steer, input_gas, input_brake, gear,
+                  engine_rpm, skidding_count, adherence_coef, aim_yaw, aim_pitch,
+                  steer_angle, slip_coef, failure_counter]`` plus optional
+                  curvature and image-history arrays (float32 each).
+                - ``reward`` is float32.
+                - ``terminated`` is True on failure or end-of-track (subject to
+                  minimum-episode-length guards).
+                - ``info`` contains ``reward_sum``, ``end_of_track``, ``crashed``,
+                  ``crash_penalty``, and optionally ``telemetry_invalid`` or
+                  ``position_patched`` from the OpenPlanet client.
+
+        Raises:
+            ValueError: If the telemetry payload is shorter than
+                ``TMRL_GRABDATA_FLOAT_COUNT`` (33) floats.
+        """
         assert self.reward_function is not None
         data = self.grab_data()
         if len(data) < TMRL_GRABDATA_FLOAT_COUNT:
@@ -369,6 +478,26 @@ class TM2020RLInterface(TM2020Interface):
         return total_obs, np.float32(rew), terminated, info
 
     def reset(self, seed=None, options=None):
+        """Reset the environment and return the initial observation.
+
+        Flushes any unlogged episode metrics, triggers ``reset_common()``,
+        reads the first telemetry frame, initializes kinematic state, and
+        builds the initial observation tuple with zeros for acceleration, jerk,
+        race progress, and failure counter.
+
+        Args:
+            seed: Unused; accepted for gymnasium API compatibility.
+            options: Unused; accepted for gymnasium API compatibility.
+
+        Returns:
+            tuple: ``(observation, info)`` where ``observation`` matches the
+                structure returned by :meth:`get_obs_rew_terminated_info` and
+                ``info`` is ``{"reward_sum": 0.0}``.
+
+        Raises:
+            ValueError: If the telemetry payload is shorter than
+                ``TMRL_GRABDATA_FLOAT_COUNT`` (33) floats.
+        """
         rf = getattr(self, "reward_function", None)
         if (
             rf is not None

@@ -621,6 +621,15 @@ class RewardFunction:
             )
 
     def _current_drift_weight(self) -> float:
+        """Return the linearly annealed drift-reward weight.
+
+        Interpolates from ``_drift_weight_start`` to ``_drift_weight_end`` over
+        ``_drift_anneal_steps`` global env steps.  When annealing is disabled
+        (``_drift_anneal_steps == 0``), returns the fixed ``_drift_reward_weight``.
+
+        Returns:
+            Current drift bonus weight as a float >= 0.
+        """
         if self._drift_anneal_steps > 0:
             frac = min(1.0, self._global_env_steps / self._drift_anneal_steps)
             return self._drift_weight_start + frac * (
