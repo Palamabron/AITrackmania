@@ -564,6 +564,29 @@ class AlgorithmConfig(BaseModel):
 
     @model_validator(mode="after")
     def _consistency(self) -> AlgorithmConfig:
+        """Enforce cross-field consistency rules for algorithm hyperparameters.
+
+        Checks performed:
+
+        - ``betas_actor`` / ``betas_critic`` must each contain exactly two floats
+          when provided.
+        - ``iqn_munchausen_clip_min <= iqn_munchausen_clip_max``.
+        - ``iqn_monotonicity_regularization`` requires ``iqn_sort_quantiles=true``.
+        - ``reward_normalize_scale`` must not exceed 200 (implausibly large values
+          indicate a mis-configured divide-by-N pattern).
+        - When ``iqn_lr_cosine_decay`` is on and ``iqn_lr_total_steps > 0``, the
+          total steps must exceed the warmup steps.
+        - ``iqn_n_actions`` must equal the product of ``iqn_n_steer_bins``,
+          ``BRAKE_TAP_TABLE_N_GAS``, and ``BRAKE_TAP_TABLE_N_BRAKE``.
+        - ``quantiles_number`` must be 1 for SAC; > 1 is allowed only for TQC,
+          IQN, or SDSAC.
+
+        Returns:
+            The validated :class:`AlgorithmConfig` instance.
+
+        Raises:
+            ValueError: For any violated consistency constraint.
+        """
         from tmrl.config.enums import AlgorithmName
 
         for beta_name in ("betas_actor", "betas_critic"):

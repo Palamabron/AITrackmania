@@ -37,6 +37,18 @@ class SchedulerConfig(BaseModel):
     @field_validator("name")
     @classmethod
     def _validate_name(cls, v: str) -> str:
+        """Normalize and validate the scheduler name.
+
+        Args:
+            v: Raw name string from config.
+
+        Returns:
+            Lowercase stripped name when valid.
+
+        Raises:
+            ValueError: If the name is not in the allowed scheduler set
+                (``''``, ``'cosine_annealing_warm_restarts'``, ``'cosine_warm_restarts'``).
+        """
         name = v.strip().lower()
         allowed = {"", "cosine_annealing_warm_restarts", "cosine_warm_restarts"}
         if name not in allowed:
@@ -60,6 +72,20 @@ class RunConfig(BaseModel):
     @field_validator("name")
     @classmethod
     def _safe_run_name(cls, v: str) -> str:
+        """Validate that the run name is non-empty and contains no path separators.
+
+        Path traversal characters (``/``, ``\\``, ``..``) are forbidden because the
+        name is used to construct checkpoint and weight filenames.
+
+        Args:
+            v: Raw run name from config.
+
+        Returns:
+            Stripped run name when valid.
+
+        Raises:
+            ValueError: If the name is empty or contains ``/``, ``\\``, or ``..``.
+        """
         v = v.strip()
         if not v:
             raise ValueError("run.name must not be empty.")

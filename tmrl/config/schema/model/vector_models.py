@@ -1,3 +1,5 @@
+"""Model config schemas for vector-input (MLP / residual MLP / RNN) actor-critic presets."""
+
 from __future__ import annotations
 
 from typing import Literal

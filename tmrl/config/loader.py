@@ -44,6 +44,14 @@ _HYDRA_CONF_DIR = Path(__file__).resolve().parent / "defaults"
 
 
 def _deep_merge(dst: dict[str, Any], src: dict[str, Any]) -> None:
+    """Recursively merge *src* into *dst* in place, with src values taking precedence.
+
+    Nested dicts are merged recursively; all other value types are replaced outright.
+
+    Args:
+        dst: Destination mapping, mutated in place.
+        src: Source mapping whose values override or extend ``dst``.
+    """
     for key, val in src.items():
         if key in dst and isinstance(dst[key], dict) and isinstance(val, dict):
             _deep_merge(cast(dict[str, Any], dst[key]), val)
@@ -52,6 +60,21 @@ def _deep_merge(dst: dict[str, Any], src: dict[str, Any]) -> None:
 
 
 def _compose_hydra_dict() -> dict[str, Any]:
+    """Compose the Hydra config dict from package defaults and optional env overrides.
+
+    Parses ``TMRL_HYDRA_OVERRIDES`` (JSON array preferred, comma-split fallback) and
+    ``TMRL_EXTRA_CONFIG_PATH`` (colon/semicolon-separated directories for plugin YAML
+    groups). Extra search paths are injected as a merged ``hydra.searchpath`` override
+    so Hydra discovers plugin config groups without touching library code.
+
+    Returns:
+        dict: The fully composed Hydra config as a plain Python dict.
+
+    Raises:
+        TypeError: If ``TMRL_HYDRA_OVERRIDES`` is a JSON list containing non-strings,
+            or if the Hydra root result is not a mapping.
+        RuntimeError: If the package Hydra config directory is missing.
+    """
     hydra_overrides_raw = os.environ.get(HYDRA_OVERRIDES_ENV, "").strip()
     hydra_overrides: list[str] = []
     if hydra_overrides_raw:
@@ -136,6 +159,14 @@ def _compose_hydra_dict() -> dict[str, Any]:
 
 
 def _load_local_overrides() -> dict[str, Any] | None:
+    """Load ``~/TmrlData/config/local.yaml`` if it exists, else return ``None``.
+
+    Returns:
+        Parsed YAML as a dict, or ``None`` if the file is absent or empty.
+
+    Raises:
+        TypeError: If the YAML root is not a mapping.
+    """
     if not LOCAL_OVERRIDE_PATH.is_file():
         return None
     with open(LOCAL_OVERRIDE_PATH, encoding="utf-8") as f:
@@ -148,6 +179,14 @@ def _load_local_overrides() -> dict[str, Any] | None:
 
 
 def _apply_env_secrets(cfg: dict[str, Any]) -> None:
+    """Inject W&B API key and TMRL password from the environment into *cfg*.
+
+    Mutates *cfg* in place so environment-supplied secrets always win over any
+    YAML value (including secrets accidentally committed to ``local.yaml``).
+
+    Args:
+        cfg: Merged config dict to update with secret values.
+    """
     wandb_key = os.getenv("WANDB_API_KEY") or os.getenv("WANDB_KEY")
     if wandb_key:
         wandb = cfg.setdefault("wandb", {})
@@ -161,6 +200,26 @@ def _apply_env_secrets(cfg: dict[str, Any]) -> None:
 
 
 def _build_raw_config() -> dict[str, Any]:
+    """Assemble the complete raw config dict from all sources in merge-precedence order.
+
+    Merge order (each layer wins over the one above):
+
+    1. Hydra defaults (package YAML under ``tmrl/config/defaults/``).
+    2. ``~/TmrlData/config/local.yaml`` user overrides.
+    3. ``WANDB_API_KEY`` / ``TMRL_PASSWORD`` environment secrets.
+    4. ``TMRL_CONFIG_OVERRIDES`` JSON object (inline experiment ablations).
+
+    Also validates that ``schema_version`` is present and satisfies
+    :data:`MINIMUM_SCHEMA_VERSION`.
+
+    Returns:
+        dict: Fully merged raw config dict ready for Pydantic validation.
+
+    Raises:
+        ValueError: If ``schema_version`` is missing, below the minimum, or
+            ``TMRL_CONFIG_OVERRIDES`` is not a valid JSON object.
+        TypeError: If ``TMRL_CONFIG_OVERRIDES`` parses to a non-dict JSON value.
+    """
     merged = _compose_hydra_dict()
     local = _load_local_overrides()
     if local:
@@ -255,7 +314,17 @@ DEBUGGER_CONFIG = MAIN_CONFIG.debugger.model_dump()
 
 
 def create_config() -> dict[str, Any]:
-    """Flat snake_case dict for W&B logging and legacy helpers expecting one-level keys."""
+    """Build a flat snake_case dict of hyperparameters for W&B logging and legacy helpers.
+
+    Unpacks the validated :class:`~tmrl.config.schema.main.MainConfig` tree into a
+    single-level mapping suitable for ``wandb.init(config=…)`` or any downstream code
+    that expects plain key-value pairs.  Indexed sequences (``cnn_filters``,
+    ``rnn_sizes``, ``rnn_lens``, ``api_mlp_sizes``) are also expanded as numbered keys
+    (e.g. ``cnn_filter0``, ``cnn_filter1``, …).
+
+    Returns:
+        dict: Flat hyperparameter mapping with string keys and JSON-serializable values.
+    """
     from tmrl.config.constants import (
         CRASH_PENALTY,
         POINTS_NUMBER,

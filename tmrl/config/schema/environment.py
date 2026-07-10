@@ -84,6 +84,20 @@ class RewardConfig(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _reject_removed_reward_fields(cls, data: Any) -> Any:
+        """Reject config fields that were removed from the reward schema.
+
+        Raises early with a descriptive error rather than silently ignoring legacy
+        fields that are no longer implemented in the reward function.
+
+        Args:
+            data: Raw input value before Pydantic field coercion.
+
+        Returns:
+            The original *data* unchanged when no removed fields are present.
+
+        Raises:
+            ValueError: If any field name from ``_REMOVED_REWARD_FIELDS`` appears in *data*.
+        """
         if isinstance(data, dict):
             removed = sorted(_REMOVED_REWARD_FIELDS.intersection(data))
             if removed:
@@ -536,6 +550,14 @@ class EnvironmentConfig(BaseModel):
 
     @model_validator(mode="after")
     def _reject_legacy_screen_ray_rangefinder_tokens(self) -> EnvironmentConfig:
+        """Reject legacy ``TM20*LIDARPROGRESS*`` interface tokens that were removed.
+
+        Returns:
+            The validated :class:`EnvironmentConfig` instance.
+
+        Raises:
+            ValueError: If ``rtgym_interface`` contains the string ``LIDARPROGRESS``.
+        """
         rt = str(self.rtgym_interface).upper()
         if "LIDARPROGRESS" in rt:
             raise ValueError(
@@ -545,5 +567,9 @@ class EnvironmentConfig(BaseModel):
         return self
 
     def rtgym_config_dict(self) -> dict[str, Any]:
-        """Plain dict for mutating and passing into rtgym DEFAULT_CONFIG_DICT."""
+        """Return a plain dict of rt-gym stepping parameters for mutating ``DEFAULT_CONFIG_DICT``.
+
+        Returns:
+            dict: All :class:`RtGymConfig` fields serialized to Python-native types.
+        """
         return self.rtgym.model_dump(mode="python")

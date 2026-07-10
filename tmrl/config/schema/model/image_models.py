@@ -1,3 +1,5 @@
+"""Model config schemas for image-based (CNN / EfficientNet) actor-critic presets."""
+
 from __future__ import annotations
 
 from typing import ClassVar, Literal

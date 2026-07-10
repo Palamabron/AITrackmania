@@ -54,7 +54,20 @@ class InterfaceContext:
 
 
 def build_interface_context(env: EnvironmentConfig) -> InterfaceContext:
-    """Build route-relevant interface flags from ``environment`` configuration."""
+    """Build route-relevant interface flags from ``environment`` configuration.
+
+    Mirrors the flag derivation logic in ``tmrl.config.constants`` but operates
+    directly on an :class:`~tmrl.config.schema.environment.EnvironmentConfig`
+    instance so route resolution stays deterministic from ``MainConfig`` alone,
+    without importing the runtime constants module.
+
+    Args:
+        env: Validated environment section of the main config.
+
+    Returns:
+        An :class:`InterfaceContext` with all boolean flags resolved from the
+        ``rtgym_interface`` token and related environment settings.
+    """
     rt = str(env.rtgym_interface).upper()
     lidar_images = rtgym_discrete_boundary_lidar_images(rt)
     lidar_geom = rtgym_discrete_boundary_lidar_family(rt)
@@ -78,6 +91,7 @@ def build_interface_context(env: EnvironmentConfig) -> InterfaceContext:
 
 
 def _advanced(ctx: InterfaceContext) -> bool:
+    """Return ``True`` when the interface uses the MobileNet pipeline or R2D2 sequence buffer."""
     return ctx.images_mobilenet_pipeline or ctx.images_r2d2_sequence_buffer
 
 
@@ -140,6 +154,14 @@ def model_policy_route(m: MainConfig) -> str:
 
 
 def _all_model_field_names(m: MainConfig) -> frozenset[str]:
+    """Return every field name declared on the active ``ModelConfig`` subclass.
+
+    Args:
+        m: Fully validated main config.
+
+    Returns:
+        Frozen set of field name strings from the concrete ``model`` subclass.
+    """
     return frozenset(m.model.__class__.model_fields.keys())
 
 

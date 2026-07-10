@@ -33,11 +33,36 @@ from tmrl.config.loader import (
 
 
 def _truthy_env(name: str) -> bool:
+    """Return ``True`` when the named environment variable holds a truthy string value.
+
+    Treats ``"1"``, ``"true"``, ``"yes"``, and ``"on"`` (case-insensitive) as truthy;
+    everything else (including an unset variable) is falsy.
+
+    Args:
+        name: Name of the environment variable to read.
+
+    Returns:
+        ``True`` if the variable is set to a recognized truthy string, ``False`` otherwise.
+    """
     return os.environ.get(name, "").strip().lower() in ("1", "true", "yes", "on")
 
 
 def _git_provenance(repo_root: Path | None = None) -> dict[str, Any] | None:
-    """Return git metadata or None if not a git checkout / git missing."""
+    """Collect git metadata for the provenance record.
+
+    Runs ``git rev-parse HEAD``, ``git rev-parse --abbrev-ref HEAD``, and
+    ``git status --porcelain`` in *repo_root* (or the current working directory).
+    All subprocess calls have a 5-second timeout and are non-fatal.
+
+    Args:
+        repo_root: Optional path to the git repository root.  Defaults to the
+            current working directory when ``None``.
+
+    Returns:
+        A dict with keys ``"commit"`` (SHA), ``"branch"``, and ``"dirty"``
+        (``True`` if there are uncommitted changes, ``None`` if the check failed),
+        or ``None`` if git is unavailable or the directory is not a git checkout.
+    """
     try:
         cwd = str(repo_root) if repo_root is not None else os.getcwd()
         commit = subprocess.run(
@@ -77,6 +102,12 @@ def _git_provenance(repo_root: Path | None = None) -> dict[str, Any] | None:
 
 
 def _validated_config_redacted() -> dict[str, Any]:
+    """Return the validated ``MAIN_CONFIG`` as a JSON-friendly dict with secrets redacted.
+
+    Returns:
+        A copy of ``MAIN_CONFIG.model_dump()`` with ``wandb.api_key`` and
+        ``distributed.password`` replaced by ``"<redacted>"``.
+    """
     data = MAIN_CONFIG.model_dump(mode="json")
     wandb = data.get("wandb")
     if isinstance(wandb, dict) and wandb.get("api_key"):
@@ -94,6 +125,12 @@ def _validated_config_redacted() -> dict[str, Any]:
 
 
 def _try_find_git_root() -> Path | None:
+    """Walk parent directories from this file to find the nearest ``.git`` directory.
+
+    Returns:
+        Absolute path of the git repository root, or ``None`` if this file is not
+        inside a git checkout.
+    """
     here = Path(__file__).resolve().parent
     for p in [here, *here.parents]:
         if (p / ".git").exists():
@@ -102,9 +139,30 @@ def _try_find_git_root() -> Path | None:
 
 
 def write_run_repro_bundle(checkpoint_path: str) -> list[Path]:
-    """Write reproducibility artifacts next to ``checkpoint_path`` (same directory).
+    """Write reproducibility artifacts beside the checkpoint on the first trainer save.
 
-    Returns paths written (empty if skipped).
+    Writes three files into the same directory as *checkpoint_path*:
+
+    - ``repro_merged_config.yaml`` — post-merge config (Hydra + local.yaml), secrets redacted.
+    - ``repro_validated_config.yaml`` — Pydantic-validated config as YAML, secrets redacted.
+    - ``repro_provenance.json`` — git revision, Python version, platform, argv, paths.
+
+    Skipped (returns empty list) when:
+
+    - ``TMRL_SKIP_REPRO_ARTIFACTS=1`` is set.
+    - The checkpoint name ends with ``_remove_on_exit`` (ephemeral checkpoints).
+    - The artifact directory cannot be created.
+    - The bundle files already exist and ``TMRL_REPRO_OVERWRITE=1`` is not set.
+
+    If a W&B run is active, each written file is also registered via ``wandb.save``.
+
+    Args:
+        checkpoint_path: Filesystem path to the checkpoint file.  Artifacts land
+            in the same parent directory.
+
+    Returns:
+        List of :class:`~pathlib.Path` objects for each file written, or an empty
+        list if the bundle was skipped or any error occurred.
     """
     if _truthy_env("TMRL_SKIP_REPRO_ARTIFACTS"):
         return []

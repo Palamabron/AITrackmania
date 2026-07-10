@@ -14,7 +14,16 @@ import numpy as np
 
 
 def polyline_arc_length_m(traj: Any) -> float | None:
-    """Return total arc length of a polyline, or None if it cannot be computed."""
+    """Return the total Euclidean arc length of a polyline in metres.
+
+    Args:
+        traj: Sequence of N-dimensional points (anything array-convertible).
+            Must have a ``__len__`` attribute and at least two points.
+
+    Returns:
+        Sum of segment lengths as a float, or ``None`` if *traj* is ``None``,
+        lacks ``__len__``, or contains fewer than two points.
+    """
     if traj is None or not hasattr(traj, "__len__"):
         return None
     arr = np.asarray(traj)

@@ -367,6 +367,17 @@ def _determine_interface_name() -> str:
 
 
 def _rtgym_interface_partial() -> Any:
+    """Build a partial constructor for the active rtgym interface class.
+
+    Resolves the interface registry key from feature flags, then injects all
+    per-interface kwargs (crash penalty, lap/checkpoint rewards, image settings,
+    discrete action table size) before returning a partial that
+    :class:`~tmrl.envs.GenericGymEnv` can call during environment creation.
+
+    Returns:
+        A :func:`~tmrl.util.partial` wrapping the selected interface class with
+        all common and interface-specific kwargs bound.
+    """
     name = _determine_interface_name()
     iface_cls = INTERFACES.get(name)
     alg = algorithm
@@ -423,6 +434,13 @@ for k, v in CONFIG_DICT_MODIFIERS.items():
 
 
 def _pick_sample_compressor() -> Any:
+    """Select the sample compression function matching the active interface.
+
+    Returns:
+        The appropriate ``get_local_buffer_sample_*`` function for the current
+        interface flags (boundary-lidar vector, boundary-lidar+images, MobileNet
+        pipeline, or vanilla image stacks).
+    """
     if cfg.USE_LIDAR and not cfg.USE_LIDAR_IMAGES:
         return get_local_buffer_sample_lidar
     if cfg.USE_LIDAR_IMAGES:
@@ -436,6 +454,16 @@ SAMPLE_COMPRESSOR = _pick_sample_compressor()
 
 
 def _pick_obs_preprocessor() -> Any:
+    """Select the observation preprocessing callable for the active interface.
+
+    For world-telemetry layouts the preprocessor is built as a closure with the
+    configured ``track_coords_divisor`` to normalize track geometry coordinates
+    into the expected floating-point range.
+
+    Returns:
+        A callable (or partial) that transforms raw rtgym observations into
+        the float tensor format expected by the memory and policy network.
+    """
     if cfg.USE_LIDAR and not cfg.USE_LIDAR_IMAGES:
         return obs_preprocessor_lidar_act_in_obs
     if cfg.USE_LIDAR_IMAGES:
@@ -557,6 +585,22 @@ _common_agent_kw = {
 
 
 def _build_agent() -> Any:
+    """Build a partial constructor for the active training agent.
+
+    Selects among SAC, TQC, REDQSAC, IQN, and SDSAC based on ``ALG_NAME`` and
+    wires in all algorithm hyperparameters from the validated config.  The IQN
+    branch auto-derives ``iqn_lr_total_steps`` from the full training horizon
+    (max_epochs * rounds_per_epoch * training_steps_per_round) when the config
+    leaves it at zero.
+
+    Returns:
+        A :func:`~tmrl.util.partial` wrapping the chosen algorithm class with all
+        hyperparameter kwargs bound, ready for
+        :class:`~tmrl.training_offline.TorchTrainingOffline` to call.
+
+    Raises:
+        ValueError: If ``ALG_NAME`` is not a recognized algorithm registry key.
+    """
     if ALG_NAME == "SAC":
         sac_cls = ALGORITHMS.get("SAC")
         _wd = float(alg.weight_decay)

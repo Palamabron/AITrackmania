@@ -74,6 +74,12 @@ WANDB_WORKER = M.wandb.log_from_worker
 
 
 def ensure_wandb_api_key() -> None:
+    """Populate WANDB_API_KEY from config if not already present in the environment.
+
+    Called lazily before the first wandb.init so the API key from ``local.yaml``
+    or ``TMRL_CONFIG_OVERRIDES`` is available without the user exporting it manually.
+    No-op when the variable is already set or when the configured key is empty.
+    """
     if "WANDB_API_KEY" not in os.environ and WANDB_KEY:
         os.environ["WANDB_API_KEY"] = WANDB_KEY
 

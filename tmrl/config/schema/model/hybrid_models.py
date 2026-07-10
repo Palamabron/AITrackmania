@@ -1,3 +1,5 @@
+"""Model config schemas for hybrid (Sophy) actor-critic presets."""
+
 from __future__ import annotations
 
 from typing import Literal

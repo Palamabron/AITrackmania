@@ -64,12 +64,36 @@ class MainConfig(BaseModel):
     @field_validator("schema_version")
     @classmethod
     def _semver(cls, v: str) -> str:
+        """Validate that ``schema_version`` has the ``MAJOR.MINOR.PATCH`` format.
+
+        Args:
+            v: Raw ``schema_version`` string from the config.
+
+        Returns:
+            The stripped version string when valid.
+
+        Raises:
+            ValueError: If the value does not match the ``MAJOR.MINOR.PATCH`` pattern.
+        """
         if not re.fullmatch(r"\d+\.\d+\.\d+", v.strip()):
             raise ValueError("schema_version must look like MAJOR.MINOR.PATCH (e.g. 0.6.0)")
         return v.strip()
 
     @model_validator(mode="after")
     def _validate_cross_field_runtime_constraints(self) -> MainConfig:
+        """Enforce algorithm-interface and n_steps cross-field constraints.
+
+        Rejects ``model.use_rnn=true`` for algorithm/interface combinations that
+        have no GRU runtime path, and requires ``algorithm.n_steps < training.batch_size``
+        when ``n_steps > 1`` (n sequential samples must fit inside a single minibatch).
+
+        Returns:
+            The validated model instance.
+
+        Raises:
+            ValueError: For any unsupported algorithm-interface or n_steps-batch_size
+                combination.
+        """
         iface = self.environment.rtgym_interface.upper()
 
         if self.model.use_rnn and not rtgym_discrete_boundary_lidar_family(iface):
