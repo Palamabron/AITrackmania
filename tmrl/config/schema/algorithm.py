@@ -580,11 +580,12 @@ class AlgorithmConfig(BaseModel):
             raise ValueError("iqn_munchausen_clip_min must be <= iqn_munchausen_clip_max")
         if self.iqn_monotonicity_regularization and not self.iqn_sort_quantiles:
             raise ValueError("iqn_monotonicity_regularization requires iqn_sort_quantiles=true")
-        if self.name == "IQN" and self.reward_normalize_scale > 10.0:
+        if self.reward_normalize_scale > 200.0:
             raise ValueError(
-                f"reward_normalize_scale={self.reward_normalize_scale} looks like a stale "
-                "divide-by-N config. Semantics changed: values now MULTIPLY rewards "
-                "(<1 shrinks, 1.0 disables). Use e.g. 0.005 instead of 200."
+                f"reward_normalize_scale={self.reward_normalize_scale} is implausibly large. "
+                "The value multiplies rewards before each Bellman backup (<1 shrinks, 1.0 "
+                "disables). Values above 200 are almost certainly a stale divide-by-N config — "
+                "use the reciprocal (e.g. 0.005 instead of 200)."
             )
         if (
             self.iqn_lr_cosine_decay

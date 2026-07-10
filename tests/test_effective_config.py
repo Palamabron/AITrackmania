@@ -135,7 +135,7 @@ def test_unsupported_explain_text_contains_warning():
 
 def test_reward_normalize_scale_rejects_stale_divide_by_n_values():
     with pytest.raises(ValueError, match="reward_normalize_scale"):
-        _validate_with(algorithm={"name": "IQN", "reward_normalize_scale": 200.0})
+        _validate_with(algorithm={"name": "IQN", "reward_normalize_scale": 201.0})
 
 
 def test_iqn_lr_total_steps_must_exceed_warmup_when_cosine_decay_enabled():

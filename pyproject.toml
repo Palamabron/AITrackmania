@@ -9,7 +9,9 @@ description = "Network-based framework for real-time robot learning"
 readme = "readme/pypi.md"
 license = { text = "MIT" }
 authors = [
-    { name = "Jakub Szulc", email = "szulcak05@gmail.com" },
+  { name = "Yann Bouteiller" },
+  { name = "Edouard Geze" },
+  { name = "Jakub Szulc", email = "szulcak05@gmail.com" },
 ]
 keywords = [
     "reinforcement learning",
@@ -27,7 +29,6 @@ classifiers = [
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.12",
-    "Programming Language :: Python :: 3.13",
     "Topic :: Games/Entertainment",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]

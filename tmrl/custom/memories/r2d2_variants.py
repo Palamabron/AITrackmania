@@ -24,6 +24,8 @@ from tmrl.registry import MEMORIES
 class MemoryR2D2woImages(R2D2Memory):
     """R2D2-style replay memory without images."""
 
+    supports_nstep: bool = True
+
     def __init__(
         self,
         memory_size: int | None = None,
@@ -202,6 +204,8 @@ class MemoryR2D2woImages(R2D2Memory):
 @MEMORIES.register("r2d2_sophy")
 class MemoryR2D2Sophy(R2D2Memory):
     """R2D2-style replay memory for Sophy interface."""
+
+    supports_nstep: bool = True
 
     def __init__(
         self,

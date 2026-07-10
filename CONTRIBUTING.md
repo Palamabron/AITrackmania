@@ -31,7 +31,7 @@ The four entry-point groups are:
 |-------|----------|------------------------|
 | `tmrl.algorithms` | `tmrl.registry.ALGORITHMS` | `tmrl.training_offline.training.TrainingAgent` |
 | `tmrl.models` | `tmrl.registry.MODELS` | — |
-| `tmrl.interfaces` | `tmrl.registry.INTERFACES` | `tmrl.actor.ActorModule` |
+| `tmrl.interfaces` | `tmrl.registry.INTERFACES` | `rtgym.RealTimeGymInterface` |
 | `tmrl.memories` | `tmrl.registry.MEMORIES` | `tmrl.memory.base.Memory` |
 
 ### Adding a New Algorithm
@@ -110,16 +110,16 @@ The four entry-point groups are:
 
 Interfaces define how `tmrl` communicates with the game or robot environment.
 
-1. Inherit from `tmrl.actor.ActorModule` and implement `act()`. Optionally implement
-   `save()` and `load()` for checkpoint support.
+1. Inherit from `rtgym.RealTimeGymInterface` and implement the required interface
+   methods. Optionally implement `save()` and `load()` for checkpoint support.
 
    ```python
    # mypackage/my_interface.py
    from tmrl.registry import INTERFACES
-   from tmrl.actor import ActorModule
+   from rtgym import RealTimeGymInterface
 
    @INTERFACES.register("MY_INTERFACE")
-   class MyInterface(ActorModule):
+   class MyInterface(RealTimeGymInterface):
        def __init__(self, observation_space, action_space):
            super().__init__(observation_space, action_space)
 

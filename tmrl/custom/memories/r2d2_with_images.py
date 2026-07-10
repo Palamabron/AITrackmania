@@ -23,6 +23,8 @@ from tmrl.registry import MEMORIES
 class MemoryR2D2(R2D2Memory):
     """R2D2-style replay memory with full telemetry and images."""
 
+    supports_nstep: bool = True
+
     def __init__(
         self,
         memory_size: int | None = None,

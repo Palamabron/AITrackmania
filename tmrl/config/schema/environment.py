@@ -308,7 +308,7 @@ class RewardConfig(BaseModel):
         description="Speed threshold (km/h) for proximity / wall-hug penalties.",
     )
     wall_hug_penalty_factor: float = Field(
-        default=0.0,
+        default=0.005,
         ge=0.0,
         description=(
             "Scale for wall-hug shaping when lateral_ratio exceeds "
@@ -316,7 +316,7 @@ class RewardConfig(BaseModel):
         ),
     )
     boundary_penalty_weight: float = Field(
-        default=0.0,
+        default=4.0,
         ge=0.0,
         description=(
             "Soft quadratic penalty when lateral_ratio exceeds boundary_penalty_start "
@@ -324,7 +324,7 @@ class RewardConfig(BaseModel):
         ),
     )
     boundary_crash_penalty: float = Field(
-        default=0.0,
+        default=10.0,
         ge=0.0,
         description=(
             "Terminate and subtract this amount when lateral_ratio > 1.0 "

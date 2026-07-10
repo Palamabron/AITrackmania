@@ -15,6 +15,7 @@ from tmrl.registry import MEMORIES
 class MemoryTMBest(MemoryTM):
     """Comprehensive TrackMania memory with full telemetry data."""
 
+    supports_nstep: bool = True
     info_field_index = TMBestField.INFOS
 
     def get_transition(self, item: int):

@@ -104,6 +104,7 @@ _IQN_BACKBONE_KWARGS = frozenset(
         "r2d2_burn_in",
         "gnn_hidden",
         "gnn_layers",
+        "init_gas_bias",
     }
 )
 
@@ -132,6 +133,7 @@ class IQNFeatureBackbone(nn.Module):
         r2d2_burn_in: int = 0,
         gnn_hidden: int = 64,
         gnn_layers: int = 3,
+        init_gas_bias: float = 0.0,
     ):
         super().__init__()
         self._track_channels = TRACK_CHANNELS_GTN if _is_gtn_encoder(track_encoder) else 4

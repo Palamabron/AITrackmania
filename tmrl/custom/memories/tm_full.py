@@ -17,6 +17,7 @@ from tmrl.registry import MEMORIES
 class MemoryTMFull(MemoryTM):
     """Full-featured TrackMania replay memory with images."""
 
+    supports_nstep: bool = True
     info_field_index = TMFullField.INFOS
 
     def get_transition(self, item: int):

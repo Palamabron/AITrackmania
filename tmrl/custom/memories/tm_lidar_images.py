@@ -18,6 +18,7 @@ from tmrl.registry import MEMORIES
 class MemoryTMLidarImages(MemoryTM):
     """Replay memory for (speed, progress, track_geometry, images) observations."""
 
+    supports_nstep: bool = True
     info_field_index = TMLidarImagesField.INFOS
 
     def get_transition(self, item: int):
