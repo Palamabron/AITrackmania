@@ -1,11 +1,13 @@
-# Adapted from https://github.com/mhammond/pywin32/blob/main/pywin32_postinstall.py
+"""Post-install script for the pywin32 Windows extensions.
 
-# May have to be adapted in the future if becoming incompatible with new versions of pywin32.
+Copies PyWinTypesxx.dll and PythonCOMxx.dll into the Windows system directory,
+creates a .pth file, registers COM objects and the help file, and adds Pythonwin
+to the shell context menu.
 
-# postinstall script for pywin32
-#
-# copies PyWinTypesxx.dll and PythonCOMxx.dll into the system directory,
-# and creates a pth file
+Adapted from https://github.com/mhammond/pywin32/blob/main/pywin32_postinstall.py
+"""
+
+# May need updating if a future pywin32 release changes the install layout.
 import argparse
 import glob
 import os
@@ -26,16 +28,33 @@ tee_f = open(os.path.join(tempfile.gettempdir(), "pywin32_postinstall.log"), "w"
 
 
 class Tee:
+    """Duplicate output stream: write to an optional file and always to the log file.
+
+    Used to ensure installation output is captured in the pywin32_postinstall.log
+    temp file even when a caller has redirected sys.stdout or sys.stderr.
+    """
+
     def __init__(self, file):
+        """Initialize the Tee with an optional secondary output file.
+
+        Args:
+            file: A writable file-like object to mirror writes to, or None.
+        """
         self.f = file
 
     def write(self, what):
+        """Write what to both the optional secondary file and the log file.
+
+        Converts line endings to CRLF when writing to the secondary file for
+        compatibility with Windows text-mode readers.
+        """
         if self.f is not None:
             with contextlib.suppress(OSError):
                 self.f.write(what.replace("\n", "\r\n"))
         tee_f.write(what)
 
     def flush(self):
+        """Flush both the optional secondary file and the log file."""
         if self.f is not None:
             with contextlib.suppress(OSError):
                 self.f.flush()
@@ -80,12 +99,17 @@ except NameError:
     is_bdist_wininst = False  # we know what it is not - but not what it is :)
 
     def file_created(file):
-        pass
+        """No-op placeholder for the bdist_wininst built-in that logs created files."""
 
     def directory_created(directory):
-        pass
+        """No-op placeholder for the bdist_wininst built-in that logs created directories."""
 
     def get_root_hkey():
+        """Return HKEY_LOCAL_MACHINE if the Python registry key is writable, else HKEY_CURRENT_USER.
+
+        Falls back to HKEY_CURRENT_USER for non-admin installs where HKLM
+        sub-key creation is denied.
+        """
         try:
             winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, root_key_name, 0, winreg.KEY_CREATE_SUB_KEY)
             return winreg.HKEY_LOCAL_MACHINE
@@ -103,6 +127,19 @@ except NameError:
     def create_shortcut(
         path, description, filename, arguments="", workdir="", iconpath="", iconindex=0
     ):
+        """Create a Windows shell shortcut (.lnk) file using COM.
+
+        Polyfill for the create_shortcut built-in provided by bdist_wininst.
+
+        Args:
+            path: Target executable path for the shortcut.
+            description: Human-readable description of the shortcut.
+            filename: Full path to the .lnk file to create.
+            arguments: Optional command-line arguments to pass to the target.
+            workdir: Optional working directory for the shortcut.
+            iconpath: Optional path to the icon file.
+            iconindex: Index of the icon within iconpath.
+        """
         import pythoncom
         from win32com.shell import shell
 
@@ -126,6 +163,20 @@ except NameError:
 
     # Support the same list of "path names" as bdist_wininst.
     def get_special_folder_path(path_name):
+        """Return the absolute path for a Windows special folder CSIDL constant.
+
+        Polyfill for the get_special_folder_path built-in provided by bdist_wininst.
+
+        Args:
+            path_name: One of the CSIDL_* constant names as a string
+                (e.g., ``"CSIDL_PROGRAMS"``).
+
+        Returns:
+            Absolute path string for the requested special folder.
+
+        Raises:
+            ValueError: If path_name is not a recognised CSIDL constant name.
+        """
         from win32com.shell import shell, shellcon
 
         for maybe in [
@@ -151,6 +202,19 @@ except NameError:
 
 
 def copy_to(desc, src, dest):
+    """Copy src to dest using win32api, retrying if the destination file is in use.
+
+    In interactive mode, prompts the user with Abort/Retry/Ignore on failure.
+    In silent mode, re-raises the error immediately.
+
+    Args:
+        desc: Human-readable description of the copy operation, used in error dialogs.
+        src: Source file path.
+        dest: Destination file path.
+
+    Raises:
+        win32api.error: On access-denied (winerror 5) or when the user selects Abort.
+    """
     import win32api
     import win32con
 
@@ -186,6 +250,16 @@ def copy_to(desc, src, dest):
 # So, we pull the same trick pywintypes.py does, but it loads from
 # our pywintypes_system32 directory.
 def load_system_module(lib_dir, modname):
+    """Load a pywin32 DLL directly from the pywin32_system32 sub-directory.
+
+    Bypasses the already-loaded DLL copy in the Windows system directory so the
+    install step can overwrite those files. Mirrors the loading trick used by
+    pywintypes.py itself.
+
+    Args:
+        lib_dir: The pywin32 library root directory (platlib).
+        modname: Module name to load (``"pywintypes"`` or ``"pythoncom"``).
+    """
     # See if this is a debug build.
     import importlib.machinery
     import importlib.util
@@ -200,6 +274,16 @@ def load_system_module(lib_dir, modname):
 
 
 def set_py_key_val(key_name, value_name, value):
+    """Write a string value into the Python registry key tree.
+
+    Creates the sub-key under ``Software\\Python\\PythonCore\\<winver>`` if it
+    does not exist.
+
+    Args:
+        key_name: Registry sub-key name relative to the Python root key.
+        value_name: Registry value name to set.
+        value: String value to write.
+    """
     root_hkey = get_root_hkey()
     root_key = winreg.OpenKey(root_hkey, root_key_name)
     try:
@@ -215,6 +299,15 @@ def set_py_key_val(key_name, value_name, value):
 
 
 def unset_py_key_val(key_name, value_name, delete_key=False):
+    """Delete a registry value from the Python key tree, optionally removing the key.
+
+    Silently ignores a missing key or value (winerror 2 / file-not-found).
+
+    Args:
+        key_name: Registry sub-key name relative to the Python root key.
+        value_name: Registry value name to delete.
+        delete_key: If True, also delete the sub-key after removing the value.
+    """
     root_hkey = get_root_hkey()
     root_key = winreg.OpenKey(root_hkey, root_key_name)
     try:
@@ -238,6 +331,11 @@ def unset_py_key_val(key_name, value_name, delete_key=False):
 
 
 def register_com_objects(register=True):
+    """Register or unregister the sample pywin32 COM server classes.
+
+    Args:
+        register: True to register (default), False to unregister.
+    """
     import win32com.server.register
 
     if register:
@@ -257,6 +355,16 @@ def register_com_objects(register=True):
 
 
 def register_help_file(register=True, lib_dir=None):
+    """Register or unregister the PyWin32.chm help file in the Python registry.
+
+    Args:
+        register: True to register (default), False to unregister.
+        lib_dir: Python platform library directory; defaults to the current
+            environment's ``platlib`` path.
+
+    Returns:
+        The path to PyWin32.chm if it was registered, or None otherwise.
+    """
     if lib_dir is None:
         lib_dir = sysconfig.get_paths()["platlib"]
     if register:
@@ -275,10 +383,17 @@ def register_help_file(register=True, lib_dir=None):
 
 
 def register_pythonwin(register=True, lib_dir=None):
-    """Add (or remove) Pythonwin to context menu for python scripts.
-    ??? Should probably also add Edit command for pys files also.
-    Also need to remove these keys on uninstall, but there's no function
-        like file_created to add registry entries to uninstall log ???
+    """Add or remove the Pythonwin IDE entry from the context menu for .py files.
+
+    Args:
+        register: True to add the context-menu entries (default), False to remove them.
+        lib_dir: Python platform library directory; defaults to the current
+            environment's ``platlib`` path.
+
+    Note:
+        Registry entries added here are not tracked by the bdist_wininst uninstall
+        log (there is no file_created equivalent for registry keys), so they are
+        cleaned up explicitly only when register=False is passed.
     """
     import os
 
@@ -337,6 +452,15 @@ def register_pythonwin(register=True, lib_dir=None):
 
 
 def get_shortcuts_folder():
+    """Return the Start Menu programs folder for the pywin32 shortcuts group.
+
+    Uses CSIDL_COMMON_PROGRAMS for admin installs and CSIDL_PROGRAMS for
+    per-user installs. Falls back to a Python-version-based group name when the
+    registry InstallGroup value is absent.
+
+    Returns:
+        Absolute path to the target shortcuts sub-folder.
+    """
     if get_root_hkey() == winreg.HKEY_LOCAL_MACHINE:
         try:
             fldr = get_special_folder_path("CSIDL_COMMON_PROGRAMS")
@@ -357,9 +481,17 @@ def get_shortcuts_folder():
     return os.path.join(fldr, install_group)
 
 
-# Get the system directory, which may be the Wow64 directory if we are a 32bit
-# python on a 64bit OS.
 def get_system_dir():
+    """Return the Windows system directory, handling the WoW64 case.
+
+    On a 32-bit Python running on a 64-bit OS the DLLs must go into the 32-bit
+    system directory (SysWOW64 / CSIDL_SYSTEMX86) rather than System32, to avoid
+    type mismatches at runtime. Falls back to win32api.GetSystemDirectory() if the
+    shell COM calls fail.
+
+    Returns:
+        Absolute path string for the appropriate Windows system directory.
+    """
     import win32api  # we assume this exists.
 
     try:
@@ -378,9 +510,12 @@ def get_system_dir():
 
 
 def fixup_dbi():
-    # We used to have a dbi.pyd with our .pyd files, but now have a .py file.
-    # If the user didn't uninstall, they will find the .pyd which will cause
-    # problems - so handle that.
+    """Rename stale dbi.pyd to dbi.pyd.old to prevent it shadowing the newer dbi.py.
+
+    In older pywin32 releases dbi was a compiled .pyd extension; it is now a
+    pure-Python .py file. Without this fixup, users who upgrade without first
+    uninstalling will pick up the stale .pyd and encounter import errors.
+    """
     import win32api
     import win32con
 
@@ -403,6 +538,21 @@ def fixup_dbi():
 
 
 def install(lib_dir):
+    """Run the full pywin32 post-install setup.
+
+    Copies PyWinTypes and PythonCOM DLLs to the Windows system directory,
+    registers COM objects, the help file, and Pythonwin as an IDE context-menu
+    entry, and creates Start Menu shortcuts. Falls back to sys.prefix if the
+    system directory is not writable (non-admin install).
+
+    Args:
+        lib_dir: The pywin32 platform library directory (platlib).
+
+    Raises:
+        RuntimeError: If no system DLL files are found, or if insufficient
+            permissions prevent installation to both the system directory and
+            sys.prefix.
+    """
     import traceback
 
     # The .pth file is now installed as a regular file.
@@ -428,14 +578,12 @@ def install(lib_dir):
     load_system_module(lib_dir, "pythoncom")
     import win32api
 
-    # and now we can get the system directory:
     files = glob.glob(os.path.join(lib_dir, "pywin32_system32\\*.*"))
     if not files:
         raise RuntimeError("No system files to copy!!")
     # Try the system32 directory first - if that fails due to "access denied",
     # it implies a non-admin user, and we use sys.prefix
     for dest_dir in [get_system_dir(), sys.prefix]:
-        # and copy some files over there
         worked = 0
         try:
             for fname in files:
@@ -444,7 +592,6 @@ def install(lib_dir):
                 copy_to(f"installing {base}", fname, dst)
                 if verbose:
                     print(f"Copied {base} to {dst}")
-                # Register the files with the uninstaller
                 file_created(dst)
                 worked = 1
                 # Nuke any other versions that may exist - having
@@ -512,10 +659,8 @@ def install(lib_dir):
         if verbose:
             print("Registered help file")
 
-    # misc other fixups.
     fixup_dbi()
 
-    # Register Pythonwin in context menu
     try:
         register_pythonwin(True, lib_dir)
     except Exception:
@@ -525,7 +670,6 @@ def install(lib_dir):
         if verbose:
             print("Pythonwin has been registered in context menu")
 
-    # Create the win32com\gen_py directory.
     make_dir = os.path.join(lib_dir, "win32com", "gen_py")
     if not os.path.isdir(make_dir):
         if verbose:
@@ -534,7 +678,6 @@ def install(lib_dir):
         os.mkdir(make_dir)
 
     try:
-        # create shortcuts
         # CSIDL_COMMON_PROGRAMS only available works on NT/2000/XP, and
         # will fail there if the user has no admin rights.
         fldr = get_shortcuts_folder()
@@ -552,7 +695,6 @@ def install(lib_dir):
             file_created(dst)
             if verbose:
                 print("Shortcut for Pythonwin created")
-            # And the docs.
             if chm_file:
                 dst = os.path.join(fldr, "Python for Windows Documentation.lnk")
                 doc = "Documentation for the PyWin32 extensions"
@@ -574,8 +716,13 @@ def install(lib_dir):
 
 
 def uninstall(lib_dir):
-    # First ensure our system modules are loaded from pywin32_system, so
-    # we can remove the ones we copied...
+    """Remove all files, registry entries, and shortcuts created during install.
+
+    Args:
+        lib_dir: The pywin32 platform library directory (platlib).
+    """
+    # Load system modules from pywin32_system32 first so the DLL copies in the
+    # Windows system directory are not locked when we try to delete them.
     load_system_module(lib_dir, "pywintypes")
     load_system_module(lib_dir, "pythoncom")
 
@@ -601,7 +748,6 @@ def uninstall(lib_dir):
             print("Unregistered Pythonwin")
 
     try:
-        # remove gen_py directory.
         gen_dir = os.path.join(lib_dir, "win32com", "gen_py")
         if os.path.isdir(gen_dir):
             shutil.rmtree(gen_dir)
@@ -632,13 +778,11 @@ def uninstall(lib_dir):
                     print(f"Removed {link}")
     except Exception as why:
         print(f"Failed to remove shortcuts: {why}")
-    # Now remove the system32 files.
     files = glob.glob(os.path.join(lib_dir, "pywin32_system32\\*.*"))
     # Try the system32 directory first - if that fails due to "access denied",
     # it implies a non-admin user, and we use sys.prefix
     try:
         for dest_dir in [get_system_dir(), sys.prefix]:
-            # and copy some files over there
             worked = 0
             for fname in files:
                 base = os.path.basename(fname)
@@ -668,22 +812,40 @@ def uninstall(lib_dir):
 
 
 def verify_destination(location):
+    """Argparse type validator that checks a given path is an existing directory.
+
+    Args:
+        location: Path string to validate.
+
+    Returns:
+        The validated location string.
+
+    Raises:
+        argparse.ArgumentTypeError: If the path does not exist or is not a directory.
+    """
     if not os.path.isdir(location):
         raise argparse.ArgumentTypeError(f'Path "{location}" does not exist!')
     return location
 
 
 def fix_pywin32():
-    """
-    Use API this to fix pywin32 programatically.
+    """Fix the pywin32 DLL and registry setup programmatically.
 
-    Note: this only needs to be done if pywin32 members fail to import.
+    Calls install() against the current environment's platlib directory. Only
+    needed when pywin32 members fail to import after a pip-based installation.
     """
     destination = sysconfig.get_paths()["platlib"]
     install(destination)
 
 
 def main():
+    """Parse command-line arguments and run install or uninstall.
+
+    Supports ``-install`` and ``-remove`` flags (exactly one required), an optional
+    ``-wait PID`` to block until a process exits, ``-silent`` to suppress interactive
+    error dialogs, ``-quiet`` to suppress progress output, and ``-destination`` to
+    override the pywin32 library directory.
+    """
     parser = argparse.ArgumentParser(
         formatter_class=argparse.RawDescriptionHelpFormatter,
         description="""A post-install script for the pywin32 extensions.

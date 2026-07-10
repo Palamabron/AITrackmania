@@ -37,10 +37,27 @@ def default_player_runs_dir() -> Path:
 
 
 def _utc_now_iso() -> str:
+    """Return the current UTC time as an ISO-8601 string with second precision."""
     return datetime.now(UTC).isoformat(timespec="seconds")
 
 
 def _normalize_payload(obj: Any, source: Path) -> dict[str, Any]:
+    """Coerce a raw deserialized run payload into a canonical dict.
+
+    Accepts both the legacy list format (just a list of samples) and the
+    current dict format.  Missing fields are filled with safe defaults.
+
+    Args:
+        obj: Deserialized payload — either a ``dict`` or a ``list``.
+        source: Path of the source file, used for error messages and default IDs.
+
+    Returns:
+        A dict with at minimum the keys ``format``, ``run_id``, ``recorded_at``,
+        ``metadata``, and ``samples``.
+
+    Raises:
+        ValueError: If *obj* is neither a ``dict`` nor a ``list``.
+    """
     if isinstance(obj, dict):
         payload = dict(obj)
         payload.setdefault("format", PLAYER_RUN_FORMAT)
@@ -234,6 +251,15 @@ def load_player_run(path: str | os.PathLike[str]) -> dict[str, Any]:
 
 
 def _append_samples_to_buffer(samples: list[Any], *, run_id: str | None = None) -> Buffer:
+    """Build a ``Buffer`` from raw sample tuples and tag each sample as a demo.
+
+    Args:
+        samples: List of ``(act, obs, rew, terminated, truncated, info)`` tuples.
+        run_id: Optional source identifier written to ``info["demo_run_id"]``.
+
+    Returns:
+        A ``Buffer`` containing all samples with ``info["is_demo"] = True``.
+    """
     from tmrl.networking import Buffer
 
     buffer = Buffer()
@@ -249,6 +275,18 @@ def _append_samples_to_buffer(samples: list[Any], *, run_id: str | None = None) 
 
 
 def _trim_memory_data(memory: Any, max_samples: int) -> int:
+    """Trim the oldest samples in *memory* so at most *max_samples* remain.
+
+    Operates directly on ``memory.data`` (a list of parallel arrays) by
+    discarding leading elements from each column.
+
+    Args:
+        memory: A memory object with a ``data`` attribute.
+        max_samples: Maximum number of samples to keep.
+
+    Returns:
+        Number of samples trimmed.
+    """
     if not getattr(memory, "data", None):
         return 0
     current_len = len(memory.data[0])

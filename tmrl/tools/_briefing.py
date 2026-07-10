@@ -44,7 +44,6 @@ def _compute_briefing() -> dict[str, Any]:
         by_status[s] = by_status.get(s, 0) + 1
     briefing["status_counts"] = by_status
 
-    # Load all saved analyses
     analyses: dict[str, dict[str, Any]] = {}
     for e in entries:
         ap = ANALYSIS_DIR / f"{e['exp_id']}.json"
@@ -102,7 +101,6 @@ def _compute_briefing() -> dict[str, Any]:
         briefing["best_experiment"] = with_ft[0]
         briefing["gap_to_target_s"] = round(with_ft[0]["best_finish_time_s"] - target_time, 2)
 
-    # Parameter effect analysis
     param_effects: dict[str, list[dict[str, Any]]] = {}
     baseline_analysis = analyses.get("gtn-baseline", {})
     baseline_ft = baseline_analysis.get("best_finish_time_s")
@@ -141,7 +139,6 @@ def _compute_briefing() -> dict[str, Any]:
 
     briefing["parameter_effects"] = param_effects
 
-    # Search space coverage
     search_space: dict[str, Any] = {}
     if SEARCH_SPACE_PATH.exists():
         with SEARCH_SPACE_PATH.open(encoding="utf-8") as f:
@@ -195,7 +192,6 @@ def _compute_briefing() -> dict[str, Any]:
         "untried": untried,
     }
 
-    # Failure patterns
     failures = [e for e in entries if e.get("status") == "failed"]
     failure_reasons: dict[str, int] = {}
     for e in failures:
@@ -220,7 +216,6 @@ def _compute_briefing() -> dict[str, Any]:
         ],
     }
 
-    # Cross-experiment insights
     insights: list[str] = []
 
     grad_sat = 0
@@ -306,6 +301,7 @@ def cmd_briefing(args: argparse.Namespace) -> None:
 
 
 def _print_briefing_text(b: dict[str, Any]) -> None:
+    """Print a human-readable experiment briefing to stdout."""
     print("=" * 70)
     print("EXPERIMENT BRIEFING")
     print(

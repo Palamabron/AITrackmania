@@ -27,6 +27,15 @@ from tmrl.tools._experiment_io import (
 
 
 def _flatten_dict(d: dict, prefix: str = "") -> list[tuple[str, Any]]:
+    """Flatten a nested dict into ``[(dotted.key, value), …]`` pairs.
+
+    Args:
+        d: The dict to flatten.
+        prefix: Dot-separated key prefix accumulated during recursion.
+
+    Returns:
+        A list of ``(dotted_key, leaf_value)`` tuples.
+    """
     items: list[tuple[str, Any]] = []
     for k, v in d.items():
         path = f"{prefix}.{k}" if prefix else k
@@ -93,6 +102,7 @@ def _find_wandb_run(api, entity: str, project: str, run_id_with_suffix: str):
 
 
 def cmd_compare(args: argparse.Namespace) -> None:
+    """Compare two experiments by config diff and key metrics, printing a text or JSON report."""
     exp_a, exp_b = args.exp_a, args.exp_b
 
     cfg_a = _build_full_config(exp_a)
@@ -172,6 +182,7 @@ def cmd_compare(args: argparse.Namespace) -> None:
 
 
 def cmd_suggest(args: argparse.Namespace) -> None:
+    """Print cross-experiment suggestions derived from completed analysis files."""
     entries = _read_registry()
     completed = [e for e in entries if e.get("status") in ("completed", "stopped_early")]
 
@@ -251,7 +262,13 @@ def cmd_suggest(args: argparse.Namespace) -> None:
 
 
 def cmd_snapshot(args: argparse.Namespace) -> None:
-    """Pull current W&B metrics for a running experiment (used by orchestrator)."""
+    """Pull current W&B metrics for a running experiment and print a JSON snapshot.
+
+    Fetches the trainer and worker run histories, computes recent-metric
+    statistics (last 100 trainer steps), extracts best/last finish times,
+    and emits a JSON object to stdout.  Used by the orchestrator to decide
+    whether to continue or stop a run.
+    """
     _load_dotenv()
 
     exp_id = args.exp_id
@@ -290,7 +307,6 @@ def cmd_snapshot(args: argparse.Namespace) -> None:
         "timestamp": datetime.datetime.now(datetime.UTC).isoformat(),
     }
 
-    # --- Trainer data ---
     try:
         trainer = _find_wandb_run(api, entity, project, f"{wandb_run_id} TRAINER")
         snapshot["trainer_state"] = trainer.state
@@ -306,6 +322,7 @@ def cmd_snapshot(args: argparse.Namespace) -> None:
         recent = h.tail(min(100, len(h)))
 
         def _recent_stats(col: str) -> dict[str, Any] | None:
+            """Return basic stats for *col* over the recent tail, or ``None`` if absent/empty."""
             if col not in recent.columns:
                 return None
             try:
@@ -389,7 +406,6 @@ def cmd_snapshot(args: argparse.Namespace) -> None:
         snapshot["error"] = f"Trainer fetch failed after retries: {exc}"
         snapshot["trainer_state"] = "unreachable"
 
-    # --- Worker data ---
     try:
         worker = _find_wandb_run(api, entity, project, f"{wandb_run_id} WORKER")
         snapshot["worker_state"] = worker.state

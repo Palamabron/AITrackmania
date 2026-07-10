@@ -5,6 +5,11 @@ from loguru import logger
 
 
 def rmdir(directory):
+    """Recursively delete a directory and all its contents.
+
+    Args:
+        directory: Path to the directory to remove. Must exist.
+    """
     directory = Path(directory)
     for item in directory.iterdir():
         if item.is_dir():
@@ -15,23 +20,30 @@ def rmdir(directory):
 
 
 def init_tmrl_data():
-    """
-    Wipes and re-generates the TmrlData folder.
+    """Wipe and re-create ~/TmrlData with default resources downloaded from GitHub.
+
+    Downloads ``resources.zip`` from the tmrl GitHub release matching the installed
+    package version (falling back to a known-good release), extracts it under
+    ``~/TmrlData``, and copies the default config, reward trajectory, and
+    pre-trained weights into their respective sub-directories. On Windows, also
+    installs the OpenPlanet plugin files into ``~/OpenplanetNext/Plugins`` if that
+    directory exists.
+
+    Raises:
+        AssertionError: If ``~/TmrlData`` still exists after the wipe step.
+        ConnectionError: If ``resources.zip`` could not be downloaded from any URL.
     """
     from shutil import copy2
     from zipfile import ZipFile
 
     from tmrl.tools.init_package.resources_bundle import download_resources_zip
 
-    # destination folder:
     home_folder = Path.home()
     tmrl_folder = home_folder / "TmrlData"
 
-    # Wipe the tmrl folder:
     if tmrl_folder.exists():
         rmdir(tmrl_folder)
 
-    # download relevant items IF THE tmrl FOLDER DOESN'T EXIST:
     assert not tmrl_folder.exists(), f"Failed to delete {tmrl_folder}"
 
     checkpoints_folder = tmrl_folder / "checkpoints"
@@ -45,33 +57,27 @@ def init_tmrl_data():
     weights_folder.mkdir(parents=True, exist_ok=True)
     config_folder.mkdir(parents=True, exist_ok=True)
 
-    # download resources:
     resources_target = tmrl_folder / "resources.zip"
     resources_url_used = download_resources_zip(resources_target)
     logger.info("Downloaded TMRL resources from {}", resources_url_used)
 
-    # unzip downloaded resources:
     with ZipFile(resources_target, "r") as zip_ref:
         zip_ref.extractall(tmrl_folder)
 
-    # delete zip file:
     resources_target.unlink()
 
-    # copy relevant files:
     resources_folder = tmrl_folder / "resources"
     copy2(resources_folder / "config.json", config_folder)
     copy2(resources_folder / "reward.pkl", reward_folder)
     copy2(resources_folder / "SAC_4_LIDAR_pretrained.tmod", weights_folder)
     copy2(resources_folder / "SAC_4_imgs_pretrained.tmod", weights_folder)
 
-    # on Windows, look for OpenPlanet:
     if platform.system() == "Windows":
         openplanet_folder = home_folder / "OpenplanetNext"
 
         if openplanet_folder.exists():
-            # copy the OpenPlanet script:
             try:
-                # remove old script if found
+                # Remove legacy script-based plugin files from earlier tmrl versions.
                 op_scripts_folder = openplanet_folder / "Scripts"
                 if op_scripts_folder.exists():
                     to_remove = [
@@ -83,7 +89,6 @@ def init_tmrl_data():
                     for old_file in to_remove:
                         if old_file.exists():
                             old_file.unlink()
-                # copy new plugin
                 op_plugins_folder = openplanet_folder / "Plugins"
                 op_plugins_folder.mkdir(parents=True, exist_ok=True)
                 tm20_plugin_1 = resources_folder / "Plugins" / "TMRL_GrabData.op"
@@ -97,13 +102,13 @@ def init_tmrl_data():
                     f"The caught exception was: {e!s}.",
                 )
         else:
-            # warn the user that OpenPlanet couldn't be found:
             print(
                 f"The OpenPlanet folder was not found at {openplanet_folder}. \
             Please copy the OpenPlanet script and signature manually for TrackMania 2020 support."
             )
 
 
+# Auto-initialize on first import so callers never need to run the setup step manually.
 TMRL_FOLDER = Path.home() / "TmrlData"
 
 if not TMRL_FOLDER.exists():

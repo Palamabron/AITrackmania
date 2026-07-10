@@ -11,10 +11,15 @@ from scipy.ndimage import gaussian_filter1d
 def line(pt1, pt2, dist):
     """Step along the segment ``pt1 -> pt2`` by ``dist`` metres.
 
+    Args:
+        pt1: Start point as a 1-D numpy array.
+        pt2: End point as a 1-D numpy array.
+        dist: Distance (metres) to walk along the segment.
+
     Returns:
-        ``(pt, 0.0)`` when a new point was produced, or ``(None, remaining)``
-        when the segment was shorter than ``dist`` and ``remaining`` metres
-        still need to be walked on the next segment.
+        ``(pt, 0.0)`` when a new point was produced at ``dist`` from ``pt1``,
+        or ``(None, remaining)`` when the segment was shorter than ``dist`` and
+        ``remaining`` metres still need to be walked on the next segment.
     """
     vec = pt2 - pt1
     norm = np.linalg.norm(vec)
@@ -34,7 +39,15 @@ def line(pt1, pt2, dist):
 
 
 def smooth_points(points, sigma=12):
-    """Apply a per-axis Gaussian filter (``sigma`` samples) to (N, 3) ``points``."""
+    """Apply a per-axis 1-D Gaussian filter to a (N, 3) point array.
+
+    Args:
+        points: Array of shape (N, 3).
+        sigma: Standard deviation (in samples) for the Gaussian kernel.
+
+    Returns:
+        Smoothed array of shape (N, 3).
+    """
     smoothed_x = gaussian_filter1d(points[:, 0], sigma)
     smoothed_y = gaussian_filter1d(points[:, 1], sigma)
     smoothed_z = gaussian_filter1d(points[:, 2], sigma)
@@ -42,7 +55,23 @@ def smooth_points(points, sigma=12):
 
 
 def interp_points_with_cubic_spline(sub_array, data_density=3):
-    """Cubic-spline interpolate ``sub_array`` (N, 3), upsampled by ``data_density``."""
+    """Cubic-spline interpolate and upsample a (N, 3) point array.
+
+    Fits a parametric CubicSpline with the original points placed at multiples
+    of ``data_density`` and evaluates at every integer index, effectively
+    upsampling by roughly ``data_density``.
+
+    Args:
+        sub_array: Array of shape (N, 3).
+        data_density: Upsampling factor; original samples are spaced this many
+            indices apart in the spline parameter space.
+
+    Returns:
+        Upsampled array of shape approximately (N * data_density, 3).
+
+    Raises:
+        ValueError: If ``sub_array`` has fewer than 2 points.
+    """
     if len(sub_array) < 2:
         raise ValueError(
             f"CubicSpline needs at least 2 points, got {len(sub_array)}. "
@@ -56,9 +85,19 @@ def interp_points_with_cubic_spline(sub_array, data_density=3):
 
 
 def pad_polyline_xz_straight(boundary: np.ndarray, n_pad: int) -> np.ndarray:
-    """Append ``n_pad`` (x, z) samples extrapolated along the last segment direction.
+    """Append extrapolated samples along the last segment of a (x, z) polyline.
 
-    ``boundary`` is shape (2, N). Used for boundary look-ahead padding near track end.
+    Extends ``boundary`` (shape (2, N)) by ``n_pad`` points in the direction of
+    the final segment, each spaced the same distance as that last segment.
+    Used for look-ahead padding near the track end so boundary queries remain
+    valid past the last recorded point.
+
+    Args:
+        boundary: Array of shape (2, N) where rows are x and z coordinates.
+        n_pad: Number of points to append.
+
+    Returns:
+        Array of shape (2, N + n_pad), or the original array if ``n_pad <= 0``.
     """
     if n_pad <= 0:
         return boundary

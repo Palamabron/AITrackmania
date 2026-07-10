@@ -27,7 +27,18 @@ def _extract_human_action_from_obs_tqcgrab(obs):
 
 
 def _extract_human_action_from_record_info(info, *, fallback: np.ndarray) -> np.ndarray:
-    """Boundary lidar path: interfaces add ``human_control_vec`` when ``record_human``."""
+    """Extract the human [gas, brake, steer] vector injected by the lidar/trackmap interface.
+
+    Boundary-lidar interfaces add ``human_control_vec`` to the step info dict when
+    ``record_human=True`` is passed at construction time.
+
+    Args:
+        info: The ``info`` dict returned by ``env.step()``.
+        fallback: Action to return when ``human_control_vec`` is absent or malformed.
+
+    Returns:
+        A float32 array of shape (3,) with [gas, brake, steer].
+    """
     if isinstance(info, dict):
         vec = info.get("human_control_vec")
         if vec is not None:
@@ -38,7 +49,21 @@ def _extract_human_action_from_record_info(info, *, fallback: np.ndarray) -> np.
 
 
 def _collect_human_episode(env, max_samples, obs_preprocessor, crc_debug):
-    """Collect one episode using human control (neutral sent so human drives) and Del to end."""
+    """Collect one human-controlled episode.
+
+    Sends a neutral (0, 0, 0) action every step so the physical gamepad retains
+    full control.  The episode ends on game termination, step limit, or Del keypress.
+
+    Args:
+        env: An already-constructed gymnasium environment.
+        max_samples: Step budget; use ``np.inf`` for unlimited.
+        obs_preprocessor: Optional callable applied to each raw observation.
+        crc_debug: When True, embeds ``crc_sample`` and ``crc_sample_ts`` in step info.
+
+    Returns:
+        A 3-tuple ``(samples, episode_return, episode_steps)`` where *samples* is
+        a list of ``(act, obs, rew, terminated, truncated, info)`` tuples.
+    """
     neutral_action = np.zeros(3, dtype=np.float32)
     buffer_memory = []
     ret = 0.0
@@ -131,7 +156,18 @@ def _rewrite_discrete_action_slots(samples: list, act_buf_len: int) -> list:
 
 
 def _maybe_apply_finish_time_bonus(samples: list) -> tuple[list, float]:
-    """Align with ``RolloutWorker.collect_train_episode``: spread ``time_bonus_scale`` on finish."""
+    """Apply the time-bonus spread from ``cfg.REWARD_CONFIG`` when the episode ends at the finish.
+
+    Mirrors the ``time_bonus_scale`` logic in ``RolloutWorker.collect_train_episode`` so
+    demo samples receive the same reward shaping as live rollouts.
+
+    Args:
+        samples: A list of ``(act, obs, rew, terminated, truncated, info)`` tuples.
+
+    Returns:
+        A 2-tuple ``(samples, episode_return)`` with the (possibly modified) sample
+        list and the total episode return after bonus application.
+    """
     if not samples:
         return samples, 0.0
     last_info = samples[-1][5]
@@ -156,8 +192,23 @@ def record_episode(
 ) -> list[Path]:
     """Collect episodes and save them as standalone player-run files.
 
-    Uses human control (no model): sends neutral (0,0,0) so you drive with a physical
-    gamepad. Press Del to end the current episode early.
+    Uses human control (no model): sends neutral (0, 0, 0) so you drive with a physical
+    gamepad.  Press Del to end the current episode early.
+
+    Args:
+        nb_episodes: Number of episodes to record.
+        output_dir: Directory for output ``.pkl`` files.  Defaults to
+            ``default_player_runs_dir()``.
+        max_samples_per_episode: Step budget per episode.  Defaults to
+            ``cfg.RW_MAX_SAMPLES_PER_EPISODE``.
+        save_replays: If True, also saves in-game replays via the interface.
+
+    Returns:
+        List of ``Path`` objects pointing to the saved player-run files.
+
+    Raises:
+        ValueError: If *nb_episodes* is not positive.
+        NotImplementedError: If the active interface does not support human recording.
     """
     if nb_episodes <= 0:
         raise ValueError("nb_episodes must be > 0")

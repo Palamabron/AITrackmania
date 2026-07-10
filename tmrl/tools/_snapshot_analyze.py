@@ -37,6 +37,11 @@ def _extract_json_from_output(text: str) -> dict[str, Any] | None:
 
 
 def _subprocess_env(uv_env: str) -> dict[str, str]:
+    """Build a subprocess environment with an optional ``UV_PROJECT_ENVIRONMENT`` override.
+
+    ``VIRTUAL_ENV`` is stripped so that ``uv run`` selects the venv specified by
+    *uv_env* rather than the currently active one.
+    """
     env = dict(os.environ)
     if uv_env:
         env["UV_PROJECT_ENVIRONMENT"] = uv_env
@@ -124,6 +129,16 @@ def _run_snapshot(
 
 
 def _run_analyze(exp_id: str, entity: str, project: str, *, retries: int = 2) -> None:
+    """Run ``experiment_manager analyze`` for *exp_id* as a subprocess.
+
+    Logs a warning and returns without raising if all attempts fail.
+
+    Args:
+        exp_id: Experiment identifier to analyze.
+        entity: W&B entity name.
+        project: W&B project name.
+        retries: Number of attempts before giving up (default 2).
+    """
     for attempt in range(1, retries + 1):
         try:
             result = subprocess.run(
@@ -164,6 +179,11 @@ def _run_analyze(exp_id: str, entity: str, project: str, *, retries: int = 2) ->
 
 
 def _append_decision_log(exp_id: str, action: str, reason: str) -> None:
+    """Append a timestamped decision entry to ``experiments/decisions.md``.
+
+    Logs a warning on ``OSError`` rather than raising, so a log-write failure
+    does not abort the orchestrator loop.
+    """
     decisions_path = EXPERIMENTS_DIR / "decisions.md"
     ts = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%d %H:%M UTC")
     entry = f"\n### {ts} -- {exp_id}\n\n**Action:** {action}\n**Reason:** {reason}\n"

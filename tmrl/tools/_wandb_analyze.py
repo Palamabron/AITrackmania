@@ -39,6 +39,11 @@ from tmrl.tools._wandb_snapshot import _find_wandb_run
 
 
 def cmd_register(args: argparse.Namespace) -> None:
+    """Register a new experiment in the registry and write its config YAML.
+
+    Creates a ``planned`` entry in the JSONL registry and a corresponding
+    YAML file under ``experiments/configs/``.
+    """
     try:
         overrides = json.loads(args.overrides) if args.overrides else {}
     except json.JSONDecodeError as exc:
@@ -76,6 +81,7 @@ def cmd_register(args: argparse.Namespace) -> None:
 
 
 def cmd_status(args: argparse.Namespace) -> None:
+    """Print a tabular status of all registered experiments and highlight target achievement."""
     entries = _read_registry()
     if not entries:
         print("No experiments registered yet.")
@@ -115,6 +121,13 @@ def cmd_status(args: argparse.Namespace) -> None:
 
 
 def cmd_analyze(args: argparse.Namespace) -> None:
+    """Fetch trainer + worker W&B history and write a full analysis JSON.
+
+    Output is saved under ``experiments/analysis/<exp_id>.json``.  Computes
+    per-metric statistics, finish-time extraction, three-phase training trends
+    (early/mid/late), and a delta comparison against the baseline experiment if
+    available.  Updates the registry entry with summary metrics.
+    """
     _load_dotenv()
 
     exp_id = args.exp_id
@@ -183,6 +196,7 @@ def cmd_analyze(args: argparse.Namespace) -> None:
         summary["git"] = entry["git"]
 
     def _safe_stats(series_name: str) -> dict[str, Any] | None:
+        """Return descriptive stats for *series_name* in *h*, or ``None`` if missing/empty."""
         if series_name not in h.columns:
             return None
         try:
@@ -278,7 +292,6 @@ def cmd_analyze(args: argparse.Namespace) -> None:
             _warn(f"Error fetching/processing worker history: {exc}")
             summary["worker"] = {"worker_state": "error", "error": str(exc)}
 
-    # Training phase analysis (early / mid / late)
     if len(h) >= 100:
         try:
             n = len(h)
@@ -328,7 +341,6 @@ def cmd_analyze(args: argparse.Namespace) -> None:
         except Exception as exc:
             _warn(f"Error in phase analysis: {exc}")
 
-    # Comparison vs baseline
     baseline_analysis = ANALYSIS_DIR / "gtn-baseline.json"
     if baseline_analysis.exists() and exp_id != "gtn-baseline":
         try:

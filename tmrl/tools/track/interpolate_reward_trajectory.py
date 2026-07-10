@@ -23,7 +23,15 @@ from loguru import logger
 
 
 def _cumulative_distances(points: np.ndarray) -> np.ndarray:
-    """Cumulative arc length along the polyline (length at each point index)."""
+    """Compute cumulative arc-length at each point of a polyline.
+
+    Args:
+        points: Array of shape (N, D).
+
+    Returns:
+        Array of shape (N,) where index ``i`` is the total distance from
+        ``points[0]`` to ``points[i]``.  Always starts at 0.
+    """
     if len(points) < 2:
         return np.zeros(max(1, len(points)))
     diffs = np.linalg.norm(np.diff(points, axis=0), axis=1)
@@ -33,9 +41,19 @@ def _cumulative_distances(points: np.ndarray) -> np.ndarray:
 
 
 def interpolate_trajectory(points: np.ndarray, factor: int) -> np.ndarray:
-    """
-    Return a new point array with roughly factor*len(points) points, uniformly spaced by arc length.
-    Linear interpolation along the original polyline; total arc length is preserved.
+    """Return a uniformly arc-length-spaced point array upsampled by ``factor``.
+
+    Produces ``max(2, factor * len(points))`` new points by linearly
+    interpolating along the original polyline.  Total arc length is preserved
+    to within floating-point precision, so the per-point reward signal remains
+    consistent with the original spacing.
+
+    Args:
+        points: Array of shape (N, D).
+        factor: Upsampling multiplier; output has ``max(2, factor * N)`` points.
+
+    Returns:
+        Array of shape (M, D) where M = ``max(2, factor * N)``.
     """
     n = len(points)
     if n < 2:
@@ -86,6 +104,11 @@ class InterpolateArgs:
 
 
 def main() -> int:
+    """CLI entry point: load, interpolate, and optionally save a reward pkl.
+
+    Returns:
+        0 on success, 1 on any error.
+    """
     args = tyro.cli(InterpolateArgs)
 
     in_path = args.input

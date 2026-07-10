@@ -23,6 +23,7 @@ ORCHESTRATOR_CONFIG_PATH = EXPERIMENTS_DIR / "orchestrator_config.yaml"
 
 
 def _warn(msg: str) -> None:
+    """Print a warning to stderr with a consistent ``[experiment_manager WARNING]`` prefix."""
     print(f"[experiment_manager WARNING] {msg}", file=sys.stderr, flush=True)
 
 
@@ -73,6 +74,11 @@ def _orch_defaults() -> tuple[str, str]:
 
 
 def _next_exp_id() -> str:
+    """Return the next auto-incremented experiment ID (``EXP001``, ``EXP002``, …).
+
+    Custom-named experiments (e.g. ``gtn-baseline``) are ignored; only IDs of
+    the form ``EXP###`` contribute to the counter.
+    """
     entries = _read_registry()
     if not entries:
         return "EXP001"
@@ -86,11 +92,17 @@ def _next_exp_id() -> str:
 
 
 def _load_baseline() -> dict[str, Any]:
+    """Load ``experiments/baseline.yaml`` and return its contents as a dict."""
     with BASELINE_PATH.open(encoding="utf-8") as f:
         return yaml.safe_load(f) or {}
 
 
 def _deep_merge(base: dict, overlay: dict) -> dict:
+    """Recursively merge *overlay* into *base*, returning a new dict.
+
+    Nested dicts are merged rather than replaced; all other value types use
+    the overlay value.
+    """
     result = dict(base)
     for k, v in overlay.items():
         if k in result and isinstance(result[k], dict) and isinstance(v, dict):
@@ -133,5 +145,8 @@ def _build_full_config(exp_id: str) -> dict[str, Any]:
 
 
 def _build_config_overrides_json(overrides: dict[str, Any]) -> str:
-    """Convert nested override dict into TMRL_CONFIG_OVERRIDES JSON."""
+    """Serialise *overrides* to the JSON string expected by ``TMRL_CONFIG_OVERRIDES``.
+
+    Non-serialisable values are coerced via ``str()``.
+    """
     return json.dumps(overrides, default=str)

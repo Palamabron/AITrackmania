@@ -17,7 +17,16 @@ _FALLBACK_TAG = "v0.6.0"
 
 
 def resources_zip_urls() -> tuple[str, ...]:
-    """Candidate URLs, most specific first."""
+    """Return candidate download URLs for resources.zip, most specific first.
+
+    The first URL targets the GitHub release that matches the installed ``tmrl``
+    package version (local VCS suffixes are stripped). The fallback URL always
+    targets ``_FALLBACK_TAG`` and is appended when no version could be determined
+    or as a safety net for fresh installs before a matching release exists.
+
+    Returns:
+        A tuple of URL strings; always contains at least the fallback URL.
+    """
     urls: list[str] = []
     try:
         from importlib.metadata import PackageNotFoundError, version
@@ -37,7 +46,22 @@ def resources_zip_urls() -> tuple[str, ...]:
 
 
 def download_resources_zip(dest: Path) -> str:
-    """Download ``resources.zip`` to ``dest`` (file path). Return the URL that succeeded."""
+    """Download ``resources.zip`` to ``dest`` and return the URL that succeeded.
+
+    Tries each candidate URL from ``resources_zip_urls()`` in order. HTTP 404
+    responses and network/DNS errors on a given URL are skipped so the fallback
+    tag can still be attempted. Any other HTTP error code raises immediately.
+
+    Args:
+        dest: Filesystem path where the archive will be written. Parent directories
+            are created if they do not exist.
+
+    Returns:
+        The URL that was successfully downloaded.
+
+    Raises:
+        ConnectionError: If every candidate URL fails (404 or network error).
+    """
     dest = Path(dest).expanduser().resolve()
     dest.parent.mkdir(parents=True, exist_ok=True)
     errors: list[str] = []

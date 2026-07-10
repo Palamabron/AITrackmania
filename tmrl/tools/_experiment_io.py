@@ -20,6 +20,7 @@ REGISTRY_PATH = EXPERIMENTS_DIR / "registry.jsonl"
 
 
 def _warn(msg: str) -> None:
+    """Print a warning to stderr with a consistent ``[experiment_io WARNING]`` prefix."""
     print(f"[experiment_io WARNING] {msg}", file=sys.stderr, flush=True)
 
 

@@ -23,7 +23,6 @@ def _decide(context: dict[str, Any]) -> dict[str, Any]:
     elapsed_h = context.get("elapsed_hours", 0)
     best_ft = snapshot.get("best_finish_time_s")
 
-    # --- Target check ---
     if best_ft is not None and best_ft > 0 and best_ft <= target_time:
         return {"action": "stop", "reason": f"Target reached: {best_ft:.2f}s"}
 
@@ -37,7 +36,6 @@ def _decide(context: dict[str, Any]) -> dict[str, Any]:
             f"best {worker_best:.1f}s). Learning is progressing.",
         }
 
-    # --- Catastrophic failure checks ---
     loss = recent.get("loss/iqn_loss", {})
     loss_last = loss.get("last")
     loss_p95 = loss.get("p95")
@@ -65,7 +63,6 @@ def _decide(context: dict[str, Any]) -> dict[str, Any]:
     if grad_last is not None and (grad_last != grad_last):  # NaN check
         return {"action": "stop", "reason": "Gradient norm is NaN."}
 
-    # --- Loss spike detection ---
     if loss_p95 and loss_median and loss_median > 0:
         spike_ratio = loss_p95 / loss_median
         if spike_ratio > 5 and elapsed_h >= 2:
@@ -75,7 +72,6 @@ def _decide(context: dict[str, Any]) -> dict[str, Any]:
                 f"Consider lower lr or tighter grad_clip.",
             }
 
-    # --- Stagnation after extended time ---
     ret_train = recent.get("metrics/return_train", {})
     if elapsed_h >= 3 and ret_train:
         ret_last = ret_train.get("last", 0)
@@ -83,7 +79,6 @@ def _decide(context: dict[str, Any]) -> dict[str, Any]:
         if ret_last > 0 and ret_p95 > 0 and ret_last < ret_p95 * 0.3:
             pass  # Return dropped significantly but might be exploration; don't stop
 
-    # --- Memory buffer health ---
     buffer_len = recent.get("buffer/memory_len", {}).get("last")
     if buffer_len is not None and buffer_len < 100 and elapsed_h > 0.5:
         return {
@@ -92,7 +87,6 @@ def _decide(context: dict[str, Any]) -> dict[str, Any]:
             f"Worker/server connection issue.",
         }
 
-    # --- All clear ---
     reasons = []
     if loss_last and loss_median:
         reasons.append(f"loss={loss_last:.2f}(med={loss_median:.2f})")
@@ -117,7 +111,6 @@ def _propose(context: dict[str, Any]) -> dict[str, Any]:
     registry = context.get("registry", [])
     completed = [e for e in registry if e.get("status") in ("completed", "stopped_early")]
 
-    # Check what we've already tried
     tried_params: set[str] = set()
     for e in registry:
         overrides = e.get("config_overrides", {})
@@ -127,7 +120,6 @@ def _propose(context: dict[str, Any]) -> dict[str, Any]:
             else:
                 tried_params.add(str(section))
 
-    # Load analyses for completed experiments
     analyses: list[dict[str, Any]] = []
     for e in completed:
         ap = EXPERIMENTS_DIR / "analysis" / f"{e['exp_id']}.json"
@@ -147,7 +139,6 @@ def _propose(context: dict[str, Any]) -> dict[str, Any]:
         if ret > best_return:
             best_return = ret
 
-    # Proposal logic based on what hasn't been tried
     proposals = []
 
     if "iqn_lr" not in tried_params:
@@ -232,7 +223,6 @@ def _propose(context: dict[str, Any]) -> dict[str, Any]:
             "reason": "All standard variations have been tried. Manual review needed.",
         }
 
-    # Pick the first untried proposal
     existing_ids = {e["exp_id"] for e in registry}
     for prop in proposals:
         if prop["exp_id"] not in existing_ids:

@@ -77,7 +77,11 @@ def smooth_points(points: np.ndarray, sigma: float) -> np.ndarray:
 
 
 def main() -> int:
-    """Load left/right tracks and show interactive 3D plot."""
+    """Load left/right tracks and show an interactive 3D scatter plot.
+
+    Returns:
+        0 on success, 1 if config cannot be loaded or track files are missing.
+    """
     args = tyro.cli(PlotTrackArgs)
 
     if args.left_path is None or args.right_path is None:

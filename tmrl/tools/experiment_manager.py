@@ -210,6 +210,7 @@ def cmd_reset(args: argparse.Namespace) -> None:
 
 
 def main() -> None:
+    """Parse subcommand arguments and dispatch to the appropriate handler."""
     parser = argparse.ArgumentParser(
         prog="experiment_manager",
         description="TMRL Experiment Manager for agentic hyperparameter tuning.",

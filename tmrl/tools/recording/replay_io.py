@@ -42,6 +42,7 @@ class ImportPlayerRunsCli:
 
 
 def _parse_paths(paths: str) -> list[str]:
+    """Split a comma-separated path string into a list of non-empty stripped paths."""
     return [p.strip() for p in paths.split(",") if p.strip()]
 
 

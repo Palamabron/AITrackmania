@@ -1,3 +1,11 @@
+"""CLI tool for recording a track boundary from a live TM2020 session.
+
+Drive along one boundary (left or right); the tool captures XYZ telemetry
+via OpenPlanet, filters out origin-glitch packets, resamples and smooths the
+path, and pickles the result.  Also exposes helpers to extend existing
+boundary ``.pkl`` files straight forward.
+"""
+
 from __future__ import annotations
 
 import os
@@ -25,11 +33,11 @@ TRACK_BOUNDARY_SPACING_M = 0.25
 TRACK_STRAIGHT_EXTENSION_M = 100.0
 # Cap on spline output points to guard against bogus path lengths.
 _MAX_SPLINE_POINTS = 200_000
-# Log a progress message every N collected positions.
 _LOG_INTERVAL = 1000
 
 
 def _track_length_m(positions) -> float:
+    """Return the total arc length in metres of a sequence of 3-D positions."""
     if len(positions) < 2:
         return 0.0
     pts = np.asarray(positions)
@@ -63,6 +71,17 @@ def _filter_origin_points(positions: np.ndarray) -> np.ndarray:
 
 
 def record_track(path_track: str | None = None) -> None:
+    """Record a track boundary by driving one lap in TM2020.
+
+    Connects to OpenPlanet, collects XYZ positions until a valid lap-finished
+    signal arrives (at least ``MIN_POSITIONS_FOR_TRACK`` samples and
+    ``MIN_TRACK_LENGTH_M`` metres driven), resamples and smooths the path, and
+    pickles the result to *path_track*.
+
+    Args:
+        path_track: Filesystem path for the output ``.pkl``.  Defaults to
+            ``cfg.TRACK_PATH_LEFT``.
+    """
     import tmrl.config as cfg
 
     if path_track is None:

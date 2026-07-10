@@ -24,7 +24,20 @@ class ProcessManager:
 
     def __init__(
         self, exp_id: str, config_overrides: dict[str, Any], uv_env: str, server_port: int = 55555
-    ):
+    ) -> None:
+        """Initialise the manager without launching any processes.
+
+        Args:
+            exp_id: Unique experiment identifier, used for log file naming and
+                injected into the subprocess environment as
+                ``TMRL_EXPERIMENT_ID``.
+            config_overrides: Hydra config overrides merged into
+                ``TMRL_CONFIG_OVERRIDES`` for all three subprocesses.
+            uv_env: UV venv directory name (e.g. ``'.venv'`` or
+                ``'.venv-linux'``), forwarded as ``UV_PROJECT_ENVIRONMENT``.
+            server_port: TCP port the relay server listens on; worker and
+                trainer use ``server_port + 1..3`` as their local ports.
+        """
         self.exp_id = exp_id
         self.config_overrides = config_overrides
         self.uv_env = uv_env
@@ -35,6 +48,14 @@ class ProcessManager:
         self._log_files: dict[str, Any] = {}
 
     def _build_env(self) -> dict[str, str]:
+        """Build the subprocess environment dict with all TMRL/W&B knobs applied.
+
+        Returns:
+            A copy of the current process environment with the following
+            modifications applied: UV venv path, experiment ID, config
+            overrides JSON, W&B service timeout and start-method settings,
+            and UTF-8 stdout encoding.
+        """
         import os
 
         env = dict(os.environ)
@@ -73,6 +94,17 @@ class ProcessManager:
         return False
 
     def start(self) -> None:
+        """Launch server, trainer, and worker in dependency order.
+
+        Starts the relay server first and waits until its TCP port is
+        accepting connections, then starts the trainer (waits 15 s to detect
+        immediate crashes), then the worker (waits 5 s).
+
+        Raises:
+            RuntimeError: If any of the three processes dies immediately after
+                launch or the server does not begin accepting connections
+                within 90 seconds.
+        """
         _free_distributed_ports(self.server_port)
 
         # Clear old logs for this experiment so we don't mix runs
@@ -82,7 +114,6 @@ class ProcessManager:
         env = self._build_env()
         _log(f"Using UV_PROJECT_ENVIRONMENT={self.uv_env}")
 
-        # --- Start server and wait for port ---
         self._start_role("server", ["uv", "run", "python", "-m", "tmrl", "--server"], env)
         _log(f"Waiting for server to listen on port {self.server_port}...")
         if not self._wait_for_port(timeout=90):
@@ -97,7 +128,6 @@ class ProcessManager:
             )
         _log(f"Server is listening on port {self.server_port}.")
 
-        # --- Start trainer and verify alive ---
         self._start_role("trainer", ["uv", "run", "python", "-m", "tmrl", "--trainer"], env)
         time.sleep(15)
         if self.processes["trainer"].poll() is not None:
@@ -107,7 +137,6 @@ class ProcessManager:
             )
         _log("Trainer is alive.")
 
-        # --- Start worker ---
         self._start_role("worker", ["uv", "run", "python", "-m", "tmrl", "--worker"], env)
         time.sleep(5)
         if self.processes["worker"].poll() is not None:
@@ -118,6 +147,17 @@ class ProcessManager:
         _log("Worker is alive. All processes started.")
 
     def _start_role(self, role: str, args: list[str], env: dict[str, str]) -> None:
+        """Spawn a single subprocess and register its log file handles.
+
+        Opens (or appends to) ``{role}_stdout.log`` and ``{role}_stderr.log``
+        under the experiment log directory, then starts the process.
+
+        Args:
+            role: One of ``'server'``, ``'trainer'``, or ``'worker'``.
+            args: Command-line argument list passed directly to
+                :class:`subprocess.Popen`.
+            env: Full environment dict for the new process.
+        """
         stdout_f = (self._log_dir / f"{role}_stdout.log").open("a", encoding="utf-8")
         stderr_f = (self._log_dir / f"{role}_stderr.log").open("a", encoding="utf-8")
         self._log_files[f"{role}_stdout"] = stdout_f
@@ -137,6 +177,7 @@ class ProcessManager:
         _log(f"  {role} PID={self.processes[role].pid}")
 
     def all_alive(self) -> bool:
+        """Return ``True`` if every tracked subprocess is still running."""
         return all(p.poll() is None for p in self.processes.values())
 
     def _kill_role(self, role: str) -> None:
@@ -219,17 +260,29 @@ class ProcessManager:
         return self.processes[role].poll() is None
 
     def _read_role_log(self, role: str, stream: str = "stdout") -> str:
+        """Read the full text of a role's stdout or stderr log file.
+
+        Args:
+            role: One of ``'server'``, ``'trainer'``, or ``'worker'``.
+            stream: ``'stdout'`` or ``'stderr'``.
+
+        Returns:
+            File contents as a string, or an empty string if the file does
+            not yet exist.
+        """
         path = self._log_dir / f"{role}_{stream}.log"
         if not path.exists():
             return ""
         return path.read_text(encoding="utf-8", errors="replace")
 
     def worker_is_sending_samples(self) -> bool:
+        """Return ``True`` if the worker log contains a sample-send confirmation."""
         return "Sent" in self._read_role_log(
             "worker"
         ) and "sample(s) to server" in self._read_role_log("worker")
 
     def trainer_is_receiving_samples(self) -> bool:
+        """Return ``True`` if the trainer log shows it has received samples from the server."""
         text = self._read_role_log("trainer")
         return (
             "Received" in text and "samples from server" in text
@@ -259,16 +312,30 @@ class ProcessManager:
         return "wandb: Tracking run" in stderr_text
 
     def worker_is_alive(self) -> bool:
+        """Return ``True`` if the worker subprocess exists and has not exited."""
         proc = self.processes.get("worker")
         return proc is not None and proc.poll() is None
 
     def status_summary(self) -> dict[str, str]:
+        """Return a role → status string mapping for all tracked processes.
+
+        Returns:
+            Dict mapping each role name to ``'running'`` or
+            ``'exited(<returncode>)'``.
+        """
         return {
             role: "running" if p.poll() is None else f"exited({p.returncode})"
             for role, p in self.processes.items()
         }
 
     def stop(self) -> None:
+        """Terminate all subprocesses gracefully and close their log file handles.
+
+        Processes are stopped in reverse dependency order (worker → trainer →
+        server) so that the worker and trainer do not generate spurious
+        reconnect errors after the server disappears.  Each process is given
+        up to 10 seconds to exit before being force-killed.
+        """
         _log(f"Stopping processes for {self.exp_id}...")
         for role in ["worker", "trainer", "server"]:
             proc = self.processes.get(role)

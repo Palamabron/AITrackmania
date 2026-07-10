@@ -1,3 +1,9 @@
+"""CLI tool for recording a reward trajectory from a live TM2020 session.
+
+Drive one lap; the tool captures positional telemetry via OpenPlanet, fits a
+cubic-spline reward path, and pickles the checkpoint array to REWARD_PATH.
+"""
+
 import os
 import pickle
 import time
@@ -19,17 +25,27 @@ PATH_REWARD = cfg.REWARD_PATH
 MIN_POSITIONS_FOR_RECORDING = 50
 # Arc-length spacing (metres) between reward checkpoints.
 REWARD_POINT_SPACING_M = 1.05
-# Log a progress message every N collected positions.
 _LOG_INTERVAL = 1000
 
 
 def _reset_env_before_recording() -> None:
+    """Press the in-game reset key and wait for the restart sleep before recording."""
     logger.info("Resetting environment before reward recording.")
     keyres()
     time.sleep(max(0.0, float(cfg.SLEEP_TIME_AT_RESET)))
 
 
 def record_reward_dist(path_reward=PATH_REWARD):
+    """Record a reward trajectory by driving one lap in TM2020.
+
+    Connects to OpenPlanet, collects XYZ positions until a lap-finished signal
+    arrives, fits a cubic spline through the sampled path, and pickles the
+    resulting checkpoint array to *path_reward*.
+
+    Args:
+        path_reward: Filesystem path where the reward ``.pkl`` is written.
+            Defaults to ``cfg.REWARD_PATH``.
+    """
     positions: list[list[float]] = []
     client = TM2020OpenPlanetClient(
         port=9000, nb_floats=tmrl_grabdata_payload_nb_floats(cfg.REWARD_CONFIG)

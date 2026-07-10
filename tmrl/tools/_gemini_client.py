@@ -26,7 +26,6 @@ VALID_OVERRIDE_SECTIONS = {
     "distributed",
 }
 
-# Map common param names to their correct section
 PARAM_TO_SECTION: dict[str, str] = {
     "iqn_lr": "algorithm",
     "gamma": "algorithm",
@@ -65,7 +64,19 @@ PARAM_TO_SECTION: dict[str, str] = {
 
 
 def _fix_overrides(overrides: dict[str, Any]) -> dict[str, Any]:
-    """Fix malformed overrides from Gemini (wrong section keys, dot notation)."""
+    """Normalise a Gemini-generated overrides dict to the TMRL section schema.
+
+    Gemini sometimes produces wrong top-level section names (e.g. ``"optimization"``
+    instead of ``"algorithm"``) or dot-notation keys inside a section
+    (e.g. ``"algorithm.iqn_grad_clip"``).  This function remaps both using
+    ``VALID_OVERRIDE_SECTIONS`` and ``PARAM_TO_SECTION``.
+
+    Args:
+        overrides: Raw overrides dict from Gemini.
+
+    Returns:
+        A new dict with corrected section keys and unwrapped param names.
+    """
     fixed: dict[str, Any] = {}
 
     for section, params in overrides.items():
@@ -145,6 +156,15 @@ def _call_gemini(prompt: str, *, retries: int = 3) -> str | None:
 
 
 def _build_decide_prompt(context: dict[str, Any]) -> str:
+    """Build the Gemini prompt for the ``decide`` (continue/stop) decision.
+
+    Args:
+        context: Dict containing ``snapshot``, ``target_finish_time_s``,
+            ``elapsed_hours``, ``current_max_hours``, and ``exp_entry``.
+
+    Returns:
+        A fully rendered prompt string ready to send to Gemini.
+    """
     snapshot = context.get("snapshot", {})
     target = context.get("target_finish_time_s", 36.0)
     elapsed = context.get("elapsed_hours", 0)
@@ -204,16 +224,27 @@ Respond with ONLY a JSON object (no markdown, no explanation):
 
 
 def _build_propose_prompt(context: dict[str, Any]) -> str:
+    """Build the Gemini prompt for the ``propose`` (next experiment) decision.
+
+    Reads ``experiments/search_space.yaml``, ``experiments/decisions.md``, and
+    ``experiments/validation_report.json`` from disk to enrich the prompt with
+    prior parameter effects and known failure patterns.
+
+    Args:
+        context: Dict containing ``registry`` (list of experiment entries) and
+            ``target_finish_time_s``.
+
+    Returns:
+        A fully rendered prompt string ready to send to Gemini.
+    """
     registry = context.get("registry", [])
     target = context.get("target_finish_time_s", 36.0)
 
-    # Load search space
     search_space_text = ""
     sp_path = EXPERIMENTS_DIR / "search_space.yaml"
     if sp_path.exists():
         search_space_text = sp_path.read_text(encoding="utf-8")[:3000]
 
-    # Load decisions log
     decisions_text = ""
     dec_path = EXPERIMENTS_DIR / "decisions.md"
     if dec_path.exists():
@@ -241,7 +272,6 @@ def _build_propose_prompt(context: dict[str, Any]) -> str:
         except Exception:
             pass
 
-    # Build rich experiment summary with analysis data
     reg_summary = []
     for e in registry:
         parts = [
@@ -283,7 +313,6 @@ def _build_propose_prompt(context: dict[str, Any]) -> str:
 
         reg_summary.append("\n".join(parts))
 
-    # Parameter effects summary
     param_effects_text = ""
     completed = [e for e in registry if e.get("status") in ("completed", "stopped_early")]
     if completed:
@@ -372,6 +401,11 @@ Respond with ONLY a JSON object (no markdown, no code fences):
 
 
 def _flatten_dict_orch(d: dict, prefix: str = "") -> list[tuple[str, Any]]:
+    """Flatten a nested dict into ``[(dotted.key, value), …]`` pairs.
+
+    Identical to ``_flatten_dict`` in ``_wandb_snapshot`` but local to avoid a
+    circular import between the two modules.
+    """
     items: list[tuple[str, Any]] = []
     for k, v in d.items():
         path = f"{prefix}.{k}" if prefix else k

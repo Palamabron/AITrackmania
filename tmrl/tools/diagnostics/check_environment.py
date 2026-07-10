@@ -10,6 +10,13 @@ _CHECK_ROUNDS = 1200
 
 
 def check_env_tm20_boundary():
+    """Step through the TM2020 boundary-LIDAR environment and log observations.
+
+    Resets the environment and runs for _CHECK_ROUNDS steps, logging reward and
+    done/truncated flags each step. Intended as a quick sanity-check that the
+    boundary-LIDAR interface is functioning correctly. Resets automatically on
+    episode termination.
+    """
     env_config = DEFAULT_CONFIG_DICT.copy()
     env_config["interface"] = TM2020InterfaceBoundary
     env_config["wait_on_done"] = True
@@ -59,6 +66,12 @@ def show_imgs(imgs, scale=cfg.IMG_SCALE_CHECK_ENV):
 
 
 def check_env_tm20full():
+    """Step through the full TM2020 vision environment, logging and displaying images.
+
+    Runs indefinitely, showing a stacked image history via OpenCV after each step
+    and logging speed, gear, RPM, and image-count observations. Resets on episode
+    termination and displays the post-reset observation.
+    """
     env_config = DEFAULT_CONFIG_DICT.copy()
     env_config["interface"] = TM2020Interface
     env_config["wait_on_done"] = True

@@ -54,6 +54,23 @@ from tmrl.tools._snapshot_analyze import (
 
 
 def run_experiment_loop(start_exp_id: str | None = None) -> None:
+    """Run the autonomous experiment loop.
+
+    Loads orchestrator config, then repeatedly: picks the next planned
+    experiment from the registry, launches the three TMRL subprocesses via
+    :class:`ProcessManager`, runs smoke checks, monitors training via W&B
+    snapshots, applies tier-based budget extensions, invokes the Gemini agent
+    for stop/continue decisions, tears down processes, and writes the final
+    status back to the registry.  Stops after ``max_consecutive_failures``
+    back-to-back failures or when no more planned experiments remain and the
+    agent cannot propose new ones.
+
+    Args:
+        start_exp_id: Resume from this specific experiment ID.  When given,
+            the ``reset incomplete`` pre-flight step is skipped and the loop
+            starts by looking up this ID in the registry rather than taking
+            the first ``'planned'`` entry.
+    """
     _load_dotenv()
     cfg = _load_config()
 
@@ -149,7 +166,6 @@ def run_experiment_loop(start_exp_id: str | None = None) -> None:
                 dirty = " [dirty]" if git.get("dirty") else ""
                 _log(f"  Git: {commit} ({branch}){dirty}")
 
-            # --- Code patch: create experiment branch ---
             exp_commit: str | None = None
             if code_patches:
                 base_branch = _get_base_branch()
@@ -199,7 +215,6 @@ def run_experiment_loop(start_exp_id: str | None = None) -> None:
                     break
                 continue
 
-            # --- Smoke check ---
             _log(f"Waiting {smoke_check_min} min for smoke check...")
             time.sleep(smoke_check_min * 60)
 
@@ -282,7 +297,6 @@ def run_experiment_loop(start_exp_id: str | None = None) -> None:
             _log("Smoke check passed. All processes alive and trainer active.")
             consecutive_failures = 0
 
-            # --- Monitoring loop ---
             exp_start = time.time()
             experiment_done = False
             final_status = "completed"
@@ -411,11 +425,9 @@ def run_experiment_loop(start_exp_id: str | None = None) -> None:
                     stop_reason = reason
                     experiment_done = True
 
-            # --- Teardown ---
             pm.stop()
             pm = None
 
-            # --- Rollback code-patch branch ---
             if base_branch and code_patches:
                 _rollback_to_branch(base_branch)
                 base_branch = None
@@ -510,6 +522,7 @@ def run_experiment_loop(start_exp_id: str | None = None) -> None:
 
 
 def main() -> None:
+    """Parse CLI arguments and enter the orchestrator loop."""
     import argparse
 
     parser = argparse.ArgumentParser(description="TMRL Autonomous Experiment Orchestrator")

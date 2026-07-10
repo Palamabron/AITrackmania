@@ -48,6 +48,10 @@ DEFAULT_WORKER_METRICS = [
 
 
 def _load_dotenv_optional() -> None:
+    """Load ``REPO_ROOT/.env`` into ``os.environ``, skipping already-set keys.
+
+    Silently does nothing if the file does not exist.
+    """
     env_path = Path(__file__).resolve().parents[3] / ".env"
     if not env_path.is_file():
         return
@@ -63,7 +67,11 @@ def _load_dotenv_optional() -> None:
 
 
 def _series(df: Any, col: str):
-    """Return pandas Series or None."""
+    """Cast *col* in *df* to float and return the resulting Series.
+
+    Returns ``None`` if the column is missing or cannot be cast (e.g. all-NaN
+    categorical).
+    """
     try:
         s = df[col].astype(float)
     except Exception:
@@ -95,7 +103,11 @@ def find_argmax_timeseries(df: Any, col: str, after_step: float = 500.0) -> dict
 
 
 def heuristic_suggestions(payload: dict[str, Any]) -> list[str]:
-    """Return bullet strings."""
+    """Return human-readable tuning suggestions derived from aggregated run metrics.
+
+    Thresholds are heuristics for this project's IQN setup and should be
+    re-calibrated for other workloads.
+    """
     suggestions: list[str] = []
 
     wm = payload.get("worker_summary") or {}
@@ -111,7 +123,6 @@ def heuristic_suggestions(payload: dict[str, Any]) -> list[str]:
     eval_med = tm_full.get("eval_return_deterministic", {}).get("median")
     train_med = tm_full.get("return_train_median_overall")
 
-    # Worker / rollout
     if isinstance(trunc_rate, (int, float)) and trunc_rate > 0.55:
         suggestions.append(
             "Worker: bardzo częsty `truncated` — ustaw wyżej `environment.rtgym.ep_max_length` "
@@ -133,7 +144,6 @@ def heuristic_suggestions(payload: dict[str, Any]) -> list[str]:
             "'utknął na poboczu')."
         )
 
-    # Trainer exploitation
     if isinstance(eps_last, (int, float)) and eps_last > 0.12:
         suggestions.append(
             "Trainer: median ε w późnej fazie nadal wyższe — rozważ niższą wartość docelową "
@@ -141,7 +151,6 @@ def heuristic_suggestions(payload: dict[str, Any]) -> list[str]:
             "`algorithm.iqn_epsilon_decay_steps`, żeby dłużej eksplorować zanim zbijesz greedy."
         )
 
-    # Train/eval mismatch
     if (
         isinstance(eval_med, (int, float))
         and isinstance(train_med, (int, float))
@@ -164,7 +173,18 @@ def heuristic_suggestions(payload: dict[str, Any]) -> list[str]:
     return suggestions
 
 
+def _last_non_nan(series: Any) -> float | None:
+    """Return the last non-NaN value in *series*, or ``None`` if all are NaN."""
+    if series is None:
+        return None
+    v = series.dropna()
+    if len(v) == 0:
+        return None
+    return float(v.iloc[-1])
+
+
 def main() -> None:
+    """CLI entry point: parse args, fetch W&B history, print analysis, optionally dump JSON."""
     _load_dotenv_optional()
     p = argparse.ArgumentParser(description="W&B IQN / TMRL run inspector")
     p.add_argument("--entity", default="tmrl")
@@ -235,15 +255,6 @@ def main() -> None:
         if am_late:
             print(f"  max-after-warmup: step={am_late['_step']:.0f} value={am_late['value']:.6g}")
 
-    # Key scalars snapshot
-    def last_non_nan(series: Any) -> float | None:
-        if series is None:
-            return None
-        v = series.dropna()
-        if len(v) == 0:
-            return None
-        return float(v.iloc[-1])
-
     trainer_payload["trainer_numeric"] = {}
     snap_cols = [
         "metrics/return_train",
@@ -255,7 +266,7 @@ def main() -> None:
     for col in snap_cols:
         if col in h.columns:
             s = _series(h, col)
-            lc = last_non_nan(s)
+            lc = _last_non_nan(s)
             med = float(s.dropna().median()) if s is not None and len(s.dropna()) else None
             trainer_payload["trainer_numeric"][col.replace("/", "_")] = {"last": lc, "median": med}
             print(f"{col}: last={lc} median={med}")
@@ -311,7 +322,7 @@ def main() -> None:
                     continue
                 if col == "run/truncated":
                     trainer_payload["worker_summary"]["truncated_times"] = int((s > 0.5).sum())
-                trainer_payload.setdefault("worker_last", {})[col] = last_non_nan(s)
+                trainer_payload.setdefault("worker_last", {})[col] = _last_non_nan(s)
 
         # Prefer episode counts from run/term_reason (same source as heuristic)
         trc = trainer_payload["worker_summary"].get("termination_counts") or {}
@@ -327,7 +338,6 @@ def main() -> None:
 
     if args.json_out:
         out_path = Path(args.json_out)
-        # JSON-serialize only summary bits
         with out_path.open("w", encoding="utf-8") as f:
             json.dump(trainer_payload, f, indent=2, default=str)
         print(f"\nWrote {out_path}")

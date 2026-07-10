@@ -38,12 +38,37 @@ from loguru import logger
 
 
 def _timer(label: str, t0: float) -> float:
+    """Log elapsed time since ``t0`` and return the current timestamp.
+
+    Args:
+        label: Section label shown in the debug log line.
+        t0: Start timestamp from ``time.perf_counter()``.
+
+    Returns:
+        Current ``time.perf_counter()`` value for chaining as the next ``t0``.
+    """
     t1 = time.perf_counter()
     logger.debug("[{}] {:.3f}s", label, t1 - t0)
     return t1
 
 
 def _ensure_3d(points: np.ndarray) -> np.ndarray:
+    """Ensure a point array has exactly 3 columns, promoting (N, 2) to (N, 3).
+
+    (N, 2) inputs are treated as (x, z) pairs; a zero-filled y column is
+    inserted at index 1 to match the TM2020 world coordinate convention where y
+    is the vertical axis.
+
+    Args:
+        points: Array of shape (N, 2) or (N, 3).
+
+    Returns:
+        Array of shape (N, 3) with dtype float64.
+
+    Raises:
+        ValueError: If the input is not 2-D, or has a column count other than
+            2 or 3.
+    """
     points = np.asarray(points, dtype=np.float64)
     if points.ndim != 2:
         raise ValueError(f"Expected 2D array (N,2) or (N,3), got shape {points.shape}")
@@ -58,6 +83,15 @@ MAX_TRACK_POINTS_LOAD = 100_000
 
 
 def _cumulative_distances(points: np.ndarray) -> np.ndarray:
+    """Compute cumulative arc-length at each point of a polyline.
+
+    Args:
+        points: Array of shape (N, D).
+
+    Returns:
+        Array of shape (N,) where index ``i`` is the total distance from
+        ``points[0]`` to ``points[i]``.  Always starts at 0.
+    """
     if len(points) < 2:
         return np.zeros(max(1, len(points)))
     diffs = np.linalg.norm(np.diff(points, axis=0), axis=1)
@@ -67,7 +101,20 @@ def _cumulative_distances(points: np.ndarray) -> np.ndarray:
 
 
 def resample_by_arc_length(points: np.ndarray, num_points: int) -> np.ndarray:
-    """Vectorized resample: np.searchsorted + vectorized lerp."""
+    """Resample a polyline to ``num_points`` uniformly spaced by arc length.
+
+    Uses ``np.searchsorted`` for O(N + M) segment lookup and a vectorised lerp;
+    significantly faster than a Python loop when ``num_points`` is large.
+
+    Args:
+        points: Array of shape (N, D).
+        num_points: Desired number of output points.
+
+    Returns:
+        Array of shape (num_points, D), or a copy of ``points`` when the
+        polyline is degenerate (fewer than 2 input points, zero total length,
+        or ``num_points < 2``).
+    """
     points = np.asarray(points, dtype=np.float64)
     n = len(points)
     if n < 2 or num_points < 2:
@@ -89,6 +136,19 @@ def resample_by_arc_length(points: np.ndarray, num_points: int) -> np.ndarray:
 
 
 def resample_by_spacing_m(points: np.ndarray, spacing_m: float) -> np.ndarray:
+    """Resample a polyline so successive points are ``spacing_m`` metres apart.
+
+    Computes the number of output points as ``round(total_length / spacing_m)``
+    and delegates to :func:`resample_by_arc_length`.
+
+    Args:
+        points: Array of shape (N, D).
+        spacing_m: Desired arc-length step between output points, in metres.
+
+    Returns:
+        Resampled array with approximately ``total_length / spacing_m`` points,
+        or a copy of ``points`` when the polyline is degenerate.
+    """
     points = np.asarray(points, dtype=np.float64)
     if len(points) < 2 or spacing_m <= 0:
         return points.copy()
@@ -136,6 +196,19 @@ def _pair_cross_section(left_pts: np.ndarray, right_pts: np.ndarray) -> np.ndarr
 
 
 def smooth_centerline(points: np.ndarray, sigma: float = 2.0) -> np.ndarray:
+    """Smooth a centerline with a per-axis Gaussian filter.
+
+    Sigma is clamped to ``[0.5, len(points) / 4]`` so the kernel never spans
+    more than a quarter of the polyline, which would otherwise cause significant
+    endpoint shrinkage on short tracks.
+
+    Args:
+        points: Array of shape (N, D).
+        sigma: Gaussian standard deviation in samples (before clamping).
+
+    Returns:
+        Smoothed array of shape (N, D), or a copy when ``len(points) < 3``.
+    """
     points = np.asarray(points, dtype=np.float64)
     if len(points) < 3:
         return points.copy()
@@ -149,6 +222,23 @@ def smooth_centerline(points: np.ndarray, sigma: float = 2.0) -> np.ndarray:
 
 
 def load_track(path: str) -> np.ndarray:
+    """Load a track boundary from a .pkl or .csv file.
+
+    Accepts (N, 3) pickle arrays or (N, 2) CSV files (x, z columns; a zero y
+    column is inserted via :func:`_ensure_3d`).  Resamples to
+    ``MAX_TRACK_POINTS_LOAD`` when the file contains more points than that cap.
+
+    Args:
+        path: Absolute or relative path to a ``.pkl`` or ``.csv`` file.
+
+    Returns:
+        Array of shape (M, 3) where M ≤ MAX_TRACK_POINTS_LOAD.
+
+    Raises:
+        FileNotFoundError: If ``path`` does not exist.
+        ValueError: If the file extension is not ``.pkl`` or ``.csv``, or the
+            array shape is not (N, 2) or (N, 3).
+    """
     path = os.path.abspath(path)
     if not os.path.isfile(path):
         raise FileNotFoundError(path)
@@ -176,6 +266,33 @@ def build_centerline(
     smooth: bool = False,
     align: str = "cross-section",
 ) -> np.ndarray:
+    """Compute a centerline from left and right track boundaries.
+
+    The centerline is the midpoint between paired left and right samples.
+    Pairing strategy is controlled by ``align``:
+
+    - ``"cross-section"`` (default): each left point is paired with the nearest
+      right point within the same arc-length window, preventing diagonal cuts
+      near the start/finish line where inner and outer barriers are close.
+    - ``"index"``: both boundaries are resampled to ``target_points`` and
+      paired by array index.
+
+    Args:
+        left: Left boundary, shape (N, 2) or (N, 3).
+        right: Right boundary, shape (M, 2) or (M, 3).
+        target_points: Number of points for initial midpoint computation.
+            Defaults to ``min(len(left), len(right))``.
+        spacing_m: If given, resample the centerline to this arc-length step
+            (metres) after computing midpoints.
+        smooth: Apply :func:`smooth_centerline` before spacing resample.
+        align: Pairing strategy; ``"cross-section"`` or ``"index"``.
+
+    Returns:
+        Array of shape (K, 3) representing the final centerline.
+
+    Raises:
+        ValueError: If either boundary has fewer than 2 points.
+    """
     left = _ensure_3d(np.asarray(left, dtype=np.float64))
     right = _ensure_3d(np.asarray(right, dtype=np.float64))
     n_l, n_r = len(left), len(right)
@@ -209,6 +326,20 @@ def _save_debug_plot(
     align: str,
     center_raw: np.ndarray | None = None,
 ) -> None:
+    """Save a 3-D and a top-down 2-D debug plot of the track and centerline.
+
+    Writes two files: ``path`` (3-D view, Y-up) and ``<stem>_topdown.<ext>``
+    (X-Z top-down view).  Points are downsampled to at most 20 000 for
+    plotting performance.  Silently skips if matplotlib is not installed.
+
+    Args:
+        left: Left boundary array, shape (N, 3).
+        right: Right boundary array, shape (M, 3).
+        center: Final centerline array, shape (K, 3).
+        path: Output file path for the 3-D plot (e.g. ``"debug.png"``).
+        align: Alignment strategy label shown in the plot title.
+        center_raw: Optional unsmoothed centerline to overlay for comparison.
+    """
     try:
         import matplotlib
 
@@ -332,6 +463,11 @@ class CenterlineArgs:
 
 
 def main() -> int:
+    """CLI entry point: build and save a centerline reward trajectory pkl.
+
+    Returns:
+        0 on success, 1 on any error.
+    """
     t_total = time.perf_counter()
     args = tyro.cli(CenterlineArgs)
 

@@ -28,11 +28,19 @@ LOGS_DIR = EXPERIMENTS_DIR / "logs"
 
 
 def _log(msg: str) -> None:
+    """Emit a timestamped orchestrator message to stdout, flushed immediately."""
     ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     print(f"[orchestrator {ts}] {msg}", flush=True)
 
 
 def _load_config() -> dict[str, Any]:
+    """Load orchestrator configuration from the YAML file.
+
+    Returns:
+        Parsed config dict, or an empty dict when the file is missing or
+        cannot be parsed as a mapping (callers fall back to hard-coded
+        defaults for every key).
+    """
     try:
         with ORCHESTRATOR_CONFIG_PATH.open(encoding="utf-8") as f:
             cfg = yaml.safe_load(f)
@@ -46,6 +54,15 @@ def _load_config() -> dict[str, Any]:
 
 
 def _get_next_planned_experiment() -> dict[str, Any] | None:
+    """Return the first registry entry with status ``'planned'``, or ``None``.
+
+    Iterates the registry in insertion order, so experiments are picked up in
+    the order they were registered.
+
+    Returns:
+        The first planned experiment dict, or ``None`` if no planned
+        experiments exist or the registry cannot be read.
+    """
     try:
         for e in _read_registry():
             if e.get("status") == "planned":
@@ -189,7 +206,15 @@ def _capture_git_hash() -> dict[str, str | bool]:
 
 
 def _get_base_branch() -> str:
-    """Return the current branch name (used to restore after experiment)."""
+    """Return the current git branch name, falling back to ``'main'`` on error.
+
+    Called before creating an experiment branch so the orchestrator knows
+    which branch to restore once the experiment finishes or is rolled back.
+
+    Returns:
+        Abbreviated HEAD ref name, or ``'main'`` if git is unavailable or the
+        working tree is in a detached HEAD state with no branch name.
+    """
     try:
         branch = subprocess.check_output(
             ["git", "rev-parse", "--abbrev-ref", "HEAD"],

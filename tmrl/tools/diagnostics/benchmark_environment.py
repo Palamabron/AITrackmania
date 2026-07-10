@@ -1,9 +1,7 @@
-# standard library imports
 import random
 import time
 from typing import Any, cast
 
-# third-party imports
 import gymnasium
 from gymnasium import spaces
 from loguru import logger
@@ -17,6 +15,17 @@ ACT_COMPUTE_MAX = 0.05
 
 
 def benchmark():
+    """Run a timing benchmark of the TM2020 boundary-LIDAR environment.
+
+    Creates a real-time gym environment using TM2020InterfaceBoundary in benchmark
+    mode and steps through NB_STEPS episodes, sampling random actions with simulated
+    compute-time delays. Logs per-step reward, total elapsed time, and the
+    environment's built-in benchmark statistics when done.
+
+    ``env.step(None)`` is used instead of passing the sampled action because the
+    benchmark environment ignores the action and only measures timing; the sample
+    call and sleep together reproduce realistic policy compute latency.
+    """
     action_space = spaces.Box(low=-1.0, high=1.0, shape=(3,))
 
     env_config = DEFAULT_CONFIG_DICT.copy()
@@ -35,7 +44,6 @@ def benchmark():
     for _idx in range(NB_STEPS - 1):
         _ = action_space.sample()  # simulate action compute time
         time.sleep(random.uniform(ACT_COMPUTE_MIN, ACT_COMPUTE_MAX))
-        # o, r, d, t, i = env.step(act)
         step_out = cast(tuple[Any, ...], env.step(None))
         _o, r, d, t, _i, _s_r = step_out
         if d or t:
