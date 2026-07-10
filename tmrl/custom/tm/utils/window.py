@@ -2,14 +2,15 @@
 
 Provides ``WindowInterface`` on both Windows (via win32gui/win32ui BitBlt) and
 Linux (via mss + xdotool). The class is defined conditionally on
-``platform.system()``. On platforms other than Windows or Linux no
-``WindowInterface`` is defined.
+``platform.system()``. On platforms other than Windows or Linux (e.g. macOS),
+``WindowInterface`` is still defined so that importing it always succeeds, but
+every method raises ``NotImplementedError`` since screen capture is not
+implemented there — TM2020 does not run on that platform anyway.
 
 Note:
-    Callers that import ``WindowInterface`` by name will receive an
-    ``ImportError`` on non-Windows platforms if the Linux branch also fails
-    (e.g. xdotool / mss not installed). This is a known limitation tracked
-    separately from this module.
+    On Linux, ``WindowInterface`` can still fail *at use time* (not import
+    time) if ``xdotool`` / ``mss`` are not installed. This is a known
+    limitation tracked separately from this module.
 """
 
 import platform
@@ -366,6 +367,29 @@ elif platform.system() == "Linux":
 
             # except GeometrySearchException as e:
             #     logger.error(f"failed to retrieve window geometry: {str(e)}")
+
+
+else:
+
+    class WindowInterface:  # type: ignore[no-redef]
+        """Unsupported-platform stand-in for ``WindowInterface``.
+
+        Windows and Linux are the only platforms with a real implementation
+        (TM2020 itself does not run elsewhere). This stub exists purely so
+        that ``from tmrl.custom.tm.utils.window import WindowInterface``
+        always succeeds; instantiating it raises ``NotImplementedError``.
+        """
+
+        def __init__(self, *_args, **_kwargs):
+            """Raise immediately: window capture is not supported on this platform.
+
+            Raises:
+                NotImplementedError: Always.
+            """
+            raise NotImplementedError(
+                f"WindowInterface is not implemented on {platform.system()!r}; "
+                "it is only available on Windows and Linux."
+            )
 
 
 def profile_screenshot():

@@ -114,11 +114,12 @@ def test_one_step_transition_layout():
     memory = _make_memory(n_step_return=1)
     _fill(memory, _two_episode_entries())
 
-    prev_obs, act, rew, new_obs, terminated, truncated, info = memory.get_transition(1)
+    prev_obs, _act, rew, new_obs, terminated, truncated, info = memory.get_transition(1)
     assert float(prev_obs[0][0]) == 1.0
     assert float(new_obs[0][0]) == 2.0
     assert float(rew) == 2.0
-    assert not terminated and not truncated
+    assert not terminated
+    assert not truncated
     assert info["n_step_effective"] == 1
 
 
@@ -148,7 +149,8 @@ def test_nstep_full_window_mid_episode():
     # R = r1 + 0.5*r2 + 0.25*r3 = 1 + 1 + 0.75
     assert float(rew) == pytest.approx(1.0 + 0.5 * 2.0 + 0.25 * 3.0)
     assert float(new_obs[0][0]) == 3.0
-    assert not terminated and not truncated
+    assert not terminated
+    assert not truncated
     assert info["n_step_effective"] == 3
 
 
@@ -162,7 +164,8 @@ def test_nstep_stops_at_termination():
     _prev, _act, rew, new_obs, terminated, truncated, info = memory.get_transition(2)
     assert float(rew) == pytest.approx(3.0 + 0.5 * 4.0)
     assert float(new_obs[0][0]) == 4.0
-    assert bool(terminated) and not bool(truncated)
+    assert bool(terminated)
+    assert not bool(truncated)
     assert info["n_step_effective"] == 2
 
 
@@ -173,7 +176,8 @@ def test_nstep_stops_at_truncation():
 
     _prev, _act, rew, _new_obs, terminated, truncated, info = memory.get_transition(2)
     assert float(rew) == pytest.approx(3.0 + 0.5 * 4.0)
-    assert not bool(terminated) and bool(truncated)
+    assert not bool(terminated)
+    assert bool(truncated)
     assert info["n_step_effective"] == 2
 
 
@@ -402,11 +406,10 @@ def test_mixed_demo_and_worker_actions_are_homogeneous_and_collate():
     _fill(memory, worker_entries)
     _fill(memory, demo_entries)
 
-    from tmrl.custom.memories.enums import GenericField as GF
-
-    for a in memory.data[GF.ACTIONS]:
+    for a in memory.data[GenericField.ACTIONS]:
         arr = np.asarray(a)
-        assert arr.ndim == 0 and np.issubdtype(arr.dtype, np.integer)
+        assert arr.ndim == 0
+        assert np.issubdtype(arr.dtype, np.integer)
 
     np.random.seed(6)
     batch = memory.sample()  # would raise ValueError in collate_torch before the fix
@@ -425,9 +428,7 @@ def test_demo_action_quantization_roundtrip():
     _fill(memory, [_continuous_entry(c) for c in controls])
 
     _, table = build_brake_tap_action_table(n_steer=13)
-    from tmrl.custom.memories.enums import GenericField as GF
-
-    for stored, original in zip(memory.data[GF.ACTIONS], controls, strict=True):
+    for stored, original in zip(memory.data[GenericField.ACTIONS], controls, strict=True):
         recovered = discrete_index_to_control(int(stored), table)
         assert recovered[0] == pytest.approx(original[0])  # gas
         assert recovered[1] == pytest.approx(original[1])  # brake (never tap sentinel)
@@ -455,27 +456,25 @@ def test_continuous_pipeline_actions_untouched():
     """With discrete_n_steer_bins=0 (SAC/TQC), (3,) actions stay continuous."""
     memory = GenericTorchMemory(memory_size=100, batch_size=2, device="cpu")
     _fill(memory, [_continuous_entry([0.5, 0.0, 0.2], is_demo=False) for _ in range(4)])
-    from tmrl.custom.memories.enums import GenericField as GF
-
-    for a in memory.data[GF.ACTIONS]:
+    for a in memory.data[GenericField.ACTIONS]:
         assert np.asarray(a).shape == (3,)
 
 
 def test_legacy_checkpoint_actions_healed_on_read():
     """Buffers pickled before append-time quantization may hold (3,) demo rows;
     get_transition must heal them in place instead of crashing collate."""
-    from tmrl.custom.memories.enums import GenericField as GF
-
     memory = _discrete_memory(batch_size=4)
     _fill(memory, [_entry(1.0, obs_val=float(i)) for i in range(6)])
     # Simulate a legacy checkpoint: overwrite stored actions with raw continuous rows.
-    memory.data[GF.ACTIONS][2] = np.array([1.0, 0.0, 0.0], dtype=np.float32)
-    memory.data[GF.ACTIONS][3] = np.array([0.0, 1.0, -1.0], dtype=np.float32)
+    memory.data[GenericField.ACTIONS][2] = np.array([1.0, 0.0, 0.0], dtype=np.float32)
+    memory.data[GenericField.ACTIONS][3] = np.array([0.0, 1.0, -1.0], dtype=np.float32)
 
     for item in (1, 2):
         _prev, act, *_ = memory.get_transition(item)
         arr = np.asarray(act)
-        assert arr.ndim == 0 and np.issubdtype(arr.dtype, np.integer)
+        assert arr.ndim == 0
+        assert np.issubdtype(arr.dtype, np.integer)
 
-    stored = np.asarray(memory.data[GF.ACTIONS][2])
-    assert stored.ndim == 0 and np.issubdtype(stored.dtype, np.integer)
+    stored = np.asarray(memory.data[GenericField.ACTIONS][2])
+    assert stored.ndim == 0
+    assert np.issubdtype(stored.dtype, np.integer)

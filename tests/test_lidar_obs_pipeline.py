@@ -40,7 +40,8 @@ def test_discrete_action_tail_scaled_to_unit_range():
     out = obs_preprocessor_lidar_act_in_obs(_raw_boundary_obs(act_tail=tail))
     assert len(out) == 11
     lo, hi = np.asarray(out[9]), np.asarray(out[10])
-    assert lo.dtype == np.float32 and hi.dtype == np.float32
+    assert lo.dtype == np.float32
+    assert hi.dtype == np.float32
     assert float(lo) == pytest.approx(0.0)
     assert float(hi) == pytest.approx(77.0 * discrete_action_index_scale())
     assert 0.0 <= float(hi) <= 1.0

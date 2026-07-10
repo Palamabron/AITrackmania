@@ -120,6 +120,16 @@ torchvision = [
 # Force from PyPI; cu124 index only has cp314 wheels for markupsafe
 markupsafe = { index = "pypi" }
 
+# vgamepad ships only an sdist whose setup.py hard-asserts
+# `sys.platform in ("win32", "linux")`, so building it to read metadata fails
+# on any other platform (e.g. macOS) even though the sys_platform marker
+# already excludes it there. Statically declaring its metadata lets uv skip
+# the build entirely during lock/sync on unsupported platforms.
+[[tool.uv.dependency-metadata]]
+name = "vgamepad"
+version = "0.1.0"
+requires-dist = ["libevdev; sys_platform == 'linux' or sys_platform == 'win32'"]
+
 [[tool.uv.index]]
 name = "pypi"
 url = "https://pypi.org/simple/"

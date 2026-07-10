@@ -259,8 +259,8 @@ def test_bc_lambda_zero_kills_anneal_schedule():
 def test_iqn_warns_when_memory_only_provides_one_step_metadata():
     """n_steps>1 with memory-side n_step_return=1 must log a one-time warning."""
     agent = _make_agent(n_steps=3)
-    agent._warned_missing_n_step_metadata = False
+    agent._warned_n_step_all_one = False
     memory = _filled_memory(n_step_return=1, batch_size=8)
     np.random.seed(21)
     agent.train(memory.sample(), 0, 0, len(memory))
-    assert agent._warned_missing_n_step_metadata
+    assert agent._warned_n_step_all_one
