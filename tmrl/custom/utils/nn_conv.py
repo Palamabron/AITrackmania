@@ -32,6 +32,17 @@ class RlkitLinear(torch.nn.Linear):
 
 
 class SacLinear(torch.nn.Linear):
+    """Linear layer with SAC-style weight initialization.
+
+    Weights are uniformly initialized to [-0.06, 0.06] (= 1 / sqrt(256)),
+    matching a hidden size of 256 from the original SAC paper implementation.
+    Bias is initialized to 0.1.
+
+    Args:
+        in_features: Size of each input sample.
+        out_features: Size of each output sample.
+    """
+
     def __init__(self, in_features, out_features):
         super().__init__(in_features, out_features)
         with torch.no_grad():
@@ -40,12 +51,25 @@ class SacLinear(torch.nn.Linear):
 
 
 class BasicReLU(torch.nn.Linear):
+    """Linear layer with a ReLU activation fused into the forward pass."""
+
     def forward(self, x):
         x = super().forward(x)
         return torch.relu(x)
 
 
 class AffineReLU(BasicReLU):
+    """Linear + ReLU with configurable weight-bound and bias initialization.
+
+    Args:
+        in_features: Size of each input sample.
+        out_features: Size of each output sample.
+        init_weight_bound: Scales the uniform weight initialization range to
+            ``[-init_weight_bound / sqrt(in_features),
+            init_weight_bound / sqrt(in_features)]``.
+        init_bias: Constant initial value for all bias entries.
+    """
+
     def __init__(
         self, in_features, out_features, init_weight_bound: float = 1.0, init_bias: float = 0.0
     ):
@@ -56,6 +80,17 @@ class AffineReLU(BasicReLU):
 
 
 class NormalizedReLU(torch.nn.Sequential):
+    """Linear layer followed by LayerNorm and ReLU.
+
+    Args:
+        in_features: Size of each input sample.
+        out_features: Size of each output sample.
+        prenorm_bias: Whether the linear layer includes a bias term before
+            LayerNorm. That bias is technically redundant with LayerNorm's
+            own learnable offset, but the default ``True`` preserves
+            checkpoint compatibility with existing saved models.
+    """
+
     def __init__(self, in_features, out_features, prenorm_bias=True):
         super().__init__(
             torch.nn.Linear(in_features, out_features, bias=prenorm_bias),
@@ -65,6 +100,13 @@ class NormalizedReLU(torch.nn.Sequential):
 
 
 class KaimingReLU(torch.nn.Linear):
+    """Linear layer with Kaiming uniform weight initialization and zero bias, followed by ReLU.
+
+    Args:
+        in_features: Size of each input sample.
+        out_features: Size of each output sample.
+    """
+
     def __init__(self, in_features, out_features):
         super().__init__(in_features, out_features)
         with torch.no_grad():
@@ -197,6 +239,14 @@ class GSDEModule(nn.Module):
         self.reset_noise()
 
     def get_std(self) -> torch.Tensor:
+        """Compute per-element standard deviations from the clamped log-std parameter.
+
+        Returns:
+            Standard deviation tensor of shape (latent_dim, action_dim).
+            When ``full_std=False``, the (latent_dim, 1) std is broadcast to
+            (latent_dim, action_dim) so downstream math always receives a
+            consistent shape.
+        """
         log_std = torch.clamp(self.log_std, GSDE_LOG_STD_MIN, GSDE_LOG_STD_MAX)
         std = torch.exp(log_std)
         if self.full_std:

@@ -34,7 +34,20 @@ class GradientStabilizer:
         self._call_count = 0
 
     def step(self, parameters: Iterable[nn.Parameter]) -> float:
-        """Stabilise gradients in-place and return the (pre-stabilisation) grad norm."""
+        """Stabilise gradients in-place and return the pre-stabilisation gradient norm.
+
+        Computes the total gradient L2 norm, updates the EMA, and — after the
+        warmup period — rescales all gradients so that the norm matches the EMA
+        whenever the current norm exceeds it.  The gradient *direction* is always
+        preserved; only the magnitude is adjusted.
+
+        Args:
+            parameters: Model parameters whose ``.grad`` tensors may be rescaled.
+
+        Returns:
+            Gradient norm *before* any rescaling, as a Python float.
+            Returns 0.0 if no parameter has a gradient.
+        """
         params = [p for p in parameters if p.grad is not None]
         if not params:
             return 0.0
@@ -63,4 +76,5 @@ class GradientStabilizer:
 
     @property
     def ema_norm(self) -> float:
+        """Running EMA of the gradient norm; 0.0 before the first ``step`` call."""
         return self._ema if self._ema is not None else 0.0
