@@ -242,6 +242,22 @@ class TorchActorModule(ActorModule, torch.nn.Module, ABC):
         return True
 
     def act_(self, obs, test=False):
+        """Collate observation onto device, run :meth:`act` with no grad, and clip action.
+
+        Overrides :meth:`ActorModule.act_` to:
+
+        1. Wrap the observation in a length-1 list and move it to ``self.device``.
+        2. Disable gradient computation via ``torch.no_grad()``.
+        3. Replace NaN values in the returned action with ``0.0`` and clip to ``[-1, 1]``.
+
+        Args:
+            obs: A single observation from the environment (before batching).
+            test (bool): True at test time, False during training rollouts.
+
+        Returns:
+            numpy.ndarray: The computed action, clipped to ``[-1, 1]``, or None if
+                :meth:`act` returns None.
+        """
         obs = collate_torch([obs], device=self.device)
         with torch.no_grad():
             action = self.act(obs, test=test)

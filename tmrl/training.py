@@ -27,17 +27,17 @@ class TrainingAgent(ABC):
         batch_index: int | None = None,
         iters: int | None = None,
     ):
-        """
-        Executes a training step.
+        """Execute one gradient update step.
 
         Args:
-            epoch:
-            iters:
-            batch_index:
-            batch: (prev_obs, action, reward, new_obs, terminated, truncated)
+            batch: A tuple ``(prev_obs, action, reward, new_obs, terminated, truncated[, ...])``.
+            epoch (int | None): Current training epoch index.
+            batch_index (int | None): Step index within the current round.
+            iters (int | None): Current replay buffer size (``len(memory)``).
 
         Returns:
-            dict: a dictionary containing one entry per metric you wish to log (e.g. for wandb)
+            dict: A mapping from metric name to value for logging (e.g. to wandb).
+                Return an empty dict if no metrics are available.
         """
         raise NotImplementedError
 

@@ -51,7 +51,20 @@ def _wandb_round_keys() -> tuple[str, ...]:
 
 
 def _round_stat_to_wandb_log_dict(round_series) -> dict[str, Any]:
-    """Build a sanitized dict from a round stat Series for wandb.log (mirrors networking)."""
+    """Build a sanitized dict from a round stat Series for ``wandb.log`` (mirrors networking).
+
+    Replaces invalid values (None, NaN, ±inf) with algorithm-appropriate defaults:
+    loss keys get ``float('nan')``; metric/eval keys get ``0.0``; anything else
+    becomes ``None``. Ensures all keys expected by the wandb dashboard are present.
+
+    Args:
+        round_series: A pandas Series or dict of round-level statistics as produced
+            by :func:`pandas_dict`.
+
+    Returns:
+        dict[str, Any]: A sanitized mapping from metric name to numeric value (or
+            ``float('nan')`` / ``0.0``) ready to pass to ``wandb.log``.
+    """
     log_dict = round_series.to_dict() if hasattr(round_series, "to_dict") else dict(round_series)
     if _is_iqn_algorithm():
         # IQN does not optimize actor/critic losses; avoid polluting wandb with NaNs.
@@ -90,7 +103,15 @@ def _round_stat_to_wandb_log_dict(round_series) -> dict[str, Any]:
 
 
 def _stats_dict_to_numeric(d: dict) -> dict:
-    """Convert tensor values in a stats dict to Python scalars so pandas can aggregate."""
+    """Convert tensor values in a stats dict to Python scalars so pandas can aggregate.
+
+    Args:
+        d: A stats dictionary whose values may be ``torch.Tensor`` or plain scalars.
+
+    Returns:
+        dict: A copy of ``d`` where every ``torch.Tensor`` is replaced by a Python
+            ``float`` (scalar tensors via ``.item()``; multi-element tensors via ``.mean()``).
+    """
     out = {}
     for k, v in d.items():
         if isinstance(v, torch.Tensor):
@@ -101,7 +122,18 @@ def _stats_dict_to_numeric(d: dict) -> dict:
 
 
 def _mean_stats_dicts(items: list[dict[str, Any]]) -> dict[str, float]:
-    """Fast mean aggregation without pandas DataFrame construction."""
+    """Fast mean aggregation without pandas DataFrame construction.
+
+    Computes the per-key mean across a list of stat dicts, skipping NaN and ±inf
+    values so a single bad batch does not corrupt round-level averages.
+
+    Args:
+        items: List of per-batch stat dicts produced by :func:`_stats_dict_to_numeric`.
+
+    Returns:
+        dict[str, float]: Mapping from metric name to its mean over all items that
+            contributed a finite value. Keys absent in every item are omitted.
+    """
     sums: dict[str, float] = {}
     counts: dict[str, int] = {}
     for row in items:

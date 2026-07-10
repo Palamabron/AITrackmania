@@ -358,7 +358,6 @@ class TrainingOffline:
             device=device,
         )
 
-        # Log rebuild details
         if rebuild_reason:
             logger.info(
                 " Agent rebuilt: reason={}, old_dim={}, new_dim={}, source={}",
@@ -382,14 +381,17 @@ class TrainingOffline:
         return True
 
     def update_buffer(self, interface):
-        """
-        Updates the memory buffer by appending new data.
-        Args: interface (an object with a method retrieve_buffer to get new data)
-        Actions:
-        Retrieves buffer data from the interface and appends it to the memory.
-        Updates the count of total samples.
-        Buffers whose observation dim does not match env (e.g. old format from server)
-        are discarded so they never enter memory.
+        """Retrieve new rollout samples from the server and append them to the replay buffer.
+
+        Rollout samples whose observation dimension does not match the current environment
+        (e.g. stale format from server after a config change) are aligned or discarded before
+        appending. Also handles optional player-run demo injection when
+        ``cfg.PLAYER_RUNS_ONLINE_INJECTION`` is enabled.
+
+        Args:
+            interface: Network interface object with a ``retrieve_buffer()`` method and,
+                optionally, a ``broadcast_model()`` method used when a new agent is built
+                from the incoming data.
         """
         buffer = interface.retrieve_buffer()
         if (
@@ -482,11 +484,18 @@ class TrainingOffline:
                 )
 
     def check_ratio(self, interface) -> float:
-        """
-        Checks the ratio of updates to total samples and waits for new samples if needed.
-         Args: interface (an object to retrieve buffer data)
-         Actions:
-         Ratio of updates to total samples; if over limit or -1, waits for new samples.
+        """Block until the update-to-sample ratio drops back to the configured limit.
+
+        Computes ``total_updates / total_samples``. If the ratio exceeds
+        ``max_training_steps_per_env_step``, or if fewer than ``start_training`` samples
+        have been collected, repeatedly calls :meth:`update_buffer` and sleeps until the
+        condition clears.
+
+        Args:
+            interface: Network interface passed through to :meth:`update_buffer`.
+
+        Returns:
+            float: Total wall-clock seconds spent waiting for new samples this call.
         """
         ratio = (
             self.total_updates / self.total_samples
@@ -564,7 +573,6 @@ class TrainingOffline:
                 info = batch[6]
                 if "is_weight" in info:
                     weights = info["is_weight"]
-                    # Normalize: w_i = w_i / max(batch_w)
                     max_w = torch.max(weights) + 1e-8
                     info["is_weight"] = weights / max_w
 
@@ -636,6 +644,7 @@ class TrainingOffline:
             liqn = stats_training_dict.get("loss/iqn_loss")
 
             def _is_bad(x):
+                """Return True if x is NaN or infinite; False if None or a finite number."""
                 if x is None:
                     return False
                 if isinstance(x, torch.Tensor):
@@ -797,7 +806,6 @@ class TrainingOffline:
                 pro.stop()
                 logger.info(pro.output_text(unicode=True, color=False, show_all=True))
 
-            # PyTorch profiler: log detailed GPU/CPU profiling to file every epoch
             if self.pytorch_profiling and self.agent is not None:
                 self._log_pytorch_profiler_stats()
 
@@ -946,6 +954,7 @@ class TrainingOffline:
 
     @staticmethod
     def _evt_cpu_time(evt) -> float:
+        """Extract CPU time from a profiler event, compatible across PyTorch versions."""
         for attr in ("cpu_time_total", "self_cpu_time_total"):
             val = getattr(evt, attr, None)
             if val is not None:
