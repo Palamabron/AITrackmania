@@ -52,6 +52,7 @@ class Buffer:
                 self._lock.release()
 
     def clip_to_maxlen(self):
+        """Drop the oldest samples until ``len(memory) <= maxlen``; warns if any are dropped."""
         with self._guarded():
             lenmem = len(self.memory)
             if lenmem > self.maxlen:
@@ -110,9 +111,23 @@ class Buffer:
             self.stat_train_return = new_total
 
     def __len__(self):
+        """Return the number of samples currently held in the buffer."""
         return len(self.memory)
 
     def __iadd__(self, other):
+        """Merge *other* into this buffer, appending its samples and overwriting episode stats.
+
+        Samples from *other* are appended after the current samples. If the combined
+        length exceeds ``maxlen``, the oldest samples are discarded. Episode statistics
+        (return, steps, finish time, etc.) are taken from *other*, overwriting the
+        corresponding fields on ``self``.
+
+        Args:
+            other (Buffer): Buffer whose samples and stats will be merged in.
+
+        Returns:
+            Buffer: ``self``, for use with the ``+=`` operator.
+        """
         with other._guarded():
             other_memory = list(other.memory)
         with self._guarded():

@@ -50,12 +50,19 @@ def _start_relay_windows_tcp(
     )
 
     def run_server():
+        """Run the tlspyo server inside the Twisted reactor.
+
+        Patches ``reactor.run`` to skip signal-handler installation, which is
+        required when running the reactor inside a non-main thread (Python only
+        allows signal handlers in the main thread).
+        """
         from twisted.internet import reactor
 
         _reactor = cast(Any, reactor)
         _orig_run = _reactor.run
 
         def run_without_signals(install_signal_handlers=0):
+            """Start the reactor with signal-handler installation disabled."""
             return _orig_run(installSignalHandlers=install_signal_handlers)
 
         _reactor.run = run_without_signals

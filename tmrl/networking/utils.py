@@ -18,6 +18,7 @@ def print_with_timestamp(message: str) -> None:
 
 
 def print_ip():
+    """Log the public and local IP addresses of the current machine."""
     try:
         public_ip = get("http://api.ipify.org", timeout=5).text
     except Exception:
@@ -42,9 +43,15 @@ def _parse_worker_send_chunk_size(raw: str | None) -> int:
 
 
 def log_environment_variables():
-    """
-    add certain relevant environment variables to our config
-    usage: `LOG_VARIABLES='HOME JOBID' python ...`
+    """Return selected environment variables for logging to experiment trackers.
+
+    Reads the ``LOG_VARIABLES`` environment variable for a whitespace-separated
+    list of variable names to capture. Example usage::
+
+        LOG_VARIABLES='HOME JOBID' python train.py
+
+    Returns:
+        dict[str, str]: Mapping from variable name to its value (empty string if unset).
     """
     return {k: os.environ.get(k, "") for k in os.environ.get("LOG_VARIABLES", "").strip().split()}
 
@@ -66,6 +73,7 @@ def _find_nested_reward_function(root: object, *, max_depth: int = 6) -> object 
     queue: list[tuple[object, int]] = [(root, 0)]
 
     def _enqueue(obj: object, depth: int) -> None:
+        """Add *obj* to the BFS queue if not already visited and within depth limit."""
         if depth > max_depth:
             return
         oid = id(obj)
@@ -95,7 +103,6 @@ def _find_nested_reward_function(root: object, *, max_depth: int = 6) -> object 
             if child is not None and child is not obj:
                 _enqueue(child, depth + 1)
 
-    # Warn if we traversed many objects without finding reward function
     if len(visited) > 50:
         logger.debug(
             "Reward function lookup visited {} objects before returning None. "

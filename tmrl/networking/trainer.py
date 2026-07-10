@@ -24,24 +24,31 @@ _dump_thread: "threading.Thread | None" = None
 
 
 def load_run_instance(checkpoint_path):
-    """
-    Default function used to load trainers from checkpoint path
+    """Load a training run instance from a checkpoint file.
+
     Args:
-        checkpoint_path: the path where instances of run_cls are checkpointed
+        checkpoint_path (str | Path): Path to the pickled checkpoint.
+
     Returns:
-        An instance of run_cls loaded from checkpoint_path
+        object: The deserialized training run instance.
     """
     return load(checkpoint_path)
 
 
 def dump_run_instance(run_instance, checkpoint_path):
-    """
-    Default function used to dump trainers to checkpoint path.
-    On Unix, uses fork() so the parent returns immediately. On Windows (no fork),
-    saves in a background thread so the server does not block and cause socket timeouts.
+    """Serialize a training run instance to a checkpoint file without blocking the caller.
+
+    On Unix, forks a child process so the parent returns immediately while the child
+    writes the checkpoint. On Windows (no ``os.fork``), saves in a background thread;
+    any previous dump thread is joined first (up to 300 s) before a new one starts.
+
+    Args:
+        run_instance: The training run object to checkpoint.
+        checkpoint_path (str | Path): Destination path for the pickled checkpoint.
     """
 
     def _do_dump():
+        """Serialize run_instance to checkpoint_path; log errors without re-raising."""
         try:
             dump(run_instance, checkpoint_path)
         except Exception as e:
@@ -98,6 +105,7 @@ def dump_run_instance(run_instance, checkpoint_path):
             )
 
         def _do_dump_safe():
+            """Serialize the snapshot to checkpoint_path; log errors without re-raising."""
             try:
                 dump(snapshot, checkpoint_path)
             except Exception as e:
@@ -118,11 +126,31 @@ def iterate_epochs(
     epochs_between_checkpoints=1,
     updater_fn=None,
 ):
-    """
-    Main training loop (remote)
-    The run_cls instance is saved in checkpoint_path at the end of each epoch
-    The model weights are sent to the RolloutWorker every model_checkpoint_interval epochs
-    Generator yielding episode statistics (list of pd.Series) while running and checkpointing
+    """Run the training loop epoch by epoch, checkpointing and yielding per-epoch stats.
+
+    If no checkpoint exists at ``checkpoint_path``, a new ``run_cls`` instance is
+    created and immediately saved. Otherwise the checkpoint is loaded and, if
+    ``updater_fn`` is provided, updated before training continues.
+
+    A checkpoint is written every ``epochs_between_checkpoints`` epochs. If
+    ``checkpoint_path`` ends with ``"_remove_on_exit"`` (i.e. a temp path was
+    auto-generated because none was supplied), it is deleted when the generator exits.
+
+    Args:
+        run_cls (type): Training class whose constructor creates a fresh run instance.
+        interface (TrainerInterface): Network interface for sending/receiving data.
+        checkpoint_path (str | None): Path to load/save the run instance.
+            ``None`` generates a temporary file that is deleted on completion.
+        dump_run_instance_fn (callable): Callable ``(run_instance, path) -> None``
+            used to save the checkpoint. Defaults to :func:`dump_run_instance`.
+        load_run_instance_fn (callable): Callable ``(path) -> run_instance``
+            used to restore a checkpoint. Defaults to :func:`load_run_instance`.
+        epochs_between_checkpoints (int): Save the checkpoint every this many epochs.
+        updater_fn (callable | None): Optional ``(run_instance, run_cls) -> run_instance``
+            called after loading an existing checkpoint (e.g. to migrate old state).
+
+    Yields:
+        object: Per-epoch statistics returned by ``run_instance.run_epoch()``.
     """
     checkpoint_path = checkpoint_path or tempfile.mktemp("_remove_on_exit")
 
@@ -172,10 +200,26 @@ def run_with_wandb(
     load_run_instance_fn=None,
     updater_fn=None,
 ):
-    """
-    Main training loop (remote).
+    """Run the full training loop while logging metrics to Weights & Biases.
 
-    saves config and stats to https://wandb.com
+    Initializes a W&B run with the current TMRL config and hyperparameters, then
+    drives :func:`iterate_epochs`. Per-epoch stats are logged inside
+    ``TrainingOffline.run_epoch()`` (not here) so that W&B step numbers stay
+    monotonically increasing with gradient updates.
+
+    Retries W&B initialization up to 10 times with 10 s between attempts, then
+    aborts via ``sys.exit(1)``.
+
+    Args:
+        entity (str): W&B entity (team or username).
+        project (str): W&B project name.
+        run_id (str): Human-readable run identifier (``" TRAINER"`` suffix is appended).
+        interface (TrainerInterface): Network interface used during training.
+        run_cls (type): Training class; passed to :func:`iterate_epochs`.
+        checkpoint_path (str | None): Checkpoint path; ``None`` = no persistence.
+        dump_run_instance_fn (callable | None): Override for checkpoint saving.
+        load_run_instance_fn (callable | None): Override for checkpoint loading.
+        updater_fn (callable | None): Override for checkpoint migration.
     """
     dump_run_instance_fn = dump_run_instance_fn or dump_run_instance
     load_run_instance_fn = load_run_instance_fn or load_run_instance
@@ -258,8 +302,18 @@ def run(
     load_run_instance_fn=None,
     updater_fn=None,
 ):
-    """
-    Main training loop (remote).
+    """Run the full training loop without W&B logging.
+
+    Convenience wrapper around :func:`iterate_epochs` that drives all epochs
+    to completion and discards per-epoch statistics.
+
+    Args:
+        interface (TrainerInterface): Network interface for the trainer endpoint.
+        run_cls (type): Training class; see :func:`iterate_epochs` for details.
+        checkpoint_path (str | None): Checkpoint path; ``None`` = no persistence.
+        dump_run_instance_fn (callable | None): Override for checkpoint saving.
+        load_run_instance_fn (callable | None): Override for checkpoint loading.
+        updater_fn (callable | None): Override for checkpoint migration.
     """
     dump_run_instance_fn = dump_run_instance_fn or dump_run_instance
     load_run_instance_fn = load_run_instance_fn or load_run_instance
@@ -276,10 +330,11 @@ def run(
 
 
 class TrainerInterface:
-    """
-    This is the trainer's network interface
-    This connects to the server
-    This receives samples batches and sends new weights
+    """Trainer-side network endpoint for the distributed training pipeline.
+
+    Connects to the central relay server as the ``"trainers"`` group member,
+    receives batched experience from workers, and broadcasts updated model
+    weights back to all connected workers.
     """
 
     def __init__(
@@ -366,11 +421,11 @@ class TrainerInterface:
 
 
 class Trainer:
-    """
-    Training entity.
+    """High-level training process that wraps :class:`TrainerInterface` and the training loop.
 
-    The `Trainer` object is where RL training happens.
-    Typically, it can be located on a HPC cluster.
+    Connects to the relay server, pulls experience from workers, trains the agent,
+    and broadcasts updated weights. Typically runs on an HPC cluster or a machine
+    with GPU access separate from the game/worker machines.
     """
 
     def __init__(
@@ -429,8 +484,9 @@ class Trainer:
         )
 
     def run(self):
-        """
-        Runs training.
+        """Run the training loop to completion (no W&B logging).
+
+        Blocks until all configured epochs are complete.
         """
         run(
             interface=self.interface,

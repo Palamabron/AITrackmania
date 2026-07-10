@@ -214,7 +214,6 @@ class RolloutWorker:
         In Real-Time RL, act is appended to a buffer that is part of new_obs (real-time delays).
 
         Args:
-            reward_function:
             obs (nested structure): previous observation
             test (bool): passed to the `act()` method of the `ActorModule`
             collect_samples (bool): if True, samples are buffered and sent to the `Server`
@@ -541,11 +540,12 @@ class RolloutWorker:
         For traditional (non-real-time) envs that can be stepped fast.
         For rtgym with wait_on_done, set end_episodes to True.
 
-        Note: Does not collect test episodes; use run_episode(train=False) periodically.
+        Note: Test episode collection requires ``end_episodes=True``; set
+            ``test_episode_interval=0`` to disable it.
 
         Args:
-            test_episode_interval (int): test every N train episodes; 0 to disable.
-                Requires end_episodes.
+            test_episode_interval (int): run deterministic test episodes every N training
+                episodes; 0 to disable. Requires ``end_episodes=True``.
             nb_steps (int): total steps to collect (after initial_steps).
             initial_steps (int): steps before waiting for first model update.
             max_steps_per_update (float): max steps per model from Server (can be non-integer).
@@ -680,7 +680,7 @@ class RolloutWorker:
 
         Args:
             nb_steps (int): number of steps to perform to compute the benchmark
-            test (int): whether the actor is called in test or train mode
+            test (bool): whether the actor is called in test or train mode
             verbose (bool): whether to log INFO messages
         """
         if nb_steps == np.inf or nb_steps < 0:
@@ -699,8 +699,21 @@ class RolloutWorker:
         return res
 
     def send_and_clear_buffer(self):
-        """
-        Sends the buffered samples to the `Server`.
+        """Snapshot the local buffer, clear it, then send the payload to the Server.
+
+        The buffer is snapshotted and cleared atomically under the buffer lock before
+        any network I/O, to avoid a race where the serializer sees a cleared Buffer and
+        the trainer receives 0 samples.
+
+        If the payload exceeds ``_worker_send_chunk_size`` samples, it is split into
+        multiple ``produce`` calls. Episode-level statistics (return, steps, finish
+        time, etc.) are attached only to the last chunk so they are not double-counted
+        by the trainer.
+
+        Empty-memory payloads (e.g. containing only deterministic-test stats) are still
+        sent so that metric state propagates to the trainer.
+
+        No-op if the worker is in standalone mode (no endpoint).
         """
         if self.__endpoint is None:
             return
