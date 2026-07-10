@@ -38,6 +38,11 @@ def build_discrete_to_continuous(
     Control is [forward (gas), backward (brake), steer] in [0,1], [0,1], [-1,1] respectively.
     Action index = steer_idx * (n_gas * n_brake) + gas_idx * n_brake + brake_idx.
 
+    Args:
+        n_steer: Number of steering bins. Steers span [-1.0, 1.0] linearly.
+        n_gas: Number of gas bins. Gas spans [0.0, 1.0]; if n_gas=1, fixed at 1.0.
+        n_brake: Number of brake bins. Brake spans [0.0, 1.0]; if n_brake=1, fixed at 0.0.
+
     Returns:
         n_actions: total number of discrete actions.
         table: list of length n_actions; table[i] is np.array([gas, brake, steer]).
@@ -69,6 +74,10 @@ def build_brake_tap_action_table(
 
     The sentinel is detected by send_control to fire a timed pulse.
 
+    Args:
+        n_steer: Number of steering bins (default 13). Steers span [-1.0, 1.0] linearly.
+        n_gas: Number of gas bins (default 2). Gas is 0.0 (gi=0) or 1.0 (gi=1).
+
     Returns:
         n_actions: total discrete actions (default 78).
         table: list[np.array([gas, brake, steer])].
@@ -87,7 +96,16 @@ def build_brake_tap_action_table(
 
 
 def is_brake_tap(control: np.ndarray) -> bool:
-    """Return True if the control vector encodes a 0.01 s brake tap."""
+    """Return True if the control vector encodes a 0.01 s brake tap.
+
+    Args:
+        control: np.array([gas, brake, steer]) as produced by
+            ``build_brake_tap_action_table``.  The brake element is checked
+            against BRAKE_TAP_SENTINEL (-1.0).
+
+    Returns:
+        True if the brake element equals BRAKE_TAP_SENTINEL.
+    """
     return float(control[1]) == BRAKE_TAP_SENTINEL
 
 
@@ -95,10 +113,17 @@ def discrete_index_to_control(
     action_index: int,
     table: list[np.ndarray],
 ) -> np.ndarray:
-    """
-    Map a single discrete action index to continuous control [forward, backward, steer].
+    """Map a single discrete action index to continuous control [forward, backward, steer].
 
     Same format as expected by send_control / control_gamepad.
+
+    Args:
+        action_index: Integer index into ``table``, in [0, len(table)).
+        table: Action table built by ``build_discrete_to_continuous`` or
+            ``build_brake_tap_action_table``.
+
+    Returns:
+        np.array([gas, brake, steer], dtype=float32) — a copy, not a view.
     """
     return table[action_index].copy()
 
@@ -107,7 +132,18 @@ def discrete_indices_to_control_batch(
     action_indices: np.ndarray,
     table: list[np.ndarray],
 ) -> np.ndarray:
-    """Map a batch of discrete indices to (batch, 3) continuous controls."""
+    """Map a batch of discrete indices to a (batch, 3) continuous control array.
+
+    Args:
+        action_indices: 1-D integer array of shape (batch,) with values in
+            [0, len(table)).
+        table: Action table built by ``build_discrete_to_continuous`` or
+            ``build_brake_tap_action_table``.
+
+    Returns:
+        np.ndarray of shape (batch, 3) and dtype float32, each row being
+        [gas, brake, steer].
+    """
     return np.array([table[int(i)] for i in action_indices], dtype=np.float32)
 
 
@@ -121,6 +157,18 @@ def continuous_control_to_discrete_index(
     Used when replay contains continuous actions (e.g. player runs) but the
     agent expects discrete indices (e.g. IQN). Brake tap sentinel is treated
     as far from any continuous value so we match to off or full brake only.
+
+    Args:
+        control: 1-D array-like [gas, brake, steer] with gas/brake in [0, 1]
+            and steer in [-1, 1].
+        table: Action table built by ``build_discrete_to_continuous`` or
+            ``build_brake_tap_action_table``.
+
+    Returns:
+        Integer index of the nearest table entry under squared Euclidean
+        distance, with BRAKE_TAP_SENTINEL entries penalised by
+        BRAKE_TAP_MATCH_PENALTY so they are never selected from continuous
+        inputs.
     """
     c = np.asarray(control, dtype=np.float32).flat
     gas, brake, steer = float(c[0]), float(c[1]), float(c[2])
@@ -142,7 +190,21 @@ def continuous_control_to_discrete_indices_batch(
     controls: np.ndarray,
     table: list[np.ndarray],
 ) -> np.ndarray:
-    """Map (batch, 3) continuous controls to (batch,) discrete indices."""
+    """Map a (batch, 3) continuous control array to (batch,) discrete indices.
+
+    Applies ``continuous_control_to_discrete_index`` row-wise.  A 1-D input is
+    treated as a single control vector and returns a 0-D array.
+
+    Args:
+        controls: np.ndarray of shape (batch, 3) or (3,) with dtype float32.
+            Each row is [gas, brake, steer].
+        table: Action table built by ``build_discrete_to_continuous`` or
+            ``build_brake_tap_action_table``.
+
+    Returns:
+        np.ndarray of shape (batch,) or scalar with dtype int64 containing
+        the nearest discrete action index for each control vector.
+    """
     controls = np.asarray(controls, dtype=np.float32)
     if controls.ndim == 1:
         return np.array(continuous_control_to_discrete_index(controls, table), dtype=np.int64)

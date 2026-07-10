@@ -1,12 +1,10 @@
 # http://www.flint.jp/misc/?q=dik&lang=en  key indicator
 
-# standard library imports
 import platform
 import time
 from typing import Any
 
 if platform.system() == "Windows":
-    # standard library imports
     import ctypes
 
     from tmrl.custom.tm.utils.control.mouse import (
@@ -16,8 +14,6 @@ if platform.system() == "Windows":
     )
 
     SendInput = ctypes.windll.user32.SendInput  # type: ignore[attr-defined]
-
-    # constants:
 
     W = 0x11
     A = 0x1E
@@ -31,6 +27,8 @@ if platform.system() == "Windows":
     PUL = ctypes.POINTER(ctypes.c_ulong)
 
     class KeyBdInput(ctypes.Structure):
+        """ctypes mirror of the Win32 KEYBDINPUT structure used with SendInput."""
+
         _fields_ = [
             ("wVk", ctypes.c_ushort),
             ("wScan", ctypes.c_ushort),
@@ -40,6 +38,8 @@ if platform.system() == "Windows":
         ]
 
     class HardwareInput(ctypes.Structure):
+        """ctypes mirror of the Win32 HARDWAREINPUT structure used with SendInput."""
+
         _fields_ = [
             ("uMsg", ctypes.c_ulong),
             ("wParamL", ctypes.c_short),
@@ -47,6 +47,8 @@ if platform.system() == "Windows":
         ]
 
     class MouseInput(ctypes.Structure):
+        """ctypes mirror of the Win32 MOUSEINPUT structure used with SendInput."""
+
         _fields_ = [
             ("dx", ctypes.c_long),
             ("dy", ctypes.c_long),
@@ -57,19 +59,23 @@ if platform.system() == "Windows":
         ]
 
     class InputI(ctypes.Union):
+        """ctypes mirror of the Win32 INPUT union (keyboard, mouse, or hardware event)."""
+
         _fields_ = [("ki", KeyBdInput), ("mi", MouseInput), ("hi", HardwareInput)]  # noqa: RUF012
 
     class Input(ctypes.Structure):
+        """ctypes mirror of the Win32 INPUT structure passed to SendInput."""
+
         _fields_ = [("type", ctypes.c_ulong), ("ii", InputI)]
 
-    # Key Functions
-
     def press_key(hex_key_code):
-        """
-        Simulates pressing a key on the keyboard.
-        Actions:
-        Creates a keyboard input event using the SendInput function from user32.dll.
-        Sends a key press event using the given key code.
+        """Send a key-down event via the Win32 SendInput API.
+
+        Uses DirectInput scan codes (dwFlags = KEYEVENTF_SCANCODE = 0x0008).
+
+        Args:
+            hex_key_code: DirectInput scan code for the target key
+                (e.g. 0x11 for W, 0x1E for A, 0xD3 for Delete).
         """
         extra = ctypes.c_ulong(0)
         ii_ = InputI()
@@ -78,11 +84,14 @@ if platform.system() == "Windows":
         ctypes.windll.user32.SendInput(1, ctypes.pointer(x), ctypes.sizeof(x))  # type: ignore[attr-defined]
 
     def release_key(hex_key_code):
-        """
-        Simulates releasing a key on the keyboard.
-        Actions:
-        Creates a keyboard input event using the SendInput function from user32.dll.
-        Sends a key release event using the given key code.
+        """Send a key-up event via the Win32 SendInput API.
+
+        Combines KEYEVENTF_SCANCODE (0x0008) with KEYEVENTF_KEYUP (0x0002) in
+        dwFlags.
+
+        Args:
+            hex_key_code: DirectInput scan code for the target key
+                (e.g. 0x11 for W, 0x1E for A, 0xD3 for Delete).
         """
         extra = ctypes.c_ulong(0)
         ii_ = InputI()
@@ -90,12 +99,17 @@ if platform.system() == "Windows":
         x = Input(ctypes.c_ulong(1), ii_)
         ctypes.windll.user32.SendInput(1, ctypes.pointer(x), ctypes.sizeof(x))  # type: ignore[attr-defined]
 
-    def apply_control(action, window_id=None):  # move_fast
-        """
-        Applies control actions based on specific key presses for movement.
-        Actions:
-        Determines which keys (W, A, S, D) to press or release based on the action string.
-        Simulates key presses/releases for forward (W), backward (S), left (A), right (D).
+    def apply_control(action, window_id=None):
+        """Map an action string to WASD key press/release events.
+
+        Each letter present in the action string activates its corresponding
+        key; absent letters trigger a release.  Mapping: "f" → W (forward),
+        "b" → S (backward), "l" → A (left), "r" → D (right).
+
+        Args:
+            action: String containing zero or more of "f", "b", "l", "r".
+            window_id: Unused on Windows; accepted for API compatibility with
+                the Linux implementation.
         """
         if "f" in action:
             press_key(W)
@@ -115,11 +129,7 @@ if platform.system() == "Windows":
             release_key(D)
 
     def keyres():
-        """
-        Triggers a key press and release for the DEL key.
-        Actions:
-        Simulates a press and release of the DEL key.
-        """
+        """Tap the Delete key (scan code 0xD3) to trigger an in-game respawn."""
         press_key(DEL)
         release_key(DEL)
 
@@ -128,7 +138,13 @@ if platform.system() == "Windows":
         return bool(ctypes.windll.user32.GetAsyncKeyState(0xD3) & 0x8000)  # type: ignore[attr-defined]
 
     def keysavereplay():  # TODO: debug - verify replay save flow works across TM2020 versions
-        """Saves a replay with key sequences and mouse actions."""
+        """Save the current replay via keyboard and mouse actions.
+
+        Presses R to open the replay menu, waits 1 s for the UI to appear,
+        then uses mouse helpers to click into the name field, types the current
+        nanosecond timestamp as the replay name, and confirms the save.  Each
+        UI step includes a 1 s delay to allow animations to complete.
+        """
         import keyboard
 
         press_key(R)
@@ -158,6 +174,16 @@ elif platform.system() == "Linux":
     process = None
 
     def execute_command(c):
+        """Write a shell command to the persistent bash subprocess.
+
+        Reuses the global subprocess across calls to avoid per-key process
+        spawn overhead.  If the process has exited it is transparently recreated
+        before the command is sent.
+
+        Args:
+            c: Shell command string to execute (must be newline-terminated so
+                bash processes it immediately).
+        """
         global process
         if process is None or process.poll() is not None:
             logger.debug("(re-)create process")
@@ -167,14 +193,34 @@ elif platform.system() == "Linux":
         process.stdin.flush()
 
     def press_key(key):
+        """Send a key-down event via xdotool.
+
+        Args:
+            key: xdotool key name (e.g. "Up", "Left", "BackSpace").
+        """
         c = f"xdotool keydown {key!s}\n"
         execute_command(c)
 
     def release_key(key):
+        """Send a key-up event via xdotool.
+
+        Args:
+            key: xdotool key name (e.g. "Up", "Left", "BackSpace").
+        """
         c = f"xdotool keyup {key!s}\n"
         execute_command(c)
 
-    def apply_control(action, window_id=None):  # move_fast
+    def apply_control(action, window_id=None):
+        """Map an action string to arrow-key press/release events via xdotool.
+
+        Optionally focuses the target window before sending keys.  Mapping:
+        "f" → Up, "b" → Down, "l" → Left, "r" → Right.
+
+        Args:
+            action: String containing zero or more of "f", "b", "l", "r".
+            window_id: xdotool window ID to focus before sending keys, or None
+                to send to the currently focused window.
+        """
         if window_id is not None:
             c_focus = f"xdotool windowfocus {window_id!s}"
             execute_command(c_focus)
@@ -197,6 +243,7 @@ elif platform.system() == "Linux":
             release_key(KEY_RIGHT)
 
     def keyres():
+        """Tap the BackSpace key to trigger an in-game respawn on Linux."""
         press_key(KEY_BACKSPACE)
         release_key(KEY_BACKSPACE)
 
