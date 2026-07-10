@@ -42,6 +42,15 @@ _IQN_OUTPUT_INIT_GAIN = 0.01
 
 
 def _init_linear_small(linear: nn.Linear, gain: float = _IQN_OUTPUT_INIT_GAIN) -> None:
+    """Initialize a linear layer with orthogonal weights scaled by ``gain``.
+
+    Small gain keeps initial Q-value outputs near zero, preventing premature
+    policy commitment at the start of training.
+
+    Args:
+        linear: The ``nn.Linear`` layer to initialize.
+        gain: Orthogonal init gain applied to ``linear.weight``.
+    """
     nn.init.orthogonal_(linear.weight, gain=gain)
     if linear.bias is not None:
         nn.init.zeros_(linear.bias)
@@ -58,6 +67,12 @@ def _init_noisy_linear_small(layer: NoisyLinear, gain: float = _IQN_OUTPUT_INIT_
 def _init_cosine_embedding(
     cos_embed: "CosineEmbedding", gain: float = _IQN_OUTPUT_INIT_GAIN
 ) -> None:
+    """Initialize the CosineEmbedding linear layer with a small orthogonal gain.
+
+    Args:
+        cos_embed: The ``CosineEmbedding`` module to initialize.
+        gain: Orthogonal init gain; kept consistent with the head output init.
+    """
     _init_linear_small(cos_embed.linear, gain=gain)
 
 
@@ -135,6 +150,41 @@ class IQNFeatureBackbone(nn.Module):
         gnn_layers: int = 3,
         init_gas_bias: float = 0.0,
     ):
+        """Initialize the IQN feature backbone.
+
+        Builds either a split track/physics encoder (when
+        ``split_track_observation`` is True and the observation space has
+        multiple sub-spaces) or a flat MLP encoder over the whole concatenated
+        observation.
+
+        When the split path is active, the track sub-space is encoded by the
+        selected ``track_encoder`` and the remaining physics scalars are
+        projected by a separate MLP, then joined and optionally processed by a
+        GRU (for R2D2-style recurrence).  Both paths share the same
+        residual-MLP or SimbaV2 backbone.
+
+        Args:
+            observation_space: Sequence of sub-spaces; the first sub-space is
+                treated as the track observation when ``split_track_observation``
+                is True.
+            hidden_dim: Width of the backbone hidden layers and the output.
+            num_blocks: Number of residual blocks in the backbone.
+            n_cos: Number of cosine basis functions for the IQN quantile embedding.
+            split_track_observation: Enable the track/physics split encoder.
+            track_encoder: Track encoder variant — ``"conv1d"``, ``"spline_mlp"``,
+                or ``"gtn"`` (graph transformer, requires 7-channel track obs).
+            use_rnn: Wrap the joint track+physics embedding in a single-layer GRU.
+            rnn_hidden_size: GRU hidden size; defaults to ``hidden_dim`` when None.
+            api_layernorm: Apply LayerNorm to the flat observation in the
+                non-split path.
+            use_simbav2: Use SimbaV2 backbone instead of ResidualMLP.
+            r2d2_sequence_length: Sequence length for R2D2 burn-in GRU stepping
+                (0 = disabled).
+            r2d2_burn_in: Number of burn-in steps computed without gradient.
+            gnn_hidden: Hidden dimension for the GTN encoder.
+            gnn_layers: Number of transformer layers in the GTN encoder.
+            init_gas_bias: Unused by the backbone; accepted for API compatibility.
+        """
         super().__init__()
         self._track_channels = TRACK_CHANNELS_GTN if _is_gtn_encoder(track_encoder) else 4
         self._r2d2_sequence_length = r2d2_sequence_length
@@ -204,6 +254,18 @@ class IQNFeatureBackbone(nn.Module):
         self.hidden_dim = hidden_dim
 
     def _joint_features(self, observation, batch_size: int) -> torch.Tensor:
+        """Encode track and physics sub-observations into a joint embedding.
+
+        Args:
+            observation: Sequence of observation tensors; ``observation[0]`` is
+                the flat track tensor reshaped to ``(B, track_channels, N)``
+                before encoding, and ``observation[1:]`` are the physics scalars.
+            batch_size: Batch size B.
+
+        Returns:
+            Concatenated tensor of shape ``(B, 2 * hidden_dim)`` — track
+            embedding followed by physics embedding.
+        """
         track = observation[0].view(batch_size, -1).float()
         track = track.view(
             batch_size, self._track_channels, self._dim_track // self._track_channels
@@ -214,7 +276,27 @@ class IQNFeatureBackbone(nn.Module):
         return torch.cat([track_embed, physics_embed], dim=-1)
 
     def _gru_joint(self, joint: torch.Tensor) -> torch.Tensor:
-        """Single-layer GRU on track+physics joint (matches SophyResidual)."""
+        """Apply a single-layer GRU to the joint track+physics embedding.
+
+        Mirrors the GRU step logic in SophyResidual.  Handles three execution
+        modes based on batch shape vs. ``r2d2_sequence_length``:
+
+        1. R2D2 burn-in: batch is a multiple of ``r2d2_sequence_length``,
+           ``r2d2_burn_in > 0``, and burn-in < seq_len.  Burn-in steps run
+           under ``torch.no_grad()`` to seed the hidden state; active steps
+           are trained normally.
+        2. Plain sequence mode: batch is a multiple of ``r2d2_sequence_length``
+           without burn-in.  The entire sequence is rolled through the GRU.
+        3. Single-step mode: batch does not align with ``r2d2_sequence_length``;
+           the input is treated as an individual time step.
+
+        Args:
+            joint: Concatenated track+physics embedding of shape
+                ``(B, joint_dim)``.
+
+        Returns:
+            GRU output tensor of shape ``(B, rnn_hidden_size)``.
+        """
         if self.rnn is None:
             return joint
         batch_size = joint.shape[0]

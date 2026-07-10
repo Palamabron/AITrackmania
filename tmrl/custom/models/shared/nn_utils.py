@@ -26,14 +26,34 @@ SiLU = nn.SiLU
 
 
 def combined_shape(length, shape=None):
-    """Return shape tuple combining length with an optional inner shape."""
+    """Return shape tuple combining length with an optional inner shape.
+
+    Args:
+        length: First (outer) dimension.
+        shape: Inner shape — either None (1-D result), a scalar int, or a tuple.
+
+    Returns:
+        Tuple ``(length,)`` when shape is None, ``(length, shape)`` for a scalar,
+        or ``(length, *shape)`` for a tuple.
+    """
     if shape is None:
         return (length,)
     return (length, shape) if np.isscalar(shape) else (length, *shape)
 
 
 def mlp(sizes, activation, output_activation=nn.Identity):
-    """Create an MLP as nn.Sequential from a list of layer sizes."""
+    """Create an MLP as nn.Sequential from a list of layer sizes.
+
+    Args:
+        sizes: Sequence of layer widths including input and output.
+            E.g. ``[64, 128, 1]`` creates two linear layers.
+        activation: Activation class (not instance) applied after each hidden layer.
+        output_activation: Activation class applied after the final layer.
+            Defaults to ``nn.Identity`` (no activation).
+
+    Returns:
+        ``nn.Sequential`` of interleaved ``nn.Linear`` and activation layers.
+    """
     layers = []
     for j in range(len(sizes) - 1):
         act = activation if j < len(sizes) - 2 else output_activation
@@ -52,7 +72,15 @@ def count_vars(module: nn.Module) -> int:
 
 
 def obs_dim(observation_space) -> int:
-    """Total flat dimension of an observation space (tuple of spaces or Box)."""
+    """Total flat dimension of an observation space (tuple of spaces or Box).
+
+    Args:
+        observation_space: Either an iterable of sub-spaces (each with a
+            ``.shape`` attribute) or a single Box-like space with ``.shape``.
+
+    Returns:
+        Integer total number of scalar elements across all sub-spaces.
+    """
     try:
         return sum(prod(s for s in space.shape) for space in observation_space)
     except TypeError:
@@ -60,7 +88,16 @@ def obs_dim(observation_space) -> int:
 
 
 def cat_obs(obs, tuple_obs: bool) -> torch.Tensor:
-    """Concatenate obs tensors along last dim; flatten for single-tensor obs."""
+    """Concatenate obs tensors along last dim; flatten for single-tensor obs.
+
+    Args:
+        obs: Either a sequence of tensors (tuple obs) or a single tensor.
+        tuple_obs: When True, concatenate along ``dim=-1``; when False, flatten
+            starting from ``dim=1``.
+
+    Returns:
+        Concatenated/flattened tensor of shape ``(B, total_dim)``.
+    """
     if tuple_obs:
         return torch.cat(obs, -1)
     return torch.flatten(obs, start_dim=1)
@@ -81,7 +118,16 @@ def obs_spaces_list(observation_space) -> list:
 
 
 def vector_dim_except(observation_space, image_index: int) -> int:
-    """Flat dimension of all obs components except the one at *image_index*."""
+    """Flat dimension of all obs components except the one at *image_index*.
+
+    Args:
+        observation_space: Iterable of sub-spaces or a single Box space.
+        image_index: Zero-based index of the sub-space to exclude.
+
+    Returns:
+        Total flat dimension of all components other than
+        ``observation_space[image_index]``.
+    """
     try:
         spaces = list(observation_space)
     except TypeError:
@@ -94,7 +140,16 @@ def vector_dim_except(observation_space, image_index: int) -> int:
 
 
 def cat_obs_except_image(obs, image_index: int) -> torch.Tensor:
-    """Concatenate all obs tensors except ``obs[image_index]`` on the last dim."""
+    """Concatenate all obs tensors except ``obs[image_index]`` on the last dim.
+
+    Args:
+        obs: Sequence of observation tensors.
+        image_index: Zero-based index of the image tensor to skip.
+
+    Returns:
+        Float tensor of shape ``(B, total_non_image_dim)`` with all remaining
+        tensors flattened to 2D and concatenated.
+    """
     parts = [obs[i] for i in range(len(obs)) if i != image_index]
     if any(t.dim() > 2 for t in parts):
         parts = [t.view(t.size(0), -1) for t in parts]
@@ -115,7 +170,20 @@ def num_flat_features(x: torch.Tensor) -> int:
 
 
 def conv2d_out_dims(conv_layer: Conv2d, h_in: int, w_in: int) -> tuple[int, int]:
-    """Output (H, W) of a Conv2d layer given input spatial dimensions."""
+    """Output (H, W) of a Conv2d layer given input spatial dimensions.
+
+    Uses the standard convolution output formula:
+        out = floor((in + 2*pad - dil*(ker-1) - 1) / stride + 1)
+
+    Args:
+        conv_layer: A configured ``nn.Conv2d`` whose stride, padding, dilation,
+            and kernel_size attributes are used to compute the output size.
+        h_in: Input height in pixels.
+        w_in: Input width in pixels.
+
+    Returns:
+        Tuple ``(h_out, w_out)`` — output spatial dimensions.
+    """
 
     def _get(attr, idx):
         v = getattr(conv_layer, attr)
@@ -137,7 +205,17 @@ def conv2d_out_dims(conv_layer: Conv2d, h_in: int, w_in: int) -> tuple[int, int]
 
 
 def _make_divisible(v, divisor, min_value=None):
-    """Round v to nearest multiple of divisor (allow at most 10% reduction)."""
+    """Round v to nearest multiple of divisor (allow at most 10% reduction).
+
+    Args:
+        v: The raw value to round.
+        divisor: The target divisor.
+        min_value: Minimum allowed result; defaults to ``divisor`` when None.
+
+    Returns:
+        Integer multiple of ``divisor`` closest to ``v``, at least ``min_value``,
+        and never more than 10% below ``v``.
+    """
     if min_value is None:
         min_value = divisor
     new_v = max(min_value, int(v + divisor / 2) // divisor * divisor)

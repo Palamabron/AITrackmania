@@ -20,6 +20,15 @@ from tmrl.registry import MODELS
 
 
 def _init_dueling_output_layers(head: "DuelingHead", gain: float = _IQN_OUTPUT_INIT_GAIN) -> None:
+    """Initialize the output layers of a DuelingHead with a small orthogonal gain.
+
+    Applies the appropriate small-gain init to the final linear (or NoisyLinear)
+    layer of both the value and advantage streams.
+
+    Args:
+        head: The ``DuelingHead`` module whose output layers will be initialized.
+        gain: Orthogonal init gain for the output weights.
+    """
     for stream in (head.value_stream, head.advantage_stream):
         out = stream[-1]
         if isinstance(out, nn.Linear):
@@ -29,6 +38,16 @@ def _init_dueling_output_layers(head: "DuelingHead", gain: float = _IQN_OUTPUT_I
 
 
 def _init_iqn_q_head(head: nn.Module, gain: float = _IQN_OUTPUT_INIT_GAIN) -> None:
+    """Initialize IQN head output layers with a small orthogonal gain.
+
+    Dispatches to the appropriate initializer: ``DuelingHead`` uses
+    ``_init_dueling_output_layers``; a plain ``nn.Sequential`` with a final
+    ``nn.Linear`` layer uses ``_init_linear_small``.
+
+    Args:
+        head: The Q-head module (either ``DuelingHead`` or ``nn.Sequential``).
+        gain: Orthogonal init gain applied to output weights.
+    """
     if isinstance(head, DuelingHead):
         _init_dueling_output_layers(head, gain=gain)
     elif isinstance(head, nn.Sequential) and isinstance(head[-1], nn.Linear):
@@ -52,6 +71,19 @@ class DuelingHead(nn.Module):
         noisy: bool = False,
         noisy_std_init: float = 0.5,
     ):
+        """Initialize the Dueling DQN head.
+
+        Args:
+            hidden_dim: Input feature dimension shared between the value and
+                advantage streams.  Each stream has an intermediate hidden layer
+                of the same width before the output projection.
+            n_actions: Number of discrete actions (output dimension of the
+                advantage stream).
+            noisy: When True, the output linear layers are replaced with
+                factorized Gaussian ``NoisyLinear`` layers (NoisyNet).
+            noisy_std_init: Initial standard deviation of the NoisyLinear noise
+                parameters.  Only used when ``noisy=True``.
+        """
         super().__init__()
         self._noisy = noisy
 
@@ -81,6 +113,12 @@ class DuelingHead(nn.Module):
     # ------------------------------------------------------------------
 
     def _noisy_layers(self) -> list[NoisyLinear]:
+        """Collect all NoisyLinear layers from both value and advantage streams.
+
+        Returns:
+            List of ``NoisyLinear`` instances in stream order.  Empty when the
+            head was created with ``noisy=False``.
+        """
         layers: list[NoisyLinear] = []
         for stream in (self.value_stream, self.advantage_stream):
             for m in stream.modules():
@@ -146,6 +184,23 @@ class IQNQNetwork(nn.Module):
         noisy_std_init: float = 0.5,
         **backbone_kwargs,
     ):
+        """Initialize the IQN Q-network.
+
+        Args:
+            observation_space: Environment observation space (sequence of
+                sub-spaces).
+            n_actions: Number of discrete actions.
+            hidden_dim: Width of the backbone and Q-head hidden layers.
+            num_blocks: Number of residual blocks in the backbone.
+            n_cos: Number of cosine basis functions for the IQN quantile embedding.
+            dueling: When True, use a Dueling architecture (V + A streams).
+                When False, use a simple two-layer MLP Q-head.
+            noisy: Enable NoisyNet exploration in the Q-head (only used when
+                ``dueling=True``).
+            noisy_std_init: Initial NoisyLinear noise standard deviation.
+            **backbone_kwargs: Extra keyword arguments forwarded to
+                ``IQNFeatureBackbone`` (filtered to ``_IQN_BACKBONE_KWARGS``).
+        """
         super().__init__()
         self.n_actions = n_actions
         bb_kw = {k: v for k, v in backbone_kwargs.items() if k in _IQN_BACKBONE_KWARGS}
@@ -268,6 +323,27 @@ class DQNActor(TorchActorModule):
         noisy_eval_std: float = 0.01,
         **backbone_kwargs,
     ):
+        """Initialize the DQN actor for rollout workers.
+
+        Args:
+            observation_space: Environment observation space.
+            action_space: Environment action space (stored by the parent class).
+            hidden_dim: Q-network backbone width.
+            num_blocks: Number of residual blocks in the Q-network backbone.
+            n_cos: Number of cosine basis functions for the IQN quantile embedding.
+            dueling: Use Dueling DQN architecture in the Q-network.
+            n_actions: Number of discrete actions.
+            epsilon: Epsilon-greedy exploration probability.
+            n_quantiles_eval: Number of quantile samples during evaluation.
+            explore_repeat_steps: Number of timesteps to hold a random exploratory
+                action before resampling (action repeat for exploration).
+            noisy: Enable NoisyNet exploration in the Q-network head.
+            noisy_std_init: Initial standard deviation for NoisyLinear parameters.
+            noisy_eval_std: Noise scale applied to NoisyLinear during evaluation
+                (0.0 = fully greedy).
+            **backbone_kwargs: Extra keyword arguments forwarded to the Q-network
+                backbone.
+        """
         super().__init__(observation_space, action_space)
         self.q_net = IQNQNetwork(
             observation_space,
@@ -294,6 +370,7 @@ class DQNActor(TorchActorModule):
 
     @property
     def noise_scale(self) -> float:
+        """Current NoisyNet exploration scale, read from the persistent buffer."""
         b = cast(Any, self._noise_scale_buf)
         scalars = b.detach().cpu().reshape(-1).tolist()
         return float(scalars[0])
@@ -327,6 +404,7 @@ class DQNActor(TorchActorModule):
 
     @property
     def epsilon(self) -> float:
+        """Current epsilon-greedy exploration probability, read from the persistent buffer."""
         b = cast(Any, self._epsilon_buf)
         scalars = b.detach().cpu().reshape(-1).tolist()
         return float(scalars[0])
@@ -338,6 +416,15 @@ class DQNActor(TorchActorModule):
             b.copy_(torch.tensor(float(value), dtype=b.dtype, device=b.device))
 
     def forward(self, observation, **kwargs):
+        """Compute expected Q-values by averaging over quantile samples.
+
+        Args:
+            observation: Environment observation tuple.
+            **kwargs: Ignored; present for API compatibility.
+
+        Returns:
+            Tensor of shape ``(B, n_actions)`` — expected Q-values.
+        """
         return self.q_net.q_values(observation, n_quantiles=self.n_quantiles_eval)
 
     def act_(self, obs, test=False):

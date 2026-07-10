@@ -30,6 +30,17 @@ class TrackGTN(nn.Module):
         num_layers: int = 3,
         num_heads: int = 4,
     ):
+        """Initialize the Graph Transformer encoder.
+
+        Args:
+            num_nodes: Number of track points (nodes) in the sequence.
+            in_dim: Input feature dimension per node (e.g. 3 for XYZ or 7 for
+                world-telemetry channels).
+            hidden_dim: Width of the internal transformer representation.
+            num_layers: Number of ``TransformerEncoderLayer`` stacked layers.
+            num_heads: Number of attention heads.  Automatically reduced to 1
+                when ``hidden_dim`` is not divisible by ``num_heads``.
+        """
         super().__init__()
         self.num_nodes = num_nodes
         self.in_dim = in_dim
@@ -55,6 +66,16 @@ class TrackGTN(nn.Module):
         self.readout = nn.Linear(hidden_dim, hidden_dim)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Encode a track-point sequence to a single fixed-dim vector.
+
+        Args:
+            x: Track tensor of shape ``(B, in_dim, N)`` where N ≤ num_nodes.
+                The channel dimension is permuted to node-feature format
+                internally before passing through the transformer.
+
+        Returns:
+            Tensor of shape ``(B, hidden_dim)`` — mean-pooled readout over nodes.
+        """
         _, _, n = x.shape
         x = x.permute(0, 2, 1)
         h = self.node_in(x) + self.positional_embedding[:, :n, :]
@@ -66,7 +87,26 @@ class TrackGTN(nn.Module):
 def build_track_gtn_branch(
     dim_track: int, hidden_dim: int, gnn_hidden: int = 64, gnn_layers: int = 3
 ) -> nn.Module:
-    """Build a GTN-based track encoding branch."""
+    """Build a GTN-based track encoding branch.
+
+    Expects ``dim_track`` to encode N nodes with exactly ``TRACK_CHANNELS_GTN``
+    (7) features each, i.e. ``dim_track % 7 == 0``.
+
+    Args:
+        dim_track: Total flat dimension of the track observation.  Must be a
+            non-zero multiple of ``TRACK_CHANNELS_GTN`` (7).
+        hidden_dim: Output embedding dimension of the branch.
+        gnn_hidden: Internal hidden dimension of the ``TrackGTN`` transformer.
+        gnn_layers: Number of transformer encoder layers in ``TrackGTN``.
+
+    Returns:
+        ``nn.Sequential`` of TrackGTN → Linear → LayerNorm → SiLU.
+        Output shape: ``(B, hidden_dim)``.
+
+    Raises:
+        AssertionError: If ``dim_track < TRACK_CHANNELS_GTN`` or is not
+            divisible by ``TRACK_CHANNELS_GTN``.
+    """
     assert dim_track >= TRACK_CHANNELS_GTN, "track dim must be at least 7"
     assert dim_track % TRACK_CHANNELS_GTN == 0, "track dim must be 7*N (7 channels)"
     num_nodes = dim_track // TRACK_CHANNELS_GTN

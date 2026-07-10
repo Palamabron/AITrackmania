@@ -17,6 +17,17 @@ class SELayer(nn.Module):
     """Squeeze-and-Excitation channel attention layer."""
 
     def __init__(self, inp, oup, reduction=4):
+        """Initialize the Squeeze-and-Excitation layer.
+
+        Args:
+            inp: Number of input channels to the parent block, used to derive
+                the bottleneck width as ``inp // reduction`` rounded to the
+                nearest multiple of 8.
+            oup: Number of output channels being attended to (must equal the
+                channel dim of tensors passed to ``forward``).
+            reduction: Channel reduction factor for the bottleneck FC layer.
+                Defaults to 4.
+        """
         super().__init__()
         self.avg_pool = nn.AdaptiveAvgPool2d(1)
         self.fc = nn.Sequential(
@@ -27,6 +38,15 @@ class SELayer(nn.Module):
         )
 
     def forward(self, x):
+        """Apply channel-wise squeeze-and-excitation attention.
+
+        Args:
+            x: Feature map of shape ``(B, C, H, W)`` where ``C == oup``.
+
+        Returns:
+            Tensor of shape ``(B, C, H, W)`` — input rescaled by learned channel
+            attention weights in [0, 1].
+        """
         b, c, _, _ = x.size()
         y = self.avg_pool(x).view(b, c)
         y = self.fc(y).view(b, c, 1, 1)
@@ -37,6 +57,16 @@ class MBConv(nn.Module):
     """Mobile Inverted Bottleneck Convolution block (with optional SE)."""
 
     def __init__(self, inp, oup, stride, expand_ratio, use_se):
+        """Initialize the MBConv block.
+
+        Args:
+            inp: Number of input channels.
+            oup: Number of output channels.
+            stride: Convolution stride (1 or 2).
+            expand_ratio: Channel expansion factor for the pointwise→depthwise path.
+            use_se: When True, inserts a Squeeze-and-Excitation layer in the
+                depthwise path (EfficientNetV2-style).
+        """
         super().__init__()
         assert stride in [1, 2]
         hidden_dim = round(inp * expand_ratio)
@@ -63,6 +93,15 @@ class MBConv(nn.Module):
             )
 
     def forward(self, x):
+        """Apply the MBConv block.
+
+        Args:
+            x: Input feature map of shape ``(B, inp, H, W)``.
+
+        Returns:
+            Output feature map of shape ``(B, oup, H', W')``.  When ``stride==1``
+            and ``inp==oup``, the result is ``x + conv(x)`` (residual shortcut).
+        """
         if self.identity:
             return x + self.conv(x)
         return self.conv(x)
@@ -145,6 +184,14 @@ class EffNetV2(nn.Module):
         self._initialize_weights()
 
     def forward(self, x):
+        """Run the full EfficientNetV2 forward pass.
+
+        Args:
+            x: Input tensor of shape ``(B, nb_channels_in, H, W)``.
+
+        Returns:
+            Embedding tensor of shape ``(B, dim_output)``.
+        """
         x = self.features(x)
         x = self.conv(x)
         x = self.avgpool(x)
@@ -152,6 +199,13 @@ class EffNetV2(nn.Module):
         return self.classifier(x)
 
     def _initialize_weights(self):
+        """Initialize all sub-module weights.
+
+        Conv2d weights use Kaiming (fan-out) init: N(0, sqrt(2 / fan_out)).
+        BatchNorm2d weight=1, bias=0.
+        Linear weights use a small N(0, 0.001) init to keep final logits near
+        zero at the start of training.
+        """
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
                 n = m.kernel_size[0] * m.kernel_size[1] * m.out_channels
@@ -259,6 +313,24 @@ class FrozenEfficientNetEncoder(nn.Module):
         use_dw_stem: bool = False,
         frozen: bool = True,
     ):
+        """Initialize the FrozenEfficientNetEncoder.
+
+        Args:
+            nb_channels_in: Number of input image channels (e.g. 4 for stacked
+                grayscale frames or RGBD).
+            embed_dim: Dimensionality of the output embedding vector.
+            width_mult: Channel width multiplier for the EfficientNet backbone.
+            variant: EfficientNet variant key — one of ``"xs"`` (fast, 8 blocks)
+                or ``"s"`` (40 blocks).
+            use_dw_stem: When True, uses a depthwise-separable first convolution
+                instead of a standard 3x3 conv.
+            frozen: When True, all backbone parameters have ``requires_grad=False``
+                and the encoder is kept in ``train`` mode so BatchNorm uses batch
+                statistics (running stats are never calibrated from random init).
+
+        Raises:
+            ValueError: If ``variant`` is not in ``_EFFNET_VARIANTS``.
+        """
         super().__init__()
         self.embed_dim = embed_dim
         self._frozen = frozen
@@ -279,6 +351,19 @@ class FrozenEfficientNetEncoder(nn.Module):
             self._encoder.train()
 
     def train(self, mode: bool = True):
+        """Set training mode, always keeping the frozen encoder in train mode.
+
+        When ``frozen=True``, the inner encoder is forced into train mode
+        regardless of ``mode``, so BatchNorm uses batch statistics rather than
+        stale running statistics from a randomly-initialized (never-calibrated)
+        model.
+
+        Args:
+            mode: Training mode flag passed to the parent module.
+
+        Returns:
+            Self, for method chaining.
+        """
         super().train(mode)
         if self._frozen:
             self._encoder.train()
@@ -287,6 +372,17 @@ class FrozenEfficientNetEncoder(nn.Module):
         return self
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Encode an image batch to a fixed-dim embedding vector.
+
+        Pixel values above 1.5 are assumed to be in the [0, 255] range and are
+        divided by 255.0 to normalise them to [0, 1] before encoding.
+
+        Args:
+            x: Image tensor of shape ``(B, nb_channels_in, H, W)``.
+
+        Returns:
+            Embedding tensor of shape ``(B, embed_dim)``.
+        """
         if x.max() > 1.5:
             x = x / 255.0
         if self._frozen:
