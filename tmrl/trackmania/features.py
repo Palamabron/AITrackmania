@@ -48,7 +48,7 @@ class TelemetryFeaturePipeline:
         return torch.zeros(self.field_count, dtype=torch.float32)
 
 
-class LidarFeaturePipelineV1:
+class LidarFeaturePipeline:
     """33-field GrabData source schema projected to 20 telemetry features and lidar."""
 
     schema_version = "1"
@@ -121,7 +121,7 @@ class LidarFeaturePipelineV1:
         base_dir: str | Path = ".",
     ) -> None:
         if samples_per_side != 15:
-            raise ValueError("LidarFeaturePipelineV1 requires exactly 15 samples per boundary")
+            raise ValueError("LidarFeaturePipeline requires exactly 15 samples per boundary")
         if max_distance_m <= 0.0:
             raise ValueError("max_distance_m must be positive")
         path = Path(geometry_path)

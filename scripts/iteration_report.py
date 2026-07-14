@@ -67,7 +67,7 @@ def _flatten_overrides(overrides: dict, prefix: str = "") -> list[tuple[str, Any
     return items
 
 
-# ?? Report sections ?????????????????????????????????????????????????
+# Report sections
 
 
 def section_leaderboard(analyses: dict[str, dict], top_n: int = 0) -> str:
@@ -94,7 +94,7 @@ def section_leaderboard(analyses: dict[str, dict], top_n: int = 0) -> str:
         f"{'LossMed':>8} {'RetTrn':>8} {'Trend':>10}"
     )
     lines.append(
-        f"{'?' * 4} {'?' * 42} {'?' * 8} {'?' * 8} {'?' * 6} {'?' * 8} {'?' * 8} {'?' * 10}"
+        f"{'-' * 4} {'-' * 42} {'-' * 8} {'-' * 8} {'-' * 6} {'-' * 8} {'-' * 8} {'-' * 10}"
     )
 
     show = ranked[:top_n] if top_n > 0 else ranked
@@ -107,7 +107,7 @@ def section_leaderboard(analyses: dict[str, dict], top_n: int = 0) -> str:
         lm_s = f"{lm:.1f}" if lm is not None else "-"
         rt = _get(data, "metrics", "metrics/return_train", "last")
         rt_s = f"{rt:.0f}" if rt is not None else "-"
-        trend = _get(data, "training_trends", "metrics/return_train", "direction", default="?")
+        trend = _get(data, "training_trends", "metrics/return_train", "direction", default="-")
         lines.append(
             f"{i:<4} {eid:<42} {ft:>7.1f}s {wb_s:>8} {wr_s:>6} {lm_s:>8} {rt_s:>8} {trend:>10}"
         )
@@ -192,7 +192,7 @@ def section_health_cards(analyses: dict[str, dict]) -> str:
 
         trends = data.get("training_trends", {})
         if trends:
-            t_parts = [f"{k.split('/')[-1]}={v.get('direction', '?')}" for k, v in trends.items()]
+            t_parts = [f"{k.split('/')[-1]}={v.get('direction', '-')}" for k, v in trends.items()]
             lines.append(f"  Trends: {', '.join(t_parts)}")
         lines.append("")
 

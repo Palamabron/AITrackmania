@@ -1,4 +1,4 @@
-# Stop TMRL / AITrackmania Python trees and free distributed ports (55555?55558).
+# Stop TMRL / AITrackmania Python trees and free distributed ports (55555-55558).
 # Broader than Makefile's old taskkill /IM python.exe (misses python3.12.exe, uv children, wandb).
 
 param(
@@ -66,7 +66,7 @@ foreach ($proc in $matched) {
     }
 }
 
-# 3) Optional: all Python interpreters (destructive ? other projects too).
+# 3) Optional: all Python interpreters (destructive - other projects too).
 if ($AllPython) {
     Write-Host "AllPython: stopping remaining python*/uv* processes..."
     Get-Process -Name "python", "python3*", "pythonw*", "uv" -ErrorAction SilentlyContinue |

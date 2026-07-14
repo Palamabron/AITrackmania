@@ -84,6 +84,7 @@ docs/source/_build/
 
 # Reports and analysis files (not part of Sphinx docs)
 docs/reports/
+docs/superpowers/
 
 # PyBuilder
 target/

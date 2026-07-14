@@ -250,7 +250,7 @@ components:
   sampler:
     class_path: tmrl.core.replay:PrioritizedSampler
   feature_pipeline:
-    class_path: tmrl.trackmania.features:LidarFeaturePipelineV1
+    class_path: tmrl.trackmania.features:LidarFeaturePipeline
     kwargs:
       geometry_path: assets/test-3.geometry.npz
       expected_map_uid: REPLACE_WITH_TEST_3_UID

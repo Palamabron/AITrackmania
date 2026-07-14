@@ -1,4 +1,4 @@
-"""TrackMania-specific collection adapter built on top of the neutral V1 contracts."""
+"""TrackMania-specific collection adapter built on top of the neutral runtime contracts."""
 
 from __future__ import annotations
 
@@ -29,7 +29,7 @@ class CollectionResult:
 
 
 class TrackmaniaCollector:
-    """Turns a TrackMania episode into V1 transitions and an episode artifact."""
+    """Turns a TrackMania episode into transitions and an episode artifact."""
 
     def __init__(self, store: ReplayStore, pipeline: FeaturePipeline, policy: Policy) -> None:
         self.store = store

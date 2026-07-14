@@ -13,7 +13,7 @@ import torch
 from tmrl.algorithms import ImplicitQuantileQLearning
 from tmrl.core.data import TrainingBatch
 from tmrl.trackmania.actions import build_brake_tap_action_table
-from tmrl.trackmania.features import LidarFeaturePipelineV1
+from tmrl.trackmania.features import LidarFeaturePipeline
 from tmrl.trackmania.geometry import BoundaryGeometry, build_geometry_asset
 from tmrl.trackmania.iqn import LidarIqnModel
 from tmrl.trackmania.session import PLUGIN_PROTOCOL_VERSION, OpenPlanetSessionClient
@@ -76,7 +76,7 @@ def test_geometry_pairs_boundaries_by_location_not_recording_progress(tmp_path: 
 def test_lidar_pipeline_validates_schema_and_builds_masked_local_observation(
     tmp_path: Path,
 ) -> None:
-    pipeline = LidarFeaturePipelineV1(_asset(tmp_path), expected_map_uid="test-3")
+    pipeline = LidarFeaturePipeline(_asset(tmp_path), expected_map_uid="test-3")
     observation = np.zeros(33, dtype=np.float32)
     observation[4:7] = [0, 0, 0]
     observation[10:13] = [1, 0, 0]
@@ -98,7 +98,7 @@ def test_lidar_pipeline_validates_schema_and_builds_masked_local_observation(
 
 
 def test_lidar_pipeline_preserves_legacy_right_then_forward_car_frame(tmp_path: Path) -> None:
-    pipeline = LidarFeaturePipelineV1(
+    pipeline = LidarFeaturePipeline(
         _asset(tmp_path), expected_map_uid="test-3", max_distance_m=10.0
     )
     observation = np.zeros(33, dtype=np.float32)
@@ -112,7 +112,7 @@ def test_lidar_pipeline_preserves_legacy_right_then_forward_car_frame(tmp_path: 
 
 
 def test_iqn_lidar_updates_and_handles_single_structured_observation(tmp_path: Path) -> None:
-    pipeline = LidarFeaturePipelineV1(_asset(tmp_path), expected_map_uid="test-3")
+    pipeline = LidarFeaturePipeline(_asset(tmp_path), expected_map_uid="test-3")
     raw = np.zeros(33, dtype=np.float32)
     raw[10] = 1.0
     single = pipeline.transform_observation(raw)

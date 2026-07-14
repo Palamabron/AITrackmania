@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-check_status.py ? snapshot of running TMRL trainer/worker experiments.
+check_status.py - snapshot of running TMRL trainer/worker experiments.
 
 Usage:
     python check_status.py [--config] [--wandb] [--all]
 
 Flags:
-    --config   Print fully-merged active config (runs `python -m tmrl --print-config`)
+    --config   Print fully merged active config (runs `python -m tmrl --print-config`)
     --wandb    Query WandB API for recent runs in the tmrl project
     --all      Enable all optional sections
 """
@@ -21,7 +21,7 @@ import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
-# ?? Load .env ????????????????????????????????????????????????????????????????
+# Load .env
 
 
 def load_dotenv(path: Path = Path(__file__).parent / ".env") -> dict[str, str]:
@@ -42,7 +42,7 @@ for k, v in ENV.items():
     if v:
         os.environ.setdefault(k, v)
 
-# ?? Helpers ???????????????????????????????????????????????????????????????????
+# Helpers
 
 RESET = "\033[0m"
 BOLD = "\033[1m"
@@ -55,13 +55,13 @@ DIM = "\033[2m"
 
 def h(title: str) -> None:
     width = 60
-    print(f"\n{BOLD}{CYAN}{'?' * width}{RESET}")
+    print(f"\n{BOLD}{CYAN}{'-' * width}{RESET}")
     print(f"{BOLD}{CYAN}  {title}{RESET}")
-    print(f"{BOLD}{CYAN}{'?' * width}{RESET}")
+    print(f"{BOLD}{CYAN}{'-' * width}{RESET}")
 
 
 def ok(msg: str) -> None:
-    print(f"  {GREEN}?{RESET}  {msg}")
+    print(f"  {GREEN}ok{RESET}  {msg}")
 
 
 def warn(msg: str) -> None:
@@ -69,7 +69,7 @@ def warn(msg: str) -> None:
 
 
 def err(msg: str) -> None:
-    print(f"  {RED}?{RESET}  {msg}")
+    print(f"  {RED}err{RESET}  {msg}")
 
 
 def info(msg: str) -> None:
@@ -88,7 +88,7 @@ def age(path: Path) -> str:
     return f"{delta / 86400:.1f}d ago"
 
 
-# ?? Process detection ????????????????????????????????????????????????????????
+# Process detection
 
 ROLES = {
     "server": ["--server"],
@@ -112,13 +112,13 @@ def find_tmrl_procs() -> dict[str, list[dict]]:
         for role, flags in ROLES.items():
             if any(f in line for f in flags):
                 parts = line.split(None, 10)
-                pid = parts[1] if len(parts) > 1 else "?"
+                pid = parts[1] if len(parts) > 1 else "unknown"
                 cmd = parts[-1] if len(parts) > 1 else line
                 found[role].append({"pid": pid, "cmd": cmd[:80]})
     return found
 
 
-# ?? Port check ???????????????????????????????????????????????????????????????
+# Port check
 
 SERVER_PORT = 55555
 
@@ -131,7 +131,7 @@ def port_open(host: str = "127.0.0.1", port: int = SERVER_PORT) -> bool:
         return False
 
 
-# ?? TmrlData artifacts ???????????????????????????????????????????????????????
+# TmrlData artifacts
 
 TMRL_DATA = Path.home() / "TmrlData"
 
@@ -149,10 +149,10 @@ def show_artifacts() -> None:
             try:
                 a = age(f)
             except Exception:
-                a = "?"
+                a = "unknown"
             info(f"{f.name:<45} {DIM}{a}{RESET}")
         if len(files) > 5:
-            info(f"? and {len(files) - 5} more")
+            info(f"- and {len(files) - 5} more")
 
     section("Checkpoints", TMRL_DATA / "checkpoints", "*.tcpt")
     section("Weights    ", TMRL_DATA / "weights", "*.tmod")
@@ -168,14 +168,14 @@ def show_artifacts() -> None:
             ok(f"Repro artifact: {fname}  {DIM}({age(fpath)}){RESET}")
 
 
-# ?? .env / secrets summary ???????????????????????????????????????????????????
+# .env / secrets summary
 
 
 def show_env_summary() -> None:
     h(".env / environment")
     wandb_key = ENV.get("WANDB_API_KEY", "")
     if wandb_key:
-        masked = wandb_key[:12] + "?" + wandb_key[-4:]
+        masked = wandb_key[:12] + "-" + wandb_key[-4:]
         ok(f"WANDB_API_KEY  {DIM}{masked}{RESET}")
     else:
         warn("WANDB_API_KEY  not set")
@@ -184,7 +184,7 @@ def show_env_summary() -> None:
     if tmrl_pw:
         ok(f"TMRL_PASSWORD  {DIM}{'*' * min(len(tmrl_pw), 8)}{RESET}")
     else:
-        warn("TMRL_PASSWORD  (empty ? open/no-auth server)")
+        warn("TMRL_PASSWORD  (empty - open/no-auth server)")
 
     for extra in ("TMRL_HYDRA_OVERRIDES", "TMRL_CONFIG_OVERRIDES", "TMRL_OUTPUT_FILES"):
         val = os.environ.get(extra, "")
@@ -192,7 +192,7 @@ def show_env_summary() -> None:
             ok(f"{extra}  {DIM}{val[:60]}{RESET}")
 
 
-# ?? Process / port summary ???????????????????????????????????????????????????
+# Process / port summary
 
 
 def show_processes() -> None:
@@ -216,7 +216,7 @@ def show_processes() -> None:
     return any_running
 
 
-# ?? Active config ?????????????????????????????????????????????????????????????
+# Active config
 
 
 def show_config() -> None:
@@ -237,26 +237,26 @@ def show_config() -> None:
         for line in output.splitlines()[:80]:  # cap at 80 lines
             print(f"  {line}")
         if output.count("\n") > 80:
-            print(f"  {DIM}? (truncated){RESET}")
+            print(f"  {DIM}- truncated{RESET}")
     except subprocess.TimeoutExpired:
         err("Timed out waiting for --print-config")
     except FileNotFoundError:
         err(f"Python not found at {python}")
 
 
-# ?? WandB runs ????????????????????????????????????????????????????????????????
+# WandB runs
 
 
 def show_wandb_runs(project: str = "tmrl", entity: str = "tmrl", limit: int = 5) -> None:
     h(f"WandB runs  ({entity}/{project}, last {limit})")
     api_key = os.environ.get("WANDB_API_KEY", "")
     if not api_key:
-        err("WANDB_API_KEY not set ? skipping")
+        err("WANDB_API_KEY not set - skipping")
         return
     try:
         import wandb  # type: ignore
     except ImportError:
-        err("wandb not installed ? run: pip install wandb")
+        err("wandb not installed - run: pip install wandb")
         return
 
     try:
@@ -279,7 +279,7 @@ def show_wandb_runs(project: str = "tmrl", entity: str = "tmrl", limit: int = 5)
         err(f"WandB API error: {exc}")
 
 
-# ?? Main ??????????????????????????????????????????????????????????????????????
+# Main
 
 
 def main() -> None:
@@ -292,7 +292,7 @@ def main() -> None:
     args = parser.parse_args()
 
     print(
-        f"\n{BOLD}TMRL experiment status  ?  {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}{RESET}"
+        f"\n{BOLD}TMRL experiment status  -  {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}{RESET}"
     )
 
     show_env_summary()

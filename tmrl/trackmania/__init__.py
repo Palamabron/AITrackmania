@@ -6,12 +6,12 @@ from tmrl.trackmania.baseline import TelemetryTqcModelFactory
 from tmrl.trackmania.collector import CollectionResult, TrackmaniaCollector, TrackmaniaEnvironment
 from tmrl.trackmania.environment import OpenPlanetEnvironmentFactory, TrackmaniaEnvironmentConfig
 from tmrl.trackmania.evaluation import TrackmaniaEvaluator
-from tmrl.trackmania.features import LidarFeaturePipelineV1, TelemetryFeaturePipeline
+from tmrl.trackmania.features import LidarFeaturePipeline, TelemetryFeaturePipeline
 from tmrl.trackmania.iqn import LidarIqnModelFactory
 
 __all__ = [
     "CollectionResult",
-    "LidarFeaturePipelineV1",
+    "LidarFeaturePipeline",
     "LidarIqnModelFactory",
     "OpenPlanetEnvironmentFactory",
     "TelemetryFeaturePipeline",
