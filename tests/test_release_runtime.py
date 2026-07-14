@@ -147,7 +147,7 @@ def test_trajectory_recorder_writes_portable_csv(tmp_path: Path) -> None:
         def read(self) -> TelemetryFrame:
             return TelemetryFrame(np.arange(33, dtype=np.float32))
 
-    path = record_trajectory(tmp_path / "trajectory.csv", Client(), samples=2)  # type: ignore[arg-type]
+    path = record_trajectory(tmp_path / "trajectory.csv", Client(), samples=2)
     points = np.loadtxt(path, delimiter=",")
     assert points.shape == (2, 3)
     assert np.array_equal(points[0], np.asarray(DEFAULT_POSITION_INDICES, dtype=np.float32))
@@ -249,11 +249,11 @@ def test_generated_project_uses_the_current_checkout_before_first_publish(tmp_pa
 
 def test_trackmania_evaluator_runs_every_declared_seed_and_episode() -> None:
     class Environment:
-        def reset(self, *, seed: int | None = None):
+        def reset(self, *, seed: int | None = None) -> tuple[float, dict[str, object]]:
             del seed
             return 0.0, {}
 
-        def step(self, action: object):
+        def step(self, action: object) -> tuple[float, float, bool, bool, dict[str, str | float]]:
             del action
             return (
                 1.0,

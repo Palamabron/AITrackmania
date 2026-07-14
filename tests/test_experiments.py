@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from typing import Any
+
 from tmrl.experiments.evaluation import STANDARD_METRICS, EvaluationResult, aggregate_results
 from tmrl.experiments.orchestration import FallbackStrategy, GridStrategy, Proposal, StudySpec
 
 
 class FailingStrategy:
-    def propose(self, study: StudySpec, history):
+    def propose(self, study: StudySpec, history: list[Mapping[str, Any]]) -> Proposal:
         del study, history
         raise RuntimeError("provider unavailable")
 

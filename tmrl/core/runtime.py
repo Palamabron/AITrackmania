@@ -162,14 +162,11 @@ def prepare_run(run: ResolvedRun) -> None:
     """Seed process RNGs and create the immutable run manifest once."""
 
     random.seed(run.spec.seed)
-    try:
-        import numpy as np
-        import torch
+    import numpy as np
+    import torch
 
-        np.random.seed(run.spec.seed)
-        torch.manual_seed(run.spec.seed)
-    except ImportError:
-        pass
+    np.random.seed(run.spec.seed)
+    torch.manual_seed(run.spec.seed)
     # Import here to keep data/contracts importable without observability cycles.
     from tmrl.observability.artifacts import write_run_manifest
 

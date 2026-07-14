@@ -1,5 +1,7 @@
 """Stable contracts and local training runtime for TMRL 1.0."""
 
+from typing import Any
+
 from tmrl.core.contracts import (
     CheckpointCodec,
     EnvironmentFactory,
@@ -66,7 +68,7 @@ __all__ = [
 ]
 
 
-def __getattr__(name: str):
+def __getattr__(name: str) -> Any:
     """Load orchestration classes lazily to keep contract imports side-effect free."""
 
     if name in {"ResolvedRun", "resolve_run", "validate_resolved_run"}:

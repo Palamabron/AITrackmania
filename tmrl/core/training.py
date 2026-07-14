@@ -9,6 +9,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from tmrl.core.data import PriorityUpdate
 from tmrl.core.runtime import ResolvedRun, prepare_run
@@ -58,8 +59,7 @@ class Trainer:
         evaluation: Mapping[str, float] | None = None
         if self.resume_checkpoint is not None:
             state = self.run.checkpoint_codec.load(self.resume_checkpoint)
-            self._restore_checkpoint(state)
-            counters = state["counters"]
+            counters = self._restore_checkpoint(state)
             transitions = int(counters["transitions"])
             updates = int(counters["updates"])
             episodes = int(counters["episodes"])
@@ -213,14 +213,22 @@ class Trainer:
         self._log("train/checkpoint", {"path": str(path)}, transitions, update, episodes)
         return path
 
-    def _restore_checkpoint(self, state: Mapping[str, object]) -> None:
+    def _restore_checkpoint(self, state: Mapping[str, Any]) -> Mapping[str, Any]:
         if state.get("schema_version") != "1.0":
             raise ValueError("Unsupported training checkpoint schema")
-        self.run.learner.load_state_dict(state["learner"])  # type: ignore[arg-type]
+        learner_state = state.get("learner")
+        if not isinstance(learner_state, Mapping):
+            raise ValueError("Training checkpoint is missing learner state")
+        counters = state.get("counters")
+        if not isinstance(counters, Mapping):
+            raise ValueError("Training checkpoint is missing counters")
+        required_counters = {"transitions", "updates", "episodes", "fractional_updates"}
+        if required_counters - counters.keys():
+            raise ValueError("Training checkpoint has incomplete counters")
+        self.run.learner.load_state_dict(learner_state)
         _load_state_dict(self.run.replay_store, state.get("replay_store"))
         _load_state_dict(self.run.sampler, state.get("sampler"))
-        if not isinstance(state.get("counters"), Mapping):
-            raise ValueError("Training checkpoint is missing counters")
+        return counters
 
     def _log(
         self,

@@ -3,15 +3,22 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Protocol
 
 import numpy as np
 
-from tmrl.trackmania.telemetry import DEFAULT_POSITION_INDICES, OpenPlanetClient
+from tmrl.trackmania.telemetry import DEFAULT_POSITION_INDICES, TelemetryFrame
+
+
+class TelemetryReader(Protocol):
+    """Supplies validated telemetry frames for asset recording."""
+
+    def read(self) -> TelemetryFrame: ...
 
 
 def record_trajectory(
     output: str | Path,
-    client: OpenPlanetClient,
+    client: TelemetryReader,
     *,
     samples: int = 2_000,
     position_indices: tuple[int, int, int] = DEFAULT_POSITION_INDICES,
@@ -29,7 +36,7 @@ def record_trajectory(
 
 def record_boundary(
     output: str | Path,
-    client: OpenPlanetClient,
+    client: TelemetryReader,
     *,
     samples: int = 2_000,
     position_indices: tuple[int, int, int] = DEFAULT_POSITION_INDICES,
