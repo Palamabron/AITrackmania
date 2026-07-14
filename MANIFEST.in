@@ -1,3 +1,4 @@
-include readme/pypi.md
+include README.md
 include CHANGELOG.md
-exclude tmrl/wandb/*
+include LICENSE
+recursive-include tmrl/project/openplanet *.as

@@ -1,9 +1,0 @@
-# @package _global_
-# TQC (car_state) interface: `default` + `tm20_car_state_rl` + `name`.
-defaults:
-  - default
-  - tm20_car_state_rl
-  - _self_
-
-interface:
-  name: tqc

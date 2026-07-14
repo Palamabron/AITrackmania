@@ -67,7 +67,7 @@ def _flatten_overrides(overrides: dict, prefix: str = "") -> list[tuple[str, Any
     return items
 
 
-# ── Report sections ─────────────────────────────────────────────────
+# ?? Report sections ?????????????????????????????????????????????????
 
 
 def section_leaderboard(analyses: dict[str, dict], top_n: int = 0) -> str:
@@ -94,7 +94,7 @@ def section_leaderboard(analyses: dict[str, dict], top_n: int = 0) -> str:
         f"{'LossMed':>8} {'RetTrn':>8} {'Trend':>10}"
     )
     lines.append(
-        f"{'─' * 4} {'─' * 42} {'─' * 8} {'─' * 8} {'─' * 6} {'─' * 8} {'─' * 8} {'─' * 10}"
+        f"{'?' * 4} {'?' * 42} {'?' * 8} {'?' * 8} {'?' * 6} {'?' * 8} {'?' * 8} {'?' * 10}"
     )
 
     show = ranked[:top_n] if top_n > 0 else ranked

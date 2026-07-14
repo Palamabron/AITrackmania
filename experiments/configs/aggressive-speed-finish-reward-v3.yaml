@@ -1,4 +1,0 @@
-environment:
-  end_of_track_reward: 64
-  reward:
-    speed_reward_weight: 4.0

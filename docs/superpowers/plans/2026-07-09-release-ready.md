@@ -4,7 +4,7 @@
 
 **Goal:** Make the AITrackmania codebase release-ready by fixing two functional bugs and sweeping for documentation gaps, dead code, and metadata issues.
 
-**Architecture:** Five independent commit-sized tasks executed in severity order. Tasks 1–2 are functional fixes; Tasks 3–5 are cosmetic. Each task ends with `make fmt && make types && make test` passing.
+**Architecture:** Five independent commit-sized tasks executed in severity order. Tasks 1?2 are functional fixes; Tasks 3?5 are cosmetic. Each task ends with `make fmt && make types && make test` passing.
 
 **Tech Stack:** Python 3.12, uv, ruff, mypy, pytest, loguru, Pydantic v2.
 
@@ -12,13 +12,13 @@
 
 - All commands run via `uv run` or `make` (see CLAUDE.md).
 - Docstring format: Google style (Args / Returns / Raises sections), matching existing style in `tmrl/actor.py` and `tmrl/registry.py`.
-- Do not add comments explaining WHAT code does — only add docstrings that describe the public contract.
+- Do not add comments explaining WHAT code does ? only add docstrings that describe the public contract.
 - Run `make fmt` then `make types` after every task and fix any errors before committing.
 - Never skip `make test` before committing.
 
 ---
 
-### Task 1: Fix PEP 561 — ship `py.typed` marker in the wheel
+### Task 1: Fix PEP 561 ? ship `py.typed` marker in the wheel
 
 **Files:**
 - Modify: `pyproject.toml:135-136`
@@ -28,7 +28,7 @@
 
 - [ ] **Step 1: Edit `pyproject.toml`**
 
-  In `pyproject.toml`, find the `[tool.setuptools.package-data]` section (currently line 135–136):
+  In `pyproject.toml`, find the `[tool.setuptools.package-data]` section (currently line 135?136):
   ```toml
   [tool.setuptools.package-data]
   tmrl = ["config/defaults/**/*.yaml"]
@@ -62,18 +62,18 @@
 
 ---
 
-### Task 2: Fix plugin-system breakage — replace hardcoded algo whitelist with registry lookup
+### Task 2: Fix plugin-system breakage ? replace hardcoded algo whitelist with registry lookup
 
 **Files:**
 - Modify: `tmrl/config/config_objects.py:74-75`
 
 **Interfaces:**
-- Consumes: `ALGORITHMS` (imported at line 64 from `tmrl.registry`), already fully populated by the side-effect imports on lines 15–19 before the check runs.
+- Consumes: `ALGORITHMS` (imported at line 64 from `tmrl.registry`), already fully populated by the side-effect imports on lines 15?19 before the check runs.
 - Produces: startup no longer blocks plugin-registered algorithms.
 
 - [ ] **Step 1: Edit `config_objects.py`**
 
-  In `tmrl/config/config_objects.py`, find lines 74–75:
+  In `tmrl/config/config_objects.py`, find lines 74?75:
   ```python
   if ALG_NAME not in ("SAC", "REDQSAC", "TQC", "IQN", "SDSAC"):
       raise ValueError(f"Unknown algorithm {ALG_NAME!r}. Supported: SAC, REDQSAC, TQC, IQN, SDSAC.")
@@ -114,7 +114,7 @@
 - Modify: `tmrl/networking/trainer.py`
 
 **Interfaces:**
-- No interface changes — docstrings only.
+- No interface changes ? docstrings only.
 
 - [ ] **Step 1: Document `tmrl/util.py`**
 
@@ -271,7 +271,7 @@
 
 - [ ] **Step 2: Document `tmrl/wrappers.py`**
 
-  **`AffineObservationWrapper` class (line 10) — add class docstring after the class definition line:**
+  **`AffineObservationWrapper` class (line 10) ? add class docstring after the class definition line:**
   ```python
   class AffineObservationWrapper(gymnasium.ObservationWrapper):
       """Gymnasium wrapper that applies an affine transform ``(obs + shift) * scale`` to observations.
@@ -480,7 +480,7 @@
 
 - [ ] **Step 6: Document `tmrl/networking/trainer.py`**
 
-  **`TrainerInterface.__init__` (line 285) — currently has no docstring:**
+  **`TrainerInterface.__init__` (line 285) ? currently has no docstring:**
   ```python
   def __init__(
       self,
@@ -503,7 +503,7 @@
       """
   ```
 
-  **`TrainerInterface.broadcast_model` (line 321) — replace terse docstring:**
+  **`TrainerInterface.broadcast_model` (line 321) ? replace terse docstring:**
   ```python
   def broadcast_model(self, model: ActorModule):
       """Serialize and broadcast model weights to all connected workers.
@@ -516,7 +516,7 @@
       """
   ```
 
-  **`TrainerInterface.retrieve_buffer` (line 334) — replace terse docstring:**
+  **`TrainerInterface.retrieve_buffer` (line 334) ? replace terse docstring:**
   ```python
   def retrieve_buffer(self):
       """Receive all pending buffers from the server and merge them into one.
@@ -552,13 +552,13 @@
 - Modify: `tmrl/tuto/tuto_minimal_drone.py`
 
 **Interfaces:**
-- No behavior changes. All modifications are comment/dead-code removals or print→logger conversions.
+- No behavior changes. All modifications are comment/dead-code removals or print?logger conversions.
 
 - [ ] **Step 1: Clean `tmrl/envs.py`**
 
-  Remove the commented-out lines (32–33) and the empty `__main__` guard (37–38).
+  Remove the commented-out lines (32?33) and the empty `__main__` guard (37?38).
 
-  Current state (lines 25–38):
+  Current state (lines 25?38):
   ```python
       super().__init__(env)
 
@@ -566,7 +566,7 @@
   if __name__ == "__main__":
       pass
   ```
-  And lines 32–33 inside `__init__`:
+  And lines 32?33 inside `__init__`:
   ```python
       # assert isinstance(env.action_space, gymnasium.spaces.Box), f"{env.action_space}"
       # env = NormalizeActionWrapper(env)
@@ -623,7 +623,7 @@
 
 - [ ] **Step 5: Fix `tmrl/tools/diagnostics/check_environment.py`**
 
-  Convert `print` calls on lines 30–31 to `logger.debug`. The function already imports `logger` at the top of the file.
+  Convert `print` calls on lines 30?31 to `logger.debug`. The function already imports `logger` at the top of the file.
 
   Find:
   ```python
@@ -673,7 +673,7 @@
 
 ---
 
-### Task 5: Fix `pyproject.toml` metadata — move pyinstrument to dev, delete stale readthedocs config
+### Task 5: Fix `pyproject.toml` metadata ? move pyinstrument to dev, delete stale readthedocs config
 
 **Files:**
 - Modify: `pyproject.toml`
@@ -689,7 +689,7 @@
       "pyinstrument",
   ```
 
-  In `[project.optional-dependencies] dev` (lines 74–79), add `pyinstrument`:
+  In `[project.optional-dependencies] dev` (lines 74?79), add `pyinstrument`:
   ```toml
   [project.optional-dependencies]
   dev = [
@@ -701,7 +701,7 @@
   ]
   ```
 
-  Also update the `[dependency-groups] dev` section (lines 84–90) identically:
+  Also update the `[dependency-groups] dev` section (lines 84?90) identically:
   ```toml
   [dependency-groups]
   dev = [
@@ -736,12 +736,12 @@
 ## Self-Review
 
 **Spec coverage check:**
-- ✅ Task 1 → Commit 1 (py.typed PEP 561)
-- ✅ Task 2 → Commit 2 (algo whitelist → registry lookup)
-- ✅ Task 3 → Commit 3 (docstrings: util, wrappers, actor, envs, memory/base, trainer)
-- ✅ Task 4 → Commit 4 (dead code: envs, actor, nn_distributions, gamepad, check_environment, tuto)
-- ✅ Task 5 → Commit 5 (pyinstrument → dev, delete .readthedocs.yaml)
+- ? Task 1 ? Commit 1 (py.typed PEP 561)
+- ? Task 2 ? Commit 2 (algo whitelist ? registry lookup)
+- ? Task 3 ? Commit 3 (docstrings: util, wrappers, actor, envs, memory/base, trainer)
+- ? Task 4 ? Commit 4 (dead code: envs, actor, nn_distributions, gamepad, check_environment, tuto)
+- ? Task 5 ? Commit 5 (pyinstrument ? dev, delete .readthedocs.yaml)
 
 **Placeholder scan:** No TBDs, TODOs, or vague requirements found.
 
-**Type consistency:** No new types or interfaces introduced — all changes are to existing signatures.
+**Type consistency:** No new types or interfaces introduced ? all changes are to existing signatures.

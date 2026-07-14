@@ -1,4 +1,4 @@
-# Release Readiness Design — AITrackmania
+# Release Readiness Design ? AITrackmania
 
 **Date:** 2026-07-09  
 **Branch:** feat/sota-professional-library  
@@ -12,7 +12,7 @@ Make the codebase release-ready as a professional RL library for Trackmania. Cov
 
 ## Commit Plan
 
-### Commit 1 — `fix: ship py.typed marker in wheel (PEP 561)`
+### Commit 1 ? `fix: ship py.typed marker in wheel (PEP 561)`
 
 **File:** `pyproject.toml`
 
@@ -27,7 +27,7 @@ tmrl = ["py.typed", "config/defaults/**/*.yaml"]
 
 ---
 
-### Commit 2 — `fix: replace hardcoded algo whitelist with registry lookup`
+### Commit 2 ? `fix: replace hardcoded algo whitelist with registry lookup`
 
 **File:** `tmrl/config/config_objects.py` ~line 74
 
@@ -48,7 +48,7 @@ This makes the plugin system functional as documented in `CONTRIBUTING.md`. Any 
 
 ---
 
-### Commit 3 — `docs: add Google-format docstrings to public API gaps`
+### Commit 3 ? `docs: add Google-format docstrings to public API gaps`
 
 Add Google-format docstrings (Args/Returns/Raises sections) to all public symbols currently missing them:
 
@@ -61,31 +61,31 @@ Add Google-format docstrings (Args/Returns/Raises sections) to all public symbol
 | `tmrl/memory/base.py` | `sample`, `append`, `sample_indices` |
 | `tmrl/networking/trainer.py` | 2 undocumented public defs |
 
-Pydantic field descriptions in `tmrl/config/schema/` are already complete — no changes needed there.
+Pydantic field descriptions in `tmrl/config/schema/` are already complete ? no changes needed there.
 
 **Format standard:** Google style (matching existing docstrings in `tmrl/actor.py` and `tmrl/registry.py`).
 
 ---
 
-### Commit 4 — `refactor: remove dead code and clean up inline comments`
+### Commit 4 ? `refactor: remove dead code and clean up inline comments`
 
 | File | Change |
 |---|---|
-| `tmrl/envs.py` lines 32–33 | Remove commented-out `assert` and `NormalizeActionWrapper` lines |
-| `tmrl/envs.py` lines 37–38 | Remove empty `if __name__ == "__main__": pass` guard |
+| `tmrl/envs.py` lines 32?33 | Remove commented-out `assert` and `NormalizeActionWrapper` lines |
+| `tmrl/envs.py` lines 37?38 | Remove empty `if __name__ == "__main__": pass` guard |
 | `tmrl/actor.py` line 147 | Remove `# super().__init__()  # torch.nn.Module` leftover comment |
 | `tmrl/custom/utils/nn_distributions.py` line 85 | Remove commented-out alternative distribution construction |
 | `tmrl/custom/tm/utils/control/gamepad.py` line 24 | Remove commented-out scaling formula |
-| `tmrl/tools/diagnostics/check_environment.py` lines 30–31 | Convert `print("d: ", d)` / `print("t: ", t)` to `logger.debug()` |
+| `tmrl/tools/diagnostics/check_environment.py` lines 30?31 | Convert `print("d: ", d)` / `print("t: ", t)` to `logger.debug()` |
 | `tmrl/tuto/tuto_minimal_drone.py` line 145 | Remove commented-out alternate config example |
 
 **Kept intentionally:**
-- `window.py` FIXME and `keyboard.py` TODO — document real known limitations
-- `impala_actor_critic.py` `# noqa: F401` re-export shim — intentional
+- `window.py` FIXME and `keyboard.py` TODO ? document real known limitations
+- `impala_actor_critic.py` `# noqa: F401` re-export shim ? intentional
 
 ---
 
-### Commit 5 — `chore: fix pyproject.toml metadata gaps`
+### Commit 5 ? `chore: fix pyproject.toml metadata gaps`
 
 - Move `pyinstrument` from `[project.dependencies]` to `[project.optional-dependencies] dev`
 - Delete `.readthedocs.yaml` (stale v1 format; `.readthedocs.yml` v2 is canonical)

@@ -1,0 +1,31 @@
+"""Lazy catalogue of first-class TMRL 1.0 learners."""
+
+from __future__ import annotations
+
+import importlib
+from typing import Any, cast
+
+_ALGORITHMS: dict[str, str] = {
+    "soft_actor_critic": "tmrl.algorithms.soft_actor_critic:SoftActorCritic",
+    "randomized_ensemble_sac": ("tmrl.algorithms.randomized_ensemble_sac:RandomizedEnsembleSAC"),
+    "truncated_quantile_critic": (
+        "tmrl.algorithms.truncated_quantile_critic:TruncatedQuantileCritic"
+    ),
+    "implicit_quantile_q_learning": (
+        "tmrl.algorithms.implicit_quantile_q_learning:ImplicitQuantileQLearning"
+    ),
+    "stable_discrete_soft_actor_critic": (
+        "tmrl.algorithms.stable_discrete_soft_actor_critic:StableDiscreteSoftActorCritic"
+    ),
+}
+
+
+def algorithm_class(name: str) -> type[Any]:
+    """Resolve one supported built-in algorithm without import-time side effects."""
+
+    try:
+        path = _ALGORITHMS[name]
+    except KeyError as exc:
+        raise ValueError(f"Unknown built-in algorithm {name!r}: {sorted(_ALGORITHMS)}") from exc
+    module_name, _, class_name = path.partition(":")
+    return cast(type[Any], getattr(importlib.import_module(module_name), class_name))

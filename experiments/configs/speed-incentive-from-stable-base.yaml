@@ -1,3 +1,0 @@
-environment:
-  reward:
-    speed_reward_weight: 2.0

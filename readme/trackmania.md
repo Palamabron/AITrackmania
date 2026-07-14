@@ -1,0 +1,71 @@
+# TrackMania IQN + lidar release workflow
+
+Install the game integration only on a machine that has TrackMania, OpenPlanet,
+the compatible telemetry plugin, and a virtual gamepad driver:
+
+```bash
+uv sync --group dev --extra trackmania --extra algorithms
+uv run tmrl init --template trackmania my-agent
+cd my-agent
+uv sync
+uv run tmrl validate run.yaml
+uv run tmrl smoke run.yaml
+uv run tmrl train run.yaml
+```
+
+The generated `.npz` is a structural placeholder only. Before training, record
+the two map boundaries by hand and build a UID-bound asset. Do not reuse an
+asset from another map:
+
+```bash
+uv run tmrl track record-boundary left assets/test-3-left.npy --samples 2000
+uv run tmrl track record-boundary right assets/test-3-right.npy --samples 2000
+uv run tmrl track build-geometry assets/test-3.geometry.npz \
+  --left assets/test-3-left.npy --right assets/test-3-right.npy \
+  --map-uid <test-3-map-uid> --map-path maps/test-3.Map.Gbx
+```
+
+Set that same UID in both `feature_pipeline.kwargs.expected_map_uid` and
+`evaluation.maps[].expected_map_uid`. Before a live evaluation, load that local
+`.Map.Gbx` manually in TrackMania. The documented OpenPlanet API exposes the
+active map UID but not a safe API to load an arbitrary local map. The bundled
+plugin's second local command port (default `9001`) therefore verifies the
+already loaded UID before every episode, then confirms an active player after
+the controller reset using protocol version `2`; a timeout, disconnect or UID
+mismatch aborts the run.
+
+The default baseline is a 78-action dueling IQN (`13` steering levels × `2`
+gas levels × continuous brake, full brake, or brake tap), not TQC. Its
+observation is a fixed 20-feature projection of the documented 33-field
+`TMRL_GrabData` packet, plus 15 left + 15 right car-local boundary samples.
+The local frame comes from `api.Position` and `vis.Dir`; it does not require
+aim-yaw telemetry. TQC remains an optional example only.
+
+Every run writes `manifest.json`, versioned `events.jsonl`, compressed episode
+artifacts, checkpoints and study records. Resume a stopped run with:
+
+```bash
+uv run tmrl resume run.yaml artifacts/<run-id>/checkpoints/update-XXXXXXXX.pt
+```
+
+`tmrl smoke` is the required Windows preflight. It collects a bounded number of
+real actions, completes at least one update, reloads the produced checkpoint,
+and runs the configured evaluation suite. It will operate the virtual gamepad:
+
+```bash
+uv run tmrl smoke run.yaml --transitions 100
+```
+
+The release benchmark is deterministic only in the sense that it repeats the
+same local map and assets. It does not claim game-engine seed control. It runs
+exactly 20 `test-3` trials, writes `evaluation.json` with per-trial status,
+latency/FPS and map UID, and passes only with at least 18 finishes, median
+completed time below 37 seconds, and no telemetry/controller errors:
+
+```bash
+uv run tmrl benchmark run.yaml artifacts/trackmania-iqn-lidar/checkpoints/update-XXXXXXXX.pt
+```
+
+The remaining manual release gate is a four-hour Windows soak on the real game,
+with periodic checkpoints and at least one successful `tmrl resume`. A failed
+benchmark or soak blocks release.

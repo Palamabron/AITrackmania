@@ -10,9 +10,9 @@
 
 ## Global Constraints
 
-- No changes to canonical public namespaces (`tmrl.memories`, `tmrl.interfaces`, `tmrl.models`, `tmrl.algorithms`, `tmrl.trackmania`) — these are preserved.
+- No changes to canonical public namespaces (`tmrl.memories`, `tmrl.interfaces`, `tmrl.models`, `tmrl.algorithms`, `tmrl.trackmania`) ? these are preserved.
 - Run `make fmt && make types && make test` after every task and fix any errors before committing.
-- 4 pre-existing pytest collection errors and 1 pre-existing test failure are expected — do not fix them, just confirm they are unchanged.
+- 4 pre-existing pytest collection errors and 1 pre-existing test failure are expected ? do not fix them, just confirm they are unchanged.
 - `make fmt` fails on macOS via `uv run` due to `vgamepad`; use `.venv/bin/ruff format tmrl/` and `.venv/bin/ruff check tmrl/` directly as a workaround.
 
 ---
@@ -130,7 +130,7 @@
 
 - [ ] **Step 2: Remove three fields from `tmrl/config/schema/run_bundle.py`**
 
-  Find the block starting at line 175 and remove these three field definitions (lines 175–190):
+  Find the block starting at line 175 and remove these three field definitions (lines 175?190):
   ```python
       demo_sampling_weight: Annotated[float, Field(ge=0.0)] = Field(
           default=1.0,
@@ -153,7 +153,7 @@
 
 - [ ] **Step 3: Remove three constants from `tmrl/config/constants.py`**
 
-  Find and remove lines 408–410:
+  Find and remove lines 408?410:
   ```python
   DEMO_SAMPLING_WEIGHT = max(0.0, float(PR.demo_sampling_weight))
   DEMO_WEIGHT_DECAY_SAMPLES = max(0, int(PR.demo_weight_decay_samples))
@@ -167,21 +167,21 @@
   PATH_DATA = TMRL_FOLDER
   ```
 
-- [ ] **Step 5: Update `tmrl/config/__init__.py` — remove imports**
+- [ ] **Step 5: Update `tmrl/config/__init__.py` ? remove imports**
 
-  In the `from tmrl.config.constants import (` block (around lines 40–200), remove these three lines:
+  In the `from tmrl.config.constants import (` block (around lines 40?200), remove these three lines:
   ```python
       DEMO_SAMPLING_WEIGHT,
       DEMO_WEIGHT_DECAY_SAMPLES,
       DEMO_WEIGHT_DECAY_SLOWDOWN,
   ```
 
-  In the `from tmrl.config.paths import (` block (around lines 210–240), remove:
+  In the `from tmrl.config.paths import (` block (around lines 210?240), remove:
   ```python
       PATH_DATA,
   ```
 
-- [ ] **Step 6: Update `tmrl/config/__init__.py` — remove from `__all__`**
+- [ ] **Step 6: Update `tmrl/config/__init__.py` ? remove from `__all__`**
 
   In the `__all__` list, remove the four string entries:
   ```python
@@ -243,11 +243,11 @@
 
   Current lines 4 and 9:
   ```python
-  from typing import cast  # noqa: F401 — kept for potential downstream use
+  from typing import cast  # noqa: F401 ? kept for potential downstream use
   ```
   and:
   ```python
-  import torch.nn.functional as F  # noqa: F401 — kept for potential downstream use
+  import torch.nn.functional as F  # noqa: F401 ? kept for potential downstream use
   ```
 
   Remove both lines entirely. After removal, the top of the file should look like:
@@ -283,11 +283,11 @@
 ## Self-Review
 
 **Spec coverage:**
-- ✅ Task 1 → Commit 1 (custom_algorithms package)
-- ✅ Task 2 → Commit 2 (zero-byte stubs)
-- ✅ Task 3 → Commit 3 (deprecated schema fields + PATH_DATA)
-- ✅ Task 4 → Commit 4 (nn_utils unused re-exports)
+- ? Task 1 ? Commit 1 (custom_algorithms package)
+- ? Task 2 ? Commit 2 (zero-byte stubs)
+- ? Task 3 ? Commit 3 (deprecated schema fields + PATH_DATA)
+- ? Task 4 ? Commit 4 (nn_utils unused re-exports)
 
-**Placeholder scan:** No TBDs, no vague steps — every step has the exact code or command.
+**Placeholder scan:** No TBDs, no vague steps ? every step has the exact code or command.
 
 **Type consistency:** No new types or interfaces. All changes are deletions.

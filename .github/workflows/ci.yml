@@ -61,3 +61,24 @@ jobs:
         env:
           TMRL_DISABLE_GAME: "1"
         run: uv run pytest tests/ -v --tb=short -x
+
+  package:
+    name: Build distributables
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          python-version: "3.12"
+
+      - name: Install build dependencies
+        run: uv sync --group dev
+
+      - name: Build source distribution and wheel
+        run: uv build
+
+      - name: Verify license contents
+        run: uv run python scripts/check_distribution.py

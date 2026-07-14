@@ -1,21 +1,15 @@
-"""Canonical re-export facade for tmrl training algorithm agents."""
+"""First-class TMRL 1.0 off-policy learners."""
 
-from tmrl.custom.algorithms._internal._common import amp_setup, sanitize_obs, set_seed
-from tmrl.custom.algorithms.iqn import IQNAgent
-from tmrl.custom.algorithms.redq_sac import REDQSACAgent
-from tmrl.custom.algorithms.sac import SpinupSacAgent
-from tmrl.custom.algorithms.sdsac import SDSACAgent
-from tmrl.custom.algorithms.tqc import TQCAgent
+from tmrl.algorithms.implicit_quantile_q_learning import ImplicitQuantileQLearning
+from tmrl.algorithms.randomized_ensemble_sac import RandomizedEnsembleSAC
+from tmrl.algorithms.soft_actor_critic import SoftActorCritic
+from tmrl.algorithms.stable_discrete_soft_actor_critic import StableDiscreteSoftActorCritic
+from tmrl.algorithms.truncated_quantile_critic import TruncatedQuantileCritic
 
 __all__ = [
-    # Agent classes
-    "IQNAgent",
-    "REDQSACAgent",
-    "SDSACAgent",
-    "SpinupSacAgent",
-    "TQCAgent",
-    # Shared utilities
-    "amp_setup",
-    "sanitize_obs",
-    "set_seed",
+    "ImplicitQuantileQLearning",
+    "RandomizedEnsembleSAC",
+    "SoftActorCritic",
+    "StableDiscreteSoftActorCritic",
+    "TruncatedQuantileCritic",
 ]

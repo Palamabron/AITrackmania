@@ -1,8 +1,0 @@
-# @package _global_
-# Full model preset matching `tmrl/custom/models/hybrid_input/sophy.py::SophyActorCritic`.
-defaults:
-  - vanilla_cnn_actor_critic
-  - _self_
-
-model:
-  type: sophy_actor_critic
