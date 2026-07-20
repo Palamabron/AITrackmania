@@ -275,8 +275,9 @@ def test_generated_project_uses_the_current_checkout_before_first_publish(tmp_pa
     target = create_project(tmp_path / "agent", "agent")
     pyproject = tomllib.loads((target / "pyproject.toml").read_text(encoding="utf-8"))
     requirement = pyproject["project"]["dependencies"][0]
-    assert requirement.startswith("tmrl[distributed] @ file:///")
+    assert requirement == "tmrl[distributed]"
     assert requirement.count("tmrl") == 1
+    assert pyproject["tool"]["uv"]["sources"]["tmrl"]["editable"] is True
     assert "pytest>=7.0" in pyproject["dependency-groups"]["dev"]
 
 

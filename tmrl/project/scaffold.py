@@ -11,7 +11,7 @@ def _tmrl_requirement(extras: str) -> str:
 
     source_root = Path(__file__).resolve().parents[2]
     if (source_root / "pyproject.toml").is_file():
-        return f"tmrl{extras} @ {source_root.as_uri()}"
+        return f"tmrl{extras}"
     return f"tmrl{extras}>=1.0"
 
 
@@ -38,19 +38,30 @@ def _trackmania_poe_tasks() -> str:
     )
 
 
-def _accelerator_options() -> str:
-    return """
-[tool.uv.sources]
-torch = [
-  { index = "pytorch-cuda", marker = "sys_platform == 'win32' or sys_platform == 'linux'" },
-]
-
-[[tool.uv.index]]
-name = "pytorch-cuda"
-url = "https://download.pytorch.org/whl/cu128"
-explicit = true
-
-"""
+def _uv_options(*, accelerator: bool) -> str:
+    source_root = Path(__file__).resolve().parents[2]
+    tmrl_source = (
+        f'tmrl = {{ path = "{source_root.as_posix()}", editable = true }}\n'
+        if (source_root / "pyproject.toml").is_file()
+        else ""
+    )
+    torch_source = (
+        "torch = [\n"
+        '  { index = "pytorch-cuda",\n'
+        "    marker = \"sys_platform == 'win32' or sys_platform == 'linux'\" },\n"
+        "]\n"
+        if accelerator
+        else ""
+    )
+    index = (
+        "\n[[tool.uv.index]]\n"
+        'name = "pytorch-cuda"\n'
+        'url = "https://download.pytorch.org/whl/cu128"\n'
+        "explicit = true\n"
+        if accelerator
+        else ""
+    )
+    return f"\n[tool.uv.sources]\n{tmrl_source}{torch_source}{index}"
 
 
 def _config(package: str) -> str:
@@ -209,8 +220,9 @@ def create_project(directory: str | Path, package: str, *, template: str = "star
         if template == "trackmania"
         else "[distributed]",
     )
+    pyproject += _uv_options(accelerator=template == "trackmania")
     if template == "trackmania":
-        pyproject += _trackmania_poe_tasks() + _accelerator_options()
+        pyproject += _trackmania_poe_tasks()
     (target / "pyproject.toml").write_text(pyproject, encoding="utf-8")
     config = _config(package) if template == "starter" else _trackmania_config()
     (target / "run.yaml").write_text(config, encoding="utf-8")
@@ -278,6 +290,7 @@ components:
     kwargs:
       learning_rate: 3.0e-5
       gradient_clip_norm: 1.0
+      target_update_interval: 5000
       exploration_epsilon: 1.0
       exploration_epsilon_final: 0.05
       exploration_epsilon_decay_updates: 100000

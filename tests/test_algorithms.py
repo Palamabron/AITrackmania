@@ -12,6 +12,7 @@ from tmrl.algorithms import (
 )
 from tmrl.algorithms._torch import polyak_update
 from tmrl.algorithms.execution import TorchExecutionConfig
+from tmrl.algorithms.implicit_quantile_q_learning import implicit_quantile_huber_loss
 from tmrl.core.data import TrainingBatch
 from tmrl.models.actors import CategoricalActor, GaussianActor
 from tmrl.models.critics import ContinuousQCritic, DiscreteQuantileNetwork, QuantileCritic
@@ -117,6 +118,16 @@ def test_iqn_network_is_batch_size_invariant() -> None:
         assert output.shape == (batch_size, 7, 3)
 
 
+def test_iqn_loss_matches_paper_quantile_reduction() -> None:
+    predictions = torch.zeros(1, 2)
+    targets = torch.full((1, 3), 2.0)
+    quantiles = torch.full((1, 2), 0.5)
+
+    loss = implicit_quantile_huber_loss(predictions, targets, quantiles)
+
+    assert torch.equal(loss, torch.tensor([1.5]))
+
+
 def test_bundled_actors_support_tuple_and_mapping_encoder_inputs() -> None:
     track = torch.randn(3, 2)
     telemetry = torch.randn(3, 2)
@@ -160,6 +171,28 @@ def test_iqn_rollout_uses_epsilon_greedy_exploration_but_evaluation_is_greedy() 
     explored_actions = {policy.act(torch.zeros(4)) for _ in range(32)}
     assert len(explored_actions) > 1
     assert policy.act(torch.zeros(4), deterministic=True) == 0
+
+
+def test_iqn_update_reports_clipping_value_and_target_diagnostics() -> None:
+    learner = ImplicitQuantileQLearning(
+        DiscreteQuantileNetwork(Encoder(), 16, 3, cosine_count=8),
+        train_quantile_count=8,
+        target_quantile_count=8,
+        evaluation_quantile_count=8,
+        target_update_interval=1,
+        gradient_clip_norm=1e-8,
+        execution={"device": "cpu", "precision": "float32"},
+    )
+    learner.setup({"seed": 0})
+
+    metrics, _ = learner.update(_batch(discrete=True))
+
+    assert metrics["debug/gradient_norm_max"] == metrics["debug/gradient_norm"]
+    assert metrics["debug/gradient_clipped_fraction"] == 1.0
+    assert metrics["debug/gradient_clip_coefficient"] < 1.0
+    assert metrics["debug/target_synced_fraction"] == 1.0
+    assert metrics["debug/q_selected_abs_max"] >= abs(metrics["debug/q_selected_mean"])
+    assert metrics["debug/target_abs_max"] >= abs(metrics["debug/target_mean"])
 
 
 def test_polyak_update_copies_batch_norm_buffers() -> None:

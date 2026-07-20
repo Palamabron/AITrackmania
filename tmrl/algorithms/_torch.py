@@ -145,14 +145,29 @@ class TorchLearnerBase:
         raise NotImplementedError
 
     def _batch(self, batch: TrainingBatch) -> TrainingBatch:
+        observations = tree_to_device(batch.observations, self.device)
+        actions = tree_to_device(batch.actions, self.device)
+        rewards = tree_to_device(batch.rewards, self.device)
+        next_observations = tree_to_device(batch.next_observations, self.device)
+        terminated = tree_to_device(batch.terminated, self.device)
+        truncated = tree_to_device(batch.truncated, self.device)
+        standard = {
+            "observations": observations,
+            "actions": actions,
+            "rewards": rewards,
+            "next_observations": next_observations,
+            "terminated": terminated,
+            "truncated": truncated,
+        }
+        data = self._batch_data(batch.data, standard)
         return TrainingBatch(
-            data=tree_to_device(batch.data, self.device),
-            observations=tree_to_device(batch.observations, self.device),
-            actions=tree_to_device(batch.actions, self.device),
-            rewards=tree_to_device(batch.rewards, self.device),
-            next_observations=tree_to_device(batch.next_observations, self.device),
-            terminated=tree_to_device(batch.terminated, self.device),
-            truncated=tree_to_device(batch.truncated, self.device),
+            data=data,
+            observations=observations,
+            actions=actions,
+            rewards=rewards,
+            next_observations=next_observations,
+            terminated=terminated,
+            truncated=truncated,
             bootstrap_discounts=tree_to_device(batch.bootstrap_discounts, self.device),
             transition_ids=batch.transition_ids,
             importance_weights=(
@@ -163,6 +178,12 @@ class TorchLearnerBase:
             masks=tree_to_device(batch.masks, self.device) if batch.masks is not None else None,
             metadata=batch.metadata,
         )
+
+    def _batch_data(self, data: Any, standard: Mapping[str, Any]) -> Any:
+        if not isinstance(data, Mapping) or data.get("_tmrl_batch_collated") is not True:
+            return tree_to_device(data, self.device)
+        extras = {key: value for key, value in data.items() if key not in standard}
+        return {**tree_to_device(extras, self.device), **standard}
 
     @staticmethod
     def _tensor(value: Any, name: str) -> torch.Tensor:

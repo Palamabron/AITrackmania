@@ -46,6 +46,15 @@ def test_gymnasium_collator_preserves_nested_structure_and_dtypes() -> None:
     assert batch["nested"][2].shape == (2, 2)
 
 
+def test_gymnasium_collator_batches_box_tensors_without_numpy_round_trip() -> None:
+    space = spaces.Box(-1.0, 1.0, shape=(2,), dtype=np.float32)
+    values = [torch.tensor([0.25, -0.5]), torch.tensor([0.5, -0.25])]
+
+    batch = GymnasiumObservationCollator(space).collate_observations(values)
+
+    assert torch.equal(batch, torch.stack(values))
+
+
 def test_gymnasium_collator_rejects_invalid_box_and_nested_values() -> None:
     collator = GymnasiumObservationCollator(_space())
     invalid = _observation()

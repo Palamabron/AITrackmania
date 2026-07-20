@@ -54,18 +54,25 @@ class _PendingRollout:
 class _MetricAccumulator:
     def __init__(self) -> None:
         self.values: dict[str, float] = {}
+        self.maximums: dict[str, float] = {}
         self.count = 0
 
     def add(self, metrics: Mapping[str, float]) -> None:
         for key, value in metrics.items():
-            self.values[key] = self.values.get(key, 0.0) + float(value)
+            numeric = float(value)
+            if key.endswith("_max"):
+                self.maximums[key] = max(self.maximums.get(key, numeric), numeric)
+            else:
+                self.values[key] = self.values.get(key, 0.0) + numeric
         self.count += 1
 
     def flush(self) -> dict[str, float]:
         if self.count == 0:
             return {}
         output = {key: value / self.count for key, value in self.values.items()}
+        output.update(self.maximums)
         self.values.clear()
+        self.maximums.clear()
         self.count = 0
         return output
 

@@ -20,7 +20,7 @@ from tmrl.core.runtime import ResolvedRun
 from tmrl.core.spec import RunSpec
 from tmrl.distributed.actor import ActorRuntime, _Client, _PolicyReference
 from tmrl.distributed.codec import WireCodec
-from tmrl.distributed.coordinator import Coordinator
+from tmrl.distributed.coordinator import Coordinator, _MetricAccumulator
 from tmrl.distributed.journal import RolloutJournal
 from tmrl.distributed.protocol import (
     PROTOCOL_VERSION,
@@ -37,6 +37,16 @@ class _Pipeline:
 
     def collate(self, transitions: list[Transition]) -> Mapping[str, Any]:
         return {"reward": np.asarray([item.reward for item in transitions])}
+
+
+def test_metric_accumulator_averages_windows_and_preserves_maxima() -> None:
+    metrics = _MetricAccumulator()
+    metrics.add({"loss": 2.0, "debug/gradient_norm_max": 3.0})
+    metrics.add({"loss": 4.0, "debug/gradient_norm_max": 2.0})
+
+    output = metrics.flush()
+
+    assert output == {"loss": 3.0, "debug/gradient_norm_max": 3.0}
 
 
 class _Policy:

@@ -48,7 +48,7 @@ def implicit_quantile_huber_loss(
     delta = targets[:, None, :] - predictions[:, :, None]
     huber = torch.where(delta.abs() <= 1, 0.5 * delta.square(), delta.abs() - 0.5)
     weights = torch.abs(quantiles[:, :, None] - (delta.detach() < 0).float())
-    return (weights * huber).mean(dim=(1, 2))
+    return (weights * huber).mean(dim=2).sum(dim=1)
 
 
 class _IQNPolicy:
@@ -216,7 +216,9 @@ class ImplicitQuantileQLearning(TorchLearnerBase):
                 )
                 targets = rewards[:, None] + discounts[:, None] * target_values
         forward_finished = perf_counter()
-        losses = implicit_quantile_huber_loss(selected.float(), targets.float(), quantiles)
+        selected_fp32 = selected.float()
+        targets_fp32 = targets.float()
+        losses = implicit_quantile_huber_loss(selected_fp32, targets_fp32, quantiles)
         weights = (
             batch.importance_weights if isinstance(batch.importance_weights, torch.Tensor) else None
         )
@@ -233,6 +235,12 @@ class ImplicitQuantileQLearning(TorchLearnerBase):
         gradient_norm = torch.nn.utils.clip_grad_norm_(
             self.model.parameters(), self.gradient_clip_norm
         )
+        gradient_norm_value = float(gradient_norm)
+        gradient_clipped = gradient_norm_value > self.gradient_clip_norm
+        clip_coefficient = min(
+            1.0,
+            self.gradient_clip_norm / max(gradient_norm_value, 1e-12),
+        )
         clipping_finished = perf_counter()
         self.scaler.step(self.optimizer)
         self.scaler.update()
@@ -243,20 +251,31 @@ class ImplicitQuantileQLearning(TorchLearnerBase):
             assert self.resolved_execution is not None
             self.resolved_execution = self.resolved_execution.with_compile_result(effective=True)
             self._record_execution_result()
+        target_synced = False
         if self.target_tau > 0:
             with torch.no_grad():
                 for target, source in zip(
                     self.target_model.parameters(), self.model.parameters(), strict=True
                 ):
                     target.lerp_(source, self.target_tau)
+            target_synced = True
         elif self.update_count % self.target_update_interval == 0:
             self.target_model.load_state_dict(self.model.state_dict())
-        td_errors = (selected.mean(1) - targets.mean(1)).detach().abs()
+            target_synced = True
+        td_errors = (selected_fp32.mean(1) - targets_fp32.mean(1)).detach().abs()
         return (
             {
                 "loss/iqn": float(loss.item()),
-                "debug/gradient_norm": float(gradient_norm),
+                "debug/gradient_norm": gradient_norm_value,
+                "debug/gradient_norm_max": gradient_norm_value,
+                "debug/gradient_clipped_fraction": float(gradient_clipped),
+                "debug/gradient_clip_coefficient": clip_coefficient,
                 "debug/td_abs_mean": float(td_errors.mean().item()),
+                "debug/q_selected_mean": float(selected_fp32.mean().item()),
+                "debug/q_selected_abs_max": float(selected_fp32.abs().max().item()),
+                "debug/target_mean": float(targets_fp32.mean().item()),
+                "debug/target_abs_max": float(targets_fp32.abs().max().item()),
+                "debug/target_synced_fraction": float(target_synced),
                 "timing/host_to_device_s": transfer_finished - started,
                 "timing/forward_s": forward_finished - transfer_finished,
                 "timing/backward_s": backward_finished - forward_finished,

@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "my-trackmania-agent"
 version = "0.1.0"
 requires-python = ">=3.12"
-dependencies = ["tmrl[trackmania,algorithms,wandb,distributed] @ file:///H:/Studia/inzynierskie/inzynierkav2/AITrackmania", "torch>=2.4"]
+dependencies = ["tmrl[trackmania,algorithms,wandb,distributed]", "torch>=2.4"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
@@ -15,6 +15,7 @@ where = ["src"]
 dev = ["poethepoet>=0.36"]
 
 [tool.uv.sources]
+tmrl = { path = "..", editable = true }
 torch = [
   { index = "pytorch-cuda", marker = "sys_platform == 'win32' or sys_platform == 'linux'" },
 ]

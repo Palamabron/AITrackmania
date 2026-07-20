@@ -113,6 +113,29 @@ class GymnasiumObservationCollator:
 
     @staticmethod
     def _collate_box(space: spaces.Box, values: Sequence[Any], path: str) -> torch.Tensor:
+        if all(isinstance(value, torch.Tensor) for value in values):
+            tensors = cast(Sequence[torch.Tensor], values)
+            if any(tuple(tensor.shape) != space.shape for tensor in tensors):
+                raise ValueError(f"{path} must have shape {space.shape}")
+            expected_dtype = torch.from_numpy(np.empty((), dtype=space.dtype)).dtype
+            if any(tensor.dtype != expected_dtype for tensor in tensors):
+                raise ValueError(f"{path} must have dtype {space.dtype}")
+            stacked_tensor = torch.stack(tuple(tensors))
+            if stacked_tensor.is_floating_point() and not torch.isfinite(stacked_tensor).all():
+                raise ValueError(f"{path} contains non-finite values")
+            low = torch.as_tensor(
+                space.low,
+                dtype=stacked_tensor.dtype,
+                device=stacked_tensor.device,
+            )
+            high = torch.as_tensor(
+                space.high,
+                dtype=stacked_tensor.dtype,
+                device=stacked_tensor.device,
+            )
+            if bool((stacked_tensor < low).any()) or bool((stacked_tensor > high).any()):
+                raise ValueError(f"{path} contains values outside the Box space")
+            return stacked_tensor
         arrays = [
             value.detach().cpu().numpy() if isinstance(value, torch.Tensor) else np.asarray(value)
             for value in values

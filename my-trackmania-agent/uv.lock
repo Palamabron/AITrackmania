@@ -429,7 +429,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "tmrl", extras = ["trackmania", "algorithms", "wandb", "distributed"], directory = "../" },
+    { name = "tmrl", extras = ["trackmania", "algorithms", "wandb", "distributed"], editable = "../" },
     { name = "torch", marker = "sys_platform != 'linux' and sys_platform != 'win32'", specifier = ">=2.4" },
     { name = "torch", marker = "sys_platform == 'linux' or sys_platform == 'win32'", specifier = ">=2.4", index = "https://download.pytorch.org/whl/cu128" },
 ]
@@ -1102,7 +1102,7 @@ wheels = [
 [[package]]
 name = "tmrl"
 version = "1.0.0"
-source = { directory = "../" }
+source = { editable = "../" }
 dependencies = [
     { name = "gymnasium" },
     { name = "numpy" },
