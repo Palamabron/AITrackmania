@@ -140,6 +140,7 @@ def test_iqn_lidar_updates_and_handles_single_structured_observation(tmp_path: P
         exploration_epsilon=1.0,
         exploration_epsilon_final=0.05,
         exploration_epsilon_decay_updates=10,
+        execution={"device": "cpu", "precision": "float32"},
     )
     learner.setup({"seed": 0})
     metrics, _ = learner.update(batch)

@@ -186,6 +186,30 @@ def test_training_spec_controls_the_replay_request() -> None:
     assert (request.batch_size, request.n_step, request.gamma, request.beta) == (3, 2, 0.8, 0.5)
 
 
+def test_training_spec_anneals_prioritized_replay_beta() -> None:
+    spec = RunSpec.model_validate(
+        {
+            "run_id": "beta-schedule",
+            "components": {
+                "learner": {"class_path": "tmrl.core.builtins:SmokeLearner"},
+                "replay_store": {"class_path": "tmrl.core.replay:InMemoryReplayStore"},
+                "sampler": {"class_path": "tmrl.core.replay:UniformSampler"},
+                "feature_pipeline": {"class_path": "tmrl.core.builtins:IdentityFeaturePipeline"},
+            },
+            "training": {
+                "total_transitions": 100,
+                "beta": 0.4,
+                "per_beta_final": 1.0,
+                "per_beta_anneal_transitions": 100,
+            },
+        }
+    )
+
+    assert spec.training.replay_beta(0) == pytest.approx(0.4)
+    assert spec.training.replay_beta(50) == pytest.approx(0.7)
+    assert spec.training.replay_beta(100) == pytest.approx(1.0)
+
+
 def test_builtins_catalogue_resolves_without_eager_optional_model_imports() -> None:
     batch = TransitionFeaturePipeline().collate([Transition(1.0, 0.0, 1.0, 2.0, False, False)])
     assert tuple(batch["observations"].shape) == (1,)

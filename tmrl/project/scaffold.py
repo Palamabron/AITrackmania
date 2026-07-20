@@ -6,29 +6,55 @@ from importlib.resources import files
 from pathlib import Path
 
 
-def _tmrl_requirement() -> str:
+def _tmrl_requirement(extras: str) -> str:
     """Use this checkout while developing before the next package release exists."""
 
     source_root = Path(__file__).resolve().parents[2]
     if (source_root / "pyproject.toml").is_file():
-        return f"tmrl @ {source_root.as_uri()}"
-    return "tmrl>=1.0"
+        return f"tmrl{extras} @ {source_root.as_uri()}"
+    return f"tmrl{extras}>=1.0"
 
 
-def _pyproject(name: str) -> str:
+def _pyproject(name: str, *, tmrl_extras: str = "") -> str:
     return (
         '[build-system]\nrequires = ["setuptools>=65"]\n'
         'build-backend = "setuptools.build_meta"\n\n'
         '[project]\nname = "' + name + '"\nversion = "0.1.0"\n'
         'requires-python = ">=3.12"\ndependencies = ["'
-        + _tmrl_requirement()
-        + '", "torch>=2.4"]\n\n'
+        + _tmrl_requirement(tmrl_extras)
+        + '", "torch>=2.4"]\n\n[dependency-groups]\ndev = ["poethepoet>=0.36", "pytest>=7.0"]\n\n'
         '[tool.setuptools.packages.find]\nwhere = ["src"]\n'
     )
 
 
+def _trackmania_poe_tasks() -> str:
+    return (
+        "\n[tool.poe.tasks]\n"
+        'record-left = "tmrl track record-boundary left assets/test-3-left.npy"\n'
+        'record-right = "tmrl track record-boundary right assets/test-3-right.npy"\n'
+        'build-geometry = "tmrl track build-geometry assets/test-3.geometry.npz '
+        "--left assets/test-3-left.npy --right assets/test-3-right.npy "
+        "--map-uid REPLACE_WITH_TEST_3_UID --map-path maps/test-3.Map.Gbx" + '"\n'
+    )
+
+
+def _accelerator_options() -> str:
+    return """
+[tool.uv.sources]
+torch = [
+  { index = "pytorch-cuda", marker = "sys_platform == 'win32' or sys_platform == 'linux'" },
+]
+
+[[tool.uv.index]]
+name = "pytorch-cuda"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+"""
+
+
 def _config(package: str) -> str:
-    return f"""api_version: "1.1"
+    return f"""api_version: "1.2"
 run_id: starter
 seed: 0
 artifacts_dir: artifacts
@@ -117,6 +143,12 @@ class StarterMlpPolicy:
         with torch.no_grad():
             return float(torch.tanh(self.network(torch.tensor([[speed]])).squeeze()).item())
 
+    def export_state(self) -> Mapping[str, Any]:
+        return {"model": self.network.state_dict()}
+
+    def load_state(self, state: Mapping[str, Any]) -> None:
+        self.network.load_state_dict(state["model"])
+
 
 class StarterMlpLearner:
     """Trainable contract example, not a complete racing algorithm."""
@@ -169,14 +201,23 @@ def create_project(directory: str | Path, package: str, *, template: str = "star
     if target.exists() and any(target.iterdir()):
         raise FileExistsError(f"Refusing to overwrite non-empty directory {target}")
     package_dir.mkdir(parents=True, exist_ok=True)
-    (target / "pyproject.toml").write_text(_pyproject(package.replace("_", "-")), encoding="utf-8")
     if template not in {"starter", "trackmania"}:
         raise ValueError("template must be 'starter' or 'trackmania'")
+    pyproject = _pyproject(
+        package.replace("_", "-"),
+        tmrl_extras="[trackmania,algorithms,wandb,distributed]"
+        if template == "trackmania"
+        else "[distributed]",
+    )
+    if template == "trackmania":
+        pyproject += _trackmania_poe_tasks() + _accelerator_options()
+    (target / "pyproject.toml").write_text(pyproject, encoding="utf-8")
     config = _config(package) if template == "starter" else _trackmania_config()
     (target / "run.yaml").write_text(config, encoding="utf-8")
     if template == "trackmania":
         assets = target / "assets"
         assets.mkdir()
+        (target / "maps").mkdir()
         (assets / "trajectory.csv").write_text("0,0,0\n1,0,0\n2,0,0\n", encoding="utf-8")
         import numpy as np
 
@@ -196,6 +237,10 @@ def create_project(directory: str | Path, package: str, *, template: str = "star
         plugin = files("tmrl.project").joinpath("openplanet/TMRL_GrabData_IQN.as")
         (plugin_dir / "TMRL_GrabData_IQN.as").write_text(
             plugin.read_text(encoding="utf-8"), encoding="utf-8"
+        )
+        plugin_info = files("tmrl.project").joinpath("openplanet/info.toml")
+        (plugin_dir / "info.toml").write_text(
+            plugin_info.read_text(encoding="utf-8"), encoding="utf-8"
         )
         (plugin_dir / "README.md").write_text(
             "Copy TMRL_GrabData_IQN.as to OpenplanetNext/Scripts, reload OpenPlanet, and "
@@ -223,8 +268,8 @@ def create_project(directory: str | Path, package: str, *, template: str = "star
 
 
 def _trackmania_config() -> str:
-    return """api_version: \"1.1\"
-run_id: trackmania-iqn-lidar
+    return """api_version: \"1.2\"
+run_id: trackmania-iqn-lidar-v1
 seed: 0
 artifacts_dir: artifacts
 components:
@@ -236,6 +281,11 @@ components:
       exploration_epsilon: 1.0
       exploration_epsilon_final: 0.05
       exploration_epsilon_decay_updates: 100000
+      execution:
+        device: auto
+        precision: auto
+        compile: false
+        compile_mode: default
   environment:
     class_path: tmrl.trackmania.environment:OpenPlanetEnvironmentFactory
     kwargs:
@@ -243,6 +293,10 @@ components:
         trajectory_path: assets/trajectory.csv
         geometry_path: assets/test-3.geometry.npz
         expected_map_uid: REPLACE_WITH_TEST_3_UID
+        action_repeat_frames: 4
+        slow_progress_window_steps: 300
+        no_progress_steps: 600
+        minimum_progress_per_window_m: 0.5
   model_factory:
     class_path: tmrl.trackmania.iqn:LidarIqnModelFactory
   replay_store:
@@ -256,7 +310,11 @@ components:
       expected_map_uid: REPLACE_WITH_TEST_3_UID
   evaluator:
     class_path: tmrl.trackmania.evaluation:TrackmaniaEvaluator
-  evaluation:
+  additional_loggers:
+    - class_path: tmrl.observability.trackers:WandbTracker
+      kwargs:
+        project: trackmania-iqn-lidar
+evaluation:
   name: test-3
   version: "1"
   maps:
@@ -265,10 +323,21 @@ components:
       geometry_path: assets/test-3.geometry.npz
       expected_map_uid: REPLACE_WITH_TEST_3_UID
   trials_per_map: 20
+distributed:
+  epsilon_profiles: [1.0]
+  epsilon_start: 0.5
+  epsilon_final: 0.05
+  epsilon_decay_transitions: 1500000
 training:
-  total_transitions: 100000
-  batch_size: 256
-  n_step: 7
+  total_transitions: 2000000
+  batch_size: 512
+  n_step: 3
   gamma: 0.995
-  warmup_transitions: 10000
+  beta: 0.4
+  per_beta_final: 1.0
+  per_beta_anneal_transitions: 2000000
+  warmup_transitions: 20000
+  updates_per_transition: 0.25
+  checkpoint_interval_updates: 5000
+  metrics_interval_updates: 50
 """

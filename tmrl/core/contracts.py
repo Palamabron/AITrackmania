@@ -17,6 +17,22 @@ class Policy(Protocol):
 
 
 @runtime_checkable
+class ReplicablePolicy(Policy, Protocol):
+    """Inference policy whose tensor state can be distributed safely."""
+
+    def export_state(self) -> Mapping[str, Any]: ...
+
+    def load_state(self, state: Mapping[str, Any]) -> None: ...
+
+
+@runtime_checkable
+class ExploratoryPolicy(Policy, Protocol):
+    """Policy with actor-local exploration independent from learner weights."""
+
+    def set_exploration_epsilon(self, epsilon: float) -> None: ...
+
+
+@runtime_checkable
 class Learner(Protocol):
     """Stateful optimisation algorithm running on the trainer."""
 
@@ -73,7 +89,7 @@ class Sampler(Protocol):
 
 @runtime_checkable
 class FeaturePipeline(Protocol):
-    """Transforms TrackMania observations and collates sampled transitions."""
+    """Transforms observations and collates sampled transitions."""
 
     def transform_observation(self, observation: Any) -> Any: ...
 

@@ -117,7 +117,7 @@ class TrackmaniaEvaluator:
                 crashed = termination_reason in {"crashed", "off_track"}
                 if finished:
                     race_time_ms = info.get("race_time_ms")
-                    if isinstance(race_time_ms, (float, int)) and race_time_ms >= 0.0:
+                    if isinstance(race_time_ms, (float, int)) and race_time_ms > 0.0:
                         finish_time_s = float(race_time_ms) / 1_000.0
                 if terminated or truncated:
                     break

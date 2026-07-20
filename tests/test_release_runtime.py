@@ -7,15 +7,17 @@ import socket
 import struct
 import sys
 import threading
+import tomllib
 from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
 import pytest
 from tmrl.core.builtins import JsonlRunLogger
+from tmrl.core.spec import RunSpec
 from tmrl.experiments.orchestration import GridStrategy, StudyLedger, StudyRunner, StudySpec
 from tmrl.project.scaffold import create_project
-from tmrl.trackmania.assets import record_trajectory
+from tmrl.trackmania.assets import record_boundary, record_trajectory
 from tmrl.trackmania.environment import OpenPlanetEnvironmentFactory
 from tmrl.trackmania.evaluation import TrackmaniaEvaluator
 from tmrl.trackmania.reward import TrajectoryReward
@@ -153,6 +155,32 @@ def test_trajectory_recorder_writes_portable_csv(tmp_path: Path) -> None:
     assert np.array_equal(points[0], np.asarray(DEFAULT_POSITION_INDICES, dtype=np.float32))
 
 
+def test_boundary_recorder_stops_when_the_game_reports_a_finish(tmp_path: Path) -> None:
+    class Client:
+        def __init__(self) -> None:
+            self.count = 0
+
+        def read(self) -> TelemetryFrame:
+            self.count += 1
+            values = np.zeros(33, dtype=np.float32)
+            values[list(DEFAULT_POSITION_INDICES)] = self.count
+            values[2] = float(self.count in {1, 4})
+            values[3] = 0.0
+            return TelemetryFrame(values)
+
+    messages: list[str] = []
+    path = record_boundary(
+        tmp_path / "boundary.npy", Client(), minimum_spacing_m=0.1, status=messages.append
+    )
+
+    assert np.load(path).shape == (3, 3)
+    assert messages == [
+        "Waiting for an active run; restart the map if it is on the finish screen.",
+        "Recording started at race time 0 ms after moving 1.7 m.",
+        "Finish detected at race time 0 ms after 3 samples.",
+    ]
+
+
 def test_openplanet_defaults_match_the_bundled_plugin_and_resolve_assets(tmp_path: Path) -> None:
     environment = OpenPlanetEnvironmentFactory(
         {"trajectory_path": "assets/trajectory.csv"}, base_dir=tmp_path
@@ -236,15 +264,20 @@ def test_trackmania_template_contains_first_party_components(tmp_path: Path) -> 
     assert "OpenPlanetEnvironmentFactory" in config
     assert "TrackmaniaEvaluator" in config
     assert (target / "assets" / "trajectory.csv").is_file()
+    assert (target / "maps").is_dir()
     plugin = target / "openplanet" / "TMRL_GrabData_IQN.as"
     assert plugin.is_file()
     assert 'const string PROTOCOL_VERSION = "2"' in plugin.read_text(encoding="utf-8")
+    assert RunSpec.from_yaml(target / "run.yaml").evaluation is not None
 
 
 def test_generated_project_uses_the_current_checkout_before_first_publish(tmp_path: Path) -> None:
     target = create_project(tmp_path / "agent", "agent")
-    pyproject = (target / "pyproject.toml").read_text(encoding="utf-8")
-    assert "tmrl @ file:///" in pyproject
+    pyproject = tomllib.loads((target / "pyproject.toml").read_text(encoding="utf-8"))
+    requirement = pyproject["project"]["dependencies"][0]
+    assert requirement.startswith("tmrl[distributed] @ file:///")
+    assert requirement.count("tmrl") == 1
+    assert "pytest>=7.0" in pyproject["dependency-groups"]["dev"]
 
 
 def test_trackmania_evaluator_runs_every_declared_seed_and_episode() -> None:
@@ -289,6 +322,40 @@ def test_trackmania_evaluator_runs_every_declared_seed_and_episode() -> None:
     assert metrics["eval/finish_rate"] == 1.0
     assert metrics["eval/reward"] == 2.0
     assert metrics["eval/finish_time_s"] == pytest.approx(12.345)
+
+
+def test_trackmania_evaluator_uses_elapsed_time_when_plugin_reports_zero() -> None:
+    class Environment:
+        def reset(self, *, seed: int | None = None) -> tuple[float, dict[str, object]]:
+            del seed
+            return 0.0, {}
+
+        def step(self, action: object) -> tuple[float, float, bool, bool, dict[str, str | float]]:
+            del action
+            return 1.0, 1.0, True, False, {"termination_reason": "finished", "race_time_ms": 0.0}
+
+        def close(self) -> None:
+            return None
+
+    class EnvironmentFactory:
+        def create(self, *, seed: int) -> Environment:
+            del seed
+            return Environment()
+
+    class Pipeline:
+        def transform_observation(self, observation: object) -> object:
+            return observation
+
+    class Policy:
+        def act(self, observation: object, *, deterministic: bool = False) -> float:
+            del observation
+            assert deterministic
+            return 0.0
+
+    suite = SimpleNamespace(seeds=(1,), episodes_per_seed=1)
+    metrics = TrackmaniaEvaluator(suite, EnvironmentFactory(), Pipeline()).evaluate(Policy())
+
+    assert metrics["eval/finish_time_s"] > 0.0
 
 
 def test_study_runner_records_success_and_failure(tmp_path: Path) -> None:

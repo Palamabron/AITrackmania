@@ -4,12 +4,14 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from copy import deepcopy
+from time import perf_counter
 from typing import Any
 
 import torch
 from torch import nn
 
 from tmrl.algorithms._torch import TorchLearnerBase
+from tmrl.algorithms.execution import TorchExecutionConfig
 from tmrl.core.data import PriorityUpdate, TrainingBatch
 from tmrl.core.pytree import sanitize_finite, tree_map, tree_to_device
 
@@ -82,6 +84,17 @@ class _IQNPolicy:
             return int(action.item())
         return action.cpu().numpy()
 
+    def export_state(self) -> Mapping[str, Any]:
+        return dict(self.model.state_dict())
+
+    def load_state(self, state: Mapping[str, Any]) -> None:
+        self.model.load_state_dict(state)
+
+    def set_exploration_epsilon(self, epsilon: float) -> None:
+        if not 0.0 <= epsilon <= 1.0:
+            raise ValueError("exploration epsilon must be between 0 and 1")
+        self.exploration_epsilon = epsilon
+
 
 class ImplicitQuantileQLearning(TorchLearnerBase):
     """Distributional Double-DQN with IQN fractions and hard/soft target updates."""
@@ -101,10 +114,10 @@ class ImplicitQuantileQLearning(TorchLearnerBase):
         exploration_epsilon: float = 0.1,
         exploration_epsilon_final: float | None = None,
         exploration_epsilon_decay_updates: int = 0,
-        device: str | None = None,
+        execution: TorchExecutionConfig | Mapping[str, Any] | None = None,
         seed: int = 0,
     ) -> None:
-        super().__init__(model, model_factory=model_factory, device=device, seed=seed)
+        super().__init__(model, model_factory=model_factory, execution=execution, seed=seed)
         self.learning_rate = learning_rate
         self.train_quantile_count = train_quantile_count
         self.target_quantile_count = target_quantile_count
@@ -123,6 +136,8 @@ class ImplicitQuantileQLearning(TorchLearnerBase):
         self.exploration_epsilon_final = final
         self.exploration_epsilon_decay_updates = exploration_epsilon_decay_updates
         self.update_count = 0
+        self._train_model: Any = None
+        self._compile_pending = False
 
     def _setup_model(self) -> None:
         assert self.model is not None
@@ -132,10 +147,44 @@ class ImplicitQuantileQLearning(TorchLearnerBase):
         for parameter in self.target_model.parameters():
             parameter.requires_grad_(False)
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=self.learning_rate)
+        self._train_model = self.model
+        assert self.resolved_execution is not None
+        if self.resolved_execution.compile_requested:
+            try:
+                self._train_model = torch.compile(
+                    self.model,
+                    mode=self.resolved_execution.compile_mode,
+                )
+                self._compile_pending = True
+            except (RuntimeError, TypeError) as exc:
+                self.resolved_execution = self.resolved_execution.with_compile_result(
+                    effective=False,
+                    fallback_reason=f"{type(exc).__name__}: {exc}",
+                )
+                self._record_execution_result()
 
     def update(self, batch: TrainingBatch) -> tuple[Mapping[str, float], PriorityUpdate]:
+        try:
+            return self._update(batch)
+        except (RuntimeError, TypeError) as exc:
+            if not self._compile_pending:
+                raise
+            self._train_model = self.model
+            self._compile_pending = False
+            assert self.resolved_execution is not None
+            self.resolved_execution = self.resolved_execution.with_compile_result(
+                effective=False,
+                fallback_reason=f"{type(exc).__name__}: {exc}",
+            )
+            self._record_execution_result()
+            self.optimizer.zero_grad(set_to_none=True)
+            return self._update(batch)
+
+    def _update(self, batch: TrainingBatch) -> tuple[Mapping[str, float], PriorityUpdate]:
         assert self.model is not None
+        started = perf_counter()
         batch = self._batch(batch)
+        transfer_finished = perf_counter()
         observations = self._observation(batch.observations, "observations")
         actions = self._tensor(batch.actions, "actions").long().reshape(-1)
         rewards = self._tensor(batch.rewards, "rewards").float().reshape(-1)
@@ -145,23 +194,28 @@ class ImplicitQuantileQLearning(TorchLearnerBase):
         )
         batch_size = _first_tensor(observations).shape[0]
         quantiles = torch.rand(batch_size, self.train_quantile_count, device=self.device)
-        predictions = self.model(observations, quantiles)
-        selected = predictions.gather(
-            2, actions[:, None, None].expand(-1, self.train_quantile_count, 1)
-        ).squeeze(-1)
-        with torch.no_grad():
-            next_actions = self.model.q_values(
-                next_observations, self.evaluation_quantile_count
-            ).argmax(dim=-1)
-            target_quantiles = torch.rand(
-                batch_size, self.target_quantile_count, device=self.device
-            )
-            target_values = (
-                self.target_model(next_observations, target_quantiles)
-                .gather(2, next_actions[:, None, None].expand(-1, self.target_quantile_count, 1))
-                .squeeze(-1)
-            )
-            targets = rewards[:, None] + discounts[:, None] * target_values
+        with self.autocast():
+            predictions = self._train_model(observations, quantiles)
+            selected = predictions.gather(
+                2, actions[:, None, None].expand(-1, self.train_quantile_count, 1)
+            ).squeeze(-1)
+            with torch.no_grad():
+                next_actions = self._train_model.q_values(
+                    next_observations, self.evaluation_quantile_count
+                ).argmax(dim=-1)
+                target_quantiles = torch.rand(
+                    batch_size, self.target_quantile_count, device=self.device
+                )
+                target_values = (
+                    self.target_model(next_observations, target_quantiles)
+                    .gather(
+                        2,
+                        next_actions[:, None, None].expand(-1, self.target_quantile_count, 1),
+                    )
+                    .squeeze(-1)
+                )
+                targets = rewards[:, None] + discounts[:, None] * target_values
+        forward_finished = perf_counter()
         losses = implicit_quantile_huber_loss(selected.float(), targets.float(), quantiles)
         weights = (
             batch.importance_weights if isinstance(batch.importance_weights, torch.Tensor) else None
@@ -171,13 +225,24 @@ class ImplicitQuantileQLearning(TorchLearnerBase):
             if weights is not None
             else losses.mean()
         )
-        self.optimizer.zero_grad()
-        loss.backward()
+        self.optimizer.zero_grad(set_to_none=True)
+        assert self.scaler is not None
+        self.scaler.scale(loss).backward()
+        self.scaler.unscale_(self.optimizer)
+        backward_finished = perf_counter()
         gradient_norm = torch.nn.utils.clip_grad_norm_(
             self.model.parameters(), self.gradient_clip_norm
         )
-        self.optimizer.step()
+        clipping_finished = perf_counter()
+        self.scaler.step(self.optimizer)
+        self.scaler.update()
+        optimizer_finished = perf_counter()
         self.update_count += 1
+        if self._compile_pending:
+            self._compile_pending = False
+            assert self.resolved_execution is not None
+            self.resolved_execution = self.resolved_execution.with_compile_result(effective=True)
+            self._record_execution_result()
         if self.target_tau > 0:
             with torch.no_grad():
                 for target, source in zip(
@@ -188,7 +253,16 @@ class ImplicitQuantileQLearning(TorchLearnerBase):
             self.target_model.load_state_dict(self.model.state_dict())
         td_errors = (selected.mean(1) - targets.mean(1)).detach().abs()
         return (
-            {"loss/iqn": float(loss.item()), "debug/gradient_norm": float(gradient_norm)},
+            {
+                "loss/iqn": float(loss.item()),
+                "debug/gradient_norm": float(gradient_norm),
+                "debug/td_abs_mean": float(td_errors.mean().item()),
+                "timing/host_to_device_s": transfer_finished - started,
+                "timing/forward_s": forward_finished - transfer_finished,
+                "timing/backward_s": backward_finished - forward_finished,
+                "timing/gradient_clip_s": clipping_finished - backward_finished,
+                "timing/optimizer_s": optimizer_finished - clipping_finished,
+            },
             PriorityUpdate(batch.transition_ids, td_errors.cpu().tolist()),
         )
 

@@ -56,19 +56,71 @@ class TrainingSpec(BaseModel):
     warmup_transitions: int = Field(default=1_000, ge=0)
     updates_per_transition: float = Field(default=1.0, gt=0.0)
     checkpoint_interval_updates: PositiveInt = 1_000
+    metrics_interval_updates: PositiveInt = 50
+    per_beta_final: float | None = Field(default=None, ge=0.0, le=1.0)
+    per_beta_anneal_transitions: PositiveInt | None = None
     evaluate_every_episodes: PositiveInt | None = None
     max_episode_artifacts: PositiveInt = 100
 
-    def batch_request(self, *, batch_size: int | None = None) -> BatchRequest:
+    @field_validator("per_beta_final")
+    @classmethod
+    def _beta_final_requires_beta(cls, value: float | None, info: Any) -> float | None:
+        if value is not None and info.data.get("beta") is None:
+            raise ValueError("per_beta_final requires training.beta")
+        return value
+
+    def batch_request(
+        self,
+        *,
+        batch_size: int | None = None,
+        beta: float | None = None,
+    ) -> BatchRequest:
         """Build the sole replay request used by the local runtime."""
 
         return BatchRequest(
             batch_size=self.batch_size if batch_size is None else batch_size,
             sequence_length=self.sequence_length,
-            beta=self.beta,
+            beta=self.beta if beta is None else beta,
             n_step=self.n_step,
             gamma=self.gamma,
         )
+
+    def replay_beta(self, transitions: int) -> float | None:
+        if self.beta is None or self.per_beta_final is None:
+            return self.beta
+        duration = self.per_beta_anneal_transitions or self.total_transitions
+        fraction = min(1.0, max(0, transitions) / duration)
+        return self.beta + fraction * (self.per_beta_final - self.beta)
+
+
+class DistributedSpec(BaseModel):
+    """Actor/learner exchange settings shared by local and remote runtimes."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    port: int = Field(default=8787, ge=1, le=65535)
+    rollout_chunk_transitions: PositiveInt = 128
+    rollout_flush_s: float = Field(default=2.0, gt=0.0)
+    policy_refresh_s: float = Field(default=5.0, gt=0.0)
+    heartbeat_s: float = Field(default=5.0, gt=0.0)
+    actor_timeout_s: float = Field(default=20.0, gt=0.0)
+    max_inflight_chunks: PositiveInt = 4
+    spool_max_bytes: PositiveInt = 2 * 1024**3
+    max_message_bytes: PositiveInt = 16 * 1024**2
+    soft_policy_lag_updates: PositiveInt = 1_000
+    hard_policy_lag_updates: PositiveInt = 5_000
+    epsilon_profiles: tuple[float, ...] = (1.0, 0.4, 0.1, 0.02)
+    epsilon_start: float = Field(default=0.5, ge=0.0, le=1.0)
+    epsilon_final: float = Field(default=0.05, ge=0.0, le=1.0)
+    epsilon_decay_transitions: PositiveInt = 1_500_000
+    token_env: str = Field(default="TMRL_DISTRIBUTED_TOKEN", min_length=1)
+
+    @field_validator("epsilon_profiles")
+    @classmethod
+    def _epsilon_profiles(cls, values: tuple[float, ...]) -> tuple[float, ...]:
+        if not values or any(value < 0.0 or value > 1.0 for value in values):
+            raise ValueError("epsilon_profiles must contain multipliers between 0 and 1")
+        return values
 
 
 class EvaluationMapSpec(BaseModel):
@@ -105,20 +157,21 @@ class RunSpec(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    api_version: str = "1.1"
+    api_version: str = "1.2"
     run_id: str = Field(min_length=1, pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
     seed: int = 0
     artifacts_dir: Path = Path("artifacts")
     components: ComponentsSpec
     training: TrainingSpec = Field(default_factory=TrainingSpec)
+    distributed: DistributedSpec = Field(default_factory=DistributedSpec)
     evaluation: EvaluationSuiteSpec | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("api_version")
     @classmethod
     def _api_version(cls, value: str) -> str:
-        if value != "1.1":
-            raise ValueError("RunSpec api_version must be '1.1'")
+        if value != "1.2":
+            raise ValueError("RunSpec api_version must be '1.2'")
         return value
 
     @classmethod

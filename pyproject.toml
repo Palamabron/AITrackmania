@@ -12,7 +12,7 @@ license-files = ["LICENSE"]
 authors = [
   { name = "Yann Bouteiller" },
   { name = "Edouard Geze" },
-  { name = "Jakub Szulc", email = "szulcak05@gmail.com" },
+  { name = "Jakub Szulc"},
 ]
 keywords = [
     "reinforcement learning",
@@ -38,10 +38,17 @@ dependencies = [
     "numpy>=1.24",
     "torch>=2.4",
     "tensordict>=0.6",
+    "gymnasium>=0.29",
     "PyYAML",
 ]
 
 [project.optional-dependencies]
+torch-cpu = [
+    "torch>=2.11",
+]
+torch-cuda = [
+    "torch>=2.11",
+]
 dev = [
     "einops>=0.7",
     "gymnasium>=0.29",
@@ -73,12 +80,45 @@ trackmania = [
 wandb = [
     "wandb>=0.15.8",
 ]
+distributed = [
+    "grpcio>=1.66",
+    "protobuf>=5.27",
+    "safetensors>=0.4.5",
+    "zstandard>=0.23",
+    "vgamepad>=0.1.0; sys_platform == 'win32' or sys_platform == 'linux'",
+    "wandb>=0.15.8",
+]
 explain = [
     "captum>=0.7",
 ]
 vision = [
     "torchvision>=0.15",
 ]
+
+[tool.uv]
+default-groups = ["dev"]
+conflicts = [
+    [
+        { extra = "torch-cpu" },
+        { extra = "torch-cuda" },
+    ],
+]
+
+[tool.uv.sources]
+torch = [
+    { index = "pytorch-cpu", extra = "torch-cpu" },
+    { index = "pytorch-cuda", extra = "torch-cuda" },
+]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cuda"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
 
 [dependency-groups]
 dev = [
@@ -93,6 +133,12 @@ dev = [
     "pytest>=7.0",
     "torchrl>=0.11",
     "types-PyYAML",
+    "grpcio>=1.66",
+    "protobuf>=5.27",
+    "safetensors>=0.4.5",
+    "zstandard>=0.23",
+    "vgamepad>=0.1.0; sys_platform == 'win32' or sys_platform == 'linux'",
+    "wandb>=0.15.8",
 ]
 
 [project.scripts]
@@ -110,6 +156,7 @@ include = [
     "tmrl.algorithms*",
     "tmrl.builtins*",
     "tmrl.core*",
+    "tmrl.distributed*",
     "tmrl.experiments*",
     "tmrl.models*",
     "tmrl.observability*",
@@ -119,7 +166,7 @@ include = [
 exclude = ["tests*"]
 
 [tool.setuptools.package-data]
-tmrl = ["py.typed", "project/openplanet/*.as"]
+tmrl = ["py.typed", "project/openplanet/*.as", "project/openplanet/*.toml"]
 
 [tool.ruff]
 target-version = "py312"

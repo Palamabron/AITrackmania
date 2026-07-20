@@ -2,3 +2,4 @@ include README.md
 include CHANGELOG.md
 include LICENSE
 recursive-include tmrl/project/openplanet *.as
+recursive-include tmrl/project/openplanet *.toml

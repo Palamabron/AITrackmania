@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=65"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "my-trackmania-agent"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = ["tmrl[trackmania,algorithms,wandb,distributed] @ file:///H:/Studia/inzynierskie/inzynierkav2/AITrackmania", "torch>=2.4"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[dependency-groups]
+dev = ["poethepoet>=0.36"]
+
+[tool.uv.sources]
+torch = [
+  { index = "pytorch-cuda", marker = "sys_platform == 'win32' or sys_platform == 'linux'" },
+]
+
+[[tool.uv.index]]
+name = "pytorch-cuda"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[tool.poe.tasks]
+record-left = "tmrl track record-boundary left assets/test-3-left.npy"
+record-right = "tmrl track record-boundary right assets/test-3-right.npy"
+build-geometry = "tmrl track build-geometry assets/test-3.geometry.npz --left assets/test-3-left.npy --right assets/test-3-right.npy --map-uid oqIJ5rQDRrNwLPTh9H2p_W4tLof --map-path maps/test-3.Map.Gbx"

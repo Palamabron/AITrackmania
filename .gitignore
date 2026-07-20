@@ -136,6 +136,9 @@ plotRewardPoints.py
 
 # Generated output
 output_files/
+artifacts/
+.tmrl-*.yaml
+TMRL_GrabData_IQN.zip
 
 # Local experiment reports (plots, exports)
 reports/

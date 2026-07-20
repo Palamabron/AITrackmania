@@ -7,9 +7,10 @@ from typing import Any
 
 import numpy as np
 import torch
+from gymnasium import spaces
 
+from tmrl.builtins.features import GymnasiumObservationCollator
 from tmrl.core.data import Transition
-from tmrl.core.pytree import tree_collate
 from tmrl.trackmania.geometry import BoundaryGeometry
 from tmrl.trackmania.telemetry import DEFAULT_TELEMETRY_FIELD_COUNT
 
@@ -28,8 +29,9 @@ class TelemetryFeaturePipeline:
             raise ValueError("telemetry observation contains non-finite values")
         return value
 
-    def collate(self, transitions: list[Transition]) -> dict[str, torch.Tensor]:
+    def collate(self, transitions: list[Transition]) -> dict[str, Any]:
         return {
+            "_tmrl_batch_collated": True,
             "observations": torch.stack(
                 [self.transform_observation(item.observation) for item in transitions]
             ),
@@ -130,6 +132,29 @@ class LidarFeaturePipeline:
         self.geometry = BoundaryGeometry(path, expected_map_uid=expected_map_uid)
         self.samples_per_side = samples_per_side
         self.max_distance_m = max_distance_m
+        self.observation_space = spaces.Dict(
+            {
+                "lidar": spaces.Box(
+                    -1.0,
+                    1.0,
+                    shape=(2, self.samples_per_side * 2),
+                    dtype=np.float32,
+                ),
+                "lidar_mask": spaces.Box(
+                    0.0,
+                    1.0,
+                    shape=(self.samples_per_side * 2,),
+                    dtype=np.float32,
+                ),
+                "telemetry": spaces.Box(
+                    -1.0,
+                    1.0,
+                    shape=(self.telemetry_dim,),
+                    dtype=np.float32,
+                ),
+            }
+        )
+        self._collator = GymnasiumObservationCollator(self.observation_space)
 
     def set_evaluation_map(self, map_spec: Any) -> None:
         """Switch the immutable source asset before evaluating a different declared map."""
@@ -229,18 +254,7 @@ class LidarFeaturePipeline:
         }
 
     def collate(self, transitions: list[Transition]) -> dict[str, Any]:
-        return {
-            "observations": tree_collate(
-                [self.transform_observation(item.observation) for item in transitions]
-            ),
-            "actions": torch.tensor([int(item.action) for item in transitions], dtype=torch.int64),
-            "rewards": torch.tensor([item.reward for item in transitions], dtype=torch.float32),
-            "next_observations": tree_collate(
-                [self.transform_observation(item.next_observation) for item in transitions]
-            ),
-            "terminated": torch.tensor([item.terminated for item in transitions]),
-            "truncated": torch.tensor([item.truncated for item in transitions]),
-        }
+        return dict(self._collator.collate_transitions(transitions))
 
     def synthetic_observation(self) -> np.ndarray:
         values = np.zeros(len(self.source_fields), dtype=np.float32)

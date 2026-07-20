@@ -88,6 +88,18 @@ class TrajectoryReward:
         self._last_progress_step = 0
         self._progress_history.clear()
 
+    @property
+    def progress_m(self) -> float:
+        """Distance reached along the recorded centre line in metres."""
+
+        return float(self._cumulative_distance[self._index])
+
+    @property
+    def progress_pct(self) -> float:
+        """Monotonic centre-line completion percentage in the current episode."""
+
+        return 100.0 * self._index / max(1, len(self.points) - 1)
+
     def step(
         self, position: np.ndarray, *, finish_ui_active: bool, speed_mps: float = 0.0
     ) -> RewardResult:

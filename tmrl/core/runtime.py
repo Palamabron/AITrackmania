@@ -176,10 +176,10 @@ def prepare_run(run: ResolvedRun) -> None:
 def validate_resolved_run(run: ResolvedRun) -> dict[str, float]:
     """Execute a deterministic no-game smoke update for ``tmrl validate``."""
 
-    prepare_run(run)
     run.learner.setup(
         {"seed": run.spec.seed, "run_dir": run.run_dir, "model_factory": run.model_factory}
     )
+    prepare_run(run)
     request = run.spec.training.batch_request()
     transition_count = max(8, request.batch_size + request.sequence_length - 1)
     synthetic = getattr(run.feature_pipeline, "synthetic_observation", None)

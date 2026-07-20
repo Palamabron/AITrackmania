@@ -30,6 +30,12 @@ class _DiscretePolicy:
             action, _ = self.actor(observation, deterministic=deterministic)
         return action.cpu().numpy()
 
+    def export_state(self) -> Mapping[str, Any]:
+        return dict(self.actor.state_dict())
+
+    def load_state(self, state: Mapping[str, Any]) -> None:
+        self.actor.load_state_dict(state)
+
 
 class StableDiscreteSoftActorCritic(TorchLearnerBase):
     """SD-SAC with double-average Q learning, Q-clip and entropy penalty."""

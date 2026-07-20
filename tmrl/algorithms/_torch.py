@@ -2,15 +2,24 @@
 
 from __future__ import annotations
 
+import json
 import random
 from collections.abc import Mapping
+from contextlib import AbstractContextManager
 from copy import deepcopy
-from typing import Any
+from pathlib import Path
+from typing import Any, cast
 
 import numpy as np
 import torch
 from torch import nn
 
+from tmrl.algorithms.execution import (
+    RequestedDevice,
+    ResolvedTorchExecution,
+    TorchExecutionConfig,
+    resolve_torch_execution,
+)
 from tmrl.core.data import TrainingBatch
 from tmrl.core.pytree import sanitize_finite, tree_to_device
 
@@ -34,6 +43,12 @@ class TorchPolicy:
         action = output[0] if isinstance(output, tuple) else output
         return action.detach().cpu().numpy()
 
+    def export_state(self) -> Mapping[str, Any]:
+        return dict(self.actor.state_dict())
+
+    def load_state(self, state: Mapping[str, Any]) -> None:
+        self.actor.load_state_dict(state)
+
 
 class TorchLearnerBase:
     """Base class for learners backed by a supplied torch model or model factory."""
@@ -44,16 +59,30 @@ class TorchLearnerBase:
         *,
         model_factory: Any | None = None,
         device: str | None = None,
+        execution: TorchExecutionConfig | Mapping[str, Any] | None = None,
         seed: int = 0,
     ) -> None:
         # User supplied model bundles intentionally expose algorithm-specific members
         # (actor/q1/q2, critics, q_values). The factory boundary is therefore dynamic.
         self.model: Any = model
         self.model_factory = model_factory
-        self.device = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
+        if execution is not None and device is not None:
+            raise ValueError("Use execution.device instead of combining execution with device")
+        if isinstance(execution, Mapping):
+            execution = TorchExecutionConfig(**execution)
+        requested = cast(RequestedDevice, device or "auto")
+        self.execution = execution or TorchExecutionConfig(device=requested)
+        self.device = torch.device("cpu")
+        self.resolved_execution: ResolvedTorchExecution | None = None
+        self.scaler: torch.amp.GradScaler | None = None
+        self.run_dir: Path | None = None
         self.seed = seed
 
     def setup(self, context: Mapping[str, Any]) -> None:
+        run_dir = context.get("run_dir")
+        self.run_dir = Path(run_dir) if run_dir is not None else None
+        self.resolved_execution = resolve_torch_execution(self.execution)
+        self.device = self.resolved_execution.torch_device
         seed = int(context.get("seed", self.seed))
         random.seed(seed)
         np.random.seed(seed)
@@ -69,7 +98,48 @@ class TorchLearnerBase:
                 raise TypeError("model_factory must expose build()")
             self.model = build()
         self.model.to(self.device)
+        self.scaler = torch.amp.GradScaler(
+            self.device.type,
+            enabled=self.resolved_execution.scaler_enabled,
+        )
         self._setup_model()
+
+    def autocast(self) -> AbstractContextManager[Any]:
+        if self.resolved_execution is None:
+            raise RuntimeError("Learner setup() must be called before autocast()")
+        dtype = {
+            "bfloat16": torch.bfloat16,
+            "float16": torch.float16,
+            "float32": torch.float32,
+        }[self.resolved_execution.precision]
+        enabled = self.resolved_execution.precision != "float32"
+        return torch.autocast(device_type=self.device.type, dtype=dtype, enabled=enabled)
+
+    def execution_manifest(self) -> Mapping[str, object]:
+        if self.resolved_execution is None:
+            return {
+                "requested_device": self.execution.device,
+                "requested_precision": self.execution.precision,
+                "compile_requested": self.execution.compile,
+                "compile_mode": self.execution.compile_mode,
+                "resolved": False,
+            }
+        return {"resolved": True, **self.resolved_execution.manifest()}
+
+    def _record_execution_result(self) -> None:
+        if self.run_dir is None or self.resolved_execution is None:
+            return
+        path = self.run_dir / "manifest.json"
+        if not path.is_file():
+            return
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+        manifest["torch_execution"] = dict(self.execution_manifest())
+        temporary = path.with_suffix(".json.tmp")
+        temporary.write_text(
+            json.dumps(manifest, indent=2, sort_keys=True, default=str),
+            encoding="utf-8",
+        )
+        temporary.replace(path)
 
     def _setup_model(self) -> None:
         raise NotImplementedError

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from time import sleep
+from time import monotonic, sleep
 from typing import Any
 
 import numpy as np
@@ -33,6 +33,9 @@ class TrackmaniaEnvironmentConfig(BaseModel):
     field_count: int = Field(default=DEFAULT_TELEMETRY_FIELD_COUNT, ge=3)
     timeout_s: float = Field(default=10.0, gt=0)
     reset_settle_s: float = Field(default=0.5, ge=0.0)
+    start_timeout_s: float = Field(default=15.0, gt=0.0)
+    start_poll_s: float = Field(default=0.01, ge=0.0)
+    action_repeat_frames: int = Field(default=4, ge=1, le=20)
     position_indices: tuple[int, int, int] = DEFAULT_POSITION_INDICES
     crash_distance: float = Field(default=25.0, gt=0)
     no_progress_steps: int = Field(default=200, ge=1)
@@ -126,8 +129,23 @@ class OpenPlanetEnvironment:
             self._session.confirm_ready(self.evaluation_map.expected_map_uid)
         if self.config.reset_settle_s:
             sleep(self.config.reset_settle_s)
-        self.reward.reset()
+        # A respawn from the standing start includes Trackmania's countdown.
+        # Do not let reward progress timers consume those frames: otherwise a
+        # slow-progress termination can occur before the car is allowed to move.
+        deadline = monotonic() + self.config.start_timeout_s
         frame = self.client.read()
+        while float(frame.values[3]) <= 0.0:
+            if monotonic() >= deadline:
+                raise TimeoutError(
+                    "Trackmania did not enter an active run after reset within "
+                    f"{self.config.start_timeout_s:g}s. Start or restart the loaded map "
+                    "and ensure the OpenPlanet race timer is advancing."
+                )
+            if self.config.start_poll_s:
+                sleep(self.config.start_poll_s)
+            frame = self.client.read()
+        self.reward.reset()
+        self._episode_started_at = monotonic()
         return frame.values, {"telemetry_health": "ok"}
 
     def step(self, action: Any) -> tuple[np.ndarray, float, bool, bool, dict[str, Any]]:
@@ -146,7 +164,13 @@ class OpenPlanetEnvironment:
             if control.shape != (3,):
                 raise ValueError("TrackMania action must be index or [gas, brake, steer]")
             self.controller.apply(control)
-        frame = self.client.read()
+        frame = None
+        # Holding a command for several rendered frames prevents an
+        # untrained epsilon-greedy policy from flickering throttle and steering
+        # every frame, while preserving one replay transition per decision.
+        for _ in range(self.config.action_repeat_frames):
+            frame = self.client.read()
+        assert frame is not None
         position = frame.values[list(self.config.position_indices)]
         result = self.reward.step(
             position, finish_ui_active=bool(frame.values[2]), speed_mps=float(frame.values[16])
@@ -161,6 +185,9 @@ class OpenPlanetEnvironment:
                 "telemetry_health": "ok",
                 "position": position.tolist(),
                 "race_time_ms": float(frame.values[3]),
+                "episode_elapsed_s": monotonic() - self._episode_started_at,
+                "progress_m": self.reward.progress_m,
+                "progress_pct": self.reward.progress_pct,
             },
         )
 

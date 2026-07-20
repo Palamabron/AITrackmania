@@ -4,12 +4,16 @@ from __future__ import annotations
 
 import argparse
 import json
+import multiprocessing
+import os
 import re
+import secrets
 from pathlib import Path
+from time import sleep, time_ns
+from typing import Any
 
 from tmrl.core.runtime import resolve_run, validate_resolved_run
 from tmrl.core.spec import RunSpec
-from tmrl.core.training import Trainer
 from tmrl.project.scaffold import create_project
 from tmrl.trackmania.assets import record_boundary, record_trajectory
 from tmrl.trackmania.geometry import build_geometry_asset
@@ -32,7 +36,10 @@ def _init(args: argparse.Namespace) -> None:
 
 def _validate(args: argparse.Namespace) -> None:
     spec = RunSpec.from_yaml(args.config)
-    run = resolve_run(spec, base_dir=Path(args.config).parent)
+    # Validation writes a synthetic checkpoint and must never reserve the
+    # artifact directory intended for the real live-training run.
+    validation_spec = spec.model_copy(update={"run_id": f"{spec.run_id}-validate-{time_ns()}"})
+    run = resolve_run(validation_spec, base_dir=Path(args.config).parent)
     try:
         metrics = validate_resolved_run(run)
     finally:
@@ -41,22 +48,151 @@ def _validate(args: argparse.Namespace) -> None:
     print(f"Manifest: {run.run_dir / 'manifest.json'}")
 
 
+def _load_env_value(config: Path, name: str) -> str | None:
+    value = os.environ.get(name)
+    if value:
+        return value
+    dotenv = config.resolve().parent / ".env"
+    if not dotenv.exists():
+        return None
+    for raw_line in dotenv.read_text(encoding="utf-8").splitlines():
+        key, separator, raw_value = raw_line.partition("=")
+        if separator and key.strip() == name:
+            return raw_value.strip().strip("'\"") or None
+    return None
+
+
+def _required_token(config: Path) -> str:
+    spec = RunSpec.from_yaml(config)
+    token = _load_env_value(config, spec.distributed.token_env)
+    if not token:
+        raise ValueError(
+            f"Set {spec.distributed.token_env} in the environment or {config.parent / '.env'}"
+        )
+    return token
+
+
 def _train(args: argparse.Namespace) -> None:
-    spec = RunSpec.from_yaml(args.config)
-    run = resolve_run(spec, base_dir=Path(args.config).parent)
-    try:
-        result = Trainer(run, resume_checkpoint=getattr(args, "checkpoint", None)).train()
-    finally:
-        run.logger.close()
-    print(
-        f"Finished {spec.run_id}: {result.transitions} transitions, "
-        f"{result.updates} updates, {result.episodes} episodes"
+    """Launch a spawn-safe local learner and actor pair."""
+
+    config = args.config.resolve()
+    spec = RunSpec.from_yaml(config)
+    token = secrets.token_urlsafe(32)
+    target = f"127.0.0.1:{spec.distributed.port}"
+    bind = target
+    context = multiprocessing.get_context("spawn")
+    shutdown = context.Event()
+    learner = context.Process(
+        target=_learner_process,
+        args=(
+            str(config),
+            bind,
+            token,
+            str(args.checkpoint) if getattr(args, "checkpoint", None) else None,
+            shutdown,
+        ),
+        name="tmrl-learner",
     )
-    print(f"Artifacts: {run.run_dir}")
+    actor = context.Process(
+        target=_actor_process,
+        args=(str(config), target, "local-actor", token, shutdown),
+        name="tmrl-local-actor",
+    )
+    learner.start()
+    actor.start()
+    print(
+        f"Local async training launched: learner={learner.pid}, actor={actor.pid}, "
+        f"endpoint={target}",
+        flush=True,
+    )
+    stopped_by_user = False
+    actor_finished_first = False
+    try:
+        while learner.is_alive() and actor.is_alive():
+            sleep(0.25)
+        actor_finished_first = not actor.is_alive() and learner.is_alive()
+        if actor_finished_first:
+            print(
+                f"Actor exited first (code={actor.exitcode}); stopping learner gracefully...",
+                flush=True,
+            )
+    except KeyboardInterrupt:
+        stopped_by_user = True
+        print("Stopping async training; saving the learner checkpoint...", flush=True)
+    finally:
+        shutdown.set()
+        learner.join(timeout=10)
+        actor.join(timeout=10)
+        for process in (actor, learner):
+            if process.is_alive():
+                process.terminate()
+            process.join(timeout=5)
+    if stopped_by_user:
+        return
+    failures = [
+        f"{name} process exited with code {process.exitcode}"
+        for name, process in (("actor", actor), ("learner", learner))
+        if process.exitcode not in (0, None)
+    ]
+    if failures:
+        raise RuntimeError("; ".join(failures))
+    if actor_finished_first:
+        raise RuntimeError("actor stopped before the learner completed the run")
+    print(f"Finished async run {spec.run_id}. Artifacts: {config.parent / spec.artifacts_dir}")
+
+
+def _learner(args: argparse.Namespace) -> None:
+    config = args.config.resolve()
+    token = _required_token(config)
+    spec = RunSpec.from_yaml(config)
+    _learner_process(
+        str(config),
+        args.bind or f"127.0.0.1:{spec.distributed.port}",
+        token,
+        str(args.checkpoint) if args.checkpoint else None,
+    )
+
+
+def _actor(args: argparse.Namespace) -> None:
+    config = args.config.resolve()
+    _actor_process(
+        str(config),
+        args.connect,
+        args.actor_id,
+        _required_token(config),
+    )
+
+
+def _learner_process(
+    config_path: str,
+    bind: str,
+    token: str,
+    resume_checkpoint: str | None = None,
+    external_stop: Any | None = None,
+) -> None:
+    try:
+        from tmrl.distributed.coordinator import learner_process_entry
+    except ModuleNotFoundError as exc:
+        raise RuntimeError("Install tmrl[distributed] to use distributed training") from exc
+    learner_process_entry(config_path, bind, token, resume_checkpoint, external_stop)
+
+
+def _actor_process(
+    config_path: str,
+    target: str,
+    actor_id: str | None,
+    token: str,
+    external_stop: Any | None = None,
+) -> None:
+    try:
+        from tmrl.distributed.actor import actor_process_entry
+    except ModuleNotFoundError as exc:
+        raise RuntimeError("Install tmrl[distributed] to use distributed training") from exc
+    actor_process_entry(config_path, target, actor_id, token, external_stop)
 
 
 def _smoke(args: argparse.Namespace) -> None:
-    """Exercise collection, update, checkpoint restore, and evaluation against the game."""
+    """Run a bounded local async actor/learner release check against the game."""
 
     spec = RunSpec.from_yaml(args.config)
     transitions = args.transitions
@@ -75,27 +211,77 @@ def _smoke(args: argparse.Namespace) -> None:
             "n_step": n_step,
             "warmup_transitions": ready,
             "updates_per_transition": 1.0,
-            "checkpoint_interval_updates": 1,
+            "checkpoint_interval_updates": 25,
         }
     )
-    smoke_spec = spec.model_copy(update={"run_id": f"{spec.run_id}-smoke", "training": training})
-    base_dir = Path(args.config).parent
-    run = resolve_run(smoke_spec, base_dir=base_dir)
-    try:
-        result = Trainer(run).train()
-    finally:
-        run.logger.close()
-    if result.updates < 1 or not result.checkpoints:
-        raise RuntimeError("smoke run did not produce an update and checkpoint")
-    resumed = resolve_run(smoke_spec, base_dir=base_dir)
-    try:
-        Trainer(resumed, resume_checkpoint=result.checkpoints[-1]).train()
-    finally:
-        resumed.logger.close()
-    print(
-        f"Smoke test passed: {result.transitions} transitions, {result.updates} updates, "
-        f"checkpoint restored from {result.checkpoints[-1]}"
+    # A release smoke test proves that live collection, replay, an update, and
+    # checkpoint restore work.  It must not launch the configured 20-trial
+    # benchmark: a freshly initialized exploratory policy is intentionally not
+    # suitable for that evaluation and could hold the game for a long time.
+    smoke_components = spec.components.model_copy(update={"evaluator": None})
+    smoke_spec = spec.model_copy(
+        update={
+            # Manifests are immutable, so a failed or interrupted smoke run
+            # must never prevent a later retry from creating its own artifact.
+            "run_id": f"{spec.run_id}-smoke-{time_ns()}",
+            "training": training,
+            "components": smoke_components,
+            "evaluation": None,
+        }
     )
+    smoke_spec = smoke_spec.model_copy(
+        update={"distributed": smoke_spec.distributed.model_copy(update={"policy_refresh_s": 0.25})}
+    )
+    base_dir = Path(args.config).resolve().parent
+    temporary = base_dir / f".tmrl-{smoke_spec.run_id}.yaml"
+    temporary.write_text(smoke_spec.to_yaml(), encoding="utf-8")
+    try:
+        _train(argparse.Namespace(config=temporary, checkpoint=None))
+        _restore_smoke_checkpoint(temporary, smoke_spec)
+    finally:
+        temporary.unlink(missing_ok=True)
+    events_path = base_dir / smoke_spec.artifacts_dir / smoke_spec.run_id / "events.jsonl"
+    events = [
+        json.loads(line)
+        for line in events_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    refreshed = any(
+        event.get("event") == "distributed/policy_published"
+        and int(event.get("payload", {}).get("policy_version", 0)) > 0
+        for event in events
+    )
+    if not refreshed:
+        raise RuntimeError("async smoke completed without refreshing the actor policy")
+    print("Async TrackMania smoke passed with a live policy-refresh interval of 0.25s.")
+
+
+def _restore_smoke_checkpoint(config: Path, spec: RunSpec) -> None:
+    from tmrl.distributed.coordinator import Coordinator
+
+    checkpoint_dir = config.parent / spec.artifacts_dir / spec.run_id / "checkpoints"
+    checkpoints = sorted(checkpoint_dir.glob("distributed-update-*.pt"))
+    if not checkpoints:
+        raise RuntimeError("async smoke did not produce a distributed checkpoint")
+    components = spec.components.model_copy(update={"additional_loggers": ()})
+    restore_spec = spec.model_copy(update={"components": components})
+    run = resolve_run(restore_spec, base_dir=config.parent)
+    coordinator = Coordinator(run, bind="127.0.0.1:8787", token="smoke", fingerprint="smoke")
+    try:
+        run.learner.setup(
+            {
+                "seed": restore_spec.seed,
+                "run_dir": run.run_dir,
+                "model_factory": run.model_factory,
+            }
+        )
+        coordinator.restore_checkpoint(checkpoints[-1])
+        if coordinator.counters.updates < 1:
+            raise RuntimeError("async smoke checkpoint contains no learner updates")
+    finally:
+        coordinator._checkpoint_writer.close()
+        coordinator.journal.close()
+        run.logger.close()
 
 
 def _record_trajectory(args: argparse.Namespace) -> None:
@@ -103,7 +289,9 @@ def _record_trajectory(args: argparse.Namespace) -> None:
         args.host, args.port, field_count=args.field_count, timeout_s=args.timeout
     )
     try:
-        path = record_trajectory(args.output, client, samples=args.samples)
+        path = record_trajectory(
+            args.output, client, samples=args.samples, sample_interval_s=args.interval
+        )
     finally:
         client.close()
     print(f"Recorded trajectory: {path}")
@@ -114,7 +302,13 @@ def _record_boundary(args: argparse.Namespace) -> None:
         args.host, args.port, field_count=args.field_count, timeout_s=args.timeout
     )
     try:
-        path = record_boundary(args.output, client, samples=args.samples)
+        path = record_boundary(
+            args.output,
+            client,
+            max_duration_s=args.max_duration,
+            minimum_spacing_m=args.minimum_spacing,
+            status=print,
+        )
     finally:
         client.close()
     print(f"Recorded {args.side} boundary: {path}")
@@ -130,6 +324,25 @@ def _build_geometry(args: argparse.Namespace) -> None:
         spacing_m=args.spacing,
     )
     print(f"Built geometry asset: {path}")
+
+
+def _check_track_connection(args: argparse.Namespace) -> None:
+    """Verify that the installed OpenPlanet plugin is emitting compatible telemetry."""
+
+    client = OpenPlanetClient(
+        args.host, args.port, field_count=args.field_count, timeout_s=args.timeout
+    )
+    try:
+        frame = client.read()
+    finally:
+        client.close()
+    position = frame.values[4:7].tolist() if args.field_count >= 7 else None
+    finished = bool(frame.values[2]) if args.field_count >= 3 else "n/a"
+    race_time = float(frame.values[3]) if args.field_count >= 4 else "n/a"
+    print(
+        f"OpenPlanet telemetry OK: {args.field_count} float32 fields; "
+        f"position={position}; finished={finished}; race_time_ms={race_time}"
+    )
 
 
 def _benchmark(args: argparse.Namespace) -> None:
@@ -200,17 +413,25 @@ def entrypoint(argv: list[str] | None = None) -> None:
     )
     validate.add_argument("config", type=Path)
     validate.set_defaults(handler=_validate)
-    train = commands.add_parser(
-        "train", help="collect TrackMania episodes and train a resolved run"
-    )
+    train = commands.add_parser("train", help="start a local asynchronous learner and actor")
     train.add_argument("config", type=Path)
     train.set_defaults(handler=_train)
-    resume = commands.add_parser("resume", help="resume a run from a full training checkpoint")
+    resume = commands.add_parser("resume", help="resume a local asynchronous training run")
     resume.add_argument("config", type=Path)
     resume.add_argument("checkpoint", type=Path)
     resume.set_defaults(handler=_train)
+    learner = commands.add_parser("learner", help="run a distributed coordinator/learner")
+    learner.add_argument("config", type=Path)
+    learner.add_argument("--bind")
+    learner.add_argument("--checkpoint", type=Path)
+    learner.set_defaults(handler=_learner)
+    actor = commands.add_parser("actor", help="run a remote continuous rollout actor")
+    actor.add_argument("config", type=Path)
+    actor.add_argument("--connect", required=True)
+    actor.add_argument("--actor-id")
+    actor.set_defaults(handler=_actor)
     smoke = commands.add_parser(
-        "smoke", help="run the bounded live TrackMania release gate and verify checkpoint restore"
+        "smoke", help="run a bounded local async TrackMania actor/learner release gate"
     )
     smoke.add_argument("config", type=Path)
     smoke.add_argument("--transitions", type=int, default=100)
@@ -226,6 +447,7 @@ def entrypoint(argv: list[str] | None = None) -> None:
     )
     record.add_argument("output", type=Path)
     record.add_argument("--samples", type=int, default=2_000)
+    record.add_argument("--interval", type=float, default=1 / 30)
     record.add_argument("--host", default="127.0.0.1")
     record.add_argument("--port", type=int, default=9000)
     record.add_argument("--field-count", type=int, default=DEFAULT_TELEMETRY_FIELD_COUNT)
@@ -236,7 +458,8 @@ def entrypoint(argv: list[str] | None = None) -> None:
     )
     boundary.add_argument("side", choices=("left", "right"))
     boundary.add_argument("output", type=Path)
-    boundary.add_argument("--samples", type=int, default=2_000)
+    boundary.add_argument("--max-duration", type=float, default=300.0)
+    boundary.add_argument("--minimum-spacing", type=float, default=0.25)
     boundary.add_argument("--host", default="127.0.0.1")
     boundary.add_argument("--port", type=int, default=9000)
     boundary.add_argument("--field-count", type=int, default=DEFAULT_TELEMETRY_FIELD_COUNT)
@@ -252,5 +475,13 @@ def entrypoint(argv: list[str] | None = None) -> None:
     geometry.add_argument("--map-path", type=Path, required=True)
     geometry.add_argument("--spacing", type=float, default=2.0)
     geometry.set_defaults(handler=_build_geometry)
+    check = track_commands.add_parser(
+        "check", help="verify that OpenPlanet is emitting one compatible telemetry frame"
+    )
+    check.add_argument("--host", default="127.0.0.1")
+    check.add_argument("--port", type=int, default=9000)
+    check.add_argument("--field-count", type=int, default=DEFAULT_TELEMETRY_FIELD_COUNT)
+    check.add_argument("--timeout", type=float, default=5.0)
+    check.set_defaults(handler=_check_track_connection)
     args = parser.parse_args(argv)
     args.handler(args)

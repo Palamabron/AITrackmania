@@ -11,7 +11,7 @@ the piece they are researching.
 The commands are identical on Windows, Linux, WSL and CI:
 
 ```bash
-uv sync --group dev --extra algorithms
+uv sync
 uv run tmrl init my-trackmania-agent
 cd my-trackmania-agent
 uv sync
@@ -21,21 +21,71 @@ uv run tmrl train run.yaml
 
 `tmrl init` creates a commented, installable agent project. `tmrl validate`
 checks imports, contracts and a synthetic update without starting the game.
-`tmrl train` owns collection, replay updates, local events, artifacts,
-checkpoints and optional evaluation.
+`tmrl train` starts a coordinator/learner and one local actor as independent
+Windows-safe `spawn` processes. Collection stays continuous while the learner
+updates replay and publishes policy snapshots asynchronously.
+
+The TrackMania project uses a fresh API `1.2` run (`v6`); do not reuse an old
+immutable artifact directory. With the game and OpenPlanet plugin running, use
+the bounded integration check:
+
+```bash
+uv run tmrl track check
+uv run tmrl smoke run.yaml --transitions 100
+```
+
+On an NVIDIA training host, select the locked CUDA wheel before training:
+
+```bash
+uv sync --extra torch-cuda
+```
+
+Use `--extra torch-cpu` for an explicit CPU-only environment. `torch-cuda`
+selects the project's tested PyTorch CUDA runtime; it does not need the same
+locally installed CUDA Toolkit version, and a newer NVIDIA driver remains
+compatible. ROCm hosts require the matching AMD Torch build, while macOS MPS
+uses the normal PyPI Torch wheel. The locked backend extras conflict by design;
+`device: auto` then resolves CUDA, ROCm, MPS or CPU from the installed Torch
+build and fails early when visible accelerator hardware cannot be used.
+
+The smoke command starts the same local async learner/actor pair as training,
+checks a live policy refresh, and writes a checkpoint.
 
 ## Runtime
 
 ```text
-run.yaml -> RunSpec -> resolved components -> Trainer
-                                          -> collect -> replay -> update
-                                          -> checkpoint -> evaluate
-                                          -> manifest + JSONL + artifacts
+run.yaml -> coordinator/learner -> SQLite WAL -> replay -> update -> checkpoint
+              ^       |
+              |       +---- safetensors policy snapshot
+              |
+              +---- local or remote actors -> durable rollout spool
 ```
 
 There is no global runtime configuration, feature-flag routing or mandatory
 external tracker. A run is fully described by `run.yaml` and its referenced,
 installed Python components.
+
+For multiple machines, put the same `TMRL_DISTRIBUTED_TOKEN` in `.env` and use
+an encrypted tunnel. The learner intentionally accepts loopback connections
+only, so its bearer token and rollout data never traverse the network in clear
+text:
+
+```bash
+# training machine
+uv run tmrl learner run.yaml --bind 127.0.0.1:8787
+
+# each TrackMania machine: create a tunnel to the training machine first
+ssh -N -L 8787:127.0.0.1:8787 TRAINING_MACHINE
+uv run tmrl actor run.yaml --connect 127.0.0.1:8787 --actor-id PC-1
+```
+
+Only the learner needs W&B credentials. Training loads `WANDB_API_KEY` from
+the environment or project `.env`; a separate `wandb login` is unnecessary
+when that variable is already present.
+
+The handshake rejects mismatched configs, models, feature/action definitions,
+map UIDs and geometry. Rollouts use Protobuf/gRPC with Zstandard compression;
+network model state is encoded with safetensors and never pickle.
 
 ## Bundled components
 
@@ -75,6 +125,10 @@ uv sync --extra wandb --extra explain --extra orchestrator
 Read the [SDK guide](readme/sdk.md) for the component schema and a built-in
 run example, and the [TrackMania workflow](readme/trackmania.md) for the
 optional OpenPlanet/gamepad integration and release smoke checklist.
+
+For the concrete `test-3` OpenPlanet installation, telemetry ports, map
+preparation, boundary recording and geometry commands, see the
+[agent OpenPlanet guide](my-trackmania-agent/openplanet/README.md).
 
 ## Development
 

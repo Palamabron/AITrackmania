@@ -4,7 +4,7 @@ Install the game integration only on a machine that has TrackMania, OpenPlanet,
 the compatible telemetry plugin, and a virtual gamepad driver:
 
 ```bash
-uv sync --group dev --extra trackmania --extra algorithms
+uv sync
 uv run tmrl init --template trackmania my-agent
 cd my-agent
 uv sync
@@ -13,13 +13,18 @@ uv run tmrl smoke run.yaml
 uv run tmrl train run.yaml
 ```
 
+Generated TrackMania agents select the project's tested PyTorch CUDA runtime by
+default on Windows and Linux; a newer NVIDIA driver stays compatible. macOS
+falls back to its normal PyPI/MPS Torch wheel. ROCm hosts require the matching
+AMD Torch build.
+
 The generated `.npz` is a structural placeholder only. Before training, record
 the two map boundaries by hand and build a UID-bound asset. Do not reuse an
 asset from another map:
 
 ```bash
-uv run tmrl track record-boundary left assets/test-3-left.npy --samples 2000
-uv run tmrl track record-boundary right assets/test-3-right.npy --samples 2000
+uv run tmrl track record-boundary left assets/test-3-left.npy
+uv run tmrl track record-boundary right assets/test-3-right.npy
 uv run tmrl track build-geometry assets/test-3.geometry.npz \
   --left assets/test-3-left.npy --right assets/test-3-right.npy \
   --map-uid <test-3-map-uid> --map-path maps/test-3.Map.Gbx
@@ -45,12 +50,12 @@ Every run writes `manifest.json`, versioned `events.jsonl`, compressed episode
 artifacts, checkpoints and study records. Resume a stopped run with:
 
 ```bash
-uv run tmrl resume run.yaml artifacts/<run-id>/checkpoints/update-XXXXXXXX.pt
+uv run tmrl resume run.yaml artifacts/<run-id>/checkpoints/distributed-update-XXXXXXXX.pt
 ```
 
 `tmrl smoke` is the required Windows preflight. It collects a bounded number of
-real actions, completes at least one update, reloads the produced checkpoint,
-and runs the configured evaluation suite. It will operate the virtual gamepad:
+real actions, completes at least one update, verifies a live policy refresh,
+and restores the produced checkpoint. It will operate the virtual gamepad:
 
 ```bash
 uv run tmrl smoke run.yaml --transitions 100
@@ -63,7 +68,7 @@ latency/FPS and map UID, and passes only with at least 18 finishes, median
 completed time below 37 seconds, and no telemetry/controller errors:
 
 ```bash
-uv run tmrl benchmark run.yaml artifacts/trackmania-iqn-lidar/checkpoints/update-XXXXXXXX.pt
+uv run tmrl benchmark run.yaml artifacts/trackmania-iqn-lidar/checkpoints/distributed-update-XXXXXXXX.pt
 ```
 
 The remaining manual release gate is a four-hour Windows soak on the real game,

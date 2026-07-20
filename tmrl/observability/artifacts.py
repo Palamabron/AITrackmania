@@ -72,6 +72,21 @@ def write_run_manifest(run: ResolvedRun) -> Path:
                     "plugin_protocol_version": PLUGIN_PROTOCOL_VERSION,
                 }
             )
+    try:
+        import torch
+
+        torch_environment: dict[str, Any] = {
+            "version": torch.__version__,
+            "cuda_build": torch.version.cuda,
+            "rocm_build": torch.version.hip,
+            "cuda_available": torch.cuda.is_available(),
+            "mps_available": bool(
+                hasattr(torch.backends, "mps") and torch.backends.mps.is_available()
+            ),
+        }
+    except ImportError:
+        torch_environment = {"version": None}
+    execution = getattr(run.learner, "execution_manifest", None)
     manifest = {
         "api_version": run.spec.api_version,
         "run_id": run.spec.run_id,
@@ -91,7 +106,9 @@ def write_run_manifest(run: ResolvedRun) -> Path:
             "platform": platform.platform(),
             "tmrl": tmrl_version,
             "git_revision": _git_revision(),
+            "torch": torch_environment,
         },
+        "torch_execution": dict(execution()) if callable(execution) else None,
         "evaluation_assets": evaluation_assets,
     }
     target = run.run_dir / "manifest.json"

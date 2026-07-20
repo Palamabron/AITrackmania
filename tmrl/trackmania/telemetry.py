@@ -61,7 +61,17 @@ class OpenPlanetClient:
         self.connect()
         assert self._socket is not None
         while len(self._buffer) < self._packet.size:
-            chunk = self._socket.recv(self._packet.size - len(self._buffer))
+            try:
+                chunk = self._socket.recv(self._packet.size - len(self._buffer))
+            except TimeoutError as error:
+                self.close()
+                raise TimeoutError(
+                    "OpenPlanet accepted the telemetry connection but sent no complete "
+                    f"{self._packet.size}-byte frame within {self.timeout_s:g}s. "
+                    "In OpenPlanet, disable every legacy TMRL_GrabData plugin, keep only "
+                    "TMRL_GrabData_IQN enabled, reload it, then enter the loaded map with "
+                    "a visible vehicle."
+                ) from error
             if not chunk:
                 self.close()
                 raise ConnectionError("OpenPlanet closed the telemetry connection")

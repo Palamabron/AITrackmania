@@ -40,13 +40,18 @@ class Trainer:
 
     def train(self) -> TrainingResult:
         spec = self.run.spec.training
-        prepare_run(self.run)
         self.run.learner.setup(
             {
                 "seed": self.run.spec.seed,
                 "run_dir": self.run.run_dir,
                 "model_factory": self.run.model_factory,
             }
+        )
+        prepare_run(self.run)
+        print(
+            f"Training started: run_id={self.run.spec.run_id}, "
+            f"target_transitions={spec.total_transitions}, artifacts={self.run.run_dir}",
+            flush=True,
         )
         writer = AsyncEpisodeWriter(
             self.run.run_dir / "episodes", max_artifacts=spec.max_episode_artifacts
@@ -103,11 +108,23 @@ class Trainer:
                         "transitions": result.transitions,
                         "replay_size": len(self.run.replay_store),
                         "termination": result.artifact.metadata.get("termination", "unknown"),
+                        **self._episode_metrics(result),
                     },
                     transitions,
                     updates,
                     episodes,
                 )
+                if episodes:
+                    termination = result.artifact.metadata.get("termination", "unknown")
+                    episode_metrics = self._episode_metrics(result)
+                    print(
+                        f"Episode {episodes}: progress={episode_metrics['progress_pct']:.1f}%, "
+                        f"reward={result.total_reward:.3f}, "
+                        f"time={episode_metrics['episode_elapsed_s']:.2f}s, "
+                        f"race={episode_metrics['race_time_s']:.2f}s, termination={termination}; "
+                        f"transitions={transitions}/{spec.total_transitions}, updates={updates}",
+                        flush=True,
+                    )
                 sample_footprint = spec.batch_size * spec.sequence_length + spec.n_step - 1
                 ready = max(spec.warmup_transitions, sample_footprint)
                 # Warm-up gathers data only.  Do not build an update debt that
@@ -115,7 +132,10 @@ class Trainer:
                 newly_trainable = max(0, transitions - ready) - max(0, previous_transitions - ready)
                 fractional_updates += newly_trainable * spec.updates_per_transition
                 while len(self.run.replay_store) >= ready and fractional_updates >= 1:
-                    batch = self.run.sampler.sample(self.run.replay_store, spec.batch_request())
+                    batch = self.run.sampler.sample(
+                        self.run.replay_store,
+                        spec.batch_request(beta=spec.replay_beta(transitions)),
+                    )
                     update = self.run.learner.update(batch)
                     metrics, priorities = update if isinstance(update, tuple) else (update, None)
                     if priorities is not None:
@@ -132,6 +152,13 @@ class Trainer:
                     if updates % spec.checkpoint_interval_updates == 0:
                         checkpoints.append(
                             self._checkpoint(transitions, updates, episodes, fractional_updates)
+                        )
+                    if updates == 1 or updates % 100 == 0:
+                        print(
+                            f"Training progress: transitions={transitions}/"
+                            f"{spec.total_transitions}, "
+                            f"updates={updates}, loss={metrics.get('loss/iqn', 'n/a')}",
+                            flush=True,
                         )
                 if (
                     self.run.evaluator is not None
@@ -155,6 +182,11 @@ class Trainer:
                 self._set_evaluation_checkpoint(checkpoints)
                 evaluation = self.run.evaluator.evaluate(self.run.learner.policy())
                 self._log("eval/suite", evaluation, transitions, updates, episodes)
+            print(
+                f"Training finished: transitions={transitions}, updates={updates}, "
+                f"episodes={episodes}",
+                flush=True,
+            )
             return TrainingResult(episodes, transitions, updates, tuple(checkpoints), evaluation)
         except BaseException as exc:
             self._log(
@@ -170,6 +202,25 @@ class Trainer:
 
     def _update_priorities(self, update: PriorityUpdate) -> None:
         self.run.sampler.update_priorities(update)
+
+    @staticmethod
+    def _episode_metrics(result: Any) -> dict[str, float]:
+        """Extract the final, user-facing telemetry summary from an episode."""
+
+        if not result.artifact.telemetry:
+            return {
+                "progress_pct": 0.0,
+                "progress_m": 0.0,
+                "episode_elapsed_s": 0.0,
+                "race_time_s": 0.0,
+            }
+        final = result.artifact.telemetry[-1]
+        return {
+            "progress_pct": float(final.get("progress_pct", 0.0)),
+            "progress_m": float(final.get("progress_m", 0.0)),
+            "episode_elapsed_s": float(final.get("episode_elapsed_s", 0.0)),
+            "race_time_s": float(final.get("race_time_ms", 0.0)) / 1_000.0,
+        }
 
     def _set_evaluation_checkpoint(self, checkpoints: list[Path]) -> None:
         if not checkpoints or self.run.evaluator is None:
@@ -211,6 +262,7 @@ class Trainer:
         }
         self.run.checkpoint_codec.save(state, path)
         self._log("train/checkpoint", {"path": str(path)}, transitions, update, episodes)
+        print(f"Checkpoint saved: {path}", flush=True)
         return path
 
     def _restore_checkpoint(self, state: Mapping[str, Any]) -> Mapping[str, Any]:

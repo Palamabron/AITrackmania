@@ -36,6 +36,10 @@ class _IncrementalReplayStore(Protocol):
 
     def is_n_step_eligible(self, transition_id: TransitionId, n_step: int) -> bool: ...
 
+    def affected_n_step_starts(
+        self, transition_id: TransitionId, n_step: int
+    ) -> list[TransitionId]: ...
+
     def changes_since(
         self, revision: int | None
     ) -> tuple[int, list[tuple[TransitionId, TransitionId | None]] | None]: ...
@@ -44,7 +48,12 @@ class _IncrementalReplayStore(Protocol):
 def _is_incremental_store(store: ReplayStore) -> TypeGuard[_IncrementalReplayStore]:
     return all(
         callable(getattr(store, name, None))
-        for name in ("changes_since", "eligible_transition_ids", "is_n_step_eligible")
+        for name in (
+            "changes_since",
+            "eligible_transition_ids",
+            "is_n_step_eligible",
+            "affected_n_step_starts",
+        )
     ) and isinstance(getattr(store, "capacity", None), int)
 
 
@@ -118,6 +127,7 @@ class InMemoryReplayStore:
         self.capacity = capacity
         self._order: deque[TransitionId] = deque()
         self._items: dict[TransitionId, Transition] = {}
+        self._episode_steps: dict[tuple[str, int], TransitionId] = {}
         self._next_index = 0
         self._lock = RLock()
         self._eligible: dict[int, _IdPool] = {}
@@ -126,20 +136,31 @@ class InMemoryReplayStore:
 
     def append(self, transition: Transition) -> TransitionId:
         with self._lock:
+            transition_key = self._transition_key(transition)
+            if transition_key is not None and transition_key in self._episode_steps:
+                raise ValueError(
+                    "duplicate replay episode step: "
+                    f"episode={transition_key[0]!r}, step={transition_key[1]}"
+                )
             index = self._next_index
             self._next_index += 1
             evicted: TransitionId | None = None
             if len(self._order) == self.capacity:
                 evicted = self._order.popleft()
-                self._items.pop(evicted)
+                evicted_transition = self._items.pop(evicted)
+                evicted_key = self._transition_key(evicted_transition)
+                if evicted_key is not None:
+                    self._episode_steps.pop(evicted_key, None)
             self._order.append(index)
             self._items[index] = transition
+            if transition_key is not None:
+                self._episode_steps[transition_key] = index
             self._revision += 1
             self._changes.append((self._revision, index, evicted))
             for n_step, pool in self._eligible.items():
                 if evicted is not None:
                     pool.remove(evicted)
-                for candidate in range(index - n_step + 1, index + 1):
+                for candidate in self._predecessor_ids_locked(index, n_step):
                     self._refresh_eligibility_locked(pool, candidate, n_step)
             return index
 
@@ -184,6 +205,11 @@ class InMemoryReplayStore:
             self._order = deque(state["order"])
             self._items = dict(state["items"])
             self._next_index = int(state["next_index"])
+            self._episode_steps = {}
+            for transition_id, transition in self._items.items():
+                key = self._transition_key(transition)
+                if key is not None:
+                    self._episode_steps[key] = transition_id
             self._eligible.clear()
             self._revision += 1
             self._changes.clear()
@@ -210,6 +236,36 @@ class InMemoryReplayStore:
     def is_n_step_eligible(self, transition_id: TransitionId, n_step: int) -> bool:
         with self._lock:
             return self._is_n_step_eligible_locked(transition_id, n_step)
+
+    def n_step_ids(self, transition_id: TransitionId, n_step: int) -> list[TransitionId]:
+        """Resolve an episode-local horizon even when actors are interleaved."""
+
+        with self._lock:
+            first = self._items.get(transition_id)
+            if first is None:
+                return []
+            result: list[TransitionId] = []
+            for offset in range(n_step):
+                candidate_id = self._offset_id_locked(transition_id, first, offset)
+                if candidate_id is None:
+                    break
+                candidate = self._items.get(candidate_id)
+                if candidate is None or candidate.episode_id != first.episode_id:
+                    break
+                result.append(candidate_id)
+                if candidate.terminated or candidate.truncated:
+                    break
+            return result
+
+    def affected_n_step_starts(
+        self, transition_id: TransitionId, n_step: int
+    ) -> list[TransitionId]:
+        """Return starts whose eligibility can change after this append."""
+
+        with self._lock:
+            if transition_id not in self._items:
+                return []
+            return self._predecessor_ids_locked(transition_id, n_step)
 
     def changes_since(
         self, revision: int | None
@@ -253,7 +309,8 @@ class InMemoryReplayStore:
         if first is None:
             return False
         for offset in range(n_step):
-            candidate = self._items.get(transition_id + offset)
+            candidate_id = self._offset_id_locked(transition_id, first, offset)
+            candidate = self._items.get(candidate_id) if candidate_id is not None else None
             if candidate is None or candidate.episode_id != first.episode_id:
                 return False
             if (
@@ -265,6 +322,33 @@ class InMemoryReplayStore:
             if candidate.terminated or candidate.truncated:
                 return True
         return True
+
+    @staticmethod
+    def _transition_key(transition: Transition) -> tuple[str, int] | None:
+        if transition.episode_id is None or transition.step is None:
+            return None
+        return transition.episode_id, transition.step
+
+    def _offset_id_locked(
+        self, transition_id: TransitionId, first: Transition, offset: int
+    ) -> TransitionId | None:
+        key = self._transition_key(first)
+        if key is None:
+            return transition_id + offset
+        return self._episode_steps.get((key[0], key[1] + offset))
+
+    def _predecessor_ids_locked(
+        self, transition_id: TransitionId, n_step: int
+    ) -> list[TransitionId]:
+        transition = self._items[transition_id]
+        key = self._transition_key(transition)
+        if key is None:
+            return list(range(transition_id - n_step + 1, transition_id + 1))
+        return [
+            candidate
+            for offset in range(n_step)
+            if (candidate := self._episode_steps.get((key[0], key[1] - offset))) is not None
+        ]
 
 
 class UniformSampler:
@@ -449,7 +533,7 @@ class PrioritizedSampler:
             for appended, evicted in changes:
                 if evicted is not None:
                     self._deactivate(evicted)
-                for candidate in range(appended - n_step + 1, appended + 1):
+                for candidate in store.affected_n_step_starts(appended, n_step):
                     if store.contains(candidate) and store.is_n_step_eligible(candidate, n_step):
                         self._activate(candidate)
                     else:
@@ -697,28 +781,67 @@ def _make_batch(
     """Build a batch whose n-step returns are derived from replay order, not batch order."""
 
     requested_ids: list[TransitionId] = []
+    horizons: dict[TransitionId, list[TransitionId]] = {}
     seen: set[TransitionId] = set()
     for transition_id in transition_ids:
-        for offset in range(request.n_step):
-            candidate = transition_id + offset
+        resolver = getattr(store, "n_step_ids", None)
+        horizon = (
+            cast(list[TransitionId], resolver(transition_id, request.n_step))
+            if callable(resolver)
+            else [transition_id + offset for offset in range(request.n_step)]
+        )
+        horizons[transition_id] = horizon
+        for candidate in horizon:
             if candidate not in seen and store.contains(candidate):
                 seen.add(candidate)
                 requested_ids.append(candidate)
     available = dict(zip(requested_ids, store.get(requested_ids), strict=True))
     n_step = [
-        _n_step_transition(transition_id, available, request) for transition_id in transition_ids
+        _n_step_transition(
+            transition_id,
+            available,
+            request,
+            horizon=horizons[transition_id],
+        )
+        for transition_id in transition_ids
     ]
     transitions = [item[0] for item in n_step]
     discounts = [item[1] for item in n_step]
     data = pipeline.collate(transitions)
+    standard = (
+        data
+        if isinstance(data, Mapping)
+        and data.get("_tmrl_batch_collated") is True
+        and {
+            "observations",
+            "actions",
+            "rewards",
+            "next_observations",
+            "terminated",
+            "truncated",
+        }.issubset(data)
+        else None
+    )
     return TrainingBatch(
         data=data,
-        observations=tree_collate([item.observation for item in transitions]),
-        actions=tree_collate([item.action for item in transitions]),
-        rewards=tree_collate([item.reward for item in transitions]),
-        next_observations=tree_collate([item.next_observation for item in transitions]),
-        terminated=tree_collate([item.terminated for item in transitions]),
-        truncated=tree_collate([item.truncated for item in transitions]),
+        observations=standard["observations"]
+        if standard is not None
+        else tree_collate([item.observation for item in transitions]),
+        actions=standard["actions"]
+        if standard is not None
+        else tree_collate([item.action for item in transitions]),
+        rewards=standard["rewards"]
+        if standard is not None
+        else tree_collate([item.reward for item in transitions]),
+        next_observations=standard["next_observations"]
+        if standard is not None
+        else tree_collate([item.next_observation for item in transitions]),
+        terminated=standard["terminated"]
+        if standard is not None
+        else tree_collate([item.terminated for item in transitions]),
+        truncated=standard["truncated"]
+        if standard is not None
+        else tree_collate([item.truncated for item in transitions]),
         bootstrap_discounts=tree_collate(discounts),
         transition_ids=transition_ids,
         importance_weights=tree_collate(importance_weights)
@@ -733,6 +856,8 @@ def _n_step_transition(
     transition_id: TransitionId,
     available: Mapping[TransitionId, Transition],
     request: BatchRequest,
+    *,
+    horizon: list[TransitionId] | None = None,
 ) -> tuple[Transition, float]:
     """Return the episode-safe discounted n-step transition beginning at ``transition_id``."""
 
@@ -743,8 +868,8 @@ def _n_step_transition(
     effective_steps = 0
     terminated = False
     truncated = False
-    for offset in range(request.n_step):
-        current_id = transition_id + offset
+    ordered_ids = horizon or [transition_id + offset for offset in range(request.n_step)]
+    for offset, current_id in enumerate(ordered_ids):
         candidate = available.get(current_id)
         if candidate is None or candidate.episode_id != first.episode_id:
             break

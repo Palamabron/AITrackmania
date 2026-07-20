@@ -11,6 +11,7 @@ from tmrl.algorithms import (
     TruncatedQuantileCritic,
 )
 from tmrl.algorithms._torch import polyak_update
+from tmrl.algorithms.execution import TorchExecutionConfig
 from tmrl.core.data import TrainingBatch
 from tmrl.models.actors import CategoricalActor, GaussianActor
 from tmrl.models.critics import ContinuousQCritic, DiscreteQuantileNetwork, QuantileCritic
@@ -85,6 +86,7 @@ def _batch(*, discrete: bool) -> TrainingBatch:
 
 
 def _assert_update(learner, batch: TrainingBatch) -> None:
+    learner.execution = TorchExecutionConfig(device="cpu", precision="float32")
     learner.setup({"seed": 0})
     metrics, priorities = learner.update(batch)
     assert all(torch.isfinite(torch.tensor(value)) for value in metrics.values())
@@ -130,6 +132,7 @@ def test_iqn_policy_accepts_an_unbatched_observation() -> None:
         train_quantile_count=8,
         target_quantile_count=8,
         evaluation_quantile_count=8,
+        execution={"device": "cpu", "precision": "float32"},
     )
     learner.setup({"seed": 0})
     assert isinstance(learner.policy().act(torch.randn(4)), int)
@@ -146,7 +149,11 @@ class GreedyIQN(nn.Module):
 
 
 def test_iqn_rollout_uses_epsilon_greedy_exploration_but_evaluation_is_greedy() -> None:
-    learner = ImplicitQuantileQLearning(GreedyIQN(), exploration_epsilon=1.0)
+    learner = ImplicitQuantileQLearning(
+        GreedyIQN(),
+        exploration_epsilon=1.0,
+        execution={"device": "cpu", "precision": "float32"},
+    )
     learner.setup({"seed": 0})
     policy = learner.policy()
     torch.manual_seed(0)
