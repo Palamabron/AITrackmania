@@ -10,7 +10,7 @@ from typing import Any
 import torch
 from torch import nn
 
-from tmrl.algorithms._torch import TorchLearnerBase
+from tmrl.algorithms._torch import TorchLearnerBase, polyak_update, weighted_mean
 from tmrl.algorithms.execution import TorchExecutionConfig
 from tmrl.core.data import PriorityUpdate, TrainingBatch
 from tmrl.core.pytree import sanitize_finite, tree_map, tree_to_device
@@ -109,7 +109,7 @@ class ImplicitQuantileQLearning(TorchLearnerBase):
         target_quantile_count: int = 64,
         evaluation_quantile_count: int = 32,
         target_update_interval: int = 1_000,
-        target_tau: float = 0.0,
+        target_tau: float = 0.005,
         gradient_clip_norm: float = 10.0,
         exploration_epsilon: float = 0.1,
         exploration_epsilon_final: float | None = None,
@@ -123,6 +123,8 @@ class ImplicitQuantileQLearning(TorchLearnerBase):
         self.target_quantile_count = target_quantile_count
         self.evaluation_quantile_count = evaluation_quantile_count
         self.target_update_interval = target_update_interval
+        if not 0.0 <= target_tau <= 1.0:
+            raise ValueError("target_tau must be between zero and one")
         self.target_tau = target_tau
         self.gradient_clip_norm = gradient_clip_norm
         if not 0.0 <= exploration_epsilon <= 1.0:
@@ -185,6 +187,9 @@ class ImplicitQuantileQLearning(TorchLearnerBase):
         started = perf_counter()
         batch = self._batch(batch)
         transfer_finished = perf_counter()
+        host_to_device_s = float(
+            batch.metadata.get("_tmrl_host_to_device_s", transfer_finished - started)
+        )
         observations = self._observation(batch.observations, "observations")
         actions = self._tensor(batch.actions, "actions").long().reshape(-1)
         rewards = self._tensor(batch.rewards, "rewards").float().reshape(-1)
@@ -220,13 +225,11 @@ class ImplicitQuantileQLearning(TorchLearnerBase):
         targets_fp32 = targets.float()
         losses = implicit_quantile_huber_loss(selected_fp32, targets_fp32, quantiles)
         weights = (
-            batch.importance_weights if isinstance(batch.importance_weights, torch.Tensor) else None
+            batch.importance_weights.float().reshape(-1)
+            if isinstance(batch.importance_weights, torch.Tensor)
+            else None
         )
-        loss = (
-            (losses * weights).sum() / weights.sum().clamp_min(1e-8)
-            if weights is not None
-            else losses.mean()
-        )
+        loss = weighted_mean(losses, weights)
         self.optimizer.zero_grad(set_to_none=True)
         assert self.scaler is not None
         self.scaler.scale(loss).backward()
@@ -253,16 +256,24 @@ class ImplicitQuantileQLearning(TorchLearnerBase):
             self._record_execution_result()
         target_synced = False
         if self.target_tau > 0:
-            with torch.no_grad():
-                for target, source in zip(
-                    self.target_model.parameters(), self.model.parameters(), strict=True
-                ):
-                    target.lerp_(source, self.target_tau)
+            polyak_update(self.model, self.target_model, self.target_tau)
             target_synced = True
         elif self.update_count % self.target_update_interval == 0:
             self.target_model.load_state_dict(self.model.state_dict())
             target_synced = True
         td_errors = (selected_fp32.mean(1) - targets_fp32.mean(1)).detach().abs()
+        action_counts = torch.bincount(actions, minlength=predictions.shape[-1]).float()
+        action_probabilities = action_counts / action_counts.sum().clamp_min(1.0)
+        positive_probabilities = action_probabilities[action_probabilities > 0.0]
+        action_entropy = -(positive_probabilities * positive_probabilities.log()).sum()
+        normalized_action_entropy = action_entropy / torch.log(
+            torch.tensor(float(max(2, predictions.shape[-1])), device=self.device)
+        )
+        importance_weights = (
+            weights.float()
+            if weights is not None
+            else torch.ones(batch_size, device=self.device, dtype=torch.float32)
+        )
         return (
             {
                 "loss/iqn": float(loss.item()),
@@ -271,12 +282,24 @@ class ImplicitQuantileQLearning(TorchLearnerBase):
                 "debug/gradient_clipped_fraction": float(gradient_clipped),
                 "debug/gradient_clip_coefficient": clip_coefficient,
                 "debug/td_abs_mean": float(td_errors.mean().item()),
+                "debug/td_abs_max": float(td_errors.max().item()),
+                "debug/reward_mean": float(rewards.mean().item()),
+                "debug/reward_abs_max": float(rewards.abs().max().item()),
                 "debug/q_selected_mean": float(selected_fp32.mean().item()),
+                "debug/q_selected_max": float(selected_fp32.max().item()),
                 "debug/q_selected_abs_max": float(selected_fp32.abs().max().item()),
+                "debug/q_selected_std_mean": float(
+                    selected_fp32.std(dim=1, correction=0).mean().item()
+                ),
                 "debug/target_mean": float(targets_fp32.mean().item()),
                 "debug/target_abs_max": float(targets_fp32.abs().max().item()),
+                "debug/target_std_mean": float(targets_fp32.std(dim=1, correction=0).mean().item()),
+                "debug/action_entropy": float(normalized_action_entropy.item()),
+                "debug/action_unique_fraction": float((action_counts > 0.0).float().mean().item()),
+                "debug/importance_weight_mean": float(importance_weights.mean().item()),
+                "debug/importance_weight_min": float(importance_weights.min().item()),
                 "debug/target_synced_fraction": float(target_synced),
-                "timing/host_to_device_s": transfer_finished - started,
+                "timing/host_to_device_s": host_to_device_s,
                 "timing/forward_s": forward_finished - transfer_finished,
                 "timing/backward_s": backward_finished - forward_finished,
                 "timing/gradient_clip_s": clipping_finished - backward_finished,

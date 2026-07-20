@@ -24,12 +24,17 @@ def tree_map(function: Callable[[Any], Any], value: PyTree) -> PyTree:
     return function(value)
 
 
-def tree_to_device(value: PyTree, device: torch.device | str) -> PyTree:
+def tree_to_device(
+    value: PyTree,
+    device: torch.device | str,
+    *,
+    non_blocking: bool = False,
+) -> PyTree:
     """Move a tensor PyTree to ``device`` without silently coercing unsupported leaves."""
 
     def move(leaf: Any) -> Any:
         if isinstance(leaf, torch.Tensor):
-            return leaf.to(device)
+            return leaf.to(device, non_blocking=non_blocking)
         if isinstance(leaf, (bool, int, float, str, type(None))):
             return leaf
         raise TypeError(

@@ -7,6 +7,7 @@ import random
 from collections.abc import Mapping
 from contextlib import AbstractContextManager
 from copy import deepcopy
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, cast
 
@@ -21,7 +22,7 @@ from tmrl.algorithms.execution import (
     resolve_torch_execution,
 )
 from tmrl.core.data import TrainingBatch
-from tmrl.core.pytree import sanitize_finite, tree_to_device
+from tmrl.core.pytree import sanitize_finite, tree_map, tree_to_device
 
 
 class TorchPolicy:
@@ -75,6 +76,7 @@ class TorchLearnerBase:
         self.device = torch.device("cpu")
         self.resolved_execution: ResolvedTorchExecution | None = None
         self.scaler: torch.amp.GradScaler | None = None
+        self._transfer_stream: torch.cuda.Stream | None = None
         self.run_dir: Path | None = None
         self.seed = seed
 
@@ -102,6 +104,8 @@ class TorchLearnerBase:
             self.device.type,
             enabled=self.resolved_execution.scaler_enabled,
         )
+        if self.resolved_execution.backend in {"cuda", "rocm"}:
+            self._transfer_stream = torch.cuda.Stream(device=self.device)
         self._setup_model()
 
     def autocast(self) -> AbstractContextManager[Any]:
@@ -145,45 +149,104 @@ class TorchLearnerBase:
         raise NotImplementedError
 
     def _batch(self, batch: TrainingBatch) -> TrainingBatch:
-        observations = tree_to_device(batch.observations, self.device)
-        actions = tree_to_device(batch.actions, self.device)
-        rewards = tree_to_device(batch.rewards, self.device)
-        next_observations = tree_to_device(batch.next_observations, self.device)
-        terminated = tree_to_device(batch.terminated, self.device)
-        truncated = tree_to_device(batch.truncated, self.device)
-        standard = {
-            "observations": observations,
-            "actions": actions,
-            "rewards": rewards,
-            "next_observations": next_observations,
-            "terminated": terminated,
-            "truncated": truncated,
-        }
-        data = self._batch_data(batch.data, standard)
+        event = batch.metadata.get("_tmrl_transfer_event")
+        if event is not None:
+            torch.cuda.current_stream(self.device).wait_event(event)
+            event.synchronize()
+            started = batch.metadata.get("_tmrl_transfer_started")
+            if started is None:
+                raise RuntimeError("Prepared CUDA batch is missing its transfer start event")
+            return replace(
+                batch,
+                metadata={
+                    **batch.metadata,
+                    "_tmrl_host_to_device_s": float(started.elapsed_time(event)) / 1_000.0,
+                },
+            )
+        return self._move_batch(batch, non_blocking=False)
+
+    def prepare_batch(self, batch: TrainingBatch) -> TrainingBatch:
+        """Pin and stage one batch on a dedicated accelerator transfer stream."""
+
+        if self._transfer_stream is None:
+            return batch
+        pinned = self._pin_batch(batch)
+        started = torch.cuda.Event(enable_timing=True)
+        with torch.cuda.stream(self._transfer_stream):
+            started.record()
+            staged = self._move_batch(pinned, non_blocking=True)
+            event = self._transfer_stream.record_event()
+        return replace(
+            staged,
+            metadata={
+                **staged.metadata,
+                "_tmrl_transfer_event": event,
+                "_tmrl_transfer_started": started,
+            },
+        )
+
+    def _move_batch(self, batch: TrainingBatch, *, non_blocking: bool) -> TrainingBatch:
         return TrainingBatch(
-            data=data,
-            observations=observations,
-            actions=actions,
-            rewards=rewards,
-            next_observations=next_observations,
-            terminated=terminated,
-            truncated=truncated,
-            bootstrap_discounts=tree_to_device(batch.bootstrap_discounts, self.device),
+            data=tree_to_device(batch.data, self.device, non_blocking=non_blocking),
+            observations=tree_to_device(batch.observations, self.device, non_blocking=non_blocking),
+            actions=tree_to_device(batch.actions, self.device, non_blocking=non_blocking),
+            rewards=tree_to_device(batch.rewards, self.device, non_blocking=non_blocking),
+            next_observations=tree_to_device(
+                batch.next_observations, self.device, non_blocking=non_blocking
+            ),
+            terminated=tree_to_device(batch.terminated, self.device, non_blocking=non_blocking),
+            truncated=tree_to_device(batch.truncated, self.device, non_blocking=non_blocking),
+            bootstrap_discounts=tree_to_device(
+                batch.bootstrap_discounts, self.device, non_blocking=non_blocking
+            ),
             transition_ids=batch.transition_ids,
             importance_weights=(
-                tree_to_device(batch.importance_weights, self.device)
+                tree_to_device(
+                    batch.importance_weights,
+                    self.device,
+                    non_blocking=non_blocking,
+                )
                 if batch.importance_weights is not None
                 else None
             ),
-            masks=tree_to_device(batch.masks, self.device) if batch.masks is not None else None,
+            masks=(
+                tree_to_device(batch.masks, self.device, non_blocking=non_blocking)
+                if batch.masks is not None
+                else None
+            ),
             metadata=batch.metadata,
         )
 
-    def _batch_data(self, data: Any, standard: Mapping[str, Any]) -> Any:
-        if not isinstance(data, Mapping) or data.get("_tmrl_batch_collated") is not True:
-            return tree_to_device(data, self.device)
-        extras = {key: value for key, value in data.items() if key not in standard}
-        return {**tree_to_device(extras, self.device), **standard}
+    @staticmethod
+    def _pin_batch(batch: TrainingBatch) -> TrainingBatch:
+        def pin(value: Any) -> Any:
+            return tree_map(
+                lambda leaf: (
+                    leaf.pin_memory()
+                    if isinstance(leaf, torch.Tensor)
+                    and leaf.device.type == "cpu"
+                    and not leaf.is_pinned()
+                    else leaf
+                ),
+                value,
+            )
+
+        return TrainingBatch(
+            data=pin(batch.data),
+            observations=pin(batch.observations),
+            actions=pin(batch.actions),
+            rewards=pin(batch.rewards),
+            next_observations=pin(batch.next_observations),
+            terminated=pin(batch.terminated),
+            truncated=pin(batch.truncated),
+            bootstrap_discounts=pin(batch.bootstrap_discounts),
+            transition_ids=batch.transition_ids,
+            importance_weights=(
+                pin(batch.importance_weights) if batch.importance_weights is not None else None
+            ),
+            masks=pin(batch.masks) if batch.masks is not None else None,
+            metadata=batch.metadata,
+        )
 
     @staticmethod
     def _tensor(value: Any, name: str) -> torch.Tensor:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
@@ -116,18 +117,48 @@ class CompositeRunLogger:
 
 
 class TorchCheckpointCodec:
-    """Default checkpoint codec compatible with normal PyTorch learner state."""
+    """Atomic zstd-streamed Torch checkpoints with legacy uncompressed reads."""
 
     def save(self, state: Mapping[str, Any], path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         import torch
+        import zstandard
 
-        torch.save(dict(state), path)
+        temporary = path.with_suffix(path.suffix + ".tmp")
+        with (
+            temporary.open("wb") as destination,
+            zstandard.ZstdCompressor(level=3).stream_writer(
+                destination, closefd=False
+            ) as compressed,
+        ):
+            torch.save(dict(state), compressed)
+        temporary.replace(path)
 
     def load(self, path: Path) -> Mapping[str, Any]:
         import torch
+        import zstandard
 
-        return cast(Mapping[str, Any], torch.load(path, map_location="cpu", weights_only=False))
+        with path.open("rb") as source:
+            compressed = source.read(4) == b"\x28\xb5\x2f\xfd"
+        if not compressed:
+            return cast(
+                Mapping[str, Any],
+                torch.load(path, map_location="cpu", weights_only=False),
+            )
+        temporary = path.with_suffix(path.suffix + ".decompressed.tmp")
+        try:
+            with (
+                path.open("rb") as source,
+                temporary.open("wb") as destination,
+                zstandard.ZstdDecompressor().stream_reader(source) as reader,
+            ):
+                shutil.copyfileobj(reader, destination, length=8 * 1024**2)
+            return cast(
+                Mapping[str, Any],
+                torch.load(temporary, map_location="cpu", weights_only=False),
+            )
+        finally:
+            temporary.unlink(missing_ok=True)
 
 
 # JSON is retained as an explicit opt-in codec for non-tensor toy learners.

@@ -15,6 +15,9 @@ class RewardResult:
     reward: float
     terminated: bool
     reason: str | None
+    progress_reward: float = 0.0
+    speed_reward: float = 0.0
+    terminal_reward: float = 0.0
 
 
 class TrajectoryReward:
@@ -133,21 +136,40 @@ class TrajectoryReward:
         ):
             self._progress_history.popleft()
         if float(window_distances[nearest - window_start]) > self.crash_distance:
-            return RewardResult(-1.0, True, "off_track")
+            return RewardResult(-1.0, True, "off_track", terminal_reward=-1.0)
         near_finish = self._index / (len(self.points) - 1) >= self.finish_progress
         if finish_ui_active and near_finish and self._step >= self.minimum_finish_steps:
             return RewardResult(
-                self.finish_reward + progress_reward + speed_reward, True, "finished"
+                self.finish_reward + progress_reward + speed_reward,
+                True,
+                "finished",
+                progress_reward,
+                speed_reward,
+                self.finish_reward,
             )
         if near_finish:
             # A valid finish signal can arrive after trajectory progress reaches the end.
-            return RewardResult(progress_reward + speed_reward, False, None)
+            return RewardResult(
+                progress_reward + speed_reward,
+                False,
+                None,
+                progress_reward,
+                speed_reward,
+            )
         if self._step - self._last_progress_step >= self.no_progress_steps:
-            return RewardResult(-abs(self.terminal_failure_penalty), True, "no_progress")
+            penalty = -abs(self.terminal_failure_penalty)
+            return RewardResult(penalty, True, "no_progress", terminal_reward=penalty)
         if (
             len(self._progress_history) >= 2
             and self._step >= self.slow_progress_window_steps
             and progress_m - self._progress_history[0][1] < self.minimum_progress_per_window_m
         ):
-            return RewardResult(-abs(self.terminal_failure_penalty), True, "slow_progress")
-        return RewardResult(progress_reward + speed_reward, False, None)
+            penalty = -abs(self.terminal_failure_penalty)
+            return RewardResult(penalty, True, "slow_progress", terminal_reward=penalty)
+        return RewardResult(
+            progress_reward + speed_reward,
+            False,
+            None,
+            progress_reward,
+            speed_reward,
+        )

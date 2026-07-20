@@ -7,6 +7,7 @@ import time
 from collections.abc import Mapping
 from pathlib import Path
 from queue import Queue
+from types import SimpleNamespace
 from typing import Any
 
 import grpc
@@ -20,7 +21,7 @@ from tmrl.core.runtime import ResolvedRun
 from tmrl.core.spec import RunSpec
 from tmrl.distributed.actor import ActorRuntime, _Client, _PolicyReference
 from tmrl.distributed.codec import WireCodec
-from tmrl.distributed.coordinator import Coordinator, _MetricAccumulator
+from tmrl.distributed.coordinator import Coordinator, _Counters, _MetricAccumulator
 from tmrl.distributed.journal import RolloutJournal
 from tmrl.distributed.protocol import (
     PROTOCOL_VERSION,
@@ -390,6 +391,116 @@ def test_new_actor_requests_the_initial_policy_snapshot() -> None:
 
     policy, epsilon, version = actor._policy()
     assert (policy.act(None), epsilon, version) == (7, 0.1, 0)
+
+
+def test_actor_evaluation_is_greedy_and_never_spooled_as_training_data() -> None:
+    deterministic_calls: list[bool] = []
+    spooled: list[tuple[list[Any], list[Any], int, list[dict[str, Any]]]] = []
+
+    class Policy:
+        def act(self, observation: Any, *, deterministic: bool = False) -> int:
+            del observation
+            deterministic_calls.append(deterministic)
+            return 0
+
+    class Environment:
+        def __init__(self) -> None:
+            self.steps = 0
+
+        def reset(self, *, seed: int) -> tuple[int, dict[str, Any]]:
+            assert seed == 1_000_007
+            return 0, {}
+
+        def step(self, action: int) -> tuple[int, float, bool, bool, dict[str, Any]]:
+            assert action == 0
+            self.steps += 1
+            if self.steps == 1:
+                return (
+                    1,
+                    2.0,
+                    False,
+                    False,
+                    {
+                        "reward_progress": 2.0,
+                        "reward_speed": 0.5,
+                    },
+                )
+            return (
+                2,
+                3.0,
+                True,
+                False,
+                {
+                    "termination_reason": "finished",
+                    "race_time_ms": 12_500.0,
+                    "reward_progress": 3.0,
+                    "reward_terminal": 10.0,
+                },
+            )
+
+    actor = object.__new__(ActorRuntime)
+    actor.spec = SimpleNamespace(training=SimpleNamespace(max_episode_steps=3))
+    actor.stop = threading.Event()
+    actor._evaluation_index = 0
+    actor._actor_seed = lambda: 7
+    actor._policy = lambda: (Policy(), 0.5, 9)
+    actor._spool = lambda transitions, episodes, version, *, evaluations=None: spooled.append(
+        (transitions, episodes, version, evaluations or [])
+    )
+
+    actor._evaluate(Environment(), _Pipeline())
+
+    assert deterministic_calls == [True, True]
+    assert spooled[0][0:3] == ([], [], 9)
+    assert spooled[0][3][0]["finish_time_s"] == 12.5
+    assert spooled[0][3][0]["reward/progress"] == 5.0
+    assert spooled[0][3][0]["reward/speed"] == 0.5
+    assert spooled[0][3][0]["reward/terminal"] == 10.0
+
+
+def test_distributed_ingest_normalizes_source_demo_marker() -> None:
+    store = InMemoryReplayStore()
+    coordinator = object.__new__(Coordinator)
+    coordinator.run = SimpleNamespace(
+        replay_store=store,
+        spec=SimpleNamespace(
+            training=SimpleNamespace(
+                warmup_transitions=1,
+                updates_per_transition=1.0,
+                evaluate_every_episodes=None,
+            )
+        ),
+        logger=_Logger(),
+    )
+    coordinator.counters = _Counters()
+    coordinator._last_ingest_at = time.monotonic()
+    coordinator._rollouts = Queue()
+
+    transition = Transition(
+        observation=np.asarray([0], dtype=np.float32),
+        action=0,
+        reward=1.0,
+        next_observation=np.asarray([1], dtype=np.float32),
+        terminated=True,
+        truncated=False,
+        info={"source": "demo"},
+        episode_id="actor",
+        step=0,
+    )
+    coordinator._ingest(
+        {
+            "actor_id": "actor",
+            "session_id": "session",
+            "sequence": 0,
+            "policy_version": 0,
+            "transitions": [transition_to_wire(transition)],
+            "episodes": [],
+            "evaluations": [],
+        },
+        1,
+    )
+
+    assert store.get([0])[0].info == {"is_demo": True}
 
 
 def test_actor_retries_a_rejected_rollout_before_deleting_it(tmp_path: Path) -> None:

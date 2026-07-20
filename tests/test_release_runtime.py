@@ -13,9 +13,12 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
-from tmrl.core.builtins import JsonlRunLogger
+import torch
+from tmrl.core.builtins import JsonlRunLogger, TorchCheckpointCodec
 from tmrl.core.spec import RunSpec
+from tmrl.distributed.actor import ActorRuntime
 from tmrl.experiments.orchestration import GridStrategy, StudyLedger, StudyRunner, StudySpec
+from tmrl.observability.trackers import _wandb_metric_name
 from tmrl.project.scaffold import create_project
 from tmrl.trackmania.assets import record_boundary, record_trajectory
 from tmrl.trackmania.environment import OpenPlanetEnvironmentFactory
@@ -38,6 +41,71 @@ def test_jsonl_events_have_release_envelope(tmp_path: Path) -> None:
     assert event["run_id"] == "release"
     assert event["timestamp_utc"]
     assert event["elapsed_s"] >= 0
+
+
+def test_torch_checkpoints_are_zstd_streamed_and_round_trip(tmp_path: Path) -> None:
+    path = tmp_path / "checkpoint.pt"
+    codec = TorchCheckpointCodec()
+    state = {"tensor": torch.zeros(1024, dtype=torch.float32), "counter": 3}
+
+    codec.save(state, path)
+    restored = codec.load(path)
+
+    assert path.read_bytes()[:4] == b"\x28\xb5\x2f\xfd"
+    assert path.stat().st_size < state["tensor"].numel() * state["tensor"].element_size()
+    assert torch.equal(restored["tensor"], state["tensor"])
+    assert restored["counter"] == 3
+
+
+def test_wandb_metrics_use_readable_sections() -> None:
+    assert _wandb_metric_name("train/episode", "finish_time_s") == "episode/finish_time_s"
+    assert _wandb_metric_name("train/update", "loss/iqn") == "learner/loss/iqn"
+    assert (
+        _wandb_metric_name("train/update", "timing/replay_sample_s")
+        == "performance/replay_sample_s"
+    )
+    assert _wandb_metric_name("train/update", "replay_size") == "replay/size"
+    assert (
+        _wandb_metric_name("train/update", "debug/gradient_norm_max") == "learner/gradient_norm_max"
+    )
+    assert (
+        _wandb_metric_name("train/update", "debug/gradient_clipped_fraction")
+        == "learner/clipped_fraction"
+    )
+    assert _wandb_metric_name("train/update", "debug/q_selected_mean") == "learner/q_mean"
+    assert _wandb_metric_name("train/update", "debug/q_selected_max") == "learner/q_max"
+    assert _wandb_metric_name("train/update", "debug/q_selected_abs_max") == "learner/q_abs_max"
+
+
+def test_actor_episode_summary_zeroes_non_finish_time() -> None:
+    summary = ActorRuntime._summary(
+        12.0,
+        {
+            "termination_reason": "no_progress",
+            "race_time_ms": 45_000.0,
+            "reward_progress": 10.0,
+            "reward_speed": 3.0,
+            "reward_terminal": -1.0,
+        },
+        6,
+    )
+
+    assert summary["return"] == 12.0
+    assert summary["reward_per_transition"] == 2.0
+    assert summary["reward/progress"] == 10.0
+    assert summary["finish_time_s"] == 0.0
+    assert summary["finished"] == 0.0
+
+
+def test_actor_episode_summary_reports_finish_time() -> None:
+    summary = ActorRuntime._summary(
+        20.0,
+        {"termination_reason": "finished", "race_time_ms": 12_345.0},
+        10,
+    )
+
+    assert summary["finish_time_s"] == pytest.approx(12.345)
+    assert summary["finished"] == 1.0
 
 
 def test_openplanet_client_validates_a_complete_packet() -> None:
@@ -105,9 +173,13 @@ def test_trajectory_reward_reports_progress_finish_and_off_track() -> None:
     reward = TrajectoryReward(
         np.array([[0, 0, 0], [1, 0, 0], [2, 0, 0]], dtype=np.float32), minimum_finish_steps=1
     )
-    assert reward.step(np.array([1, 0, 0]), finish_ui_active=False).reward > 0
+    progress = reward.step(np.array([1, 0, 0]), finish_ui_active=False)
+    assert progress.reward > 0
+    assert progress.reward == progress.progress_reward + progress.speed_reward
     assert reward.step(np.array([2, 0, 0]), finish_ui_active=False).reason is None
-    assert reward.step(np.array([2, 0, 0]), finish_ui_active=True).reason == "finished"
+    finish = reward.step(np.array([2, 0, 0]), finish_ui_active=True)
+    assert finish.reason == "finished"
+    assert finish.reward == finish.progress_reward + finish.speed_reward + finish.terminal_reward
     reward.reset()
     assert reward.step(np.array([100, 0, 0]), finish_ui_active=False).reason == "off_track"
 

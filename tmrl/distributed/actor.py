@@ -108,6 +108,8 @@ class ActorRuntime:
         self.stop = threading.Event()
         self.stop_reason = "running"
         self.force_refresh = threading.Event()
+        self.evaluate = threading.Event()
+        self._evaluation_index = 0
         # The disk spool is the backpressure boundary. Keeping this queue
         # unbounded prevents a temporarily slow learner from pausing the game.
         self.queue: Queue[Path] = Queue()
@@ -226,8 +228,14 @@ class ActorRuntime:
         chunk_started = monotonic()
         episode = 0
         while not self.stop.is_set():
+            if self.evaluate.is_set():
+                self.evaluate.clear()
+                self._evaluate(environment, pipeline)
             observation, _ = environment.reset(seed=self._actor_seed() + episode)
             total_reward = 0.0
+            progress_reward = 0.0
+            speed_reward = 0.0
+            terminal_reward = 0.0
             final_info: Mapping[str, Any] = {}
             episode_id = f"{self.actor_id}/{self.session_id}/{episode:08d}"
             for step in range(self.spec.training.max_episode_steps):
@@ -251,6 +259,9 @@ class ActorRuntime:
                 )
                 observation = next_observation
                 total_reward += float(reward)
+                progress_reward += float(info.get("reward_progress", 0.0))
+                speed_reward += float(info.get("reward_speed", 0.0))
+                terminal_reward += float(info.get("reward_terminal", 0.0))
                 final_info = info
                 if self._should_flush(transitions, chunk_started):
                     self._spool(transitions, summaries, version)
@@ -258,27 +269,89 @@ class ActorRuntime:
                     chunk_started = monotonic()
                 if terminated or truncated or self.stop.is_set():
                     break
-            summaries.append(self._summary(total_reward, final_info, step + 1))
+            summary_info = {
+                **dict(final_info),
+                "reward_progress": progress_reward,
+                "reward_speed": speed_reward,
+                "reward_terminal": terminal_reward,
+                "actor_epsilon": epsilon,
+                "policy_version": version,
+            }
+            summaries.append(self._summary(total_reward, summary_info, step + 1))
             episode += 1
             _, _, version = self._policy()
             self._spool(transitions, summaries, version)
             transitions, summaries = [], []
             chunk_started = monotonic()
 
+    def _evaluate(self, environment: Any, pipeline: Any) -> None:
+        observation, _ = environment.reset(
+            seed=self._actor_seed() + 1_000_000 + self._evaluation_index
+        )
+        total_reward = 0.0
+        progress_reward = 0.0
+        speed_reward = 0.0
+        terminal_reward = 0.0
+        final_info: Mapping[str, Any] = {}
+        policy, _, version = self._policy()
+        for _step in range(self.spec.training.max_episode_steps):
+            prepared = pipeline.transform_observation(observation)
+            action = policy.act(prepared, deterministic=True)
+            observation, reward, terminated, truncated, info = environment.step(action)
+            total_reward += float(reward)
+            progress_reward += float(info.get("reward_progress", 0.0))
+            speed_reward += float(info.get("reward_speed", 0.0))
+            terminal_reward += float(info.get("reward_terminal", 0.0))
+            final_info = info
+            if terminated or truncated or self.stop.is_set():
+                break
+        summary = self._summary(
+            total_reward,
+            {
+                **dict(final_info),
+                "reward_progress": progress_reward,
+                "reward_speed": speed_reward,
+                "reward_terminal": terminal_reward,
+                "actor_epsilon": 0.0,
+                "policy_version": version,
+            },
+            _step + 1,
+        )
+        summary["deterministic"] = 1.0
+        self._spool([], [], version, evaluations=[summary])
+        self._evaluation_index += 1
+
     def _should_flush(self, transitions: list[Transition], started: float) -> bool:
         return len(transitions) >= self.spec.distributed.rollout_chunk_transitions or (
             bool(transitions) and monotonic() - started >= self.spec.distributed.rollout_flush_s
         )
 
-    def _summary(self, reward: float, info: Mapping[str, Any], transitions: int) -> dict[str, Any]:
+    @staticmethod
+    def _summary(reward: float, info: Mapping[str, Any], transitions: int) -> dict[str, Any]:
+        termination = str(info.get("termination_reason") or "max_steps")
+        finished = termination == "finished"
+        race_time_s = float(info.get("race_time_ms", 0.0)) / 1_000.0
         return {
-            "reward": reward,
-            "transitions": transitions,
+            "return": reward,
+            "reward_per_transition": reward / transitions,
+            "reward/progress": float(info.get("reward_progress", 0.0)),
+            "reward/speed": float(info.get("reward_speed", 0.0)),
+            "reward/terminal": float(info.get("reward_terminal", 0.0)),
+            "steps": transitions,
             "progress_pct": float(info.get("progress_pct", 0.0)),
             "progress_m": float(info.get("progress_m", 0.0)),
-            "episode_elapsed_s": float(info.get("episode_elapsed_s", 0.0)),
-            "race_time_s": float(info.get("race_time_ms", 0.0)) / 1_000.0,
-            "termination": str(info.get("termination_reason") or "max_steps"),
+            "duration_s": float(info.get("episode_elapsed_s", 0.0)),
+            "race_time_s": race_time_s,
+            "finish_time_s": race_time_s if finished else 0.0,
+            "finished": float(finished),
+            "termination": termination,
+            "termination/finished": float(finished),
+            "termination/no_progress": float(termination == "no_progress"),
+            "termination/slow_progress": float(termination == "slow_progress"),
+            "termination/off_track": float(termination == "off_track"),
+            "termination/max_steps": float(termination == "max_steps"),
+            "exploration_epsilon": float(info.get("actor_epsilon", 0.0)),
+            "policy_version": int(info.get("policy_version", 0)),
         }
 
     def _spool(
@@ -286,8 +359,10 @@ class ActorRuntime:
         transitions: list[Transition],
         summaries: list[dict[str, Any]],
         policy_version: int,
+        *,
+        evaluations: list[dict[str, Any]] | None = None,
     ) -> None:
-        if not transitions and not summaries:
+        if not transitions and not summaries and not evaluations:
             return
         value = {
             **self._request_base(),
@@ -298,6 +373,7 @@ class ActorRuntime:
             ),
             "transitions": [transition_to_wire(item) for item in transitions],
             "episodes": summaries,
+            "evaluations": evaluations or [],
         }
         payload = self.codec.encode(value)
         if self._spool_bytes() + len(payload) > self.spec.distributed.spool_max_bytes:
@@ -321,6 +397,8 @@ class ActorRuntime:
                     response = self.client.call("Submit", request)
                     if response.get("force_refresh"):
                         self.force_refresh.set()
+                    if response.get("evaluate"):
+                        self.evaluate.set()
                     if response.get("stop"):
                         self.stop_reason = "learner requested stop"
                         self.stop.set()

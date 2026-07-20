@@ -69,3 +69,16 @@ def test_duplicate_episode_step_does_not_mutate_replay() -> None:
 
     assert store.available_ids() == [0]
     assert store.get([0])[0].reward == 1.0
+
+
+def test_replay_snapshot_is_immutable_after_ring_overwrite() -> None:
+    store = InMemoryReplayStore(capacity=2)
+    store.append(_transition(0))
+    store.append(_transition(1))
+
+    state = store.state_dict()
+    store.append(_transition(2))
+    restored = InMemoryReplayStore(capacity=2)
+    restored.load_state_dict(state)
+
+    assert [item.reward for item in restored.get(restored.available_ids())] == [1.0, 2.0]

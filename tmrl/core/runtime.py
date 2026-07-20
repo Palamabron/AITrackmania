@@ -113,7 +113,12 @@ def resolve_run(spec: RunSpec, *, base_dir: str | Path = ".") -> ResolvedRun:
         logger = CompositeRunLogger(
             logger,
             *(
-                _instantiate(item, run_dir=run_dir, run_id=spec.run_id)
+                _instantiate(
+                    item,
+                    run_dir=run_dir,
+                    run_id=spec.run_id,
+                    config=spec.model_dump(mode="json"),
+                )
                 for item in spec.components.additional_loggers
             ),
         )

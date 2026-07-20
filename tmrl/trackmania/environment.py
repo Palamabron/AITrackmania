@@ -188,6 +188,9 @@ class OpenPlanetEnvironment:
                 "episode_elapsed_s": monotonic() - self._episode_started_at,
                 "progress_m": self.reward.progress_m,
                 "progress_pct": self.reward.progress_pct,
+                "reward_progress": result.progress_reward,
+                "reward_speed": result.speed_reward,
+                "reward_terminal": result.terminal_reward,
             },
         )
 

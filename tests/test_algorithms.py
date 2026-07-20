@@ -10,7 +10,7 @@ from tmrl.algorithms import (
     StableDiscreteSoftActorCritic,
     TruncatedQuantileCritic,
 )
-from tmrl.algorithms._torch import polyak_update
+from tmrl.algorithms._torch import polyak_update, weighted_mean
 from tmrl.algorithms.execution import TorchExecutionConfig
 from tmrl.algorithms.implicit_quantile_q_learning import implicit_quantile_huber_loss
 from tmrl.core.data import TrainingBatch
@@ -128,6 +128,15 @@ def test_iqn_loss_matches_paper_quantile_reduction() -> None:
     assert torch.equal(loss, torch.tensor([1.5]))
 
 
+def test_importance_weights_are_normalized_after_per_sample_iqn_reduction() -> None:
+    losses = torch.tensor([1.0, 3.0])
+    weights = torch.tensor([1.0, 0.5])
+
+    loss = weighted_mean(losses, weights)
+
+    assert loss == torch.tensor(5.0 / 3.0)
+
+
 def test_bundled_actors_support_tuple_and_mapping_encoder_inputs() -> None:
     track = torch.randn(3, 2)
     telemetry = torch.randn(3, 2)
@@ -191,8 +200,12 @@ def test_iqn_update_reports_clipping_value_and_target_diagnostics() -> None:
     assert metrics["debug/gradient_clipped_fraction"] == 1.0
     assert metrics["debug/gradient_clip_coefficient"] < 1.0
     assert metrics["debug/target_synced_fraction"] == 1.0
+    assert metrics["debug/q_selected_max"] >= metrics["debug/q_selected_mean"]
     assert metrics["debug/q_selected_abs_max"] >= abs(metrics["debug/q_selected_mean"])
     assert metrics["debug/target_abs_max"] >= abs(metrics["debug/target_mean"])
+    assert 0.0 <= metrics["debug/action_entropy"] <= 1.0
+    assert 0.0 < metrics["debug/action_unique_fraction"] <= 1.0
+    assert metrics["debug/importance_weight_min"] <= metrics["debug/importance_weight_mean"]
 
 
 def test_polyak_update_copies_batch_norm_buffers() -> None:

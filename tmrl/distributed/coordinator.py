@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from copy import deepcopy
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from queue import Empty, Queue
 from threading import RLock
@@ -16,6 +16,7 @@ import grpc
 from google.protobuf.wrappers_pb2 import BytesValue
 
 from tmrl.core.contracts import ReplicablePolicy
+from tmrl.core.data import BatchRequest, TrainingBatch
 from tmrl.core.runtime import ResolvedRun, prepare_run, resolve_run
 from tmrl.core.spec import RunSpec
 from tmrl.core.training import TrainingResult
@@ -37,6 +38,10 @@ from tmrl.distributed.protocol import (
 class _Counters:
     transitions: int = 0
     episodes: int = 0
+    finishes: int = 0
+    best_finish_time_s: float = 0.0
+    evaluations: int = 0
+    evaluation_finishes: int = 0
     updates: int = 0
     update_credit: float = 0.0
     journal_watermark: int = 0
@@ -49,6 +54,44 @@ class _PendingRollout:
     value: Mapping[str, Any]
     row_id: int
     enqueued_at: float
+
+
+@dataclass(frozen=True, slots=True)
+class _PreparedBatch:
+    batch: TrainingBatch
+    preparation_s: float
+
+
+class _BatchPrefetcher:
+    def __init__(self, run: ResolvedRun) -> None:
+        self.run = run
+        self.prepare = getattr(run.learner, "prepare_batch", None)
+        self.enabled = bool(getattr(run.sampler, "thread_safe_prefetch", False))
+        self.executor = (
+            ThreadPoolExecutor(max_workers=1, thread_name_prefix="tmrl-batch-prefetch")
+            if self.enabled
+            else None
+        )
+        self.pending: Future[_PreparedBatch] | None = None
+
+    def next(self, request: BatchRequest) -> tuple[TrainingBatch, float, float]:
+        waited_at = perf_counter()
+        prepared = self.pending.result() if self.pending is not None else self._prepare(request)
+        wait_s = perf_counter() - waited_at
+        if self.executor is not None:
+            self.pending = self.executor.submit(self._prepare, request)
+        return prepared.batch, prepared.preparation_s, wait_s
+
+    def _prepare(self, request: BatchRequest) -> _PreparedBatch:
+        started = perf_counter()
+        batch = self.run.sampler.sample(self.run.replay_store, request)
+        if callable(self.prepare):
+            batch = self.prepare(batch)
+        return _PreparedBatch(batch, perf_counter() - started)
+
+    def close(self) -> None:
+        if self.executor is not None:
+            self.executor.shutdown(wait=True, cancel_futures=True)
 
 
 class _MetricAccumulator:
@@ -129,6 +172,7 @@ class Coordinator:
         self._last_progress_print = 0
         self._last_heartbeats: dict[str, float] = {}
         self._timed_out_actors: set[str] = set()
+        self._evaluation_due: set[str] = set()
         self._last_ingest_at = monotonic()
         self._started_at = monotonic()
         self._rollouts: Queue[_PendingRollout] = Queue()
@@ -137,6 +181,7 @@ class Coordinator:
         self._last_metric_credit = 0.0
         self._growing_credit_windows = 0
         self._last_logging_s = 0.0
+        self._last_metric_transitions = 0
         self._checkpoint_writer = _AsyncCheckpointWriter(run.checkpoint_codec)
 
     def run_forever(self) -> TrainingResult:
@@ -284,6 +329,10 @@ class Coordinator:
         )
         if inserted:
             self._rollouts.put(_PendingRollout(value, row_id, monotonic()))
+        with self._lock:
+            actor_id = str(value["actor_id"])
+            evaluate = actor_id in self._evaluation_due
+            self._evaluation_due.discard(actor_id)
         return self._response(
             {
                 "accepted": True,
@@ -291,6 +340,7 @@ class Coordinator:
                 "force_refresh": lag > self.run.spec.distributed.soft_policy_lag_updates,
                 "stop": stop,
                 "policy_lag_updates": lag,
+                "evaluate": evaluate,
             }
         )
 
@@ -348,7 +398,17 @@ class Coordinator:
         self._last_ingest_at = now
         before = self.counters.transitions
         for transition in transitions:
-            self.run.replay_store.append(transition)
+            replay_info = (
+                {
+                    "is_demo": bool(
+                        transition.info.get("is_demo", False)
+                        or transition.info.get("source") == "demo"
+                    )
+                }
+                if "is_demo" in transition.info or transition.info.get("source") == "demo"
+                else {}
+            )
+            self.run.replay_store.append(replace(transition, info=replay_info))
         self.counters.transitions += len(transitions)
         ready = self.run.spec.training.warmup_transitions
         newly_trainable = max(0, self.counters.transitions - ready) - max(0, before - ready)
@@ -363,10 +423,23 @@ class Coordinator:
         )
         for summary in value.get("episodes", []):
             self.counters.episodes += 1
+            finished = bool(summary["finished"])
+            finish_time_s = float(summary["finish_time_s"])
+            if finished:
+                self.counters.finishes += 1
+                if (
+                    self.counters.best_finish_time_s == 0.0
+                    or finish_time_s < self.counters.best_finish_time_s
+                ):
+                    self.counters.best_finish_time_s = finish_time_s
             self.run.logger.log(
                 "train/episode",
                 {
                     **summary,
+                    "index": self.counters.episodes,
+                    "finish_count": self.counters.finishes,
+                    "finish_rate": self.counters.finishes / self.counters.episodes,
+                    "best_finish_time_s": self.counters.best_finish_time_s,
                     "actor_id": value["actor_id"],
                     "replay_size": len(self.run.replay_store),
                 },
@@ -375,9 +448,26 @@ class Coordinator:
             print(
                 f"Actor {value['actor_id']} episode {self.counters.episodes}: "
                 f"progress={float(summary['progress_pct']):.1f}%, "
-                f"reward={float(summary['reward']):.3f}, "
+                f"return={float(summary['return']):.3f}, "
                 f"termination={summary['termination']}",
                 flush=True,
+            )
+            interval = self.run.spec.training.evaluate_every_episodes
+            if interval is not None and self.counters.episodes % interval == 0:
+                with self._lock:
+                    self._evaluation_due.add(str(value["actor_id"]))
+        for summary in value.get("evaluations", []):
+            self.counters.evaluations += 1
+            self.counters.evaluation_finishes += int(bool(summary["finished"]))
+            self.run.logger.log(
+                "eval/episode",
+                {
+                    **summary,
+                    "index": self.counters.evaluations,
+                    "finish_rate": self.counters.evaluation_finishes / self.counters.evaluations,
+                    "actor_id": value["actor_id"],
+                },
+                step=self.counters.updates,
             )
         self.run.logger.log(
             "distributed/ingest",
@@ -400,56 +490,57 @@ class Coordinator:
         spec = self.run.spec.training
         footprint = spec.batch_size * spec.sequence_length + spec.n_step - 1
         ready = max(spec.warmup_transitions, footprint)
-        while (
-            not self._should_stop()
-            or (len(self.run.replay_store) >= ready and self.counters.update_credit >= 1.0)
-            or not self._rollouts.empty()
-        ):
-            did_update = False
-            self._check_actor_timeouts()
-            self._drain_rollouts(32)
-            if len(self.run.replay_store) >= ready and self.counters.update_credit >= 1.0:
-                sample_started = perf_counter()
-                beta = spec.replay_beta(self.counters.transitions)
-                batch = self.run.sampler.sample(
-                    self.run.replay_store,
-                    spec.batch_request(beta=beta),
-                )
-                sample_finished = perf_counter()
-                result = self.run.learner.update(batch)
-                update_finished = perf_counter()
-                metrics, priorities = result if isinstance(result, tuple) else (result, None)
-                if priorities is not None:
-                    self.run.sampler.update_priorities(priorities)
-                self.counters.updates += 1
-                self.counters.update_credit -= 1.0
-                did_update = True
-                self._metrics.add(
-                    {
-                        **metrics,
-                        "timing/replay_sample_s": sample_finished - sample_started,
-                        "timing/learner_update_s": update_finished - sample_finished,
-                    }
-                )
-                self._emit_metrics_if_ready()
-                if (
-                    self.counters.updates == 1
-                    or self.counters.updates - self._last_progress_print >= 100
-                ):
-                    self._last_progress_print = self.counters.updates
-                    print(
-                        "Async training progress: "
-                        f"transitions={self.counters.transitions}/"
-                        f"{spec.total_transitions}, updates={self.counters.updates}, "
-                        f"replay={len(self.run.replay_store)}, "
-                        f"credit={self.counters.update_credit:.1f}",
-                        flush=True,
+        prefetcher = _BatchPrefetcher(self.run)
+        try:
+            while (
+                not self._should_stop()
+                or (len(self.run.replay_store) >= ready and self.counters.update_credit >= 1.0)
+                or not self._rollouts.empty()
+            ):
+                did_update = False
+                self._check_actor_timeouts()
+                self._drain_rollouts(32)
+                if len(self.run.replay_store) >= ready and self.counters.update_credit >= 1.0:
+                    request = spec.batch_request(beta=spec.replay_beta(self.counters.transitions))
+                    batch, preparation_s, wait_s = prefetcher.next(request)
+                    update_started = perf_counter()
+                    result = self.run.learner.update(batch)
+                    update_finished = perf_counter()
+                    metrics, priorities = result if isinstance(result, tuple) else (result, None)
+                    if priorities is not None:
+                        self.run.sampler.update_priorities(priorities)
+                    self.counters.updates += 1
+                    self.counters.update_credit -= 1.0
+                    did_update = True
+                    self._metrics.add(
+                        {
+                            **metrics,
+                            "timing/replay_sample_s": preparation_s,
+                            "timing/replay_wait_s": wait_s,
+                            "timing/learner_update_s": update_finished - update_started,
+                        }
                     )
-                if self.counters.updates % spec.checkpoint_interval_updates == 0:
-                    self._checkpoints.append(self._checkpoint())
-                self._publish_policy()
-            if not did_update:
-                sleep(0.005)
+                    self._emit_metrics_if_ready()
+                    if (
+                        self.counters.updates == 1
+                        or self.counters.updates - self._last_progress_print >= 100
+                    ):
+                        self._last_progress_print = self.counters.updates
+                        print(
+                            "Async training progress: "
+                            f"transitions={self.counters.transitions}/"
+                            f"{spec.total_transitions}, updates={self.counters.updates}, "
+                            f"replay={len(self.run.replay_store)}, "
+                            f"credit={self.counters.update_credit:.1f}",
+                            flush=True,
+                        )
+                    if self.counters.updates % spec.checkpoint_interval_updates == 0:
+                        self._checkpoints.append(self._checkpoint())
+                    self._publish_policy()
+                if not did_update:
+                    sleep(0.005)
+        finally:
+            prefetcher.close()
 
     def _drain_rollouts(self, limit: int) -> None:
         for _ in range(limit):
@@ -468,13 +559,28 @@ class Coordinator:
             return
         now = monotonic()
         elapsed = max(now - self._metric_window_started, 1e-6)
+        window_transitions = self.counters.transitions - self._last_metric_transitions
+        transitions_per_s = window_transitions / elapsed
+        updates_per_s = interval / elapsed
+        target_updates_per_s = transitions_per_s * self.run.spec.training.updates_per_transition
+        replay_capacity = int(getattr(self.run.replay_store, "capacity", 0))
         payload: dict[str, object] = {
             **self._metrics.flush(),
             "replay_size": len(self.run.replay_store),
+            "replay_fill_fraction": (
+                len(self.run.replay_store) / replay_capacity if replay_capacity else 0.0
+            ),
             "update_credit": self.counters.update_credit,
             "rollout_queue_depth": self._rollouts.qsize(),
-            "updates_per_s": interval / elapsed,
-            "transitions_per_s": self.counters.transitions / max(now - self._started_at, 1e-6),
+            "updates_per_s": updates_per_s,
+            "transitions_per_s": transitions_per_s,
+            "cumulative_transitions_per_s": self.counters.transitions
+            / max(now - self._started_at, 1e-6),
+            "target_updates_per_s": target_updates_per_s,
+            "update_throughput_ratio": updates_per_s / max(target_updates_per_s, 1e-6),
+            "update_backlog_s": self.counters.update_credit / max(updates_per_s, 1e-6),
+            "episodes": self.counters.episodes,
+            "finish_rate": self.counters.finishes / max(1, self.counters.episodes),
             "per_beta": self.run.spec.training.replay_beta(self.counters.transitions),
             "timing/logging_s": self._last_logging_s,
         }
@@ -496,6 +602,7 @@ class Coordinator:
             payload["warning"] = "update credit has grown for five metric windows"
         self._last_metric_credit = self.counters.update_credit
         self._metric_window_started = now
+        self._last_metric_transitions = self.counters.transitions
         logging_started = perf_counter()
         self.run.logger.log("train/update", payload, step=self.counters.updates)
         self._last_logging_s = perf_counter() - logging_started
@@ -559,6 +666,10 @@ class Coordinator:
             "distributed": {
                 "transitions": self.counters.transitions,
                 "episodes": self.counters.episodes,
+                "finishes": self.counters.finishes,
+                "best_finish_time_s": self.counters.best_finish_time_s,
+                "evaluations": self.counters.evaluations,
+                "evaluation_finishes": self.counters.evaluation_finishes,
                 "updates": self.counters.updates,
                 "update_credit": self.counters.update_credit,
                 "journal_watermark": self.counters.journal_watermark,

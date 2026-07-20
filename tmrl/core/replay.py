@@ -7,9 +7,11 @@ from collections import deque
 from collections.abc import Mapping
 from dataclasses import replace
 from math import ceil, floor, isfinite
+from numbers import Number
 from threading import RLock
 from typing import Any, Protocol, TypeGuard, cast
 
+import numpy as np
 import torch
 
 from tmrl.core.contracts import ReplayStore
@@ -84,8 +86,8 @@ class _FenwickTree:
 
     def __init__(self, size: int) -> None:
         self.size = size
-        self.values = [0.0] * (size + 1)
-        self.leaves = [0.0] * size
+        self.values = np.zeros(size + 1, dtype=np.float64)
+        self.leaves = np.zeros(size, dtype=np.float32)
 
     def set(self, index: int, value: float) -> None:
         delta = value - self.leaves[index]
@@ -100,7 +102,7 @@ class _FenwickTree:
         total = 0.0
         index = self.size
         while index:
-            total += self.values[index]
+            total += float(self.values[index])
             index -= index & -index
         return total
 
@@ -118,66 +120,277 @@ class _FenwickTree:
         return min(index, self.size - 1)
 
 
+class _TreeColumns:
+    """Fixed-shape numeric PyTree stored in contiguous capacity-first arrays."""
+
+    def __init__(self, capacity: int, example: Any) -> None:
+        self.capacity = capacity
+        self.arrays: list[np.ndarray[Any, Any]] = []
+        self.spec = self._build(example)
+
+    def _build(self, value: Any) -> Any:
+        if isinstance(value, Mapping):
+            return (
+                "mapping",
+                tuple(value),
+                tuple(self._build(value[key]) for key in value),
+            )
+        if isinstance(value, tuple):
+            return ("tuple", tuple(self._build(item) for item in value))
+        if isinstance(value, list):
+            return ("list", tuple(self._build(item) for item in value))
+        array, leaf_kind = self._leaf(value)
+        index = len(self.arrays)
+        self.arrays.append(np.empty((self.capacity, *array.shape), dtype=array.dtype))
+        return ("leaf", index, leaf_kind, array.dtype.str, array.shape)
+
+    @staticmethod
+    def _leaf(value: Any) -> tuple[np.ndarray[Any, Any], str]:
+        if isinstance(value, torch.Tensor):
+            return value.detach().cpu().numpy(), "tensor"
+        if isinstance(value, np.ndarray):
+            return value, "ndarray"
+        if isinstance(value, (Number, np.generic)):
+            return np.asarray(value), "scalar"
+        raise TypeError(
+            "Array replay PyTrees require tensor, ndarray, or numeric leaves; "
+            f"got {type(value).__name__}"
+        )
+
+    def write(self, slot: int, value: Any) -> None:
+        self._write_node(self.spec, slot, value)
+
+    def _write_node(self, spec: Any, slot: int, value: Any) -> None:
+        kind = spec[0]
+        if kind == "mapping":
+            keys = spec[1]
+            if not isinstance(value, Mapping) or tuple(value) != keys:
+                raise TypeError("Replay PyTree mapping structure changed after allocation")
+            for key, child in zip(keys, spec[2], strict=True):
+                self._write_node(child, slot, value[key])
+            return
+        if kind in {"tuple", "list"}:
+            expected = tuple if kind == "tuple" else list
+            if not isinstance(value, expected) or len(value) != len(spec[1]):
+                raise TypeError(f"Replay PyTree {kind} structure changed after allocation")
+            for child, item in zip(spec[1], value, strict=True):
+                self._write_node(child, slot, item)
+            return
+        array, _ = self._leaf(value)
+        if array.shape != spec[4] or array.dtype.str != spec[3]:
+            raise TypeError("Replay PyTree leaf shape or dtype changed after allocation")
+        self.arrays[spec[1]][slot] = array
+
+    def read(self, slot: int) -> Any:
+        return self._read_node(self.spec, slot)
+
+    def _read_node(self, spec: Any, slot: int) -> Any:
+        kind = spec[0]
+        if kind == "mapping":
+            return {
+                key: self._read_node(child, slot)
+                for key, child in zip(spec[1], spec[2], strict=True)
+            }
+        if kind == "tuple":
+            return tuple(self._read_node(child, slot) for child in spec[1])
+        if kind == "list":
+            return [self._read_node(child, slot) for child in spec[1]]
+        value = self.arrays[spec[1]][slot]
+        if spec[2] == "tensor":
+            return torch.from_numpy(value)
+        if spec[2] == "ndarray":
+            return value
+        return value.item()
+
+    def snapshot(self, slots: slice | np.ndarray[Any, np.dtype[np.int64]]) -> dict[str, Any]:
+        return {
+            "spec": self.spec,
+            "arrays": [np.array(array[slots], copy=True, order="C") for array in self.arrays],
+        }
+
+    @classmethod
+    def restore(
+        cls,
+        capacity: int,
+        snapshot: Mapping[str, Any],
+        slots: np.ndarray[Any, np.dtype[np.int64]],
+    ) -> _TreeColumns:
+        value = cls.__new__(cls)
+        value.capacity = capacity
+        value.spec = snapshot["spec"]
+        packed = list(snapshot["arrays"])
+        value.arrays = [
+            np.empty((capacity, *array.shape[1:]), dtype=array.dtype) for array in packed
+        ]
+        for target, source in zip(value.arrays, packed, strict=True):
+            target[slots] = source
+        return value
+
+
 class InMemoryReplayStore:
-    """Bounded FIFO replay store; sampling policy is intentionally external."""
+    """Preallocated columnar FIFO replay with stable transition IDs."""
 
     def __init__(self, capacity: int = 100_000) -> None:
         if capacity < 1:
             raise ValueError("capacity must be positive")
         self.capacity = capacity
-        self._order: deque[TransitionId] = deque()
-        self._items: dict[TransitionId, Transition] = {}
-        self._episode_steps: dict[tuple[str, int], TransitionId] = {}
+        self._ids = np.full(capacity, -1, dtype=np.int64)
+        self._rewards = np.empty(capacity, dtype=np.float64)
+        self._terminated = np.empty(capacity, dtype=np.bool_)
+        self._truncated = np.empty(capacity, dtype=np.bool_)
+        self._episode_codes = np.full(capacity, -1, dtype=np.int64)
+        self._steps = np.full(capacity, -1, dtype=np.int64)
+        self._previous_ids = np.full(capacity, -1, dtype=np.int64)
+        self._next_ids = np.full(capacity, -1, dtype=np.int64)
+        self._observations: _TreeColumns | None = None
+        self._actions: _TreeColumns | None = None
+        self._next_overrides: dict[TransitionId, Any] = {}
+        self._info: dict[TransitionId, Mapping[str, Any]] = {}
+        self._episode_names: dict[int, str] = {}
+        self._episode_codes_by_name: dict[str, int] = {}
+        self._episode_last: dict[int, tuple[int, TransitionId]] = {}
         self._next_index = 0
+        self._size = 0
         self._lock = RLock()
-        self._eligible: dict[int, _IdPool] = {}
         self._revision = 0
-        self._changes: deque[tuple[int, TransitionId, TransitionId | None]] = deque(maxlen=capacity)
+        self._changes: deque[tuple[int, TransitionId, TransitionId | None]] = deque(
+            maxlen=min(capacity, 65_536)
+        )
 
     def append(self, transition: Transition) -> TransitionId:
         with self._lock:
-            transition_key = self._transition_key(transition)
-            if transition_key is not None and transition_key in self._episode_steps:
-                raise ValueError(
-                    "duplicate replay episode step: "
-                    f"episode={transition_key[0]!r}, step={transition_key[1]}"
-                )
-            index = self._next_index
+            episode_code = self._episode_code(transition.episode_id)
+            previous_id = self._previous_transition(transition, episode_code)
+            transition_id = self._next_index
+            slot = transition_id % self.capacity
+            evicted = int(self._ids[slot]) if self._ids[slot] >= 0 else None
+            if evicted is not None:
+                self._info.pop(evicted, None)
+                self._next_overrides.pop(evicted, None)
+            self._allocate_columns(transition)
+            assert self._observations is not None
+            assert self._actions is not None
+            self._observations.write(slot, transition.observation)
+            self._actions.write(slot, transition.action)
+            self._ids[slot] = transition_id
+            self._rewards[slot] = transition.reward
+            self._terminated[slot] = transition.terminated
+            self._truncated[slot] = transition.truncated
+            self._episode_codes[slot] = episode_code
+            self._steps[slot] = transition.step if transition.step is not None else -1
+            self._previous_ids[slot] = previous_id
+            self._next_ids[slot] = -1
+            self._next_overrides[transition_id] = transition.next_observation
+            if transition.info:
+                self._info[transition_id] = transition.info
+            self._link_previous(previous_id, transition_id, transition.observation)
+            if episode_code >= 0 and transition.step is not None:
+                self._episode_last[episode_code] = (transition.step, transition_id)
             self._next_index += 1
-            evicted: TransitionId | None = None
-            if len(self._order) == self.capacity:
-                evicted = self._order.popleft()
-                evicted_transition = self._items.pop(evicted)
-                evicted_key = self._transition_key(evicted_transition)
-                if evicted_key is not None:
-                    self._episode_steps.pop(evicted_key, None)
-            self._order.append(index)
-            self._items[index] = transition
-            if transition_key is not None:
-                self._episode_steps[transition_key] = index
+            self._size = min(self.capacity, self._size + 1)
             self._revision += 1
-            self._changes.append((self._revision, index, evicted))
-            for n_step, pool in self._eligible.items():
-                if evicted is not None:
-                    pool.remove(evicted)
-                for candidate in self._predecessor_ids_locked(index, n_step):
-                    self._refresh_eligibility_locked(pool, candidate, n_step)
-            return index
+            self._changes.append((self._revision, transition_id, evicted))
+            return transition_id
+
+    def _allocate_columns(self, transition: Transition) -> None:
+        if self._observations is None:
+            self._observations = _TreeColumns(self.capacity, transition.observation)
+            self._actions = _TreeColumns(self.capacity, transition.action)
+
+    def _episode_code(self, episode_id: str | None) -> int:
+        if episode_id is None:
+            return -1
+        existing = self._episode_codes_by_name.get(episode_id)
+        if existing is not None:
+            return existing
+        code = len(self._episode_names)
+        self._episode_names[code] = episode_id
+        self._episode_codes_by_name[episode_id] = code
+        return code
+
+    def _previous_transition(self, transition: Transition, episode_code: int) -> TransitionId:
+        if episode_code < 0 or transition.step is None:
+            candidate = self._next_index - 1
+            return candidate if self.contains(candidate) else -1
+        previous = self._episode_last.get(episode_code)
+        if previous is None:
+            return -1
+        previous_step, previous_id = previous
+        if transition.step <= previous_step:
+            episode_id = self._episode_names[episode_code]
+            raise ValueError(
+                f"duplicate replay episode step: episode={episode_id!r}, step={transition.step}"
+            )
+        return previous_id if transition.step == previous_step + 1 else -1
+
+    def _link_previous(
+        self,
+        previous_id: TransitionId,
+        transition_id: TransitionId,
+        observation: Any,
+    ) -> None:
+        if previous_id < 0 or not self.contains(previous_id):
+            return
+        previous_slot = previous_id % self.capacity
+        self._next_ids[previous_slot] = transition_id
+        previous_next = self._next_overrides.get(previous_id)
+        if previous_next is not None and self._tree_equal(previous_next, observation):
+            self._next_overrides.pop(previous_id)
+
+    @staticmethod
+    def _tree_equal(left: Any, right: Any) -> bool:
+        if isinstance(left, Mapping) and isinstance(right, Mapping):
+            return tuple(left) == tuple(right) and all(
+                InMemoryReplayStore._tree_equal(left[key], right[key]) for key in left
+            )
+        if isinstance(left, (tuple, list)) and isinstance(right, type(left)):
+            return len(left) == len(right) and all(
+                InMemoryReplayStore._tree_equal(a, b) for a, b in zip(left, right, strict=True)
+            )
+        if isinstance(left, torch.Tensor):
+            left = left.detach().cpu().numpy()
+        if isinstance(right, torch.Tensor):
+            right = right.detach().cpu().numpy()
+        return bool(np.array_equal(np.asarray(left), np.asarray(right)))
 
     def get(self, transition_ids: list[TransitionId]) -> list[Transition]:
         with self._lock:
             missing = [
                 transition_id
                 for transition_id in transition_ids
-                if transition_id not in self._items
+                if not self.contains(transition_id)
             ]
             if missing:
                 raise KeyError(f"Replay transitions no longer available: {missing[:3]}")
-            return [self._items[transition_id] for transition_id in transition_ids]
+            return [self._transition(transition_id) for transition_id in transition_ids]
+
+    def _transition(self, transition_id: TransitionId) -> Transition:
+        assert self._observations is not None
+        assert self._actions is not None
+        slot = transition_id % self.capacity
+        next_observation = self._next_overrides.get(transition_id)
+        if next_observation is None:
+            next_id = int(self._next_ids[slot])
+            if not self.contains(next_id):
+                raise RuntimeError(f"Transition {transition_id} has no next observation")
+            next_observation = self._observations.read(next_id % self.capacity)
+        episode_code = int(self._episode_codes[slot])
+        step = int(self._steps[slot])
+        return Transition(
+            observation=self._observations.read(slot),
+            action=self._actions.read(slot),
+            reward=float(self._rewards[slot]),
+            next_observation=next_observation,
+            terminated=bool(self._terminated[slot]),
+            truncated=bool(self._truncated[slot]),
+            info=self._info.get(transition_id, {}),
+            episode_id=self._episode_names.get(episode_code),
+            step=step if step >= 0 else None,
+        )
 
     def available_ids(self) -> list[TransitionId]:
         with self._lock:
-            return list(self._order)
+            return list(range(self._next_index - self._size, self._next_index))
 
     def available_indices(self) -> list[TransitionId]:
         """Compatibility spelling; IDs are never reused after eviction."""
@@ -185,53 +398,181 @@ class InMemoryReplayStore:
         return self.available_ids()
 
     def contains(self, transition_id: TransitionId) -> bool:
-        with self._lock:
-            return transition_id in self._items
+        if transition_id < 0:
+            return False
+        return bool(self._ids[transition_id % self.capacity] == transition_id)
 
     def __len__(self) -> int:
         with self._lock:
-            return len(self._items)
+            return self._size
 
     def state_dict(self) -> dict[str, Any]:
         with self._lock:
-            return {
-                "order": list(self._order),
-                "items": dict(self._items),
+            empty = {
+                "format": "columnar-v1",
+                "capacity": self.capacity,
+                "size": self._size,
                 "next_index": self._next_index,
             }
+            if self._observations is None or self._actions is None:
+                return empty
+            slots = self._snapshot_slots()
+            return {
+                **empty,
+                "observations": self._observations.snapshot(slots),
+                "actions": self._actions.snapshot(slots),
+                "rewards": np.array(self._rewards[slots], copy=True, order="C"),
+                "terminated": np.array(self._terminated[slots], copy=True, order="C"),
+                "truncated": np.array(self._truncated[slots], copy=True, order="C"),
+                "episode_codes": np.array(self._episode_codes[slots], copy=True, order="C"),
+                "steps": np.array(self._steps[slots], copy=True, order="C"),
+                "previous_ids": np.array(self._previous_ids[slots], copy=True, order="C"),
+                "next_ids": np.array(self._next_ids[slots], copy=True, order="C"),
+                "episode_names": dict(self._episode_names),
+                "next_overrides": dict(self._next_overrides),
+                "info": dict(self._info),
+            }
+
+    def _snapshot_slots(self) -> slice | np.ndarray[Any, np.dtype[np.int64]]:
+        first_id = self._next_index - self._size
+        first_slot = first_id % self.capacity
+        if first_slot + self._size <= self.capacity:
+            return slice(first_slot, first_slot + self._size)
+        ids = np.arange(first_id, self._next_index, dtype=np.int64)
+        return ids % self.capacity
 
     def load_state_dict(self, state: Mapping[str, Any]) -> None:
+        if state.get("format") != "columnar-v1":
+            self._load_legacy_state(state)
+            return
         with self._lock:
-            self._order = deque(state["order"])
-            self._items = dict(state["items"])
+            checkpoint_capacity = int(state["capacity"])
+            if checkpoint_capacity != self.capacity:
+                raise ValueError(
+                    f"Replay checkpoint capacity {checkpoint_capacity} does not match "
+                    f"configured capacity {self.capacity}"
+                )
+            self._reset_arrays()
+            self._size = int(state["size"])
             self._next_index = int(state["next_index"])
-            self._episode_steps = {}
-            for transition_id, transition in self._items.items():
-                key = self._transition_key(transition)
-                if key is not None:
-                    self._episode_steps[key] = transition_id
-            self._eligible.clear()
+            if self._size:
+                ids = np.asarray(
+                    state.get(
+                        "ids",
+                        np.arange(
+                            self._next_index - self._size,
+                            self._next_index,
+                            dtype=np.int64,
+                        ),
+                    ),
+                    dtype=np.int64,
+                )
+                slots = ids % self.capacity
+                self._ids[slots] = ids
+                self._observations = _TreeColumns.restore(
+                    self.capacity, cast(Mapping[str, Any], state["observations"]), slots
+                )
+                self._actions = _TreeColumns.restore(
+                    self.capacity, cast(Mapping[str, Any], state["actions"]), slots
+                )
+                for name, target in (
+                    ("rewards", self._rewards),
+                    ("terminated", self._terminated),
+                    ("truncated", self._truncated),
+                    ("episode_codes", self._episode_codes),
+                    ("steps", self._steps),
+                    ("previous_ids", self._previous_ids),
+                    ("next_ids", self._next_ids),
+                ):
+                    target[slots] = state[name]
+            self._episode_names = {
+                int(code): str(name)
+                for code, name in cast(Mapping[Any, Any], state.get("episode_names", {})).items()
+            }
+            self._episode_codes_by_name = {name: code for code, name in self._episode_names.items()}
+            self._next_overrides = dict(state.get("next_overrides", {}))
+            self._info = dict(state.get("info", {}))
+            self._rebuild_episode_last()
             self._revision += 1
             self._changes.clear()
 
+    def _reset_arrays(self) -> None:
+        self._ids.fill(-1)
+        self._episode_codes.fill(-1)
+        self._steps.fill(-1)
+        self._previous_ids.fill(-1)
+        self._next_ids.fill(-1)
+        self._observations = None
+        self._actions = None
+        self._next_overrides.clear()
+        self._info.clear()
+        self._episode_last.clear()
+
+    def _rebuild_episode_last(self) -> None:
+        self._episode_last.clear()
+        for transition_id in range(self._next_index - self._size, self._next_index):
+            slot = transition_id % self.capacity
+            code = int(self._episode_codes[slot])
+            step = int(self._steps[slot])
+            if code >= 0 and step >= 0:
+                self._episode_last[code] = (step, transition_id)
+
+    def _load_legacy_state(self, state: Mapping[str, Any]) -> None:
+        order = list(state["order"])
+        items = cast(Mapping[TransitionId, Transition], state["items"])
+        if len(order) > self.capacity:
+            raise ValueError("Legacy replay checkpoint exceeds configured capacity")
+        with self._lock:
+            self._reset_arrays()
+            self._size = 0
+            self._next_index = 0
+            self._episode_names.clear()
+            self._episode_codes_by_name.clear()
+        for transition_id in order:
+            appended = self.append(items[transition_id])
+            if appended != transition_id:
+                raise ValueError("Legacy replay checkpoint transition IDs are not contiguous")
+
     def eligible_transition_ids(self, n_step: int) -> list[TransitionId]:
-        """Return complete n-step starts, incrementally maintained on append."""
+        """Return complete n-step starts without retaining a second full ID index."""
 
         with self._lock:
-            return list(self._eligible_pool_locked(n_step).ids)
+            return [
+                transition_id
+                for transition_id in range(self._next_index - self._size, self._next_index)
+                if self._is_n_step_eligible_locked(transition_id, n_step)
+            ]
 
     def sample_eligible_ids(
         self, n_step: int, batch_size: int, rng: random.Random
     ) -> list[TransitionId]:
-        """Sample complete n-step starts without scanning the replay buffer."""
+        """Draw complete starts by bounded rejection from the dense ID interval."""
 
         with self._lock:
-            pool = self._eligible_pool_locked(n_step)
-            if len(pool.ids) < batch_size:
+            if self._size < batch_size:
                 raise RuntimeError(
-                    f"Need {batch_size} complete n-step transitions, replay has {len(pool.ids)}"
+                    f"Need {batch_size} complete n-step transitions, replay has {self._size}"
                 )
-            return rng.sample(pool.ids, batch_size)
+            chosen: list[TransitionId] = []
+            chosen_set: set[TransitionId] = set()
+            attempts = 0
+            lower = self._next_index - self._size
+            while len(chosen) < batch_size and attempts < batch_size * 32:
+                candidate = rng.randrange(lower, self._next_index)
+                attempts += 1
+                if candidate not in chosen_set and self._is_n_step_eligible_locked(
+                    candidate, n_step
+                ):
+                    chosen.append(candidate)
+                    chosen_set.add(candidate)
+            if len(chosen) < batch_size:
+                eligible = self.eligible_transition_ids(n_step)
+                if len(eligible) < batch_size:
+                    raise RuntimeError(
+                        f"Need {batch_size} complete n-step transitions, replay has {len(eligible)}"
+                    )
+                return rng.sample(eligible, batch_size)
+            return chosen
 
     def is_n_step_eligible(self, transition_id: TransitionId, n_step: int) -> bool:
         with self._lock:
@@ -241,20 +582,18 @@ class InMemoryReplayStore:
         """Resolve an episode-local horizon even when actors are interleaved."""
 
         with self._lock:
-            first = self._items.get(transition_id)
-            if first is None:
+            if not self.contains(transition_id):
                 return []
             result: list[TransitionId] = []
-            for offset in range(n_step):
-                candidate_id = self._offset_id_locked(transition_id, first, offset)
-                if candidate_id is None:
-                    break
-                candidate = self._items.get(candidate_id)
-                if candidate is None or candidate.episode_id != first.episode_id:
+            candidate_id = transition_id
+            for _ in range(n_step):
+                if not self.contains(candidate_id):
                     break
                 result.append(candidate_id)
-                if candidate.terminated or candidate.truncated:
+                slot = candidate_id % self.capacity
+                if self._terminated[slot] or self._truncated[slot]:
                     break
+                candidate_id = int(self._next_ids[slot])
             return result
 
     def affected_n_step_starts(
@@ -263,7 +602,7 @@ class InMemoryReplayStore:
         """Return starts whose eligibility can change after this append."""
 
         with self._lock:
-            if transition_id not in self._items:
+            if not self.contains(transition_id):
                 return []
             return self._predecessor_ids_locked(transition_id, n_step)
 
@@ -285,70 +624,30 @@ class InMemoryReplayStore:
                 if change_revision > revision
             ]
 
-    def _eligible_pool_locked(self, n_step: int) -> _IdPool:
-        if n_step < 1:
-            raise ValueError("n_step must be positive")
-        pool = self._eligible.get(n_step)
-        if pool is None:
-            pool = _IdPool()
-            for transition_id in self._order:
-                self._refresh_eligibility_locked(pool, transition_id, n_step)
-            self._eligible[n_step] = pool
-        return pool
-
-    def _refresh_eligibility_locked(
-        self, pool: _IdPool, transition_id: TransitionId, n_step: int
-    ) -> None:
-        if self._is_n_step_eligible_locked(transition_id, n_step):
-            pool.add(transition_id)
-        else:
-            pool.remove(transition_id)
-
     def _is_n_step_eligible_locked(self, transition_id: TransitionId, n_step: int) -> bool:
-        first = self._items.get(transition_id)
-        if first is None:
+        if n_step < 1 or not self.contains(transition_id):
             return False
-        for offset in range(n_step):
-            candidate_id = self._offset_id_locked(transition_id, first, offset)
-            candidate = self._items.get(candidate_id) if candidate_id is not None else None
-            if candidate is None or candidate.episode_id != first.episode_id:
+        candidate_id = transition_id
+        for _ in range(n_step):
+            if not self.contains(candidate_id):
                 return False
-            if (
-                candidate.step is not None
-                and first.step is not None
-                and candidate.step != first.step + offset
-            ):
-                return False
-            if candidate.terminated or candidate.truncated:
+            slot = candidate_id % self.capacity
+            if self._terminated[slot] or self._truncated[slot]:
                 return True
+            candidate_id = int(self._next_ids[slot])
         return True
-
-    @staticmethod
-    def _transition_key(transition: Transition) -> tuple[str, int] | None:
-        if transition.episode_id is None or transition.step is None:
-            return None
-        return transition.episode_id, transition.step
-
-    def _offset_id_locked(
-        self, transition_id: TransitionId, first: Transition, offset: int
-    ) -> TransitionId | None:
-        key = self._transition_key(first)
-        if key is None:
-            return transition_id + offset
-        return self._episode_steps.get((key[0], key[1] + offset))
 
     def _predecessor_ids_locked(
         self, transition_id: TransitionId, n_step: int
     ) -> list[TransitionId]:
-        transition = self._items[transition_id]
-        key = self._transition_key(transition)
-        if key is None:
-            return list(range(transition_id - n_step + 1, transition_id + 1))
-        return [
-            candidate
-            for offset in range(n_step)
-            if (candidate := self._episode_steps.get((key[0], key[1] - offset))) is not None
-        ]
+        result: list[TransitionId] = []
+        candidate = transition_id
+        for _ in range(n_step):
+            if not self.contains(candidate):
+                break
+            result.append(candidate)
+            candidate = int(self._previous_ids[candidate % self.capacity])
+        return result
 
 
 class UniformSampler:
@@ -385,7 +684,9 @@ class UniformSampler:
 
 
 class PrioritizedSampler:
-    """Proportional PER separated from storage, with normalized IS weights."""
+    """Array-backed proportional PER with normalized importance weights."""
+
+    thread_safe_prefetch = True
 
     def __init__(
         self,
@@ -402,78 +703,115 @@ class PrioritizedSampler:
         self.alpha = alpha
         self.beta = beta
         self.priority_epsilon = priority_epsilon
-        self._priorities: dict[int, float] = {}
+        self._fallback_priorities: dict[int, float] = {}
+        self._priorities = np.empty(0, dtype=np.float32)
+        self._slot_ids = np.empty(0, dtype=np.int64)
         self._rng = random.Random(seed)
-        self._active_ids: set[TransitionId] = set()
-        self._slot_ids: list[TransitionId | None] = []
+        self._active_count = 0
         self._tree: _FenwickTree | None = None
         self._replay_revision: int | None = None
         self._n_step: int | None = None
         self._maximum_priority = 1.0
+        self._lock = RLock()
 
     def sample(self, store: ReplayStore, request: BatchRequest) -> TrainingBatch:
         if request.sequence_length != 1:
             raise ValueError("PrioritizedSampler supports sequence_length=1")
         if _is_incremental_store(store):
             return self._sample_incrementally(store, request)
-        transition_ids = _eligible_n_step_ids(store, request)
-        if len(transition_ids) < request.batch_size:
-            raise RuntimeError(
-                f"Need {request.batch_size} transitions, replay has {len(transition_ids)}"
-            )
-        self._synchronize(transition_ids)
-        scaled = [self._priorities[transition_id] ** self.alpha for transition_id in transition_ids]
-        total = sum(scaled)
-        probabilities = (
-            [weight / total for weight in scaled]
-            if total > 0.0
-            else [1 / len(transition_ids)] * len(transition_ids)
-        )
-        chosen = self._rng.choices(transition_ids, weights=probabilities, k=request.batch_size)
-        by_id = dict(zip(transition_ids, probabilities, strict=True))
-        beta = self.beta if request.beta is None else request.beta
-        weights = [
-            (len(transition_ids) * by_id[transition_id]) ** (-beta) for transition_id in chosen
-        ]
-        maximum = max(weights)
-        normalized_weights = tuple(weight / maximum for weight in weights)
+        chosen, normalized, beta = self._sample_fallback(store, request)
         return _make_batch(
             store,
             self.pipeline,
             chosen,
             request,
-            importance_weights=normalized_weights,
+            importance_weights=normalized,
             metadata={"sampling": "prioritized", "beta": beta},
         )
 
-    def update_priorities(self, update: PriorityUpdate) -> None:
-        for transition_id, priority in zip(update.transition_ids, update.priorities, strict=True):
-            value = abs(float(priority)) + self.priority_epsilon
-            if not isfinite(value):
-                raise ValueError("PER priorities must be finite")
-            if transition_id in self._priorities:
-                self._priorities[transition_id] = value
-                self._maximum_priority = max(self._maximum_priority, value)
-                if self._tree is not None and transition_id in self._active_ids:
-                    self._tree.set(transition_id % self._tree.size, value**self.alpha)
+    def _sample_fallback(
+        self, store: ReplayStore, request: BatchRequest
+    ) -> tuple[list[TransitionId], tuple[float, ...], float]:
+        with self._lock:
+            transition_ids = _eligible_n_step_ids(store, request)
+            if len(transition_ids) < request.batch_size:
+                raise RuntimeError(
+                    f"Need {request.batch_size} transitions, replay has {len(transition_ids)}"
+                )
+            self._synchronize_fallback(transition_ids)
+            scaled = [
+                self._fallback_priorities[transition_id] ** self.alpha
+                for transition_id in transition_ids
+            ]
+            total = sum(scaled)
+            probabilities = (
+                [weight / total for weight in scaled]
+                if total > 0.0
+                else [1 / len(transition_ids)] * len(transition_ids)
+            )
+            chosen = self._rng.choices(transition_ids, weights=probabilities, k=request.batch_size)
+            by_id = dict(zip(transition_ids, probabilities, strict=True))
+            beta = self.beta if request.beta is None else request.beta
+            weights = [
+                (len(transition_ids) * by_id[transition_id]) ** (-beta) for transition_id in chosen
+            ]
+            maximum = max(weights)
+            return chosen, tuple(weight / maximum for weight in weights), beta
 
-    def _synchronize(self, transition_ids: list[TransitionId]) -> None:
+    def update_priorities(self, update: PriorityUpdate) -> None:
+        with self._lock:
+            for transition_id, priority in zip(
+                update.transition_ids, update.priorities, strict=True
+            ):
+                value = abs(float(priority)) + self.priority_epsilon
+                if not isfinite(value):
+                    raise ValueError("PER priorities must be finite")
+                self._maximum_priority = max(self._maximum_priority, value)
+                if self._tree is None:
+                    if transition_id in self._fallback_priorities:
+                        self._fallback_priorities[transition_id] = value
+                    continue
+                slot = transition_id % self._tree.size
+                if self._slot_ids[slot] == transition_id and self._tree.leaves[slot] > 0.0:
+                    self._priorities[slot] = value
+                    self._tree.set(slot, value**self.alpha)
+
+    def _synchronize_fallback(self, transition_ids: list[TransitionId]) -> None:
         active = set(transition_ids)
-        self._priorities = {
-            index: priority for index, priority in self._priorities.items() if index in active
+        self._fallback_priorities = {
+            index: priority
+            for index, priority in self._fallback_priorities.items()
+            if index in active
         }
-        maximum = max(self._priorities.values(), default=1.0)
+        maximum = max(self._fallback_priorities.values(), default=1.0)
         for index in active:
-            self._priorities.setdefault(index, maximum)
+            self._fallback_priorities.setdefault(index, maximum)
 
     def state_dict(self) -> dict[str, Any]:
-        return {"priorities": dict(self._priorities), "rng": self._rng.getstate()}
+        with self._lock:
+            return {
+                "format": "array-per-v1",
+                "priorities": self._priorities.copy(),
+                "slot_ids": self._slot_ids.copy(),
+                "fallback_priorities": dict(self._fallback_priorities),
+                "maximum_priority": self._maximum_priority,
+                "rng": self._rng.getstate(),
+            }
 
     def load_state_dict(self, state: Mapping[str, Any]) -> None:
-        self._priorities = {int(key): float(value) for key, value in state["priorities"].items()}
-        self._maximum_priority = max(self._priorities.values(), default=1.0)
-        self._active_ids.clear()
-        self._slot_ids = []
+        if state.get("format") == "array-per-v1":
+            self._priorities = np.asarray(state["priorities"], dtype=np.float32)
+            self._slot_ids = np.asarray(state["slot_ids"], dtype=np.int64)
+            fallback = cast(Mapping[Any, Any], state.get("fallback_priorities", {}))
+            self._fallback_priorities = {int(key): float(value) for key, value in fallback.items()}
+            self._maximum_priority = float(state["maximum_priority"])
+        else:
+            legacy = cast(Mapping[Any, Any], state["priorities"])
+            self._fallback_priorities = {int(key): float(value) for key, value in legacy.items()}
+            self._maximum_priority = max(self._fallback_priorities.values(), default=1.0)
+            self._priorities = np.empty(0, dtype=np.float32)
+            self._slot_ids = np.empty(0, dtype=np.int64)
+        self._active_count = 0
         self._tree = None
         self._replay_revision = None
         self._n_step = None
@@ -482,51 +820,61 @@ class PrioritizedSampler:
     def _sample_incrementally(
         self, store: _IncrementalReplayStore, request: BatchRequest
     ) -> TrainingBatch:
-        self._synchronize_incremental_store(store, request.n_step)
-        if len(self._active_ids) < request.batch_size:
-            raise RuntimeError(
-                f"Need {request.batch_size} transitions, replay has {len(self._active_ids)}"
-            )
-        assert self._tree is not None
-        total = self._tree.total
-        if total <= 0.0:
-            raise RuntimeError("Prioritized replay has no positive sampling mass")
-        transition_ids: list[TransitionId] = []
-        probabilities: list[float] = []
-        for _ in range(request.batch_size):
-            slot = self._tree.find(self._rng.random() * total)
-            transition_id = self._slot_ids[slot]
-            if transition_id is None:
-                raise RuntimeError("Prioritized replay tree is out of sync with active transitions")
-            transition_ids.append(transition_id)
-            probabilities.append(self._tree.leaves[slot] / total)
-        beta = self.beta if request.beta is None else request.beta
-        weights = [
-            (len(self._active_ids) * probability) ** (-beta) for probability in probabilities
-        ]
-        maximum = max(weights)
+        transition_ids, normalized, beta = self._sample_incremental_ids(store, request)
         return _make_batch(
             store,
             self.pipeline,
             transition_ids,
             request,
-            importance_weights=tuple(weight / maximum for weight in weights),
+            importance_weights=normalized,
             metadata={"sampling": "prioritized", "beta": beta},
         )
+
+    def _sample_incremental_ids(
+        self, store: _IncrementalReplayStore, request: BatchRequest
+    ) -> tuple[list[TransitionId], tuple[float, ...], float]:
+        with self._lock:
+            self._synchronize_incremental_store(store, request.n_step)
+            if self._active_count < request.batch_size:
+                raise RuntimeError(
+                    f"Need {request.batch_size} transitions, replay has {self._active_count}"
+                )
+            assert self._tree is not None
+            total = self._tree.total
+            if total <= 0.0:
+                raise RuntimeError("Prioritized replay has no positive sampling mass")
+            transition_ids: list[TransitionId] = []
+            probabilities: list[float] = []
+            for _ in range(request.batch_size):
+                slot = self._tree.find(self._rng.random() * total)
+                transition_id = int(self._slot_ids[slot])
+                if transition_id < 0:
+                    raise RuntimeError(
+                        "Prioritized replay tree is out of sync with active transitions"
+                    )
+                transition_ids.append(transition_id)
+                probabilities.append(float(self._tree.leaves[slot]) / total)
+            beta = self.beta if request.beta is None else request.beta
+            weights = [
+                (self._active_count * probability) ** (-beta) for probability in probabilities
+            ]
+            maximum = max(weights)
+            return transition_ids, tuple(weight / maximum for weight in weights), beta
 
     def _synchronize_incremental_store(self, store: _IncrementalReplayStore, n_step: int) -> None:
         capacity = store.capacity
         if self._tree is None or self._n_step != n_step or self._tree.size != capacity:
             self._tree = _FenwickTree(capacity)
-            self._slot_ids = [None] * capacity
-            self._active_ids.clear()
+            if self._slot_ids.shape != (capacity,):
+                self._slot_ids = np.full(capacity, -1, dtype=np.int64)
+                self._priorities = np.zeros(capacity, dtype=np.float32)
+            self._active_count = 0
             self._replay_revision = None
             self._n_step = n_step
         revision, changes = store.changes_since(self._replay_revision)
         if changes is None:
-            self._active_ids.clear()
+            self._active_count = 0
             self._tree = _FenwickTree(capacity)
-            self._slot_ids = [None] * capacity
             for transition_id in store.eligible_transition_ids(n_step):
                 self._activate(transition_id)
         else:
@@ -541,28 +889,27 @@ class PrioritizedSampler:
         self._replay_revision = revision
 
     def _activate(self, transition_id: TransitionId) -> None:
-        if transition_id in self._active_ids:
-            return
         assert self._tree is not None
         slot = transition_id % self._tree.size
-        replaced = self._slot_ids[slot]
-        if replaced is not None:
-            self._active_ids.discard(replaced)
-            self._priorities.pop(replaced, None)
-        priority = self._priorities.setdefault(transition_id, self._maximum_priority)
-        self._active_ids.add(transition_id)
+        if self._slot_ids[slot] == transition_id and self._tree.leaves[slot] > 0.0:
+            return
+        if self._tree.leaves[slot] > 0.0:
+            self._active_count -= 1
+        priority = (
+            float(self._priorities[slot])
+            if self._slot_ids[slot] == transition_id and self._priorities[slot] > 0.0
+            else self._maximum_priority
+        )
+        self._priorities[slot] = priority
         self._slot_ids[slot] = transition_id
         self._tree.set(slot, priority**self.alpha)
+        self._active_count += 1
 
     def _deactivate(self, transition_id: TransitionId) -> None:
-        if transition_id not in self._active_ids:
-            return
         assert self._tree is not None
-        self._active_ids.remove(transition_id)
-        self._priorities.pop(transition_id, None)
         slot = transition_id % self._tree.size
-        if self._slot_ids[slot] == transition_id:
-            self._slot_ids[slot] = None
+        if self._slot_ids[slot] == transition_id and self._tree.leaves[slot] > 0.0:
+            self._active_count -= 1
             self._tree.set(slot, 0.0)
 
 
@@ -822,8 +1169,26 @@ def _make_batch(
         }.issubset(data)
         else None
     )
+    batch_data = (
+        {
+            key: value
+            for key, value in standard.items()
+            if key
+            not in {
+                "_tmrl_batch_collated",
+                "observations",
+                "actions",
+                "rewards",
+                "next_observations",
+                "terminated",
+                "truncated",
+            }
+        }
+        if standard is not None
+        else data
+    )
     return TrainingBatch(
-        data=data,
+        data=batch_data,
         observations=standard["observations"]
         if standard is not None
         else tree_collate([item.observation for item in transitions]),

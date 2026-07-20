@@ -8,6 +8,33 @@ from pathlib import Path
 from typing import Any
 
 
+def _wandb_metric_name(event: str, key: str) -> str:
+    if event == "train/episode":
+        return f"episode/{key}"
+    if event == "train/update":
+        learner_aliases = {
+            "debug/gradient_norm_max": "gradient_norm_max",
+            "debug/gradient_clipped_fraction": "clipped_fraction",
+            "debug/q_selected_mean": "q_mean",
+            "debug/q_selected_max": "q_max",
+            "debug/q_selected_abs_max": "q_abs_max",
+        }
+        if key in learner_aliases:
+            return f"learner/{learner_aliases[key]}"
+        if key.startswith(("loss/", "debug/")):
+            return f"learner/{key}"
+        if key.startswith("timing/"):
+            return f"performance/{key.removeprefix('timing/')}"
+        if key in {"replay_size", "replay_fill_fraction", "per_beta"}:
+            return f"replay/{key.removeprefix('replay_')}"
+        return f"training/{key}"
+    if event == "distributed/ingest":
+        return f"actor/{key}"
+    if event == "distributed/policy_published":
+        return f"actor/policy/{key}"
+    return f"{event}/{key}"
+
+
 def _load_wandb_key_from_dotenv(run_dir: str | None) -> Path | None:
     """Load ``WANDB_API_KEY`` from the nearest project ``.env`` if necessary.
 
@@ -47,7 +74,14 @@ def _load_wandb_key_from_dotenv(run_dir: str | None) -> Path | None:
 class WandbTracker:
     """Minimal neutral-event adapter for the optional ``tmrl[wandb]`` extra."""
 
-    def __init__(self, project: str, entity: str | None = None, run_dir: str | None = None) -> None:
+    def __init__(
+        self,
+        project: str,
+        entity: str | None = None,
+        run_dir: str | None = None,
+        run_id: str | None = None,
+        config: Mapping[str, Any] | None = None,
+    ) -> None:
         _load_wandb_key_from_dotenv(run_dir)
         try:
             import wandb
@@ -63,6 +97,8 @@ class WandbTracker:
             project=project,
             entity=entity,
             dir=run_dir,
+            name=run_id,
+            config=dict(config) if config is not None else None,
             reinit="finish_previous",
             settings=settings,
         )
@@ -71,7 +107,10 @@ class WandbTracker:
             print(f"Weights & Biases run: {url}", flush=True)
 
     def log(self, event: str, payload: Mapping[str, Any], *, step: int | None = None) -> None:
-        self._wandb.log({event + "/" + key: value for key, value in payload.items()}, step=step)
+        self._wandb.log(
+            {_wandb_metric_name(event, key): value for key, value in payload.items()},
+            step=step,
+        )
 
     def close(self) -> None:
         self._wandb.finish(exit_code=0)
