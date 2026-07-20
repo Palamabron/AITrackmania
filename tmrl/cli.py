@@ -8,6 +8,7 @@ import multiprocessing
 import os
 import re
 import secrets
+import signal
 from pathlib import Path
 from time import sleep, time_ns
 from typing import Any
@@ -170,6 +171,8 @@ def _learner_process(
     resume_checkpoint: str | None = None,
     external_stop: Any | None = None,
 ) -> None:
+    if external_stop is not None:
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
     try:
         from tmrl.distributed.coordinator import learner_process_entry
     except ModuleNotFoundError as exc:
@@ -184,6 +187,8 @@ def _actor_process(
     token: str,
     external_stop: Any | None = None,
 ) -> None:
+    if external_stop is not None:
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
     try:
         from tmrl.distributed.actor import actor_process_entry
     except ModuleNotFoundError as exc:
@@ -322,6 +327,7 @@ def _build_geometry(args: argparse.Namespace) -> None:
         map_uid=args.map_uid,
         map_path=args.map_path,
         spacing_m=args.spacing,
+        smooth_window=args.smooth_window,
     )
     print(f"Built geometry asset: {path}")
 
@@ -474,6 +480,12 @@ def entrypoint(argv: list[str] | None = None) -> None:
     geometry.add_argument("--map-uid", required=True)
     geometry.add_argument("--map-path", type=Path, required=True)
     geometry.add_argument("--spacing", type=float, default=2.0)
+    geometry.add_argument(
+        "--smooth-window",
+        type=int,
+        default=5,
+        help="odd moving-average window over resampled points (1 disables)",
+    )
     geometry.set_defaults(handler=_build_geometry)
     check = track_commands.add_parser(
         "check", help="verify that OpenPlanet is emitting one compatible telemetry frame"

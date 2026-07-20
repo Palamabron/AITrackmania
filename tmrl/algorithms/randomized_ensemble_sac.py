@@ -9,7 +9,13 @@ from typing import Any
 import torch
 from torch import nn
 
-from tmrl.algorithms._torch import TorchLearnerBase, TorchPolicy, polyak_update, weighted_mean
+from tmrl.algorithms._torch import (
+    TorchLearnerBase,
+    TorchPolicy,
+    backward,
+    polyak_update,
+    weighted_mean,
+)
 from tmrl.core.data import PriorityUpdate, TrainingBatch
 
 
@@ -87,7 +93,7 @@ class RandomizedEnsembleSAC(TorchLearnerBase):
             (predictions - targets.unsqueeze(0)).square().mean(dim=0), weights
         )
         self.critic_optimizer.zero_grad()
-        critic_loss.backward()
+        backward(critic_loss)
         self.critic_optimizer.step()
         self.update_count += 1
         actor_loss = torch.zeros((), device=self.device)
@@ -100,7 +106,7 @@ class RandomizedEnsembleSAC(TorchLearnerBase):
             ).mean(dim=0)
             actor_loss = (self.entropy_coefficient * log_probabilities - values).mean()
             self.actor_optimizer.zero_grad()
-            actor_loss.backward()
+            backward(actor_loss)
             self.actor_optimizer.step()
             for critic in self.model.critics:
                 critic.requires_grad_(True)

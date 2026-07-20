@@ -46,35 +46,104 @@ def _validate_geometry_points(points: np.ndarray) -> np.ndarray:
     return values
 
 
+def _segment_lengths(points: np.ndarray) -> np.ndarray:
+    return np.asarray(np.linalg.norm(np.diff(points, axis=0), axis=1), dtype=np.float64)
+
+
 def _resample(points: np.ndarray, count: int) -> np.ndarray:
-    segments = np.linalg.norm(np.diff(points, axis=0), axis=1)
-    length = np.r_[0.0, np.cumsum(segments)]
-    if float(length[-1]) <= 1e-4:
+    """Resample a polyline to ``count`` points uniformly along arc length."""
+
+    segments = _segment_lengths(points)
+    arc = np.r_[0.0, np.cumsum(segments)]
+    if float(arc[-1]) <= 1e-4:
         raise ValueError("boundary has zero arc length")
-    targets = np.linspace(0.0, float(length[-1]), count, dtype=np.float32)
-    return np.stack(
-        [np.interp(targets, length, points[:, axis]) for axis in range(3)], axis=1
-    ).astype(np.float32)
+    targets = np.linspace(0.0, float(arc[-1]), count, dtype=np.float64)
+    return np.stack([np.interp(targets, arc, points[:, axis]) for axis in range(3)], axis=1).astype(
+        np.float32
+    )
 
 
-def _pair_opposite_boundary(reference: np.ndarray, opposite: np.ndarray) -> np.ndarray:
-    """Pair each resampled reference point with its nearest recorded opposite boundary point."""
+def _resample_matching(
+    left: np.ndarray,
+    right: np.ndarray,
+    center: np.ndarray,
+    count: int,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Re-sample paired boundaries uniformly along the centerline arc length."""
 
-    # Recordings are driven independently: equal fractional arc length does not imply one
-    # cross-section. This intentionally mirrors the geometric nearest-neighbour alignment
-    # used by the pre-refactor boundary interface.
-    # Keep memory bounded for long manual recordings.  A dense N x M matrix
-    # grows quadratically and can exhaust memory before the asset validation
-    # has a chance to reject bad input.
+    arc = np.r_[0.0, np.cumsum(_segment_lengths(center))]
+    if float(arc[-1]) <= 1e-4:
+        raise ValueError("centerline has zero arc length")
+    targets = np.linspace(0.0, float(arc[-1]), count, dtype=np.float64)
+
+    def take(points: np.ndarray) -> np.ndarray:
+        return np.stack(
+            [np.interp(targets, arc, points[:, axis]) for axis in range(3)], axis=1
+        ).astype(np.float32)
+
+    return take(left), take(right), take(center)
+
+
+def _smooth_polyline(points: np.ndarray, window: int) -> np.ndarray:
+    """Light moving-average smooth along the polyline; endpoints stay fixed."""
+
+    if window == 1:
+        return np.asarray(points, dtype=np.float32)
+    if window < 1 or window % 2 == 0:
+        raise ValueError("smooth_window must be a positive odd integer")
+    if len(points) < 3:
+        return np.asarray(points, dtype=np.float32)
+    radius = window // 2
+    values = np.asarray(points, dtype=np.float64)
+    out = values.copy()
+    for index in range(1, len(values) - 1):
+        start = max(0, index - radius)
+        stop = min(len(values), index + radius + 1)
+        out[index] = values[start:stop].mean(axis=0)
+    out[0] = values[0]
+    out[-1] = values[-1]
+    return out.astype(np.float32)
+
+
+def _nearest_index(point: np.ndarray, cloud: np.ndarray) -> int:
+    return int(np.argmin(np.sum((cloud - point) ** 2, axis=1)))
+
+
+def _orient_opposite_boundary(reference: np.ndarray, opposite: np.ndarray) -> np.ndarray:
+    """Flip the opposite recording when it was driven against the reference direction."""
+
+    start = _nearest_index(reference[0], opposite)
+    end = _nearest_index(reference[-1], opposite)
+    if start <= end:
+        return opposite
+    return np.ascontiguousarray(opposite[::-1])
+
+
+def _pair_opposite_boundary(
+    reference: np.ndarray,
+    opposite: np.ndarray,
+    *,
+    forward_window: int = 256,
+    backward_window: int = 64,
+) -> np.ndarray:
+    """Pair each resampled reference point with a locally nearest opposite point.
+
+    Global nearest-neighbour snaps across parallel map sections and places the
+    midpoint centerline between tracks.  Walk the opposite recording with a
+    bounded window so matches stay continuous along the driven boundary.
+    """
+
+    if forward_window < 1 or backward_window < 0:
+        raise ValueError("pairing windows must be non-negative (forward_window >= 1)")
+    oriented = _orient_opposite_boundary(reference, opposite)
     indices = np.empty(len(reference), dtype=np.intp)
-    for start in range(0, len(reference), 512):
-        stop = min(start + 512, len(reference))
-        distances = np.sum(
-            (reference[start:stop, None, :] - opposite[None, :, :]) ** 2,
-            axis=2,
-        )
-        indices[start:stop] = np.argmin(distances, axis=1)
-    paired = np.asarray(opposite[indices], dtype=np.float32)
+    indices[0] = _nearest_index(reference[0], oriented)
+    for index in range(1, len(reference)):
+        previous = int(indices[index - 1])
+        start = max(0, previous - backward_window)
+        stop = min(len(oriented), previous + forward_window + 1)
+        indices[index] = start + _nearest_index(reference[index], oriented[start:stop])
+    paired = np.asarray(oriented[indices], dtype=np.float32)
     widths = np.linalg.norm(reference - paired, axis=1)
     if float(np.quantile(widths, 0.1)) <= 0.1:
         raise ValueError("boundary recordings overlap for a substantial portion of the map")
@@ -89,6 +158,7 @@ def build_geometry_asset(
     map_uid: str,
     map_path: str | Path,
     spacing_m: float = 2.0,
+    smooth_window: int = 5,
 ) -> Path:
     """Clean, arc-resample and pair two manually recorded map boundaries."""
 
@@ -96,13 +166,26 @@ def build_geometry_asset(
         raise ValueError("map_uid is required")
     if spacing_m <= 0.0:
         raise ValueError("spacing_m must be positive")
+    if smooth_window < 1 or smooth_window % 2 == 0:
+        raise ValueError("smooth_window must be a positive odd integer")
     left = _clean_boundary(np.load(left_recording))
     right = _clean_boundary(np.load(right_recording))
-    left_length = float(np.linalg.norm(np.diff(left, axis=0), axis=1).sum())
+    left_length = float(_segment_lengths(left).sum())
     count = max(2, round(left_length / spacing_m) + 1)
     left = _resample(left, count)
     right = _pair_opposite_boundary(left, right)
     center = (left + right) / 2.0
+    # Midpoints of a left-arc sample are not uniform on bends (inner/outer path
+    # lengths differ). Re-parameterize the triple by centerline arc length so
+    # reward/lidar index steps stay ~constant in metres.
+    center_length = float(_segment_lengths(center).sum())
+    count = max(2, round(center_length / spacing_m) + 1)
+    left, right, center = _resample_matching(left, right, center, count)
+    if smooth_window > 1:
+        left = _smooth_polyline(left, smooth_window)
+        right = _smooth_polyline(right, smooth_window)
+        center = (left + right) / 2.0
+        left, right, center = _resample_matching(left, right, center, count)
     widths = np.linalg.norm(left - right, axis=1)
     if not np.isfinite(center).all() or float(np.median(widths)) <= 0.1:
         raise ValueError("paired boundaries are degenerate or overlap")
@@ -118,6 +201,7 @@ def build_geometry_asset(
         center=center.astype(np.float32),
         right=right,
         spacing_m=np.asarray(spacing_m, dtype=np.float32),
+        smooth_window=np.asarray(smooth_window, dtype=np.int32),
         left_sha256=np.asarray(file_sha256(left_recording)),
         right_sha256=np.asarray(file_sha256(right_recording)),
     )

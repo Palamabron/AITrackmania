@@ -25,6 +25,10 @@ from tmrl.core.data import TrainingBatch
 from tmrl.core.pytree import sanitize_finite, tree_map, tree_to_device
 
 
+def backward(loss: Any) -> None:
+    cast(Any, loss).backward()
+
+
 class TorchPolicy:
     """Inference adapter that makes deterministic policy behavior explicit."""
 
@@ -105,7 +109,7 @@ class TorchLearnerBase:
             enabled=self.resolved_execution.scaler_enabled,
         )
         if self.resolved_execution.backend in {"cuda", "rocm"}:
-            self._transfer_stream = torch.cuda.Stream(device=self.device)
+            self._transfer_stream = cast(Any, torch.cuda).Stream(device=self.device)
         self._setup_model()
 
     def autocast(self) -> AbstractContextManager[Any]:
@@ -171,11 +175,12 @@ class TorchLearnerBase:
         if self._transfer_stream is None:
             return batch
         pinned = self._pin_batch(batch)
-        started = torch.cuda.Event(enable_timing=True)
+        started = cast(Any, torch.cuda).Event(enable_timing=True)
+        event = cast(Any, torch.cuda).Event(enable_timing=True)
         with torch.cuda.stream(self._transfer_stream):
             started.record()
             staged = self._move_batch(pinned, non_blocking=True)
-            event = self._transfer_stream.record_event()
+            event.record()
         return replace(
             staged,
             metadata={

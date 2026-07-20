@@ -9,17 +9,29 @@ uv run poe types
 uv run poe test
 uv run tmrl init my-trackmania-agent
 uv run tmrl validate run.yaml
+uv run tmrl track check
+uv run tmrl smoke run.yaml --transitions 100
+uv run tmrl train run.yaml
 ```
 
 These commands deliberately use `uv` without platform-specific virtualenv or shell branches. They must work unchanged on Windows, Linux, WSL and CI.
 
 ## Architecture
 
-The public flow is `RunSpec -> ResolvedRun -> validation -> collection/training`. `tmrl.core` contains contracts, data, replay, runtime and built-ins. `tmrl.trackmania` contains the game adapter only. `tmrl.observability` owns manifests, events and artifacts; `tmrl.experiments` owns suites and study strategies; `tmrl.project` owns the generated extension project.
+The public flow is `RunSpec 1.2 -> coordinator/learner + actor -> WAL -> replay -> updates`. `tmrl.core` contains contracts, data, replay, runtime and built-ins. `tmrl.distributed` contains the authenticated gRPC actor/learner protocol, codec, coordinator and actor spool. `tmrl.trackmania` contains the game adapter only. `tmrl.observability` owns manifests, W&B/local events and artifacts; `tmrl.experiments` owns suites and study strategies; `tmrl.project` owns the generated extension project.
+
+`tmrl train` uses Windows-safe multiprocessing `spawn` and starts one local
+actor by default. Remote deployments use `tmrl learner --bind` and
+`tmrl actor --connect`; all participants must use the same run fingerprint,
+map UID, geometry hash, feature/action contract and `TMRL_DISTRIBUTED_TOKEN`.
+Rollouts are flushed every 128 transitions or 2 seconds, policy snapshots are
+published at most every 5 seconds, and actor policy state is transferred with
+safetensors rather than pickle. Actor exploration profiles are assigned by
+stable actor ID; epsilon is never overwritten globally on the learner.
 
 User components are loaded by explicit `module:attribute` paths from an installable local project. Configuration is Pydantic at the CLI/runtime boundary. Transitions and batches are slot dataclasses and PyTrees in hot paths. Do not add global configuration, import-time side effects, feature flags or a mandatory external tracker.
 
-All built-ins and generated user components need deterministic contract tests. Trackmania itself is exercised only in optional smoke tests.
+All built-ins and generated user components need deterministic contract tests. TrackMania is exercised in the bounded live smoke test; unit tests use fake actors and a slow learner to verify asynchronous behavior without the game.
 
 ## Python Code Rules
 

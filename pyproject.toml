@@ -172,6 +172,7 @@ tmrl = ["py.typed", "project/openplanet/*.as", "project/openplanet/*.toml"]
 target-version = "py312"
 line-length = 100
 src = ["tmrl"]
+extend-exclude = [".pytest-*"]
 
 [tool.ruff.lint]
 select = [
@@ -212,6 +213,7 @@ check = ["lint", "types"]
 
 [tool.mypy]
 python_version = "3.12"
+strict = true
 warn_return_any = true
 warn_unused_configs = true
 ignore_missing_imports = true

@@ -195,7 +195,13 @@ class Coordinator:
         prepare_run(self.run)
         self._log_execution()
         if self.resume_checkpoint is not None:
+            print(f"Restoring checkpoint: {self.resume_checkpoint}", flush=True)
             self.restore_checkpoint(self.resume_checkpoint)
+            print(
+                "Checkpoint restored: "
+                f"transitions={self.counters.transitions}, updates={self.counters.updates}",
+                flush=True,
+            )
         else:
             self._recover_journal(0)
         self._publish_policy(force=True)

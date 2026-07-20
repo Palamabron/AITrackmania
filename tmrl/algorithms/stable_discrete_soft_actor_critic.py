@@ -10,7 +10,7 @@ from typing import Any
 import torch
 from torch import nn
 
-from tmrl.algorithms._torch import TorchLearnerBase, weighted_mean
+from tmrl.algorithms._torch import TorchLearnerBase, backward, weighted_mean
 from tmrl.core.data import PriorityUpdate, TrainingBatch
 from tmrl.core.pytree import sanitize_finite, tree_to_device
 
@@ -136,7 +136,7 @@ class StableDiscreteSoftActorCritic(TorchLearnerBase):
         )
         critic_loss = weighted_mean(critic_losses, weights)
         self.critic_optimizer.zero_grad()
-        critic_loss.backward()
+        backward(critic_loss)
         self.critic_optimizer.step()
         probabilities = self.model.actor.probabilities(observations)
         log_probabilities = probabilities.clamp_min(1e-8).log()
@@ -151,7 +151,7 @@ class StableDiscreteSoftActorCritic(TorchLearnerBase):
         entropy_penalty = (entropy - target_entropy).square().mean()
         actor_loss = actor_loss + self.entropy_penalty_coefficient * entropy_penalty
         self.actor_optimizer.zero_grad()
-        actor_loss.backward()
+        backward(actor_loss)
         self.actor_optimizer.step()
         alpha_loss = torch.zeros((), device=self.device)
         if self.log_alpha is not None:
@@ -163,7 +163,7 @@ class StableDiscreteSoftActorCritic(TorchLearnerBase):
             alpha_loss = (self.log_alpha * (entropy.detach() - desired_entropy)).mean()
             assert self.alpha_optimizer is not None
             self.alpha_optimizer.zero_grad()
-            alpha_loss.backward()
+            backward(alpha_loss)
             self.alpha_optimizer.step()
         with torch.no_grad():
             for target, source in zip(

@@ -22,14 +22,19 @@ def _pyproject(name: str, *, tmrl_extras: str = "") -> str:
         '[project]\nname = "' + name + '"\nversion = "0.1.0"\n'
         'requires-python = ">=3.12"\ndependencies = ["'
         + _tmrl_requirement(tmrl_extras)
-        + '", "torch>=2.4"]\n\n[dependency-groups]\ndev = ["poethepoet>=0.36", "pytest>=7.0"]\n\n'
+        + '", "torch>=2.4"]\n\n[dependency-groups]\n'
+        'dev = ["mypy>=1.8", "poethepoet>=0.36", "pytest>=7.0", "ruff>=0.4"]\n\n'
         '[tool.setuptools.packages.find]\nwhere = ["src"]\n'
+        "\n[tool.poe.tasks]\n"
+        'fmt = [{ cmd = "ruff format ." }, { cmd = "ruff check --fix ." }]\n'
+        'types = "mypy --strict src tests"\n'
+        'test = "pytest"\n'
     )
 
 
 def _trackmania_poe_tasks() -> str:
     return (
-        "\n[tool.poe.tasks]\n"
+        "\n"
         'record-left = "tmrl track record-boundary left assets/test-3-left.npy"\n'
         'record-right = "tmrl track record-boundary right assets/test-3-right.npy"\n'
         'build-geometry = "tmrl track build-geometry assets/test-3.geometry.npz '
@@ -92,7 +97,7 @@ training:
 COMPONENTS = '''"""Editable components. Run `tmrl validate run.yaml` after each change."""
 
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, cast
 
 import torch
 from torch import nn
@@ -200,7 +205,7 @@ class TorchCheckpointCodec:
         torch.save(dict(state), path)
 
     def load(self, path: Path) -> Mapping[str, Any]:
-        return torch.load(path, map_location="cpu", weights_only=False)
+        return cast(Mapping[str, Any], torch.load(path, map_location="cpu", weights_only=False))
 '''
 
 
@@ -272,7 +277,7 @@ def create_project(directory: str | Path, package: str, *, template: str = "star
     tests_dir.mkdir()
     (tests_dir / "test_components.py").write_text(
         f"from {package}.components import StarterMlpLearner\n\n\n"
-        "def test_policy_is_constructible():\n"
+        "def test_policy_is_constructible() -> None:\n"
         "    assert StarterMlpLearner().policy() is not None\n",
         encoding="utf-8",
     )

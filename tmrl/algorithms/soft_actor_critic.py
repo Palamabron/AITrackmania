@@ -9,7 +9,13 @@ from typing import Any
 import torch
 from torch import nn
 
-from tmrl.algorithms._torch import TorchLearnerBase, TorchPolicy, polyak_update, weighted_mean
+from tmrl.algorithms._torch import (
+    TorchLearnerBase,
+    TorchPolicy,
+    backward,
+    polyak_update,
+    weighted_mean,
+)
 from tmrl.core.data import PriorityUpdate, TrainingBatch
 
 
@@ -94,7 +100,7 @@ class SoftActorCritic(TorchLearnerBase):
         td_error = (0.5 * (q1 + q2) - targets).detach().abs()
         critic_loss = weighted_mean((q1 - targets).square() + (q2 - targets).square(), weights)
         self.critic_optimizer.zero_grad()
-        critic_loss.backward()
+        backward(critic_loss)
         self.critic_optimizer.step()
         for critic in (self.model.q1, self.model.q2):
             critic.requires_grad_(False)
@@ -104,7 +110,7 @@ class SoftActorCritic(TorchLearnerBase):
         )
         actor_loss = (alpha * log_probabilities - policy_values).mean()
         self.actor_optimizer.zero_grad()
-        actor_loss.backward()
+        backward(actor_loss)
         self.actor_optimizer.step()
         for critic in (self.model.q1, self.model.q2):
             critic.requires_grad_(True)
@@ -118,7 +124,7 @@ class SoftActorCritic(TorchLearnerBase):
             alpha_loss = -(self.log_alpha * (log_probabilities.detach() + target_entropy)).mean()
             assert self.alpha_optimizer is not None
             self.alpha_optimizer.zero_grad()
-            alpha_loss.backward()
+            backward(alpha_loss)
             self.alpha_optimizer.step()
         polyak_update(self.model, self.target_model, self.target_tau)
         return (

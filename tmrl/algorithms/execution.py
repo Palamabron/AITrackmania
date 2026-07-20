@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import subprocess
 from dataclasses import dataclass, replace
-from typing import Literal
+from typing import Any, Literal, cast
 
 import torch
 
@@ -198,7 +198,7 @@ def _precision_probe(device: torch.device, dtype: torch.dtype) -> bool:
         value = torch.ones((2, 2), device=device, requires_grad=True)
         with torch.autocast(device_type=device.type, dtype=dtype):
             loss = (value @ value).sum()
-        loss.backward()
+        cast(Any, loss).backward()
         return bool(torch.isfinite(loss).item())
     except (RuntimeError, TypeError):
         return False

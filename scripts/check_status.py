@@ -254,9 +254,9 @@ def show_wandb_runs(project: str = "tmrl", entity: str = "tmrl", limit: int = 5)
         err("WANDB_API_KEY not set - skipping")
         return
     try:
-        import wandb  # type: ignore
+        import wandb
     except ImportError:
-        err("wandb not installed - run: pip install wandb")
+        err("wandb not installed - run: uv add wandb")
         return
 
     try:

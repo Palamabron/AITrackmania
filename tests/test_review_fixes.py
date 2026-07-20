@@ -82,3 +82,18 @@ def test_replay_snapshot_is_immutable_after_ring_overwrite() -> None:
     restored.load_state_dict(state)
 
     assert [item.reward for item in restored.get(restored.available_ids())] == [1.0, 2.0]
+
+
+def test_legacy_replay_restore_links_out_of_order_episode_steps() -> None:
+    store = InMemoryReplayStore()
+    store.load_state_dict(
+        {
+            "order": [0, 1],
+            "items": {
+                0: _transition(1, terminated=True),
+                1: _transition(0),
+            },
+        }
+    )
+
+    assert store.n_step_ids(1, 2) == [1, 0]

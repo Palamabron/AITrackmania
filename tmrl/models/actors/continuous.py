@@ -25,7 +25,7 @@ class GaussianActor(nn.Module):
         features = _encode(self.encoder, observation)
         mean = self.mean(features)
         log_std = self.log_std(features).clamp(-20, 2)
-        distribution = Normal(mean, log_std.exp())
+        distribution: Any = Normal(mean, log_std.exp())
         raw = mean if deterministic else distribution.rsample()
         action = raw.tanh()
         correction = 2 * (math.log(2) - raw - torch.nn.functional.softplus(-2 * raw))

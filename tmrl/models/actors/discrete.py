@@ -20,7 +20,7 @@ class CategoricalActor(nn.Module):
         self, observation: Any, *, deterministic: bool = False
     ) -> tuple[torch.Tensor, torch.Tensor]:
         logits = self.logits(_encode(self.encoder, observation))
-        distribution = torch.distributions.Categorical(logits=logits)
+        distribution: Any = torch.distributions.Categorical(logits=logits)
         actions = logits.argmax(dim=-1) if deterministic else distribution.sample()
         return actions, distribution.log_prob(actions)
 

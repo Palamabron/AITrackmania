@@ -8,7 +8,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from queue import Queue
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import grpc
 import numpy as np
@@ -195,9 +195,9 @@ def test_rollout_journal_is_idempotent_and_recovers_rows(tmp_path: Path) -> None
 
 
 def test_authentication_and_run_fingerprint_cover_geometry(tmp_path: Path) -> None:
-    authenticate(_Context("Bearer secret"), "secret")  # type: ignore[arg-type]
+    authenticate(cast(Any, _Context("Bearer secret")), "secret")
     with pytest.raises(RuntimeError, match="UNAUTHENTICATED"):
-        authenticate(_Context("Bearer wrong"), "secret")  # type: ignore[arg-type]
+        authenticate(cast(Any, _Context("Bearer wrong")), "secret")
 
     geometry = tmp_path / "geometry.npz"
     geometry.write_bytes(b"geometry-v1")

@@ -10,7 +10,7 @@ from typing import Any
 import torch
 from torch import nn
 
-from tmrl.algorithms._torch import TorchLearnerBase, polyak_update, weighted_mean
+from tmrl.algorithms._torch import TorchLearnerBase, backward, polyak_update, weighted_mean
 from tmrl.algorithms.execution import TorchExecutionConfig
 from tmrl.core.data import PriorityUpdate, TrainingBatch
 from tmrl.core.pytree import sanitize_finite, tree_map, tree_to_device
@@ -232,7 +232,7 @@ class ImplicitQuantileQLearning(TorchLearnerBase):
         loss = weighted_mean(losses, weights)
         self.optimizer.zero_grad(set_to_none=True)
         assert self.scaler is not None
-        self.scaler.scale(loss).backward()
+        backward(self.scaler.scale(loss))
         self.scaler.unscale_(self.optimizer)
         backward_finished = perf_counter()
         gradient_norm = torch.nn.utils.clip_grad_norm_(

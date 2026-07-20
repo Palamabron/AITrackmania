@@ -20,8 +20,9 @@ from tmrl.trackmania.session import PLUGIN_PROTOCOL_VERSION, OpenPlanetSessionCl
 
 
 def _asset(tmp_path: Path) -> Path:
-    left = np.asarray([[0, 0, -5], [5, 0, -5], [10, 0, -5]], dtype=np.float32)
-    right = left + np.asarray([0, 0, 10], dtype=np.float32)
+    # Dense enough that opposite-boundary nearest neighbours stay on-station.
+    left = np.asarray([[float(x), 0.0, -5.0] for x in range(0, 11)], dtype=np.float32)
+    right = left + np.asarray([0.0, 0.0, 10.0], dtype=np.float32)
     np.save(tmp_path / "left.npy", left)
     np.save(tmp_path / "right.npy", right)
     (tmp_path / "test-3.Map.Gbx").write_bytes(b"test-3-map")
@@ -71,6 +72,89 @@ def test_geometry_pairs_boundaries_by_location_not_recording_progress(tmp_path: 
     )
     geometry = BoundaryGeometry(asset)
     assert np.allclose(np.linalg.norm(geometry.left - geometry.right, axis=1), 10.0)
+
+
+def test_geometry_pairing_stays_on_track_across_parallel_sections(tmp_path: Path) -> None:
+    left = np.asarray([[float(x), 0.0, 0.0] for x in range(60)], dtype=np.float32)
+    true_right = np.asarray([[float(x), 0.0, 10.0] for x in range(60)], dtype=np.float32)
+    # Closer decoy for the middle of the track, appended far later in the file.
+    decoy = np.asarray([[float(x), 0.0, 9.5] for x in range(20, 50)], dtype=np.float32)
+    filler = np.asarray([[1000.0, 0.0, 1000.0 + float(i)] for i in range(2000)], dtype=np.float32)
+    right = np.concatenate([true_right, filler, decoy], axis=0)
+    np.save(tmp_path / "left-parallel.npy", left)
+    np.save(tmp_path / "right-parallel.npy", right)
+    (tmp_path / "test-3.Map.Gbx").write_bytes(b"test-3-map")
+    asset = build_geometry_asset(
+        tmp_path / "parallel.npz",
+        tmp_path / "left-parallel.npy",
+        tmp_path / "right-parallel.npy",
+        map_uid="test-3",
+        map_path=tmp_path / "test-3.Map.Gbx",
+        spacing_m=1.0,
+    )
+    geometry = BoundaryGeometry(asset)
+    assert np.allclose(geometry.right[:, 2], 10.0, atol=0.05)
+    steps = np.linalg.norm(np.diff(geometry.center, axis=0), axis=1)
+    assert float(steps.max()) < 3.0
+
+
+def test_geometry_centerline_spacing_is_uniform_on_bends(tmp_path: Path) -> None:
+    left = np.asarray(
+        [[float(x), 0.0, 0.0] for x in range(0, 41)]
+        + [[40.0, 0.0, float(z)] for z in range(1, 21)],
+        dtype=np.float32,
+    )
+    right = np.asarray(
+        [[float(x), 0.0, 10.0] for x in range(0, 41)]
+        + [[30.0, 0.0, float(z)] for z in range(1, 21)],
+        dtype=np.float32,
+    )
+    np.save(tmp_path / "left-bend.npy", left)
+    np.save(tmp_path / "right-bend.npy", right)
+    (tmp_path / "test-3.Map.Gbx").write_bytes(b"test-3-map")
+    asset = build_geometry_asset(
+        tmp_path / "bend.npz",
+        tmp_path / "left-bend.npy",
+        tmp_path / "right-bend.npy",
+        map_uid="test-3",
+        map_path=tmp_path / "test-3.Map.Gbx",
+        spacing_m=2.0,
+    )
+    steps = np.linalg.norm(np.diff(BoundaryGeometry(asset).center, axis=0), axis=1)
+    assert float(steps.std()) < 0.05
+    assert float(steps.max() - steps.min()) < 0.15
+    assert abs(float(steps.mean()) - 2.0) < 0.15
+
+
+def test_geometry_smoothing_reduces_boundary_jitter(tmp_path: Path) -> None:
+    left = np.asarray([[float(x), 0.0, 0.05 * ((-1) ** x)] for x in range(40)], dtype=np.float32)
+    right = left + np.asarray([0.0, 0.0, 10.0], dtype=np.float32)
+    np.save(tmp_path / "left-jitter.npy", left)
+    np.save(tmp_path / "right-jitter.npy", right)
+    (tmp_path / "test-3.Map.Gbx").write_bytes(b"test-3-map")
+    raw = build_geometry_asset(
+        tmp_path / "raw.npz",
+        tmp_path / "left-jitter.npy",
+        tmp_path / "right-jitter.npy",
+        map_uid="test-3",
+        map_path=tmp_path / "test-3.Map.Gbx",
+        spacing_m=1.0,
+        smooth_window=1,
+    )
+    soft = build_geometry_asset(
+        tmp_path / "soft.npz",
+        tmp_path / "left-jitter.npy",
+        tmp_path / "right-jitter.npy",
+        map_uid="test-3",
+        map_path=tmp_path / "test-3.Map.Gbx",
+        spacing_m=1.0,
+        smooth_window=5,
+    )
+
+    def jitter_energy(path: Path) -> float:
+        return float(np.var(BoundaryGeometry(path).left[:, 2]))
+
+    assert jitter_energy(soft) < jitter_energy(raw)
 
 
 def test_lidar_pipeline_validates_schema_and_builds_masked_local_observation(

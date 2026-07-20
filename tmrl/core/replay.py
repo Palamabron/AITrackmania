@@ -248,7 +248,8 @@ class InMemoryReplayStore:
         self._info: dict[TransitionId, Mapping[str, Any]] = {}
         self._episode_names: dict[int, str] = {}
         self._episode_codes_by_name: dict[str, int] = {}
-        self._episode_last: dict[int, tuple[int, TransitionId]] = {}
+        self._episode_steps: dict[int, dict[int, TransitionId]] = {}
+        self._episode_terminal_steps: dict[int, int] = {}
         self._next_index = 0
         self._size = 0
         self._lock = RLock()
@@ -285,7 +286,7 @@ class InMemoryReplayStore:
                 self._info[transition_id] = transition.info
             self._link_previous(previous_id, transition_id, transition.observation)
             if episode_code >= 0 and transition.step is not None:
-                self._episode_last[episode_code] = (transition.step, transition_id)
+                self._register_episode_step(episode_code, transition.step, transition_id)
             self._next_index += 1
             self._size = min(self.capacity, self._size + 1)
             self._revision += 1
@@ -312,16 +313,50 @@ class InMemoryReplayStore:
         if episode_code < 0 or transition.step is None:
             candidate = self._next_index - 1
             return candidate if self.contains(candidate) else -1
-        previous = self._episode_last.get(episode_code)
-        if previous is None:
-            return -1
-        previous_step, previous_id = previous
-        if transition.step <= previous_step:
+        steps = self._episode_steps.setdefault(episode_code, {})
+        existing = self._episode_step(steps, transition.step)
+        if existing >= 0:
             episode_id = self._episode_names[episode_code]
             raise ValueError(
                 f"duplicate replay episode step: episode={episode_id!r}, step={transition.step}"
             )
-        return previous_id if transition.step == previous_step + 1 else -1
+        return self._episode_step(steps, transition.step - 1)
+
+    def _register_episode_step(
+        self, episode_code: int, step: int, transition_id: TransitionId
+    ) -> None:
+        steps = self._episode_steps.setdefault(episode_code, {})
+        steps[step] = transition_id
+        successor = self._episode_step(steps, step + 1)
+        if successor >= 0:
+            assert self._observations is not None
+            self._link_previous(
+                transition_id,
+                successor,
+                self._observations.read(successor % self.capacity),
+            )
+        slot = transition_id % self.capacity
+        if self._terminated[slot] or self._truncated[slot]:
+            self._episode_terminal_steps[episode_code] = step
+        self._release_completed_episode(episode_code)
+
+    def _episode_step(self, steps: dict[int, TransitionId], step: int) -> TransitionId:
+        transition_id = steps.get(step, -1)
+        if transition_id >= 0 and not self.contains(transition_id):
+            steps.pop(step, None)
+            return -1
+        return transition_id
+
+    def _release_completed_episode(self, episode_code: int) -> None:
+        terminal_step = self._episode_terminal_steps.get(episode_code)
+        if terminal_step is None:
+            return
+        steps = self._episode_steps[episode_code]
+        if len(steps) < terminal_step + 1:
+            return
+        if all(self._episode_step(steps, step) >= 0 for step in range(terminal_step + 1)):
+            self._episode_steps.pop(episode_code)
+            self._episode_terminal_steps.pop(episode_code)
 
     def _link_previous(
         self,
@@ -333,6 +368,7 @@ class InMemoryReplayStore:
             return
         previous_slot = previous_id % self.capacity
         self._next_ids[previous_slot] = transition_id
+        self._previous_ids[transition_id % self.capacity] = previous_id
         previous_next = self._next_overrides.get(previous_id)
         if previous_next is not None and self._tree_equal(previous_next, observation):
             self._next_overrides.pop(previous_id)
@@ -492,7 +528,7 @@ class InMemoryReplayStore:
             self._episode_codes_by_name = {name: code for code, name in self._episode_names.items()}
             self._next_overrides = dict(state.get("next_overrides", {}))
             self._info = dict(state.get("info", {}))
-            self._rebuild_episode_last()
+            self._rebuild_episode_steps()
             self._revision += 1
             self._changes.clear()
 
@@ -506,16 +542,25 @@ class InMemoryReplayStore:
         self._actions = None
         self._next_overrides.clear()
         self._info.clear()
-        self._episode_last.clear()
+        self._episode_steps.clear()
+        self._episode_terminal_steps.clear()
 
-    def _rebuild_episode_last(self) -> None:
-        self._episode_last.clear()
+    def _rebuild_episode_steps(self) -> None:
+        self._episode_steps.clear()
+        self._episode_terminal_steps.clear()
+        completed: set[int] = set()
         for transition_id in range(self._next_index - self._size, self._next_index):
             slot = transition_id % self.capacity
             code = int(self._episode_codes[slot])
             step = int(self._steps[slot])
-            if code >= 0 and step >= 0:
-                self._episode_last[code] = (step, transition_id)
+            if code >= 0 and step >= 0 and (self._terminated[slot] or self._truncated[slot]):
+                completed.add(code)
+        for transition_id in range(self._next_index - self._size, self._next_index):
+            slot = transition_id % self.capacity
+            code = int(self._episode_codes[slot])
+            step = int(self._steps[slot])
+            if code >= 0 and step >= 0 and code not in completed:
+                self._episode_steps.setdefault(code, {})[step] = transition_id
 
     def _load_legacy_state(self, state: Mapping[str, Any]) -> None:
         order = list(state["order"])
