@@ -103,7 +103,7 @@ class OpenPlanetEnvironment:
             else None
         )
         if self.geometry is not None:
-            self.reward = TrajectoryReward(self.geometry.center, **reward_kwargs)
+            self.reward = TrajectoryReward(self.geometry.reward_center, **reward_kwargs)
         else:
             assert config.trajectory_path is not None
             self.reward = TrajectoryReward.from_file(config.trajectory_path, **reward_kwargs)

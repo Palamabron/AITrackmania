@@ -105,6 +105,54 @@ def _smooth_polyline(points: np.ndarray, window: int) -> np.ndarray:
     return out.astype(np.float32)
 
 
+def _is_closed_loop(center: np.ndarray) -> bool:
+    """True when the recording is a full lap (start and finish are the same place)."""
+
+    gap = float(np.linalg.norm(center[0] - center[-1]))
+    length = float(_segment_lengths(center).sum())
+    if length <= 1e-4:
+        return False
+    return gap / length <= 0.05
+
+
+def _end_tangent(points: np.ndarray) -> np.ndarray:
+    direction = points[-1] - points[-2]
+    norm = float(np.linalg.norm(direction))
+    if norm <= 1e-5:
+        span = min(5, len(points) - 1)
+        direction = points[-1] - points[-1 - span]
+        norm = float(np.linalg.norm(direction))
+    if norm <= 1e-5:
+        raise ValueError("cannot extrapolate a degenerate boundary end")
+    return np.asarray(direction / norm, dtype=np.float64)
+
+
+def _extend_polyline(points: np.ndarray, *, count: int, spacing_m: float) -> np.ndarray:
+    if count <= 0:
+        return np.asarray(points, dtype=np.float32)
+    tangent = _end_tangent(points)
+    steps = spacing_m * np.arange(1, count + 1, dtype=np.float64)
+    extra = points[-1].astype(np.float64) + steps[:, None] * tangent[None, :]
+    return np.concatenate([points, extra.astype(np.float32)], axis=0)
+
+
+def _extend_open_finish(
+    left: np.ndarray,
+    right: np.ndarray,
+    center: np.ndarray,
+    *,
+    lookahead_points: int,
+    spacing_m: float,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Extrapolate past the finish so lidar look-ahead keeps seeing new samples."""
+
+    return (
+        _extend_polyline(left, count=lookahead_points, spacing_m=spacing_m),
+        _extend_polyline(right, count=lookahead_points, spacing_m=spacing_m),
+        _extend_polyline(center, count=lookahead_points, spacing_m=spacing_m),
+    )
+
+
 def _nearest_index(point: np.ndarray, cloud: np.ndarray) -> int:
     return int(np.argmin(np.sum((cloud - point) ** 2, axis=1)))
 
@@ -159,6 +207,7 @@ def build_geometry_asset(
     map_path: str | Path,
     spacing_m: float = 2.0,
     smooth_window: int = 5,
+    lookahead_points: int = 60,
 ) -> Path:
     """Clean, arc-resample and pair two manually recorded map boundaries."""
 
@@ -168,6 +217,8 @@ def build_geometry_asset(
         raise ValueError("spacing_m must be positive")
     if smooth_window < 1 or smooth_window % 2 == 0:
         raise ValueError("smooth_window must be a positive odd integer")
+    if lookahead_points < 0:
+        raise ValueError("lookahead_points must be non-negative")
     left = _clean_boundary(np.load(left_recording))
     right = _clean_boundary(np.load(right_recording))
     left_length = float(_segment_lengths(left).sum())
@@ -189,6 +240,15 @@ def build_geometry_asset(
     widths = np.linalg.norm(left - right, axis=1)
     if not np.isfinite(center).all() or float(np.median(widths)) <= 0.1:
         raise ValueError("paired boundaries are degenerate or overlap")
+    recorded_count = len(center)
+    if lookahead_points > 0 and not _is_closed_loop(center):
+        left, right, center = _extend_open_finish(
+            left,
+            right,
+            center,
+            lookahead_points=lookahead_points,
+            spacing_m=spacing_m,
+        )
     target = Path(output)
     target.parent.mkdir(parents=True, exist_ok=True)
     source_map_sha256 = file_sha256(map_path)
@@ -202,6 +262,7 @@ def build_geometry_asset(
         right=right,
         spacing_m=np.asarray(spacing_m, dtype=np.float32),
         smooth_window=np.asarray(smooth_window, dtype=np.int32),
+        recorded_count=np.asarray(recorded_count, dtype=np.int32),
         left_sha256=np.asarray(file_sha256(left_recording)),
         right_sha256=np.asarray(file_sha256(right_recording)),
     )
@@ -225,10 +286,18 @@ class BoundaryGeometry:
             self.right = _validate_geometry_points(data["right"])
             self.spacing_m = float(data["spacing_m"].item())
             self.map_sha256 = str(data.get("map_sha256", np.asarray("")).item())
+            recorded = (
+                data["recorded_count"].item()
+                if "recorded_count" in data.files
+                else len(self.center)
+            )
+            self.recorded_count = int(recorded)
         if self.version != GEOMETRY_ASSET_VERSION or self.spacing_m <= 0.0:
             raise ValueError("unsupported or invalid geometry asset")
         if not (len(self.left) == len(self.center) == len(self.right)):
             raise ValueError("geometry asset boundaries must have equal lengths")
+        if not 2 <= self.recorded_count <= len(self.center):
+            raise ValueError("geometry asset recorded_count is out of range")
         widths = np.linalg.norm(self.left - self.right, axis=1)
         center_length = float(np.linalg.norm(np.diff(self.center, axis=0), axis=1).sum())
         if float(np.median(widths)) <= 0.1 or center_length <= 0.1:
@@ -236,6 +305,12 @@ class BoundaryGeometry:
         if expected_map_uid is not None and self.map_uid != expected_map_uid:
             raise ValueError("geometry asset map UID does not match evaluation map")
         self.sha256 = file_sha256(self.path)
+
+    @property
+    def reward_center(self) -> np.ndarray:
+        """Centerline used for progress/finish (excludes virtual lidar extension)."""
+
+        return self.center[: self.recorded_count]
 
     def validate_map(self, map_path: str | Path) -> None:
         """Reject missing map files and assets built from a different local map binary."""

@@ -328,6 +328,7 @@ def _build_geometry(args: argparse.Namespace) -> None:
         map_path=args.map_path,
         spacing_m=args.spacing,
         smooth_window=args.smooth_window,
+        lookahead_points=args.lookahead_points,
     )
     print(f"Built geometry asset: {path}")
 
@@ -485,6 +486,12 @@ def entrypoint(argv: list[str] | None = None) -> None:
         type=int,
         default=5,
         help="odd moving-average window over resampled points (1 disables)",
+    )
+    geometry.add_argument(
+        "--lookahead-points",
+        type=int,
+        default=60,
+        help="virtual points past the finish on open tracks so lidar look-ahead stays fresh",
     )
     geometry.set_defaults(handler=_build_geometry)
     check = track_commands.add_parser(

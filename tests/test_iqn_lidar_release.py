@@ -19,7 +19,7 @@ from tmrl.trackmania.iqn import LidarIqnModel
 from tmrl.trackmania.session import PLUGIN_PROTOCOL_VERSION, OpenPlanetSessionClient
 
 
-def _asset(tmp_path: Path) -> Path:
+def _asset(tmp_path: Path, *, lookahead_points: int = 60) -> Path:
     # Dense enough that opposite-boundary nearest neighbours stay on-station.
     left = np.asarray([[float(x), 0.0, -5.0] for x in range(0, 11)], dtype=np.float32)
     right = left + np.asarray([0.0, 0.0, 10.0], dtype=np.float32)
@@ -32,6 +32,7 @@ def _asset(tmp_path: Path) -> Path:
         tmp_path / "right.npy",
         map_uid="test-3",
         map_path=tmp_path / "test-3.Map.Gbx",
+        lookahead_points=lookahead_points,
     )
 
 
@@ -69,6 +70,7 @@ def test_geometry_pairs_boundaries_by_location_not_recording_progress(tmp_path: 
         map_uid="test-3",
         map_path=tmp_path / "test-3.Map.Gbx",
         spacing_m=5.0,
+        lookahead_points=0,
     )
     geometry = BoundaryGeometry(asset)
     assert np.allclose(np.linalg.norm(geometry.left - geometry.right, axis=1), 10.0)
@@ -91,6 +93,7 @@ def test_geometry_pairing_stays_on_track_across_parallel_sections(tmp_path: Path
         map_uid="test-3",
         map_path=tmp_path / "test-3.Map.Gbx",
         spacing_m=1.0,
+        lookahead_points=0,
     )
     geometry = BoundaryGeometry(asset)
     assert np.allclose(geometry.right[:, 2], 10.0, atol=0.05)
@@ -119,6 +122,7 @@ def test_geometry_centerline_spacing_is_uniform_on_bends(tmp_path: Path) -> None
         map_uid="test-3",
         map_path=tmp_path / "test-3.Map.Gbx",
         spacing_m=2.0,
+        lookahead_points=0,
     )
     steps = np.linalg.norm(np.diff(BoundaryGeometry(asset).center, axis=0), axis=1)
     assert float(steps.std()) < 0.05
@@ -140,6 +144,7 @@ def test_geometry_smoothing_reduces_boundary_jitter(tmp_path: Path) -> None:
         map_path=tmp_path / "test-3.Map.Gbx",
         spacing_m=1.0,
         smooth_window=1,
+        lookahead_points=0,
     )
     soft = build_geometry_asset(
         tmp_path / "soft.npz",
@@ -149,12 +154,48 @@ def test_geometry_smoothing_reduces_boundary_jitter(tmp_path: Path) -> None:
         map_path=tmp_path / "test-3.Map.Gbx",
         spacing_m=1.0,
         smooth_window=5,
+        lookahead_points=0,
     )
 
     def jitter_energy(path: Path) -> float:
         return float(np.var(BoundaryGeometry(path).left[:, 2]))
 
     assert jitter_energy(soft) < jitter_energy(raw)
+
+
+def test_open_track_gets_virtual_finish_lookahead(tmp_path: Path) -> None:
+    geometry = BoundaryGeometry(_asset(tmp_path, lookahead_points=60))
+    assert geometry.recorded_count < len(geometry.center)
+    assert len(geometry.center) == geometry.recorded_count + 60
+    assert len(geometry.reward_center) == geometry.recorded_count
+    steps = np.linalg.norm(np.diff(geometry.center[geometry.recorded_count - 1 :], axis=0), axis=1)
+    assert np.allclose(steps, geometry.spacing_m, atol=1e-3)
+
+
+def test_closed_lap_does_not_extend_finish(tmp_path: Path) -> None:
+    angles = np.linspace(0.0, 2.0 * np.pi, 80, endpoint=False)
+    left = np.stack(
+        [20.0 * np.cos(angles), np.zeros_like(angles), 20.0 * np.sin(angles)], axis=1
+    ).astype(np.float32)
+    right = np.stack(
+        [15.0 * np.cos(angles), np.zeros_like(angles), 15.0 * np.sin(angles)], axis=1
+    ).astype(np.float32)
+    np.save(tmp_path / "left-loop.npy", left)
+    np.save(tmp_path / "right-loop.npy", right)
+    (tmp_path / "test-3.Map.Gbx").write_bytes(b"test-3-map")
+    asset = build_geometry_asset(
+        tmp_path / "loop.npz",
+        tmp_path / "left-loop.npy",
+        tmp_path / "right-loop.npy",
+        map_uid="test-3",
+        map_path=tmp_path / "test-3.Map.Gbx",
+        spacing_m=2.0,
+        lookahead_points=60,
+    )
+    geometry = BoundaryGeometry(asset)
+    assert geometry.recorded_count == len(geometry.center)
+    gap = float(np.linalg.norm(geometry.center[0] - geometry.center[-1]))
+    assert gap < 10.0
 
 
 def test_lidar_pipeline_validates_schema_and_builds_masked_local_observation(
@@ -173,7 +214,7 @@ def test_lidar_pipeline_validates_schema_and_builds_masked_local_observation(
     assert output["lidar_mask"].shape == (30,)
     assert output["telemetry"].shape == (20,)
     assert torch.allclose(output["telemetry"][[4, 7, 8, 17]], torch.tensor([0.25, 0.5, 0.5, -0.5]))
-    assert not output["lidar_mask"][-1]
+    assert bool(output["lidar_mask"].all())
     assert pipeline.transform_observation(output)["lidar"].shape == (2, 30)
     with pytest.raises(ValueError, match="33 fields"):
         pipeline.transform_observation(np.zeros(32, dtype=np.float32))
@@ -181,9 +222,21 @@ def test_lidar_pipeline_validates_schema_and_builds_masked_local_observation(
         pipeline.transform_observation(np.full(33, np.nan, dtype=np.float32))
 
 
+def test_lidar_near_finish_keeps_fresh_lookahead_on_open_track(tmp_path: Path) -> None:
+    asset = _asset(tmp_path, lookahead_points=60)
+    geometry = BoundaryGeometry(asset)
+    pipeline = LidarFeaturePipeline(asset, expected_map_uid="test-3")
+    observation = np.zeros(33, dtype=np.float32)
+    observation[4:7] = geometry.reward_center[-1]
+    observation[10:13] = [1, 0, 0]
+    output = pipeline.transform_observation(observation)
+    assert bool(output["lidar_mask"].all())
+    assert not torch.allclose(output["lidar"][:, 0], output["lidar"][:, 14])
+
+
 def test_lidar_pipeline_preserves_legacy_right_then_forward_car_frame(tmp_path: Path) -> None:
     pipeline = LidarFeaturePipeline(
-        _asset(tmp_path), expected_map_uid="test-3", max_distance_m=10.0
+        _asset(tmp_path, lookahead_points=0), expected_map_uid="test-3", max_distance_m=10.0
     )
     observation = np.zeros(33, dtype=np.float32)
     observation[10] = 1.0  # Car points along +X.
