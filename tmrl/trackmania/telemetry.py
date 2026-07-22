@@ -14,6 +14,9 @@ DEFAULT_TELEMETRY_FIELD_COUNT = 33
 DEFAULT_POSITION_INDICES = (4, 5, 6)
 """``api.Position`` X/Y/Z offsets in the supported 33-field telemetry packet."""
 
+DEFAULT_VELOCITY_INDICES = (7, 8, 9)
+"""``api.Velocity`` X/Y/Z offsets in the supported 33-field telemetry packet."""
+
 
 @dataclass(frozen=True, slots=True)
 class TelemetryFrame:

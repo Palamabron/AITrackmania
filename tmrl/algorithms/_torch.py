@@ -9,7 +9,7 @@ from contextlib import AbstractContextManager
 from copy import deepcopy
 from dataclasses import replace
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Protocol, cast
 
 import numpy as np
 import torch
@@ -27,6 +27,16 @@ from tmrl.core.pytree import sanitize_finite, tree_map, tree_to_device
 
 def backward(loss: Any) -> None:
     cast(Any, loss).backward()
+
+
+class _GradScaler(Protocol):
+    def scale(self, outputs: Any) -> Any: ...
+
+    def unscale_(self, optimizer: torch.optim.Optimizer) -> None: ...
+
+    def step(self, optimizer: torch.optim.Optimizer) -> Any: ...
+
+    def update(self) -> None: ...
 
 
 class TorchPolicy:
@@ -79,7 +89,7 @@ class TorchLearnerBase:
         self.execution = execution or TorchExecutionConfig(device=requested)
         self.device = torch.device("cpu")
         self.resolved_execution: ResolvedTorchExecution | None = None
-        self.scaler: torch.amp.GradScaler | None = None
+        self.scaler: _GradScaler | None = None
         self._transfer_stream: torch.cuda.Stream | None = None
         self.run_dir: Path | None = None
         self.seed = seed
@@ -104,7 +114,7 @@ class TorchLearnerBase:
                 raise TypeError("model_factory must expose build()")
             self.model = build()
         self.model.to(self.device)
-        self.scaler = torch.amp.GradScaler(
+        self.scaler = cast(Any, torch.amp).GradScaler(
             self.device.type,
             enabled=self.resolved_execution.scaler_enabled,
         )

@@ -10,7 +10,10 @@ from torch import nn
 
 from tmrl.models.critics import DiscreteQuantileNetwork
 from tmrl.models.encoders.track_geometry import TrackGeometryEncoder
-from tmrl.trackmania.actions import build_brake_tap_action_table
+from tmrl.trackmania.actions import (
+    build_brake_tap_action_table,
+    build_brake_tap_exploration_weights,
+)
 from tmrl.trackmania.features import LidarFeaturePipeline
 
 
@@ -20,7 +23,7 @@ class _LidarObservationEncoder(nn.Module):
     def __init__(self) -> None:
         super().__init__()
         self.encoder = TrackGeometryEncoder(
-            2, LidarFeaturePipeline.telemetry_dim, output_dim=self.output_dim
+            4, LidarFeaturePipeline.telemetry_dim, output_dim=self.output_dim
         )
 
     def forward(self, observation: Mapping[str, torch.Tensor]) -> torch.Tensor:
@@ -40,6 +43,11 @@ class LidarIqnModel(DiscreteQuantileNetwork):
         action_count, _ = build_brake_tap_action_table()
         encoder = _LidarObservationEncoder()
         super().__init__(encoder, encoder.output_dim, action_count, cosine_count, dueling=True)
+        self.register_buffer(
+            "exploration_action_weights",
+            torch.from_numpy(build_brake_tap_exploration_weights()),
+            persistent=False,
+        )
 
 
 class LidarIqnModelFactory:

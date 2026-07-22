@@ -12,7 +12,11 @@ import pytest
 import torch
 from tmrl.algorithms import ImplicitQuantileQLearning
 from tmrl.core.data import TrainingBatch
-from tmrl.trackmania.actions import build_brake_tap_action_table
+from tmrl.models.encoders import TrackGeometryEncoder
+from tmrl.trackmania.actions import (
+    build_brake_tap_action_table,
+    build_brake_tap_exploration_weights,
+)
 from tmrl.trackmania.features import LidarFeaturePipeline
 from tmrl.trackmania.geometry import BoundaryGeometry, build_geometry_asset
 from tmrl.trackmania.iqn import LidarIqnModel
@@ -210,12 +214,12 @@ def test_lidar_pipeline_validates_schema_and_builds_masked_local_observation(
     observation[17] = 5_000.0
     observation[30] = -0.5
     output = pipeline.transform_observation(observation)
-    assert output["lidar"].shape == (2, 30)
-    assert output["lidar_mask"].shape == (30,)
+    assert output["lidar"].shape == (4, 60)
+    assert output["lidar_mask"].shape == (60,)
     assert output["telemetry"].shape == (20,)
     assert torch.allclose(output["telemetry"][[4, 7, 8, 17]], torch.tensor([0.25, 0.5, 0.5, -0.5]))
     assert bool(output["lidar_mask"].all())
-    assert pipeline.transform_observation(output)["lidar"].shape == (2, 30)
+    assert pipeline.transform_observation(output)["lidar"].shape == (4, 60)
     with pytest.raises(ValueError, match="33 fields"):
         pipeline.transform_observation(np.zeros(32, dtype=np.float32))
     with pytest.raises(ValueError, match="non-finite"):
@@ -245,7 +249,7 @@ def test_lidar_pipeline_preserves_legacy_right_then_forward_car_frame(tmp_path: 
 
     # The 2 m-resampled next left-boundary point is (2, 0, -5): it is 5 m right
     # and 2 m ahead in the established OpenPlanet local-frame convention.
-    assert output["lidar"][:, 0].tolist() == pytest.approx([0.5, 0.2])
+    assert output["lidar"][:2, 0].tolist() == pytest.approx([0.5, 0.2])
 
 
 def test_iqn_lidar_updates_and_handles_single_structured_observation(tmp_path: Path) -> None:
@@ -286,11 +290,46 @@ def test_iqn_lidar_updates_and_handles_single_structured_observation(tmp_path: P
     assert learner._current_epsilon() < 1.0
 
 
+def test_track_geometry_attention_masks_bfloat16_logits() -> None:
+    encoder = TrackGeometryEncoder(channels=4, telemetry_dim=0)
+    track = torch.randn(2, 4, 60)
+    mask = torch.ones(2, 60, dtype=torch.bool)
+    mask[:, -10:] = False
+
+    with torch.autocast(device_type="cpu", dtype=torch.bfloat16):
+        output = encoder(track, mask=mask)
+
+    assert torch.isfinite(output).all()
+
+
 def test_iqn_action_table_has_all_78_indices_and_brake_taps() -> None:
     count, table = build_brake_tap_action_table()
     assert count == 78
     assert len(table) == 78
     assert sum(float(action[1]) == -1.0 for action in table) == 26
+
+
+def test_iqn_exploration_weights_favor_throttle_and_straight_actions() -> None:
+    _, table = build_brake_tap_action_table()
+    weights = build_brake_tap_exploration_weights()
+
+    throttled = sum(
+        weight for weight, action in zip(weights, table, strict=True) if action[0] == 1.0
+    )
+    braking = sum(weight for weight, action in zip(weights, table, strict=True) if action[1] != 0.0)
+    center = next(
+        weight
+        for weight, action in zip(weights, table, strict=True)
+        if action.tolist() == [1.0, 0.0, 0.0]
+    )
+    extreme = next(
+        weight
+        for weight, action in zip(weights, table, strict=True)
+        if action.tolist() == [1.0, 0.0, 1.0]
+    )
+
+    assert throttled > braking
+    assert center > extreme
 
 
 def test_session_protocol_verifies_preloaded_map_and_ready_state() -> None:

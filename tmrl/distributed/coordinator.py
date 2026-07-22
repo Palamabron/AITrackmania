@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import Mapping
 from concurrent.futures import Future, ThreadPoolExecutor
 from copy import deepcopy
@@ -42,6 +43,7 @@ class _Counters:
     best_finish_time_s: float = 0.0
     evaluations: int = 0
     evaluation_finishes: int = 0
+    evaluation_sub40: int = 0
     updates: int = 0
     update_credit: float = 0.0
     journal_watermark: int = 0
@@ -151,6 +153,7 @@ class Coordinator:
         token: str,
         fingerprint: str,
         resume_checkpoint: Path | None = None,
+        reset_replay: bool = False,
         external_stop: Any | None = None,
     ) -> None:
         self.run = run
@@ -158,6 +161,7 @@ class Coordinator:
         self.token = token
         self.fingerprint = fingerprint
         self.resume_checkpoint = resume_checkpoint
+        self.reset_replay = reset_replay
         self.external_stop = external_stop
         self.codec = WireCodec(run.spec.distributed.max_message_bytes)
         self.journal = RolloutJournal(run.run_dir / "distributed" / "rollouts.sqlite3")
@@ -196,9 +200,14 @@ class Coordinator:
         self._log_execution()
         if self.resume_checkpoint is not None:
             print(f"Restoring checkpoint: {self.resume_checkpoint}", flush=True)
-            self.restore_checkpoint(self.resume_checkpoint)
+            self.restore_checkpoint(self.resume_checkpoint, reset_replay=self.reset_replay)
+            restored = (
+                "learner state only; replay and runtime counters reset"
+                if self.reset_replay
+                else "full state"
+            )
             print(
-                "Checkpoint restored: "
+                f"Checkpoint restored ({restored}): "
                 f"transitions={self.counters.transitions}, updates={self.counters.updates}",
                 flush=True,
             )
@@ -207,8 +216,9 @@ class Coordinator:
         self._publish_policy(force=True)
         self._start_server()
         print(
-            f"Async learner started: run_id={self.run.spec.run_id}, bind={self.bind}, "
-            f"target_transitions={self.run.spec.training.total_transitions}",
+            f"Async learner ready (pid={os.getpid()}): run_id={self.run.spec.run_id}, "
+            f"gRPC bind={self.bind}, target_transitions="
+            f"{self.run.spec.training.total_transitions}",
             flush=True,
         )
         try:
@@ -455,6 +465,17 @@ class Coordinator:
                 f"Actor {value['actor_id']} episode {self.counters.episodes}: "
                 f"progress={float(summary['progress_pct']):.1f}%, "
                 f"return={float(summary['return']):.3f}, "
+                f"reward(time={float(summary['reward/time']):.3f}, "
+                f"pbrs={float(summary['reward/pbrs']):.3f}, "
+                f"progress={float(summary['reward/progress']):.3f}, "
+                f"projected_velocity={float(summary['reward/projected_velocity']):.3f}, "
+                f"steering_delta={float(summary['reward/steering_delta']):.3f}, "
+                f"terminal={float(summary['reward/terminal']):.3f}), "
+                f"velocity_ratio(mean={float(summary['velocity/ratio_mean']):.3f}, "
+                f"max={float(summary['velocity/ratio_max']):.3f}), "
+                f"steps={int(summary['steps'])}, "
+                f"race={float(summary['race_time_s']):.2f}s, "
+                f"epsilon={float(summary['exploration_epsilon']):.3f}, "
                 f"termination={summary['termination']}",
                 flush=True,
             )
@@ -464,13 +485,19 @@ class Coordinator:
                     self._evaluation_due.add(str(value["actor_id"]))
         for summary in value.get("evaluations", []):
             self.counters.evaluations += 1
-            self.counters.evaluation_finishes += int(bool(summary["finished"]))
+            finished = bool(summary["finished"])
+            finish_time_s = float(summary["finish_time_s"])
+            sub40 = finished and finish_time_s < 40.0
+            self.counters.evaluation_finishes += int(finished)
+            self.counters.evaluation_sub40 += int(sub40)
             self.run.logger.log(
                 "eval/episode",
                 {
                     **summary,
                     "index": self.counters.evaluations,
                     "finish_rate": self.counters.evaluation_finishes / self.counters.evaluations,
+                    "sub40": float(sub40),
+                    "sub40_rate": self.counters.evaluation_sub40 / self.counters.evaluations,
                     "actor_id": value["actor_id"],
                 },
                 step=self.counters.updates,
@@ -505,7 +532,8 @@ class Coordinator:
             ):
                 did_update = False
                 self._check_actor_timeouts()
-                self._drain_rollouts(32)
+                if self.counters.update_credit < 1.0:
+                    self._drain_rollouts(1)
                 if len(self.run.replay_store) >= ready and self.counters.update_credit >= 1.0:
                     request = spec.batch_request(beta=spec.replay_beta(self.counters.transitions))
                     batch, preparation_s, wait_s = prefetcher.next(request)
@@ -676,6 +704,7 @@ class Coordinator:
                 "best_finish_time_s": self.counters.best_finish_time_s,
                 "evaluations": self.counters.evaluations,
                 "evaluation_finishes": self.counters.evaluation_finishes,
+                "evaluation_sub40": self.counters.evaluation_sub40,
                 "updates": self.counters.updates,
                 "update_credit": self.counters.update_credit,
                 "journal_watermark": self.counters.journal_watermark,
@@ -695,20 +724,23 @@ class Coordinator:
         print(f"Checkpoint queued: {path}", flush=True)
         return path
 
-    def restore_checkpoint(self, path: Path) -> None:
-        """Restore learner, replay, sampler, and pending WAL rows."""
+    def restore_checkpoint(self, path: Path, *, reset_replay: bool = False) -> None:
+        """Restore a checkpoint, optionally retaining only the learner state."""
 
-        self._restore(path)
+        self._restore(path, reset_replay=reset_replay)
 
-    def _restore(self, path: Path) -> None:
+    def _restore(self, path: Path, *, reset_replay: bool) -> None:
         state = self.run.checkpoint_codec.load(path)
         if state.get("schema_version") != "2.0":
             raise ValueError("async runtime only resumes distributed checkpoint schema 2.0")
         self.run.learner.load_state_dict(state["learner"])
-        _load_state_dict(self.run.replay_store, state["replay_store"])
-        _load_state_dict(self.run.sampler, state["sampler"])
+        if reset_replay:
+            self.counters = _Counters()
+            return
         distributed = state["distributed"]
         self.counters = _Counters(**distributed)
+        _load_state_dict(self.run.replay_store, state["replay_store"])
+        _load_state_dict(self.run.sampler, state["sampler"])
         self._recover_journal(self.counters.journal_watermark)
 
     def _recover_journal(self, watermark: int) -> None:
@@ -733,6 +765,7 @@ def learner_process_entry(
     bind: str,
     token: str,
     resume_checkpoint: str | None = None,
+    reset_replay: bool = False,
     external_stop: Any | None = None,
 ) -> None:
     """Spawn-safe learner entrypoint used by both local and remote launchers."""
@@ -747,6 +780,7 @@ def learner_process_entry(
             token=token,
             fingerprint=run_fingerprint(spec, path.parent),
             resume_checkpoint=Path(resume_checkpoint) if resume_checkpoint else None,
+            reset_replay=reset_replay,
             external_stop=external_stop,
         ).run_forever()
     finally:

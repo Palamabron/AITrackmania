@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from math import isfinite
 from pathlib import Path
 from time import monotonic, sleep
 from typing import Any
@@ -17,7 +18,9 @@ from tmrl.trackmania.session import OpenPlanetSessionClient
 from tmrl.trackmania.telemetry import (
     DEFAULT_POSITION_INDICES,
     DEFAULT_TELEMETRY_FIELD_COUNT,
+    DEFAULT_VELOCITY_INDICES,
     OpenPlanetClient,
+    TelemetryFrame,
 )
 
 
@@ -37,29 +40,53 @@ class TrackmaniaEnvironmentConfig(BaseModel):
     start_poll_s: float = Field(default=0.01, ge=0.0)
     action_repeat_frames: int = Field(default=4, ge=1, le=20)
     position_indices: tuple[int, int, int] = DEFAULT_POSITION_INDICES
+    velocity_indices: tuple[int, int, int] = DEFAULT_VELOCITY_INDICES
     crash_distance: float = Field(default=25.0, gt=0)
     no_progress_steps: int = Field(default=200, ge=1)
     slow_progress_window_steps: int = Field(default=80, ge=2)
     minimum_progress_per_window_m: float = Field(default=2.0, ge=0.0)
     terminal_failure_penalty: float = Field(default=1.0, ge=0.0)
+    collision_penalty: float = Field(default=0.05, ge=0.0)
     minimum_finish_steps: int = Field(default=50, ge=1)
     nearest_forward_points: int = Field(default=500, ge=1)
     nearest_backward_points: int = Field(default=10, ge=0)
-    progress_reward_full_lap: float = Field(default=200.0, ge=0.0)
-    finish_reward: float = Field(default=10.0, ge=0.0)
-    speed_reward_weight: float = Field(default=0.25, ge=0.0)
-    max_speed_mps: float = Field(default=100.0, gt=0.0)
+    time_penalty_per_second: float = Field(default=0.1, ge=0.0)
+    max_time_delta_s: float = Field(default=1.0, gt=0.0)
+    progress_reward_full_lap: float = Field(default=10.0, ge=0.0)
+    finish_reward: float = Field(default=30.0, ge=0.0)
+    potential_progress_weight: float = Field(default=2.0, ge=0.0)
+    max_projected_speed_mps: float = Field(default=100.0, gt=0.0)
+    velocity_to_mps_scale: float = Field(default=0.001, gt=0.0)
+    projected_velocity_scale: float = Field(default=0.0, ge=0.0)
+    steering_delta_penalty: float = Field(default=0.0, ge=0.0)
+    reward_gamma: float = Field(default=0.995, ge=0.0, le=1.0)
 
     @model_validator(mode="after")
-    def _position_indices_fit_packet(self) -> TrackmaniaEnvironmentConfig:
+    def _reward_contract_is_valid(self) -> TrackmaniaEnvironmentConfig:
         if self.trajectory_path is None and self.geometry_path is None:
             raise ValueError("either trajectory_path or geometry_path is required")
-        if len(set(self.position_indices)) != 3 or any(
-            index < 0 or index >= self.field_count for index in self.position_indices
+        for name, indices in (
+            ("position_indices", self.position_indices),
+            ("velocity_indices", self.velocity_indices),
         ):
-            raise ValueError(
-                "position_indices must be three unique indices inside the telemetry packet"
-            )
+            if len(set(indices)) != 3 or any(
+                index < 0 or index >= self.field_count for index in indices
+            ):
+                raise ValueError(f"{name} must be three unique indices inside the telemetry packet")
+        values = (
+            self.time_penalty_per_second,
+            self.max_time_delta_s,
+            self.progress_reward_full_lap,
+            self.finish_reward,
+            self.potential_progress_weight,
+            self.max_projected_speed_mps,
+            self.velocity_to_mps_scale,
+            self.projected_velocity_scale,
+            self.steering_delta_penalty,
+            self.reward_gamma,
+        )
+        if not all(isfinite(value) for value in values):
+            raise ValueError("reward values must be finite")
         return self
 
 
@@ -81,13 +108,20 @@ class OpenPlanetEnvironment:
             "slow_progress_window_steps": config.slow_progress_window_steps,
             "minimum_progress_per_window_m": config.minimum_progress_per_window_m,
             "terminal_failure_penalty": config.terminal_failure_penalty,
+            "collision_penalty": config.collision_penalty,
             "minimum_finish_steps": config.minimum_finish_steps,
             "nearest_forward_points": config.nearest_forward_points,
             "nearest_backward_points": config.nearest_backward_points,
+            "time_penalty_per_second": config.time_penalty_per_second,
+            "max_time_delta_s": config.max_time_delta_s,
             "progress_reward_full_lap": config.progress_reward_full_lap,
             "finish_reward": config.finish_reward,
-            "speed_reward_weight": config.speed_reward_weight,
-            "max_speed_mps": config.max_speed_mps,
+            "potential_progress_weight": config.potential_progress_weight,
+            "max_projected_speed_mps": config.max_projected_speed_mps,
+            "velocity_to_mps_scale": config.velocity_to_mps_scale,
+            "projected_velocity_scale": config.projected_velocity_scale,
+            "steering_delta_penalty": config.steering_delta_penalty,
+            "reward_gamma": config.reward_gamma,
         }
         geometry_path = (
             evaluation_map.geometry_path if evaluation_map is not None else config.geometry_path
@@ -123,30 +157,49 @@ class OpenPlanetEnvironment:
             assert self.geometry is not None
             self.geometry.validate_map(self.evaluation_map.map_path)
             self._session.verify_loaded_map(self.evaluation_map.expected_map_uid)
-        self.controller.reset()
-        if self.evaluation_map is not None:
-            assert self._session is not None
-            self._session.confirm_ready(self.evaluation_map.expected_map_uid)
+        frame = self._restart_race()
         if self.config.reset_settle_s:
             sleep(self.config.reset_settle_s)
-        # A respawn from the standing start includes Trackmania's countdown.
-        # Do not let reward progress timers consume those frames: otherwise a
-        # slow-progress termination can occur before the car is allowed to move.
+            frame = self.client.read()
+        self.reward.reset(
+            frame.values[list(self.config.position_indices)],
+            velocity=frame.values[list(self.config.velocity_indices)],
+            race_time_ms=float(frame.values[3]),
+        )
+        self._episode_started_at = monotonic()
+        return frame.values, {"telemetry_health": "ok"}
+
+    def _restart_race(self) -> TelemetryFrame:
+        for attempt in range(2):
+            previous_race_time_ms = float(self.client.read().values[3])
+            self.controller.reset()
+            if self.evaluation_map is not None:
+                assert self._session is not None
+                self._session.confirm_ready(self.evaluation_map.expected_map_uid)
+            try:
+                return self._wait_for_active_run(previous_race_time_ms)
+            except TimeoutError:
+                if attempt:
+                    raise
+        raise AssertionError("unreachable")
+
+    def _wait_for_active_run(self, previous_race_time_ms: float) -> TelemetryFrame:
         deadline = monotonic() + self.config.start_timeout_s
-        frame = self.client.read()
-        while float(frame.values[3]) <= 0.0:
+        restart_observed = previous_race_time_ms <= 0.0
+        while True:
+            frame = self.client.read()
+            race_time_ms = float(frame.values[3])
+            restart_observed = restart_observed or race_time_ms < previous_race_time_ms
+            if restart_observed and race_time_ms > 0.0:
+                return frame
             if monotonic() >= deadline:
                 raise TimeoutError(
-                    "Trackmania did not enter an active run after reset within "
-                    f"{self.config.start_timeout_s:g}s. Start or restart the loaded map "
-                    "and ensure the OpenPlanet race timer is advancing."
+                    "Trackmania did not confirm a new race after reset within "
+                    f"{self.config.start_timeout_s:g}s. Check that the virtual gamepad "
+                    "restart binding resets the race timer, then restart the loaded map."
                 )
             if self.config.start_poll_s:
                 sleep(self.config.start_poll_s)
-            frame = self.client.read()
-        self.reward.reset()
-        self._episode_started_at = monotonic()
-        return frame.values, {"telemetry_health": "ok"}
 
     def step(self, action: Any) -> tuple[np.ndarray, float, bool, bool, dict[str, Any]]:
         if isinstance(action, (int, np.integer)):
@@ -172,8 +225,14 @@ class OpenPlanetEnvironment:
             frame = self.client.read()
         assert frame is not None
         position = frame.values[list(self.config.position_indices)]
+        collision = self.controller.consume_collision()
         result = self.reward.step(
-            position, finish_ui_active=bool(frame.values[2]), speed_mps=float(frame.values[16])
+            position,
+            finish_ui_active=bool(frame.values[2]),
+            velocity=frame.values[list(self.config.velocity_indices)],
+            race_time_ms=float(frame.values[3]),
+            collision=collision,
+            steering=float(control[2]),
         )
         return (
             frame.values,
@@ -188,9 +247,17 @@ class OpenPlanetEnvironment:
                 "episode_elapsed_s": monotonic() - self._episode_started_at,
                 "progress_m": self.reward.progress_m,
                 "progress_pct": self.reward.progress_pct,
+                "reward_time": result.time_reward,
+                "reward_pbrs": result.pbrs_reward,
                 "reward_progress": result.progress_reward,
-                "reward_speed": result.speed_reward,
+                "reward_projected_velocity": result.projected_velocity_reward,
+                "reward_steering_delta": result.steering_delta_reward,
+                "reward_collision": result.collision_reward,
+                "collision": result.collided,
                 "reward_terminal": result.terminal_reward,
+                "potential_progress": result.potential_progress,
+                "projected_velocity_mps": result.projected_velocity_mps,
+                "projected_velocity_ratio": result.projected_velocity_ratio,
             },
         )
 

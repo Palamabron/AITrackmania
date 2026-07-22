@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from threading import RLock, Timer
 from time import sleep
 from typing import Protocol, runtime_checkable
@@ -11,9 +12,18 @@ import numpy as np
 from tmrl.trackmania.actions import BRAKE_TAP_DURATION_S, BRAKE_TAP_SENTINEL
 
 
+def _vgamepad_callback[Callback: Callable[..., object]](callback: Callback) -> Callback:
+    """Match vgamepad's unannotated callback contract at runtime."""
+
+    callback.__annotations__.clear()
+    return callback
+
+
 @runtime_checkable
 class Controller(Protocol):
     def apply(self, action: np.ndarray) -> None: ...
+
+    def consume_collision(self) -> bool: ...
 
     def reset(self) -> None: ...
 
@@ -21,9 +31,9 @@ class Controller(Protocol):
 
 
 class GamepadController:
-    """Virtual XInput controller with an explicit TrackMania respawn action."""
+    """Virtual XInput controller with an explicit TrackMania restart action."""
 
-    _RESPAWN_BUTTON = 0x2000  # Xbox B; TrackMania's default respawn binding.
+    _RESTART_BUTTON = 0x2000  # Xbox B; TrackMania's default Give Up binding.
 
     def __init__(self) -> None:
         try:
@@ -32,8 +42,34 @@ class GamepadController:
             raise RuntimeError("Install tmrl[trackmania] to use GamepadController") from exc
         self._gamepad = vgamepad.VX360Gamepad()
         self._tap_lock = RLock()
+        self._collision_lock = RLock()
         self._tap_timer: Timer | None = None
         self._tap_generation = 0
+        self._collision_detected = False
+        self._gamepad.register_notification(callback_function=self._on_vibration)
+
+    @_vgamepad_callback
+    def _on_vibration(
+        self,
+        client: object,
+        target: object,
+        large_motor: int,
+        small_motor: int,
+        led_number: int,
+        user_data: object,
+    ) -> None:
+        del client, target, small_motor, led_number, user_data
+        if large_motor > 100:
+            with self._collision_lock:
+                self._collision_detected = True
+
+    def consume_collision(self) -> bool:
+        """Return and clear the most recent collision rumble event."""
+
+        with self._collision_lock:
+            collision_detected = self._collision_detected
+            self._collision_detected = False
+        return collision_detected
 
     def _apply(self, action: np.ndarray) -> None:
         gas, brake, steer = np.clip(
@@ -84,16 +120,17 @@ class GamepadController:
         self.apply(control)
 
     def reset(self) -> None:
-        """Release controls and request a TrackMania respawn before an episode."""
+        """Release controls and request a TrackMania restart before an episode."""
 
         with self._tap_lock:
             self._cancel_tap_unlocked()
             self._gamepad.reset()
-            self._gamepad.press_button(button=self._RESPAWN_BUTTON)
+            self._gamepad.press_button(button=self._RESTART_BUTTON)
             self._gamepad.update()
             sleep(0.1)
-            self._gamepad.release_button(button=self._RESPAWN_BUTTON)
+            self._gamepad.release_button(button=self._RESTART_BUTTON)
             self._gamepad.update()
+        self.consume_collision()
 
     def close(self) -> None:
         with self._tap_lock:
@@ -113,6 +150,9 @@ class RecordingController:
 
     def apply_discrete(self, action: np.ndarray) -> None:
         self.apply(action)
+
+    def consume_collision(self) -> bool:
+        return False
 
     def reset(self) -> None:
         self.actions.clear()

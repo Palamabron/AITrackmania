@@ -5,6 +5,8 @@ from __future__ import annotations
 import os
 from collections.abc import Mapping
 from pathlib import Path
+from queue import Full, Queue
+from threading import Thread
 from typing import Any
 
 
@@ -72,7 +74,7 @@ def _load_wandb_key_from_dotenv(run_dir: str | None) -> Path | None:
 
 
 class WandbTracker:
-    """Minimal neutral-event adapter for the optional ``tmrl[wandb]`` extra."""
+    """Asynchronous neutral-event adapter for the optional ``tmrl[wandb]`` extra."""
 
     def __init__(
         self,
@@ -81,7 +83,10 @@ class WandbTracker:
         run_dir: str | None = None,
         run_id: str | None = None,
         config: Mapping[str, Any] | None = None,
+        queue_size: int = 10_000,
     ) -> None:
+        if queue_size < 1:
+            raise ValueError("W&B queue_size must be positive")
         _load_wandb_key_from_dotenv(run_dir)
         try:
             import wandb
@@ -105,12 +110,56 @@ class WandbTracker:
         url = getattr(run, "url", None)
         if url:
             print(f"Weights & Biases run: {url}", flush=True)
+        self._events: Queue[dict[str, Any] | None] = Queue(maxsize=queue_size)
+        self._enabled = True
+        self._dropped_events = 0
+        self._worker = Thread(target=self._send_events, name="tmrl-wandb", daemon=True)
+        self._worker.start()
 
     def log(self, event: str, payload: Mapping[str, Any], *, step: int | None = None) -> None:
-        self._wandb.log(
-            {_wandb_metric_name(event, key): value for key, value in payload.items()},
-            step=step,
-        )
+        del step
+        if not self._enabled:
+            return
+        values = {_wandb_metric_name(event, key): value for key, value in payload.items()}
+        try:
+            self._events.put_nowait(values)
+        except Full:
+            self._dropped_events += 1
+            if self._dropped_events == 1:
+                print(
+                    "W&B event queue is full; dropping remote metrics until it recovers.",
+                    flush=True,
+                )
 
     def close(self) -> None:
+        try:
+            self._events.put_nowait(None)
+        except Full:
+            print(
+                "W&B event queue did not drain before shutdown; remote metrics may be incomplete.",
+                flush=True,
+            )
+            return
+        self._worker.join(timeout=5.0)
+        if self._worker.is_alive():
+            print(
+                "W&B worker did not stop within 5 seconds; leaving it to process shutdown.",
+                flush=True,
+            )
+            return
         self._wandb.finish(exit_code=0)
+
+    def _send_events(self) -> None:
+        while True:
+            values = self._events.get()
+            try:
+                if values is None:
+                    return
+                if not self._enabled:
+                    continue
+                self._wandb.log(values)
+            except Exception as exc:
+                self._enabled = False
+                print(f"W&B logging disabled after {type(exc).__name__}: {exc}", flush=True)
+            finally:
+                self._events.task_done()

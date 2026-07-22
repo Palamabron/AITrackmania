@@ -76,13 +76,24 @@ class _IQNPolicy:
                 exploratory = (
                     torch.rand(action.shape, device=self.device) < self.exploration_epsilon
                 )
-                random_actions = torch.randint(
-                    q_values.shape[-1], action.shape, device=self.device, dtype=action.dtype
-                )
+                random_actions = self._exploration_actions(q_values, action)
                 action = torch.where(exploratory, random_actions, action)
         if is_single_observation:
             return int(action.item())
         return action.cpu().numpy()
+
+    def _exploration_actions(self, q_values: torch.Tensor, actions: torch.Tensor) -> torch.Tensor:
+        weights = getattr(self.model, "exploration_action_weights", None)
+        if isinstance(weights, torch.Tensor) and weights.shape == (q_values.shape[-1],):
+            sampled = torch.multinomial(
+                weights.to(device=self.device, dtype=torch.float32),
+                actions.numel(),
+                replacement=True,
+            )
+            return sampled.reshape(actions.shape).to(actions.dtype)
+        return torch.randint(
+            q_values.shape[-1], actions.shape, device=self.device, dtype=actions.dtype
+        )
 
     def export_state(self) -> Mapping[str, Any]:
         return dict(self.model.state_dict())

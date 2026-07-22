@@ -40,6 +40,11 @@ class TrackGeometryEncoder(nn.Module):
             nn.Conv1d(hidden_dim // 2, hidden_dim, kernel_size=3, padding=1),
             nn.SiLU(),
         )
+        self.track_attention = nn.Sequential(
+            nn.Conv1d(hidden_dim, hidden_dim // 2, kernel_size=1),
+            nn.SiLU(),
+            nn.Conv1d(hidden_dim // 2, 1, kernel_size=1),
+        )
         self.telemetry = (
             nn.Sequential(nn.Linear(telemetry_dim, hidden_dim), nn.LayerNorm(hidden_dim), nn.SiLU())
             if telemetry_dim
@@ -64,13 +69,19 @@ class TrackGeometryEncoder(nn.Module):
             )
         track = torch.nan_to_num(track.float())
         encoded_track = self.track(track)
+        attention_logits = self.track_attention(encoded_track).squeeze(1)
         if mask is not None:
             if mask.shape != (track.shape[0], track.shape[2]):
                 raise ValueError("track mask must have shape (batch, points)")
-            valid = mask.to(encoded_track.dtype).unsqueeze(1)
-            track_features = (encoded_track * valid).sum(dim=2) / valid.sum(dim=2).clamp_min(1.0)
-        else:
-            track_features = encoded_track.mean(dim=2)
+            valid = mask.to(dtype=torch.bool)
+            attention_logits = attention_logits.masked_fill(
+                ~valid, torch.finfo(attention_logits.dtype).min
+            )
+        attention = torch.softmax(attention_logits, dim=1)
+        if mask is not None:
+            attention = attention * valid.to(attention.dtype)
+            attention = attention / attention.sum(dim=1, keepdim=True).clamp_min(1e-8)
+        track_features = (encoded_track * attention.unsqueeze(1)).sum(dim=2)
         features = [track_features]
         if self.telemetry is not None:
             if telemetry is None or telemetry.shape != (track.shape[0], self.telemetry_dim):

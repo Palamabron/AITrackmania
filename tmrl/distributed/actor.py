@@ -131,6 +131,11 @@ class ActorRuntime:
     def run_forever(self) -> None:
         pipeline, environment_factory = self._components()
         initial = self._register()
+        print(
+            f"Actor {self.actor_id} (pid={os.getpid()}) registered with learner at "
+            f"{self.target}; collecting rollouts (epsilon={float(initial['epsilon']):.4f})",
+            flush=True,
+        )
         self._policy_ref = _PolicyReference(self._new_policy(), float(initial["epsilon"]), -1)
         self._refresh_policy()
         for path in sorted(self.spool_dir.glob("*.rollout")):
@@ -218,7 +223,11 @@ class ActorRuntime:
                     grpc.StatusCode.PERMISSION_DENIED,
                 }:
                     raise RuntimeError(f"actor registration rejected: {exc.details()}") from exc
-                print(f"Actor {self.actor_id}: waiting for learner at {self.target}...", flush=True)
+                print(
+                    f"Actor {self.actor_id} (pid={os.getpid()}): learner not ready at "
+                    f"{self.target}; retrying...",
+                    flush=True,
+                )
                 self.stop.wait(1.0)
         raise RuntimeError("actor stopped before registering")
 
@@ -233,9 +242,14 @@ class ActorRuntime:
                 self._evaluate(environment, pipeline)
             observation, _ = environment.reset(seed=self._actor_seed() + episode)
             total_reward = 0.0
+            time_reward = 0.0
+            pbrs_reward = 0.0
             progress_reward = 0.0
-            speed_reward = 0.0
+            projected_velocity_reward = 0.0
+            steering_delta_reward = 0.0
             terminal_reward = 0.0
+            velocity_ratio_sum = 0.0
+            velocity_ratio_max = 0.0
             final_info: Mapping[str, Any] = {}
             episode_id = f"{self.actor_id}/{self.session_id}/{episode:08d}"
             for step in range(self.spec.training.max_episode_steps):
@@ -259,9 +273,15 @@ class ActorRuntime:
                 )
                 observation = next_observation
                 total_reward += float(reward)
+                time_reward += float(info.get("reward_time", 0.0))
+                pbrs_reward += float(info.get("reward_pbrs", 0.0))
                 progress_reward += float(info.get("reward_progress", 0.0))
-                speed_reward += float(info.get("reward_speed", 0.0))
+                projected_velocity_reward += float(info.get("reward_projected_velocity", 0.0))
+                steering_delta_reward += float(info.get("reward_steering_delta", 0.0))
                 terminal_reward += float(info.get("reward_terminal", 0.0))
+                velocity_ratio = float(info.get("projected_velocity_ratio", 0.0))
+                velocity_ratio_sum += velocity_ratio
+                velocity_ratio_max = max(velocity_ratio_max, velocity_ratio)
                 final_info = info
                 if self._should_flush(transitions, chunk_started):
                     self._spool(transitions, summaries, version)
@@ -271,9 +291,14 @@ class ActorRuntime:
                     break
             summary_info = {
                 **dict(final_info),
+                "reward_time": time_reward,
+                "reward_pbrs": pbrs_reward,
                 "reward_progress": progress_reward,
-                "reward_speed": speed_reward,
+                "reward_projected_velocity": projected_velocity_reward,
+                "reward_steering_delta": steering_delta_reward,
                 "reward_terminal": terminal_reward,
+                "projected_velocity_ratio_mean": velocity_ratio_sum / (step + 1),
+                "projected_velocity_ratio_max": velocity_ratio_max,
                 "actor_epsilon": epsilon,
                 "policy_version": version,
             }
@@ -285,23 +310,44 @@ class ActorRuntime:
             chunk_started = monotonic()
 
     def _evaluate(self, environment: Any, pipeline: Any) -> None:
+        suite = getattr(self.spec, "evaluation", None)
+        trials = int(getattr(suite, "trials_per_map", 1))
+        policy, _, version = self._policy()
+        summaries = [
+            self._evaluate_episode(environment, pipeline, policy, version) for _ in range(trials)
+        ]
+        self._spool([], [], version, evaluations=summaries)
+
+    def _evaluate_episode(
+        self, environment: Any, pipeline: Any, policy: Any, version: int
+    ) -> dict[str, Any]:
         observation, _ = environment.reset(
             seed=self._actor_seed() + 1_000_000 + self._evaluation_index
         )
         total_reward = 0.0
+        time_reward = 0.0
+        pbrs_reward = 0.0
         progress_reward = 0.0
-        speed_reward = 0.0
+        projected_velocity_reward = 0.0
+        steering_delta_reward = 0.0
         terminal_reward = 0.0
+        velocity_ratio_sum = 0.0
+        velocity_ratio_max = 0.0
         final_info: Mapping[str, Any] = {}
-        policy, _, version = self._policy()
         for _step in range(self.spec.training.max_episode_steps):
             prepared = pipeline.transform_observation(observation)
             action = policy.act(prepared, deterministic=True)
             observation, reward, terminated, truncated, info = environment.step(action)
             total_reward += float(reward)
+            time_reward += float(info.get("reward_time", 0.0))
+            pbrs_reward += float(info.get("reward_pbrs", 0.0))
             progress_reward += float(info.get("reward_progress", 0.0))
-            speed_reward += float(info.get("reward_speed", 0.0))
+            projected_velocity_reward += float(info.get("reward_projected_velocity", 0.0))
+            steering_delta_reward += float(info.get("reward_steering_delta", 0.0))
             terminal_reward += float(info.get("reward_terminal", 0.0))
+            velocity_ratio = float(info.get("projected_velocity_ratio", 0.0))
+            velocity_ratio_sum += velocity_ratio
+            velocity_ratio_max = max(velocity_ratio_max, velocity_ratio)
             final_info = info
             if terminated or truncated or self.stop.is_set():
                 break
@@ -309,17 +355,22 @@ class ActorRuntime:
             total_reward,
             {
                 **dict(final_info),
+                "reward_time": time_reward,
+                "reward_pbrs": pbrs_reward,
                 "reward_progress": progress_reward,
-                "reward_speed": speed_reward,
+                "reward_projected_velocity": projected_velocity_reward,
+                "reward_steering_delta": steering_delta_reward,
                 "reward_terminal": terminal_reward,
+                "projected_velocity_ratio_mean": velocity_ratio_sum / (_step + 1),
+                "projected_velocity_ratio_max": velocity_ratio_max,
                 "actor_epsilon": 0.0,
                 "policy_version": version,
             },
             _step + 1,
         )
         summary["deterministic"] = 1.0
-        self._spool([], [], version, evaluations=[summary])
         self._evaluation_index += 1
+        return summary
 
     def _should_flush(self, transitions: list[Transition], started: float) -> bool:
         return len(transitions) >= self.spec.distributed.rollout_chunk_transitions or (
@@ -334,9 +385,17 @@ class ActorRuntime:
         return {
             "return": reward,
             "reward_per_transition": reward / transitions,
+            "reward/time": float(info.get("reward_time", 0.0)),
+            "reward/pbrs": float(info.get("reward_pbrs", 0.0)),
             "reward/progress": float(info.get("reward_progress", 0.0)),
-            "reward/speed": float(info.get("reward_speed", 0.0)),
+            "reward/projected_velocity": float(info.get("reward_projected_velocity", 0.0)),
+            "reward/steering_delta": float(info.get("reward_steering_delta", 0.0)),
             "reward/terminal": float(info.get("reward_terminal", 0.0)),
+            "potential/progress": float(info.get("potential_progress", 0.0)),
+            "velocity/projected_mps": float(info.get("projected_velocity_mps", 0.0)),
+            "velocity/ratio": float(info.get("projected_velocity_ratio", 0.0)),
+            "velocity/ratio_mean": float(info.get("projected_velocity_ratio_mean", 0.0)),
+            "velocity/ratio_max": float(info.get("projected_velocity_ratio_max", 0.0)),
             "steps": transitions,
             "progress_pct": float(info.get("progress_pct", 0.0)),
             "progress_m": float(info.get("progress_m", 0.0)),
@@ -480,7 +539,13 @@ class ActorRuntime:
         return self._policy_ref.get()
 
     def _spool_bytes(self) -> int:
-        return sum(path.stat().st_size for path in self.spool_dir.glob("*.rollout"))
+        total = 0
+        for path in self.spool_dir.glob("*.rollout"):
+            try:
+                total += path.stat().st_size
+            except FileNotFoundError:
+                continue
+        return total
 
     def _next_sequence(self) -> int:
         existing = [

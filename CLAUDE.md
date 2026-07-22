@@ -72,6 +72,9 @@ All built-ins and generated user components need deterministic contract tests. T
 
 - Never hardcode secrets. Use environment variables or a gitignored `.env`.
 - Never log secrets, tokens, or PII.
+- Before invoking an external integration, inspect `.env` variable names only; this workspace may
+  provide `GEMINI_API_KEY`, `TMRL_PASSWORD`, and `WANDB_API_KEY`. Never read, print, or record
+  their values in code, rules, logs, or chat.
 
 ### Do Not Do
 

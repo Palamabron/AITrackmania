@@ -9,6 +9,7 @@ import os
 import re
 import secrets
 import signal
+import sys
 from pathlib import Path
 from time import sleep, time_ns
 from typing import Any
@@ -73,6 +74,23 @@ def _required_token(config: Path) -> str:
     return token
 
 
+def _spawn_executable() -> str:
+    virtual_env = os.environ.get("VIRTUAL_ENV")
+    if not virtual_env:
+        return sys.executable
+    scripts_dir = "Scripts" if os.name == "nt" else "bin"
+    executable_name = "python.exe" if os.name == "nt" else "python"
+    candidate = Path(virtual_env) / scripts_dir / executable_name
+    return str(candidate) if candidate.is_file() else sys.executable
+
+
+def _spawn_context() -> multiprocessing.context.SpawnContext:
+    """Start Windows children with the active virtual environment's interpreter."""
+
+    multiprocessing.set_executable(_spawn_executable())
+    return multiprocessing.get_context("spawn")
+
+
 def _train(args: argparse.Namespace) -> None:
     """Launch a spawn-safe local learner and actor pair."""
 
@@ -81,7 +99,7 @@ def _train(args: argparse.Namespace) -> None:
     token = secrets.token_urlsafe(32)
     target = f"127.0.0.1:{spec.distributed.port}"
     bind = target
-    context = multiprocessing.get_context("spawn")
+    context = _spawn_context()
     shutdown = context.Event()
     learner = context.Process(
         target=_learner_process,
@@ -90,6 +108,7 @@ def _train(args: argparse.Namespace) -> None:
             bind,
             token,
             str(args.checkpoint) if getattr(args, "checkpoint", None) else None,
+            bool(getattr(args, "reset_replay", False)),
             shutdown,
         ),
         name="tmrl-learner",
@@ -101,9 +120,17 @@ def _train(args: argparse.Namespace) -> None:
     )
     learner.start()
     actor.start()
+    print("Local async training launched:", flush=True)
     print(
-        f"Local async training launched: learner={learner.pid}, actor={actor.pid}, "
-        f"endpoint={target}",
+        f"  learner_pid={learner.pid}  gradient updates, replay, checkpoints",
+        flush=True,
+    )
+    print(
+        f"  actor_pid={actor.pid}      TrackMania rollouts -> learner",
+        flush=True,
+    )
+    print(
+        f"  endpoint={target}  gRPC; actor connects here",
         flush=True,
     )
     stopped_by_user = False
@@ -114,7 +141,8 @@ def _train(args: argparse.Namespace) -> None:
         actor_finished_first = not actor.is_alive() and learner.is_alive()
         if actor_finished_first:
             print(
-                f"Actor exited first (code={actor.exitcode}); stopping learner gracefully...",
+                f"Actor process (pid={actor.pid}) exited first with code={actor.exitcode}; "
+                f"stopping learner (pid={learner.pid}) gracefully...",
                 flush=True,
             )
     except KeyboardInterrupt:
@@ -169,6 +197,7 @@ def _learner_process(
     bind: str,
     token: str,
     resume_checkpoint: str | None = None,
+    reset_replay: bool = False,
     external_stop: Any | None = None,
 ) -> None:
     if external_stop is not None:
@@ -177,7 +206,14 @@ def _learner_process(
         from tmrl.distributed.coordinator import learner_process_entry
     except ModuleNotFoundError as exc:
         raise RuntimeError("Install tmrl[distributed] to use distributed training") from exc
-    learner_process_entry(config_path, bind, token, resume_checkpoint, external_stop)
+    learner_process_entry(
+        config_path,
+        bind,
+        token,
+        resume_checkpoint,
+        reset_replay,
+        external_stop,
+    )
 
 
 def _actor_process(
@@ -426,6 +462,11 @@ def entrypoint(argv: list[str] | None = None) -> None:
     resume = commands.add_parser("resume", help="resume a local asynchronous training run")
     resume.add_argument("config", type=Path)
     resume.add_argument("checkpoint", type=Path)
+    resume.add_argument(
+        "--reset-replay",
+        action="store_true",
+        help="restore learner state while starting with an empty replay and sampler",
+    )
     resume.set_defaults(handler=_train)
     learner = commands.add_parser("learner", help="run a distributed coordinator/learner")
     learner.add_argument("config", type=Path)

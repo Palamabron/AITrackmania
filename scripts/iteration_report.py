@@ -1,14 +1,10 @@
 #!/usr/bin/env python3
-"""Generate a comprehensive iteration report from local analysis data.
-
-Run after every autoresearch iteration (or after fetch_analysis.py) to get a
-standardized summary: leaderboard, per-experiment health cards, aggregate
-patterns, and actionable next-step suggestions.
+"""Render health reports from normalized W&B analysis artifacts.
 
 Usage:
-    python scripts/iteration_report.py
-    python scripts/iteration_report.py --format json
-    python scripts/iteration_report.py --top 5
+    uv run python scripts/iteration_report.py
+    uv run python scripts/iteration_report.py --format json --out reports/wandb.json
+    uv run python scripts/iteration_report.py --format markdown
 """
 
 from __future__ import annotations
@@ -16,444 +12,388 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from collections import Counter, defaultdict
+from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 EXPERIMENTS_DIR = REPO_ROOT / "experiments"
 ANALYSIS_DIR = EXPERIMENTS_DIR / "analysis"
-REGISTRY_PATH = EXPERIMENTS_DIR / "registry.jsonl"
-BASELINE_PATH = EXPERIMENTS_DIR / "baseline.yaml"
-TARGET_FINISH_S = 36.0
+SUPPORTED_SCHEMA_VERSION = "2.0"
 
 
-def _get(d: dict, *keys: str, default: Any = None) -> Any:
-    for k in keys:
-        if not isinstance(d, dict):
-            return default
-        d = d.get(k, default)
-    return d
-
-
-def _load_analyses() -> dict[str, dict]:
-    result = {}
-    for f in sorted(ANALYSIS_DIR.glob("*.json")):
+def _load_analyses() -> dict[str, dict[str, Any]]:
+    analyses: dict[str, dict[str, Any]] = {}
+    unsupported_count = 0
+    for path in sorted(ANALYSIS_DIR.glob("*.json")):
         try:
-            data = json.loads(f.read_text(encoding="utf-8"))
-            result[data.get("exp_id", f.stem)] = data
-        except Exception:
-            pass
-    return result
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            print(f"WARNING: ignoring invalid JSON: {path}", file=sys.stderr)
+            continue
+        if not isinstance(data, dict) or data.get("schema_version") != SUPPORTED_SCHEMA_VERSION:
+            unsupported_count += 1
+            continue
+        exp_id = data.get("exp_id")
+        if not isinstance(exp_id, str) or not exp_id:
+            print(f"WARNING: ignoring analysis without exp_id: {path}", file=sys.stderr)
+            continue
+        analyses[exp_id] = data
+    if unsupported_count:
+        print(
+            f"WARNING: ignored {unsupported_count} legacy analysis artifacts; "
+            "refresh them with fetch_analysis.py to include them.",
+            file=sys.stderr,
+        )
+    return analyses
 
 
-def _load_registry() -> list[dict]:
-    entries = []
-    if REGISTRY_PATH.exists():
-        for line in REGISTRY_PATH.read_text(encoding="utf-8").strip().splitlines():
-            if line.strip():
-                entries.append(json.loads(line))
-    return entries
+def _metric_matches(name: str, keywords: Iterable[str]) -> bool:
+    lower_name = name.lower()
+    return all(keyword in lower_name for keyword in keywords)
 
 
-def _flatten_overrides(overrides: dict, prefix: str = "") -> list[tuple[str, Any]]:
-    items = []
-    for k, v in overrides.items():
-        full_key = f"{prefix}.{k}" if prefix else k
-        if isinstance(v, dict):
-            items.extend(_flatten_overrides(v, full_key))
-        else:
-            items.append((full_key, v))
-    return items
-
-
-# Report sections
-
-
-def section_leaderboard(analyses: dict[str, dict], top_n: int = 0) -> str:
-    ranked = []
-    for exp_id, data in analyses.items():
-        ft = data.get("best_finish_time_s")
-        if ft and ft > 0:
-            ranked.append((exp_id, ft, data))
-    ranked.sort(key=lambda x: x[1])
-
-    dnf = [
-        (eid, d)
-        for eid, d in analyses.items()
-        if not d.get("best_finish_time_s") or d["best_finish_time_s"] <= 0
+def _first_metric(
+    metrics: Mapping[str, Any], *keywords: str
+) -> tuple[str, Mapping[str, Any]] | None:
+    matches = [
+        (name, values)
+        for name, values in metrics.items()
+        if isinstance(values, Mapping) and _metric_matches(name, keywords)
     ]
-
-    lines = ["## Leaderboard", ""]
-    lines.append(
-        f"Target: {TARGET_FINISH_S}s | Experiments with finishes: {len(ranked)}/{len(analyses)}"
-    )
-    lines.append("")
-    lines.append(
-        f"{'#':<4} {'Experiment':<42} {'Best':>8} {'WrkBest':>8} {'Wrk%':>6} "
-        f"{'LossMed':>8} {'RetTrn':>8} {'Trend':>10}"
-    )
-    lines.append(
-        f"{'-' * 4} {'-' * 42} {'-' * 8} {'-' * 8} {'-' * 6} {'-' * 8} {'-' * 8} {'-' * 10}"
-    )
-
-    show = ranked[:top_n] if top_n > 0 else ranked
-    for i, (eid, ft, data) in enumerate(show, 1):
-        wb = _get(data, "worker", "best_finish_time_s")
-        wb_s = f"{wb:.1f}s" if wb else "-"
-        wr = _get(data, "worker", "finish_rate", default=0)
-        wr_s = f"{wr * 100:.0f}%"
-        lm = _get(data, "metrics", "loss/iqn_loss", "median")
-        lm_s = f"{lm:.1f}" if lm is not None else "-"
-        rt = _get(data, "metrics", "metrics/return_train", "last")
-        rt_s = f"{rt:.0f}" if rt is not None else "-"
-        trend = _get(data, "training_trends", "metrics/return_train", "direction", default="-")
-        lines.append(
-            f"{i:<4} {eid:<42} {ft:>7.1f}s {wb_s:>8} {wr_s:>6} {lm_s:>8} {rt_s:>8} {trend:>10}"
-        )
-
-    if dnf:
-        lines.append("")
-        lines.append(f"DNF ({len(dnf)} experiments):")
-        for eid, data in sorted(dnf, key=lambda x: x[0]):
-            wc = _get(data, "worker", "finish_count", default=0)
-            wb = _get(data, "worker", "best_finish_time_s")
-            note = ""
-            if wc > 0 and wb:
-                note = f" (worker: {wc} finishes, best {wb:.1f}s)"
-            lines.append(f"  - {eid}{note}")
-
-    if ranked:
-        lines.append("")
-        gap = ranked[0][1] - TARGET_FINISH_S
-        lines.append(
-            f"Gap to target: {gap:+.1f}s (best={ranked[0][1]:.2f}s, target={TARGET_FINISH_S}s)"
-        )
-
-    return "\n".join(lines)
+    return sorted(matches, key=lambda item: item[0])[0] if matches else None
 
 
-def section_health_cards(analyses: dict[str, dict]) -> str:
-    lines = ["## Per-Experiment Health Cards", ""]
-
-    for exp_id in sorted(analyses.keys()):
-        data = analyses[exp_id]
-        ft = data.get("best_finish_time_s")
-        ft_s = f"{ft:.2f}s" if ft and ft > 0 else "DNF"
-
-        loss_med = _get(data, "metrics", "loss/iqn_loss", "median")
-        loss_last = _get(data, "metrics", "loss/iqn_loss", "last")
-        max_q = _get(data, "metrics", "q/max_q", "last")
-        mean_q = _get(data, "metrics", "q/mean_q", "last")
-        eps = _get(data, "metrics", "exploration/epsilon", "last")
-        grad_norm = _get(data, "metrics", "debug/grad_norm", "median")
-        pre_clip = _get(data, "metrics", "debug/grad_norm_pre_clip", "mean")
-        ret_train = _get(data, "metrics", "metrics/return_train", "last")
-        wr = _get(data, "worker", "finish_rate", default=0)
-        wc = _get(data, "worker", "finish_count", default=0)
-
-        # Health flags
-        flags = []
-        if loss_last and loss_med and loss_last > loss_med * 2:
-            flags.append("LOSS_SPIKE")
-        if max_q and max_q > 100:
-            flags.append("Q_EXPLODING")
-        if pre_clip and grad_norm and grad_norm > 0:
-            clip_ratio = pre_clip / grad_norm
-            if clip_ratio > 50:
-                flags.append(f"SEVERE_CLIP({clip_ratio:.0f}x)")
-            elif clip_ratio > 10:
-                flags.append(f"HEAVY_CLIP({clip_ratio:.0f}x)")
-        if ft and ft > 0 and ft > TARGET_FINISH_S * 2.5:
-            flags.append("FAR_FROM_TARGET")
-
-        flag_str = " | ".join(flags) if flags else "OK"
-
-        lines.append(f"### {exp_id}")
-        lines.append(
-            f"  Finish: {ft_s} | Worker: {wc} finishes ({wr * 100:.0f}%) | Flags: {flag_str}"
-        )
-        lm_s = f"{loss_med:.1f}" if loss_med else "0"
-        ll_s = f"{loss_last:.1f}" if loss_last else "0"
-        mq_s = f"{max_q:.1f}" if max_q else "0"
-        mnq_s = f"{mean_q:.1f}" if mean_q else "0"
-        eps_s = f"{eps:.3f}" if eps else "0"
-        lines.append(f"  Loss: med={lm_s}, last={ll_s} | Q: max={mq_s}, mean={mnq_s} | eps={eps_s}")
-        if pre_clip:
-            if grad_norm and grad_norm > 0:
-                lines.append(
-                    f"  Grad: norm={grad_norm:.2f}, pre_clip_mean={pre_clip:.1f}, "
-                    f"clip_ratio={pre_clip / grad_norm:.0f}x"
-                )
-            else:
-                lines.append(f"  Grad: pre_clip_mean={pre_clip:.1f}")
-        rt_s = f"{ret_train:.0f}" if ret_train else "0"
-        lines.append(f"  Return(train): {rt_s}")
-
-        trends = data.get("training_trends", {})
-        if trends:
-            t_parts = [f"{k.split('/')[-1]}={v.get('direction', '-')}" for k, v in trends.items()]
-            lines.append(f"  Trends: {', '.join(t_parts)}")
-        lines.append("")
-
-    return "\n".join(lines)
+def _number(value: Any) -> float | None:
+    return float(value) if isinstance(value, int | float) and not isinstance(value, bool) else None
 
 
-def section_patterns(analyses: dict[str, dict], registry: list[dict]) -> str:
-    lines = ["## Aggregate Patterns", ""]
-
-    reg_map = {e["exp_id"]: e for e in registry}
-
-    # Parameter impact analysis
-    param_results: dict[str, list[tuple[Any, float | None]]] = defaultdict(list)
-    for exp_id, data in analyses.items():
-        entry = reg_map.get(exp_id, {})
-        overrides = entry.get("config_overrides", {})
-        ft = data.get("best_finish_time_s")
-        for key, val in _flatten_overrides(overrides):
-            param_results[key].append((val, ft))
-
-    if param_results:
-        lines.append("### Parameter Impact")
-        lines.append("")
-        for param, results in sorted(param_results.items()):
-            if len(results) < 1:
-                continue
-            finished = [(v, t) for v, t in results if t and t > 0]
-            dnf = [(v, t) for v, t in results if not t or t <= 0]
-            parts = []
-            for val, ft in sorted(finished, key=lambda x: x[1]):
-                parts.append(f"  {val} -> {ft:.1f}s")
-            for val, _ in dnf:
-                parts.append(f"  {val} -> DNF")
-            if parts:
-                lines.append(f"  {param}:")
-                for p in parts:
-                    lines.append(f"    {p}")
-        lines.append("")
-
-    # Gradient clipping severity
-    clip_data = []
-    for exp_id, data in analyses.items():
-        pre_clip = _get(data, "metrics", "debug/grad_norm_pre_clip", "mean")
-        grad_norm = _get(data, "metrics", "debug/grad_norm", "median")
-        if pre_clip and grad_norm and grad_norm > 0:
-            clip_data.append((exp_id, pre_clip / grad_norm, pre_clip))
-    if clip_data:
-        clip_data.sort(key=lambda x: x[1], reverse=True)
-        lines.append("### Gradient Clipping Severity (pre_clip / clip_limit)")
-        lines.append("")
-        for eid, ratio, pre in clip_data[:10]:
-            lines.append(f"  {eid:<42} {ratio:>6.0f}x  (pre_clip_mean={pre:.1f})")
-        lines.append("")
-
-    # Loss vs finish time correlation
-    loss_ft_pairs = []
-    for exp_id, data in analyses.items():
-        ft = data.get("best_finish_time_s")
-        lm = _get(data, "metrics", "loss/iqn_loss", "median")
-        if ft and ft > 0 and lm is not None:
-            loss_ft_pairs.append((exp_id, lm, ft))
-    if loss_ft_pairs:
-        lines.append("### Loss vs Finish Time")
-        lines.append("")
-        loss_ft_pairs.sort(key=lambda x: x[2])
-        for eid, lm, ft in loss_ft_pairs:
-            lines.append(f"  {eid:<42} loss_med={lm:>6.1f}  finish={ft:>7.1f}s")
-        lines.append("")
-
-    # Termination patterns
-    term_counts: Counter = Counter()
-    for data in analyses.values():
-        tc = _get(data, "worker", "termination_counts", default={})
-        for reason, count in tc.items():
-            if isinstance(count, (int, float)):
-                term_counts[reason] += int(count)
-    if term_counts:
-        total = sum(term_counts.values())
-        lines.append("### Termination Reasons (aggregate)")
-        lines.append("")
-        for reason, count in term_counts.most_common():
-            pct = count / total * 100 if total > 0 else 0
-            lines.append(f"  {reason:<30} {count:>5} ({pct:.1f}%)")
-        lines.append("")
-
-    return "\n".join(lines)
+def _metric(metrics: Mapping[str, Any], *names: str) -> tuple[str, Mapping[str, Any]] | None:
+    for name in names:
+        values = metrics.get(name)
+        if isinstance(values, Mapping):
+            return name, values
+    return None
 
 
-def section_suggestions(analyses: dict[str, dict], registry: list[dict]) -> str:
-    lines = ["## Suggestions for Next Iteration", ""]
-
-    ranked = sorted(
-        [(eid, d.get("best_finish_time_s", 0) or 0, d) for eid, d in analyses.items()],
-        key=lambda x: x[1] if x[1] > 0 else float("inf"),
-    )
-    best_finished = [(eid, ft, d) for eid, ft, d in ranked if ft > 0]
-
-    if not best_finished:
-        lines.append(
-            "- **Critical:** No experiments have finished the track. "
-            "Consider reducing track difficulty or increasing training time."
-        )
-        return "\n".join(lines)
-
-    best_id, best_ft, _best_data = best_finished[0]
-
-    if best_ft > TARGET_FINISH_S * 2:
-        lines.append(
-            f"- **Gap is large** ({best_ft:.1f}s vs {TARGET_FINISH_S}s target). "
-            f"Focus on getting consistent finishes before optimizing time."
-        )
-    elif best_ft > TARGET_FINISH_S * 1.3:
-        lines.append(
-            f"- **Approaching target** ({best_ft:.1f}s vs {TARGET_FINISH_S}s). "
-            f"Fine-tune around the best config ({best_id})."
-        )
-
-    # Check if any pattern is clear
-    all_severe_clip = all(
-        _get(d, "metrics", "debug/grad_norm_pre_clip", "mean", default=0)
-        / max(_get(d, "metrics", "debug/grad_norm", "median", default=1), 0.01)
-        > 20
-        for d in analyses.values()
-        if _get(d, "metrics", "debug/grad_norm_pre_clip", "mean") is not None
-    )
-    if all_severe_clip:
-        lines.append(
-            "- **Structural gradient issue:** ALL experiments show severe pre-clip/clip "
-            "ratios (>20x). This is likely a model architecture or loss landscape issue, "
-            "not fixable by clip tuning alone. Consider: architecture changes, "
-            "learning rate warmup, gradient penalty, or spectral normalization."
-        )
-
-    # Check return vs baseline for best experiments
-    for eid, ft, data in best_finished[:3]:
-        vs = data.get("vs_baseline", {})
-        ret_delta = _get(vs, "metrics/return_train", "pct", default=0)
-        if ret_delta > 0:
-            lines.append(
-                f"- **{eid}** shows +{ret_delta:.0f}% return over baseline "
-                f"(finish={ft:.1f}s). Build on this config."
-            )
-
-    # Check what hyperparameters the best experiments share
-    reg_map = {e["exp_id"]: e for e in registry}
-    best_overrides: dict[str, list] = defaultdict(list)
-    for eid, ft, _ in best_finished[:3]:
-        entry = reg_map.get(eid, {})
-        for key, val in _flatten_overrides(entry.get("config_overrides", {})):
-            best_overrides[key].append((val, ft))
-    if best_overrides:
-        lines.append("")
-        lines.append("Config patterns in top-3 finishers:")
-        for key, vals in sorted(best_overrides.items()):
-            val_str = ", ".join(f"{v}({ft:.0f}s)" for v, ft in vals)
-            lines.append(f"  - {key}: {val_str}")
-
-    # Suggest untried directions
-    lines.append("")
-    lines.append("Potentially untried directions:")
-    tried_params = set()
-    for entry in registry:
-        for key, _ in _flatten_overrides(entry.get("config_overrides", {})):
-            tried_params.add(key)
-
-    suggestions = {
-        "training.batch_size": "Try larger batch sizes (1024+) if memory allows",
-        "algorithm.iqn_epsilon_decay_steps": "Faster epsilon decay for quicker exploitation",
-        "environment.end_of_track_reward": "Higher finish bonus to incentivize completion",
-        "environment.reward.speed_reward_weight": "Tune speed reward to balance progress vs safety",
-        "algorithm.iqn_munchausen_enabled": "Munchausen RL for implicit policy regularization",
-        "model.residual_mlp_hidden_dim": "Model capacity changes",
-        "algorithm.reward_normalize_scale": "Reward scaling to tame gradients",
-    }
-    for param, desc in suggestions.items():
-        if param not in tried_params:
-            lines.append(f"  - {param}: {desc}")
-
-    return "\n".join(lines)
+def _metric_rows(
+    metrics: Mapping[str, Any], exact: tuple[tuple[str, ...], ...], prefixes: tuple[str, ...]
+) -> list[dict[str, Any]]:
+    selected: dict[str, Mapping[str, Any]] = {}
+    for names in exact:
+        match = _metric(metrics, *names)
+        if match is not None:
+            selected[match[0]] = match[1]
+    for name, values in metrics.items():
+        if isinstance(values, Mapping) and name.startswith(prefixes):
+            selected[name] = values
+    return [_metric_row(name, values) for name, values in sorted(selected.items())]
 
 
-def build_report(analyses: dict[str, dict], registry: list[dict], top_n: int = 0) -> str:
-    parts = [
-        "# Autoresearch Iteration Report",
-        f"Generated: {__import__('datetime').datetime.now().isoformat()}",
-        f"Total experiments: {len(analyses)}",
-        "",
-        section_leaderboard(analyses, top_n),
-        "",
-        section_patterns(analyses, registry),
-        "",
-        section_suggestions(analyses, registry),
-        "",
-        section_health_cards(analyses),
-    ]
-    return "\n".join(parts)
-
-
-def build_json_report(analyses: dict[str, dict], registry: list[dict]) -> dict:
-    ranked = sorted(
-        [(eid, d.get("best_finish_time_s", 0) or 0) for eid, d in analyses.items()],
-        key=lambda x: x[1] if x[1] > 0 else float("inf"),
-    )
-
-    experiments = []
-    for eid, data in sorted(analyses.items()):
-        ft = data.get("best_finish_time_s")
-        experiments.append(
-            {
-                "exp_id": eid,
-                "best_finish_time_s": ft if ft and ft > 0 else None,
-                "worker_finish_count": _get(data, "worker", "finish_count", default=0),
-                "worker_finish_rate": _get(data, "worker", "finish_rate", default=0),
-                "worker_best_finish_time_s": _get(data, "worker", "best_finish_time_s"),
-                "loss_median": _get(data, "metrics", "loss/iqn_loss", "median"),
-                "loss_last": _get(data, "metrics", "loss/iqn_loss", "last"),
-                "max_q_last": _get(data, "metrics", "q/max_q", "last"),
-                "epsilon_last": _get(data, "metrics", "exploration/epsilon", "last"),
-                "return_train_last": _get(data, "metrics", "metrics/return_train", "last"),
-                "grad_norm_pre_clip_mean": _get(
-                    data, "metrics", "debug/grad_norm_pre_clip", "mean"
-                ),
-                "training_trends": data.get("training_trends"),
-            }
-        )
-
+def _metric_row(name: str, values: Mapping[str, Any]) -> dict[str, Any]:
     return {
-        "generated_at": __import__("datetime").datetime.now().isoformat(),
-        "target_finish_s": TARGET_FINISH_S,
-        "total_experiments": len(analyses),
-        "experiments_with_finish": sum(1 for _, ft in ranked if ft > 0),
-        "best_overall": ranked[0][0] if ranked and ranked[0][1] > 0 else None,
-        "best_time_s": ranked[0][1] if ranked and ranked[0][1] > 0 else None,
-        "leaderboard": [
-            {"rank": i + 1, "exp_id": eid, "best_time_s": ft}
-            for i, (eid, ft) in enumerate(ranked)
-            if ft > 0
-        ],
+        "name": name,
+        "count": int(values["count"]),
+        "last": _number(values["last"]),
+        "recent_mean": _number(values["recent_mean"]),
+        "prior_mean": _number(values["prior_mean"]),
+        "recent_delta": _number(values["recent_delta"]),
+        "recent_relative_delta": _number(values["recent_relative_delta"]),
+        "p05": _number(values["p05"]),
+        "p95": _number(values["p95"]),
+    }
+
+
+def _section(metrics: Mapping[str, Any], key: str) -> list[dict[str, Any]]:
+    sections = {
+        "episode_health": (
+            (
+                ("episode/return", "episode/reward"),
+                ("episode/progress_pct",),
+                ("episode/finish_rate",),
+                ("episode/best_finish_time_s",),
+                ("episode/finish_time_s",),
+                ("episode/steps", "episode/transitions"),
+                ("episode/race_time_s",),
+                ("episode/exploration_epsilon",),
+            ),
+            ("episode/reward/", "episode/termination/", "episode/velocity/"),
+        ),
+        "learner_stability": (
+            (
+                ("learner/q_mean", "learner/debug/q_selected_mean"),
+                ("learner/q_abs_max",),
+                ("learner/gradient_norm_max", "learner/debug/gradient_norm"),
+                ("learner/clipped_fraction", "learner/debug/gradient_clipped_fraction"),
+                ("learner/debug/td_abs_mean",),
+                ("learner/debug/td_abs_max",),
+            ),
+            ("learner/loss/",),
+        ),
+        "replay_and_schedule": (
+            (
+                ("replay/size",),
+                ("replay/fill_fraction",),
+                ("replay/per_beta",),
+                ("training/update_credit",),
+                ("training/finish_rate",),
+            ),
+            (),
+        ),
+        "throughput_and_backlog": (
+            (
+                ("training/transitions_per_s",),
+                ("training/updates_per_s",),
+                ("training/update_throughput_ratio",),
+                ("training/update_backlog_s",),
+                ("training/rollout_queue_depth",),
+                ("performance/learner_update_s",),
+                ("performance/replay_wait_s",),
+            ),
+            (),
+        ),
+        "actor_health": (
+            (
+                ("actor/ingest_fps",),
+                ("actor/policy_lag_updates",),
+                ("actor/queue_delay_s",),
+                ("actor/rollout_queue_depth",),
+                ("actor/heartbeat/spool_bytes",),
+                ("actor/timeout/silence_s",),
+            ),
+            ("actor/policy/",),
+        ),
+        "evaluation": (
+            (
+                ("eval/suite/eval/finish_rate", "eval/episode/finish_rate"),
+                ("eval/suite/eval/median_finish_time_s",),
+                ("eval/suite/eval/finish_time_s", "eval/episode/finish_time_s"),
+                ("eval/suite/eval/crash_rate",),
+                ("eval/suite/eval/reward", "eval/episode/return"),
+            ),
+            (),
+        ),
+    }
+    exact, prefixes = sections[key]
+    return _metric_rows(metrics, exact, prefixes)
+
+
+def _categories(analysis: Mapping[str, Any]) -> dict[str, dict[str, int]]:
+    categories = analysis.get("categories")
+    if not isinstance(categories, Mapping):
+        return {}
+    return {
+        str(name): {str(value): int(count) for value, count in values.items()}
+        for name, values in categories.items()
+        if isinstance(values, Mapping)
+    }
+
+
+def _alerts(analysis: Mapping[str, Any], sections: Mapping[str, list[dict[str, Any]]]) -> list[str]:
+    history = analysis["history"]
+    run = analysis.get("run")
+    metrics = analysis["metrics"]
+    alerts: list[str] = []
+    if int(history["rows_scanned"]) < 10:
+        alerts.append("History is too short for reliable trend estimates.")
+    if isinstance(run, Mapping) and run.get("state") not in {"running", "finished"}:
+        alerts.append(f"Run state is '{run.get('state')}', so the final history may be incomplete.")
+    for row in sections["learner_stability"]:
+        if row["name"].startswith("learner/loss/") and (row["recent_relative_delta"] or 0.0) > 0.5:
+            alerts.append(f"{row['name']} rose by more than 50% in the recent window.")
+    clipped = _metric(metrics, "learner/clipped_fraction")
+    clipping_rate = _number(clipped[1]["recent_mean"]) if clipped is not None else None
+    if clipping_rate is not None and clipping_rate > 0.5:
+        alerts.append("More than half of recent learner updates were gradient-clipped.")
+    backlog = _metric(metrics, "training/update_backlog_s")
+    if backlog is not None and (_number(backlog[1]["recent_mean"]) or 0.0) > 60.0:
+        alerts.append("Learner update backlog exceeds one minute.")
+    no_progress = _section_metric(sections["episode_health"], "episode/termination/no_progress")
+    if _recent(no_progress) is not None and _recent(no_progress) > 0.5:
+        alerts.append("No-progress termination is the dominant recent episode outcome.")
+    finish_rate = _section_metric(sections["episode_health"], "episode/finish_rate")
+    if _last(finish_rate) == 0.0 and finish_rate is not None and int(finish_rate["count"]) >= 25:
+        alerts.append("No training episode has finished despite at least 25 recorded episodes.")
+    eval_finish_rate = _section_metric(sections["evaluation"], "eval/episode/finish_rate")
+    if _last(eval_finish_rate) == 0.0 and eval_finish_rate is not None:
+        alerts.append("Deterministic evaluation has not recorded a finish.")
+    transitions = _section_metric(sections["throughput_and_backlog"], "training/transitions_per_s")
+    if transitions is not None and (_number(transitions["recent_relative_delta"]) or 0.0) < -0.3:
+        alerts.append("Recent collection throughput is more than 30% below the prior window.")
+    update_time = _section_metric(
+        sections["throughput_and_backlog"], "performance/learner_update_s"
+    )
+    if update_time is not None and (_number(update_time["recent_relative_delta"]) or 0.0) > 0.5:
+        alerts.append("Recent learner update latency is more than 50% above the prior window.")
+    return alerts
+
+
+def _section_metric(rows: Iterable[Mapping[str, Any]], name: str) -> Mapping[str, Any] | None:
+    return next((row for row in rows if row["name"] == name), None)
+
+
+def _diagnostics(exp_id: str, analysis: Mapping[str, Any]) -> dict[str, Any]:
+    history = analysis.get("history")
+    metrics = analysis.get("metrics")
+    if not isinstance(history, Mapping) or not isinstance(metrics, Mapping):
+        raise ValueError(f"Analysis for {exp_id} has an invalid normalized schema")
+    sections = {
+        key: _section(metrics, key)
+        for key in (
+            "episode_health",
+            "learner_stability",
+            "replay_and_schedule",
+            "throughput_and_backlog",
+            "actor_health",
+            "evaluation",
+        )
+    }
+    return {
+        "exp_id": exp_id,
+        "run": analysis.get("run", {}),
+        "history": dict(history),
+        "categories": _categories(analysis),
+        "sections": sections,
+        "alerts": _alerts(analysis, sections),
+    }
+
+
+def build_json_report(analyses: Mapping[str, Mapping[str, Any]]) -> dict[str, Any]:
+    experiments = [_diagnostics(exp_id, analysis) for exp_id, analysis in sorted(analyses.items())]
+    return {
+        "schema_version": SUPPORTED_SCHEMA_VERSION,
+        "experiment_count": len(experiments),
         "experiments": experiments,
     }
 
 
+def _format_number(value: float | None) -> str:
+    return f"{value:.4g}" if value is not None else "n/a"
+
+
+def _render_metrics(title: str, rows: list[Mapping[str, Any]]) -> list[str]:
+    if not rows:
+        return []
+    lines = [
+        "",
+        f"### {title}",
+        "",
+        "| Metric | Last | Recent mean | Prior mean | Delta | P05-P95 |",
+        "|---|---:|---:|---:|---:|---:|",
+    ]
+    for row in rows:
+        delta = _number(row["recent_delta"])
+        delta_text = f"{delta:+.4g}" if delta is not None else "n/a"
+        interval = f"{_format_number(_number(row['p05']))}-{_format_number(_number(row['p95']))}"
+        lines.append(
+            f"| `{row['name']}` | {_format_number(_number(row['last']))} | "
+            f"{_format_number(_number(row['recent_mean']))} | "
+            f"{_format_number(_number(row['prior_mean']))} | {delta_text} | {interval} |"
+        )
+    return lines
+
+
+def _render_categories(categories: Mapping[str, Mapping[str, int]]) -> list[str]:
+    termination = categories.get("episode/termination")
+    if not termination:
+        return []
+    rows = ", ".join(f"`{name}`: {count}" for name, count in sorted(termination.items()))
+    return ["", "### Termination reasons", "", rows]
+
+
+def _comparison_rows(experiments: Iterable[Mapping[str, Any]]) -> list[str]:
+    rows = list(experiments)
+    if len(rows) < 2:
+        return []
+    lines = [
+        "",
+        "## Cross-run comparison",
+        "",
+        "| Run | State | Return | Progress | Finish rate | Loss |",
+        "|---|---|---:|---:|---:|---:|",
+    ]
+    for experiment in rows:
+        section = experiment["sections"]
+        episode = {row["name"]: row for row in section["episode_health"]}
+        learner = {row["name"]: row for row in section["learner_stability"]}
+        run = experiment["run"] if isinstance(experiment["run"], Mapping) else {}
+        values = (
+            _recent(episode.get("episode/return") or episode.get("episode/reward")),
+            _recent(episode.get("episode/progress_pct")),
+            _last(episode.get("episode/finish_rate")),
+            _recent(learner.get("learner/loss/iqn")),
+        )
+        lines.append(
+            f"| {experiment['exp_id']} | {run.get('state', 'unknown')} | "
+            + " | ".join(_format_number(value) for value in values)
+            + " |"
+        )
+    return lines
+
+
+def _recent(row: Mapping[str, Any] | None) -> float | None:
+    return _number(row.get("recent_mean")) if row is not None else None
+
+
+def _last(row: Mapping[str, Any] | None) -> float | None:
+    return _number(row.get("last")) if row is not None else None
+
+
+def build_markdown_report(report: Mapping[str, Any]) -> str:
+    lines = [
+        "# W&B RL Diagnostic Report",
+        "",
+        f"Experiments analyzed: {report['experiment_count']}",
+    ]
+    lines.extend(_comparison_rows(report["experiments"]))
+    titles = {
+        "episode_health": "Episode health",
+        "learner_stability": "Learner stability",
+        "replay_and_schedule": "Replay and schedule",
+        "throughput_and_backlog": "Throughput and backlog",
+        "actor_health": "Actor and policy health",
+        "evaluation": "Evaluation",
+    }
+    for experiment in report["experiments"]:
+        run = experiment["run"] if isinstance(experiment["run"], Mapping) else {}
+        history = experiment["history"]
+        lines.extend(
+            [
+                "",
+                f"## {experiment['exp_id']}",
+                f"State: {run.get('state', 'unknown')} | "
+                f"History rows: {history.get('rows_scanned', 0)} | "
+                f"Numeric metrics: {history.get('metric_count', 0)}",
+            ]
+        )
+        for key, title in titles.items():
+            lines.extend(_render_metrics(title, experiment["sections"][key]))
+        lines.extend(_render_categories(experiment["categories"]))
+        if experiment["alerts"]:
+            lines.extend(["", "### Alerts", ""])
+            lines.extend(f"- {alert}" for alert in experiment["alerts"])
+    return "\n".join(lines)
+
+
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Generate autoresearch iteration report")
-    parser.add_argument("--format", choices=["text", "json"], default="text")
-    parser.add_argument("--top", type=int, default=0, help="Show only top N in leaderboard")
+    parser = argparse.ArgumentParser(description="Render normalized W&B experiment analyses")
+    parser.add_argument("--format", choices=["text", "json", "markdown"], default="text")
     parser.add_argument("--out", default="", help="Write to file instead of stdout")
     args = parser.parse_args()
 
     analyses = _load_analyses()
-    registry = _load_registry()
-
     if not analyses:
-        print("No analysis files found. Run: python scripts/fetch_analysis.py", file=sys.stderr)
+        print(
+            "No normalized analysis files found. Run: "
+            "uv run python scripts/fetch_analysis.py --run ENTITY/PROJECT/RUN_ID",
+            file=sys.stderr,
+        )
         sys.exit(1)
-
+    report = build_json_report(analyses)
     if args.format == "json":
-        report = build_json_report(analyses, registry)
         output = json.dumps(report, indent=2, default=str)
     else:
-        output = build_report(analyses, registry, args.top)
+        output = build_markdown_report(report)
 
     if args.out:
         Path(args.out).write_text(output, encoding="utf-8")

@@ -51,9 +51,9 @@ class TelemetryFeaturePipeline:
 
 
 class LidarFeaturePipeline:
-    """33-field GrabData source schema projected to 20 telemetry features and lidar."""
+    """33-field GrabData source schema projected to telemetry and paired boundary lookahead."""
 
-    schema_version = "1"
+    schema_version = "2"
     source_fields = (
         "checkpoint",
         "lap",
@@ -118,12 +118,12 @@ class LidarFeaturePipeline:
         geometry_path: str | Path,
         *,
         expected_map_uid: str | None = None,
-        samples_per_side: int = 15,
+        samples_per_side: int = 60,
         max_distance_m: float = 300.0,
         base_dir: str | Path = ".",
     ) -> None:
-        if samples_per_side != 15:
-            raise ValueError("LidarFeaturePipeline requires exactly 15 samples per boundary")
+        if samples_per_side < 2:
+            raise ValueError("samples_per_side must be at least two")
         if max_distance_m <= 0.0:
             raise ValueError("max_distance_m must be positive")
         path = Path(geometry_path)
@@ -137,13 +137,13 @@ class LidarFeaturePipeline:
                 "lidar": spaces.Box(
                     -1.0,
                     1.0,
-                    shape=(2, self.samples_per_side * 2),
+                    shape=(4, self.samples_per_side),
                     dtype=np.float32,
                 ),
                 "lidar_mask": spaces.Box(
                     0.0,
                     1.0,
-                    shape=(self.samples_per_side * 2,),
+                    shape=(self.samples_per_side,),
                     dtype=np.float32,
                 ),
                 "telemetry": spaces.Box(
@@ -219,10 +219,21 @@ class LidarFeaturePipeline:
         indices = nearest + np.arange(1, self.samples_per_side + 1)
         valid = indices < len(self.geometry.center)
         indices = np.clip(indices, 0, len(self.geometry.center) - 1)
-        points = np.concatenate((self.geometry.left[indices], self.geometry.right[indices]), axis=0)
-        relative = points - position
-        local = np.stack((relative @ right, relative @ forward), axis=0) / self.max_distance_m
-        mask = np.concatenate((valid, valid)).astype(np.float32)
+        left_relative = self.geometry.left[indices] - position
+        right_relative = self.geometry.right[indices] - position
+        local = (
+            np.stack(
+                (
+                    left_relative @ right,
+                    left_relative @ forward,
+                    right_relative @ right,
+                    right_relative @ forward,
+                ),
+                axis=0,
+            )
+            / self.max_distance_m
+        )
+        mask = valid.astype(np.float32)
         local *= mask[None, :]
         return np.clip(local, -1.0, 1.0).astype(np.float32), mask
 
@@ -236,8 +247,8 @@ class LidarFeaturePipeline:
                 for key, value in observation.items()
             }
             if (
-                prepared["lidar"].shape != (2, self.samples_per_side * 2)
-                or prepared["lidar_mask"].shape != (self.samples_per_side * 2,)
+                prepared["lidar"].shape != (4, self.samples_per_side)
+                or prepared["lidar_mask"].shape != (self.samples_per_side,)
                 or prepared["telemetry"].shape != (self.telemetry_dim,)
                 or not all(torch.isfinite(value).all() for value in prepared.values())
             ):

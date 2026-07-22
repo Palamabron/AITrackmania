@@ -2,7 +2,7 @@
 name = "TMRL_GrabData_IQN"
 author = "Palamabron / AITrackmania"
 category = "Trackmania Reinforcement Learning"
-version = "2.2.0"
+version = "2.2.1"
 
 [script]
 dependencies = ["VehicleState", "PlayerState"]

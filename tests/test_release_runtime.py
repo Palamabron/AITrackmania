@@ -18,10 +18,10 @@ from tmrl.core.builtins import JsonlRunLogger, TorchCheckpointCodec
 from tmrl.core.spec import RunSpec
 from tmrl.distributed.actor import ActorRuntime
 from tmrl.experiments.orchestration import GridStrategy, StudyLedger, StudyRunner, StudySpec
-from tmrl.observability.trackers import _wandb_metric_name
+from tmrl.observability.trackers import WandbTracker, _wandb_metric_name
 from tmrl.project.scaffold import create_project
 from tmrl.trackmania.assets import record_boundary, record_trajectory
-from tmrl.trackmania.environment import OpenPlanetEnvironmentFactory
+from tmrl.trackmania.environment import OpenPlanetEnvironment, OpenPlanetEnvironmentFactory
 from tmrl.trackmania.evaluation import TrackmaniaEvaluator
 from tmrl.trackmania.reward import TrajectoryReward
 from tmrl.trackmania.telemetry import (
@@ -41,6 +41,35 @@ def test_jsonl_events_have_release_envelope(tmp_path: Path) -> None:
     assert event["run_id"] == "release"
     assert event["timestamp_utc"]
     assert event["elapsed_s"] >= 0
+
+
+def test_spawn_context_uses_the_active_virtual_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    from tmrl import cli
+
+    executable: list[str] = []
+    expected_context = object()
+    monkeypatch.setattr(cli.sys, "executable", "C:/venv/Scripts/python.exe")
+    monkeypatch.delenv("VIRTUAL_ENV", raising=False)
+    monkeypatch.setattr(cli.multiprocessing, "set_executable", executable.append)
+    monkeypatch.setattr(cli.multiprocessing, "get_context", lambda method: expected_context)
+
+    assert cli._spawn_context() is expected_context
+    assert executable == ["C:/venv/Scripts/python.exe"]
+
+
+def test_spawn_executable_prefers_the_active_virtual_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tmrl import cli
+
+    directory = "Scripts" if cli.os.name == "nt" else "bin"
+    filename = "python.exe" if cli.os.name == "nt" else "python"
+    executable = tmp_path / directory / filename
+    executable.parent.mkdir()
+    executable.touch()
+    monkeypatch.setenv("VIRTUAL_ENV", str(tmp_path))
+
+    assert cli._spawn_executable() == str(executable)
 
 
 def test_torch_checkpoints_are_zstd_streamed_and_round_trip(tmp_path: Path) -> None:
@@ -77,14 +106,46 @@ def test_wandb_metrics_use_readable_sections() -> None:
     assert _wandb_metric_name("train/update", "debug/q_selected_abs_max") == "learner/q_abs_max"
 
 
+def test_wandb_tracker_queues_remote_logging_without_reusing_global_steps(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    logged: list[dict[str, object]] = []
+
+    class FakeWandb:
+        class Settings:
+            def __init__(self, **kwargs: object) -> None:
+                del kwargs
+
+        @staticmethod
+        def init(**kwargs: object) -> SimpleNamespace:
+            del kwargs
+            return SimpleNamespace(url="")
+
+        @staticmethod
+        def log(values: dict[str, object]) -> None:
+            logged.append(values)
+
+        @staticmethod
+        def finish(*, exit_code: int) -> None:
+            assert exit_code == 0
+
+    monkeypatch.setitem(sys.modules, "wandb", FakeWandb)
+    tracker = WandbTracker("project", run_dir=str(tmp_path))
+    tracker.log("train/episode", {"index": 1}, step=10)
+    tracker.log("train/episode", {"index": 2}, step=10)
+    tracker.close()
+
+    assert logged == [{"episode/index": 1}, {"episode/index": 2}]
+
+
 def test_actor_episode_summary_zeroes_non_finish_time() -> None:
     summary = ActorRuntime._summary(
         12.0,
         {
             "termination_reason": "no_progress",
             "race_time_ms": 45_000.0,
-            "reward_progress": 10.0,
-            "reward_speed": 3.0,
+            "reward_time": -4.5,
+            "reward_pbrs": 0.2,
             "reward_terminal": -1.0,
         },
         6,
@@ -92,7 +153,8 @@ def test_actor_episode_summary_zeroes_non_finish_time() -> None:
 
     assert summary["return"] == 12.0
     assert summary["reward_per_transition"] == 2.0
-    assert summary["reward/progress"] == 10.0
+    assert summary["reward/time"] == -4.5
+    assert summary["reward/pbrs"] == 0.2
     assert summary["finish_time_s"] == 0.0
     assert summary["finished"] == 0.0
 
@@ -106,6 +168,63 @@ def test_actor_episode_summary_reports_finish_time() -> None:
 
     assert summary["finish_time_s"] == pytest.approx(12.345)
     assert summary["finished"] == 1.0
+
+
+def test_environment_waits_for_race_timer_restart() -> None:
+    class Client:
+        def __init__(self) -> None:
+            self._race_times_ms = iter((1_000.0, 0.0, 50.0))
+
+        def read(self) -> TelemetryFrame:
+            return TelemetryFrame(
+                np.asarray([0.0, 0.0, 0.0, next(self._race_times_ms)], dtype=np.float32)
+            )
+
+    environment = object.__new__(OpenPlanetEnvironment)
+    environment.client = Client()
+    environment.config = SimpleNamespace(start_timeout_s=1.0, start_poll_s=0.0)
+
+    frame = environment._wait_for_active_run(500.0)
+
+    assert float(frame.values[3]) == 50.0
+
+
+def test_environment_retries_an_unconfirmed_restart() -> None:
+    class Controller:
+        def __init__(self) -> None:
+            self.resets = 0
+
+        def reset(self) -> None:
+            self.resets += 1
+
+    class Client:
+        def __init__(self) -> None:
+            self._race_times_ms = iter((1_000.0, 2_000.0))
+
+        def read(self) -> TelemetryFrame:
+            return TelemetryFrame(
+                np.asarray([0.0, 0.0, 0.0, next(self._race_times_ms)], dtype=np.float32)
+            )
+
+    environment = object.__new__(OpenPlanetEnvironment)
+    environment.client = Client()
+    environment.controller = Controller()
+    environment.evaluation_map = None
+    attempts = 0
+    frame = TelemetryFrame(np.asarray([0.0, 0.0, 0.0, 50.0], dtype=np.float32))
+
+    def wait_for_active_run(previous_race_time_ms: float) -> TelemetryFrame:
+        nonlocal attempts
+        attempts += 1
+        assert previous_race_time_ms in {1_000.0, 2_000.0}
+        if attempts == 1:
+            raise TimeoutError
+        return frame
+
+    environment._wait_for_active_run = wait_for_active_run
+
+    assert environment._restart_race() is frame
+    assert environment.controller.resets == 2
 
 
 def test_openplanet_client_validates_a_complete_packet() -> None:
@@ -171,17 +290,58 @@ def test_openplanet_client_keeps_a_valid_origin_position_after_a_previous_frame(
 
 def test_trajectory_reward_reports_progress_finish_and_off_track() -> None:
     reward = TrajectoryReward(
-        np.array([[0, 0, 0], [1, 0, 0], [2, 0, 0]], dtype=np.float32), minimum_finish_steps=1
+        np.array([[0, 0, 0], [1, 0, 0], [2, 0, 0]], dtype=np.float32),
+        minimum_finish_steps=1,
     )
-    progress = reward.step(np.array([1, 0, 0]), finish_ui_active=False)
+    reward.reset(np.array([0, 0, 0]), velocity=np.zeros(3), race_time_ms=0.0)
+    progress = reward.step(
+        np.array([1, 0, 0]),
+        finish_ui_active=False,
+        velocity=np.zeros(3),
+        race_time_ms=100.0,
+    )
     assert progress.reward > 0
-    assert progress.reward == progress.progress_reward + progress.speed_reward
-    assert reward.step(np.array([2, 0, 0]), finish_ui_active=False).reason is None
-    finish = reward.step(np.array([2, 0, 0]), finish_ui_active=True)
+    assert progress.reward == (
+        progress.time_reward
+        + progress.pbrs_reward
+        + progress.progress_reward
+        + progress.projected_velocity_reward
+        + progress.steering_delta_reward
+    )
+    assert (
+        reward.step(
+            np.array([2, 0, 0]),
+            finish_ui_active=False,
+            velocity=np.zeros(3),
+            race_time_ms=200.0,
+        ).reason
+        is None
+    )
+    finish = reward.step(
+        np.array([2, 0, 0]),
+        finish_ui_active=True,
+        velocity=np.zeros(3),
+        race_time_ms=300.0,
+    )
     assert finish.reason == "finished"
-    assert finish.reward == finish.progress_reward + finish.speed_reward + finish.terminal_reward
-    reward.reset()
-    assert reward.step(np.array([100, 0, 0]), finish_ui_active=False).reason == "off_track"
+    assert finish.reward == (
+        finish.time_reward
+        + finish.pbrs_reward
+        + finish.progress_reward
+        + finish.projected_velocity_reward
+        + finish.steering_delta_reward
+        + finish.terminal_reward
+    )
+    reward.reset(np.array([0, 0, 0]), velocity=np.zeros(3), race_time_ms=0.0)
+    assert (
+        reward.step(
+            np.array([100, 0, 0]),
+            finish_ui_active=False,
+            velocity=np.zeros(3),
+            race_time_ms=100.0,
+        ).reason
+        == "off_track"
+    )
 
 
 def test_trajectory_reward_has_dense_progress_signal_and_stall_termination() -> None:
@@ -191,11 +351,80 @@ def test_trajectory_reward_has_dense_progress_signal_and_stall_termination() -> 
         slow_progress_window_steps=10,
         minimum_finish_steps=1,
     )
-    assert reward.step(np.array([1, 0, 0]), finish_ui_active=False, speed_mps=50).reward > 100.0
-    reward.reset()
-    assert reward.step(np.array([0, 0, 0]), finish_ui_active=False).reason is None
-    assert reward.step(np.array([0, 0, 0]), finish_ui_active=False).reason is None
-    assert reward.step(np.array([0, 0, 0]), finish_ui_active=False).reason == "no_progress"
+    reward.reset(np.array([0, 0, 0]), velocity=np.zeros(3), race_time_ms=0.0)
+    assert (
+        reward.step(
+            np.array([1, 0, 0]),
+            finish_ui_active=False,
+            velocity=np.zeros(3),
+            race_time_ms=100.0,
+        ).reward
+        > 0.0
+    )
+    reward.reset(np.array([0, 0, 0]), velocity=np.zeros(3), race_time_ms=0.0)
+    assert (
+        reward.step(
+            np.array([0, 0, 0]),
+            finish_ui_active=False,
+            velocity=np.zeros(3),
+            race_time_ms=100.0,
+        ).reason
+        is None
+    )
+    assert (
+        reward.step(
+            np.array([0, 0, 0]),
+            finish_ui_active=False,
+            velocity=np.zeros(3),
+            race_time_ms=200.0,
+        ).reason
+        is None
+    )
+    assert (
+        reward.step(
+            np.array([0, 0, 0]),
+            finish_ui_active=False,
+            velocity=np.zeros(3),
+            race_time_ms=300.0,
+        ).reason
+        == "no_progress"
+    )
+
+
+def test_trajectory_reward_applies_a_light_nonterminal_collision_penalty() -> None:
+    trajectory = np.array([[0, 0, 0], [1, 0, 0]], dtype=np.float32)
+    without_collision = TrajectoryReward(
+        trajectory,
+        collision_penalty=0.05,
+        time_penalty_per_second=0.0,
+    )
+    with_collision = TrajectoryReward(
+        trajectory,
+        collision_penalty=0.05,
+        time_penalty_per_second=0.0,
+    )
+    for reward in (without_collision, with_collision):
+        reward.reset(np.array([0, 0, 0]), velocity=np.zeros(3), race_time_ms=0.0)
+
+    baseline = without_collision.step(
+        np.array([0, 0, 0]),
+        finish_ui_active=False,
+        velocity=np.zeros(3),
+        race_time_ms=100.0,
+    )
+    collision = with_collision.step(
+        np.array([0, 0, 0]),
+        finish_ui_active=False,
+        velocity=np.zeros(3),
+        race_time_ms=100.0,
+        collision=True,
+    )
+
+    assert not collision.terminated
+    assert collision.reason is None
+    assert collision.collided
+    assert collision.collision_reward == pytest.approx(-0.05)
+    assert collision.reward == pytest.approx(baseline.reward - 0.05)
 
 
 def test_trajectory_reward_does_not_skip_ahead_at_a_track_crossover() -> None:
@@ -209,11 +438,256 @@ def test_trajectory_reward_does_not_skip_ahead_at_a_track_crossover() -> None:
         nearest_forward_points=2,
         minimum_finish_steps=1,
     )
+    reward.reset(np.array([0, 0, 0]), velocity=np.zeros(3), race_time_ms=0.0)
 
-    result = reward.step(np.array([10, 0, 0.9]), finish_ui_active=False)
+    result = reward.step(
+        np.array([10, 0, 0.9]),
+        finish_ui_active=False,
+        velocity=np.zeros(3),
+        race_time_ms=100.0,
+    )
 
-    assert result.reward == pytest.approx(40.0)
+    assert result.pbrs_reward > 0.0
     assert reward._index == 1
+
+
+def test_trajectory_reward_does_not_reward_perpendicular_velocity() -> None:
+    reward = TrajectoryReward(
+        np.array([[0, 0, 0], [1, 0, 0]], dtype=np.float32),
+        minimum_finish_steps=1,
+        max_projected_speed_mps=10.0,
+        velocity_to_mps_scale=1.0,
+    )
+    reward.reset(np.array([0, 0, 0]), velocity=np.zeros(3), race_time_ms=0.0)
+
+    result = reward.step(
+        np.array([1, 0, 0]),
+        finish_ui_active=False,
+        velocity=np.array([0, 10, 0]),
+        race_time_ms=100.0,
+    )
+
+    assert result.projected_velocity_ratio == 0.0
+    assert result.projected_velocity_reward == 0.0
+
+
+def test_trajectory_reward_projects_velocity_without_an_index_change() -> None:
+    trajectory = np.array([[0, 0, 0], [1, 0, 0], [2, 0, 0]], dtype=np.float32)
+    reward = TrajectoryReward(
+        trajectory,
+        max_projected_speed_mps=10.0,
+        velocity_to_mps_scale=1.0,
+        projected_velocity_scale=0.1,
+    )
+    reward.reset(np.array([0, 0, 0]), velocity=np.zeros(3), race_time_ms=0.0)
+
+    forward = reward.step(
+        np.array([1, 0, 0]),
+        finish_ui_active=False,
+        velocity=np.array([10, 0, 0]),
+        race_time_ms=100.0,
+    )
+    stationary = reward.step(
+        np.array([1, 0, 0]),
+        finish_ui_active=False,
+        velocity=np.array([10, 0, 0]),
+        race_time_ms=200.0,
+    )
+
+    assert forward.projected_velocity_mps == pytest.approx(10.0)
+    assert forward.projected_velocity_reward == pytest.approx(0.1)
+    assert stationary.projected_velocity_reward == pytest.approx(0.1)
+
+
+def test_trajectory_reward_penalizes_reverse_projected_velocity() -> None:
+    reward = TrajectoryReward(
+        np.array([[0, 0, 0], [1, 0, 0]], dtype=np.float32),
+        projected_velocity_scale=0.1,
+        velocity_to_mps_scale=1.0,
+    )
+    reward.reset(np.array([0, 0, 0]), velocity=np.zeros(3), race_time_ms=0.0)
+
+    result = reward.step(
+        np.array([0, 0, 0]),
+        finish_ui_active=False,
+        velocity=np.array([-10, 0, 0]),
+        race_time_ms=100.0,
+    )
+
+    assert result.projected_velocity_mps == pytest.approx(-10.0)
+    assert result.projected_velocity_reward == pytest.approx(-0.1)
+
+
+def test_trajectory_reward_penalizes_steering_delta() -> None:
+    reward = TrajectoryReward(
+        np.array([[0, 0, 0], [1, 0, 0]], dtype=np.float32),
+        steering_delta_penalty=0.1,
+        time_penalty_per_second=0.0,
+        potential_progress_weight=0.0,
+    )
+    reward.reset(np.array([0, 0, 0]), velocity=np.zeros(3), race_time_ms=0.0)
+
+    first = reward.step(
+        np.array([0, 0, 0]),
+        finish_ui_active=False,
+        velocity=np.zeros(3),
+        race_time_ms=100.0,
+        steering=0.5,
+    )
+    unchanged = reward.step(
+        np.array([0, 0, 0]),
+        finish_ui_active=False,
+        velocity=np.zeros(3),
+        race_time_ms=200.0,
+        steering=0.5,
+    )
+    reversal = reward.step(
+        np.array([0, 0, 0]),
+        finish_ui_active=False,
+        velocity=np.zeros(3),
+        race_time_ms=300.0,
+        steering=-0.5,
+    )
+
+    assert first.steering_delta_reward == pytest.approx(-0.05)
+    assert unchanged.steering_delta_reward == 0.0
+    assert reversal.steering_delta_reward == pytest.approx(-0.1)
+
+
+def test_trajectory_reward_pbrs_telescopes_at_the_terminal_state() -> None:
+    reward = TrajectoryReward(
+        np.array([[0, 0, 0], [1, 0, 0]], dtype=np.float32),
+        minimum_finish_steps=1,
+    )
+    reward.reset(np.array([0, 0, 0]), velocity=np.zeros(3), race_time_ms=0.0)
+    progress = reward.step(
+        np.array([1, 0, 0]),
+        finish_ui_active=False,
+        velocity=np.zeros(3),
+        race_time_ms=100.0,
+    )
+    finish = reward.step(
+        np.array([1, 0, 0]),
+        finish_ui_active=True,
+        velocity=np.zeros(3),
+        race_time_ms=200.0,
+    )
+
+    assert progress.pbrs_reward + reward.reward_gamma * finish.pbrs_reward == pytest.approx(0.0)
+
+
+def test_trajectory_reward_prefers_farther_failed_run() -> None:
+    trajectory = np.asarray([[index, 0, 0] for index in range(11)], dtype=np.float32)
+
+    def failed_return(progress_index: int) -> float:
+        reward = TrajectoryReward(
+            trajectory,
+            no_progress_steps=2,
+            slow_progress_window_steps=10,
+            terminal_failure_penalty=2.0,
+            time_penalty_per_second=0.0,
+            potential_progress_weight=0.0,
+        )
+        reward.reset(np.array([0, 0, 0]), velocity=np.zeros(3), race_time_ms=0.0)
+        total = 0.0
+        for race_time_ms in (100.0, 200.0, 300.0):
+            result = reward.step(
+                np.array([progress_index, 0, 0]),
+                finish_ui_active=False,
+                velocity=np.zeros(3),
+                race_time_ms=race_time_ms,
+            )
+            total += result.reward
+            if result.terminated:
+                break
+        return total
+
+    assert failed_return(4) > failed_return(0)
+
+
+def test_trajectory_reward_high_gamma_limits_stationary_pbrs_penalty() -> None:
+    reward = TrajectoryReward(
+        np.array([[0, 0, 0], [1, 0, 0], [2, 0, 0]], dtype=np.float32),
+        reward_gamma=0.9995,
+    )
+    reward.reset(np.array([1, 0, 0]), velocity=np.zeros(3), race_time_ms=0.0)
+
+    result = reward.step(
+        np.array([1, 0, 0]),
+        finish_ui_active=False,
+        velocity=np.zeros(3),
+        race_time_ms=100.0,
+    )
+
+    assert result.pbrs_reward == pytest.approx(-0.0005)
+
+
+def test_trajectory_reward_prefers_a_shorter_completed_run() -> None:
+    trajectory = np.array([[0, 0, 0], [1, 0, 0], [2, 0, 0]], dtype=np.float32)
+
+    def completed_return(step_time_ms: float) -> float:
+        reward = TrajectoryReward(trajectory, minimum_finish_steps=1)
+        reward.reset(np.array([0, 0, 0]), velocity=np.zeros(3), race_time_ms=0.0)
+        first = reward.step(
+            np.array([1, 0, 0]),
+            finish_ui_active=False,
+            velocity=np.zeros(3),
+            race_time_ms=step_time_ms,
+        )
+        finish = reward.step(
+            np.array([2, 0, 0]),
+            finish_ui_active=True,
+            velocity=np.zeros(3),
+            race_time_ms=2.0 * step_time_ms,
+        )
+        return first.reward + reward.reward_gamma * finish.reward
+
+    assert completed_return(100.0) > completed_return(200.0)
+
+
+def test_trajectory_reward_reset_restarts_the_race_time_delta() -> None:
+    reward = TrajectoryReward(np.array([[0, 0, 0], [1, 0, 0]], dtype=np.float32))
+    reward.reset(np.array([0, 0, 0]), velocity=np.zeros(3), race_time_ms=0.0)
+    first = reward.step(
+        np.array([0, 0, 0]),
+        finish_ui_active=False,
+        velocity=np.zeros(3),
+        race_time_ms=100.0,
+    )
+    reward.reset(np.array([0, 0, 0]), velocity=np.zeros(3), race_time_ms=0.0)
+    second = reward.step(
+        np.array([0, 0, 0]),
+        finish_ui_active=False,
+        velocity=np.zeros(3),
+        race_time_ms=100.0,
+    )
+
+    assert second.time_reward == first.time_reward
+
+
+def test_trajectory_reward_does_not_terminate_an_unconfirmed_finish() -> None:
+    reward = TrajectoryReward(
+        np.array([[0, 0, 0], [1, 0, 0]], dtype=np.float32),
+        minimum_finish_steps=1,
+    )
+    reward.reset(np.array([0, 0, 0]), velocity=np.zeros(3), race_time_ms=0.0)
+
+    first = reward.step(
+        np.array([1, 0, 0]),
+        finish_ui_active=False,
+        velocity=np.zeros(3),
+        race_time_ms=100.0,
+    )
+    second = reward.step(
+        np.array([1, 0, 0]),
+        finish_ui_active=False,
+        velocity=np.zeros(3),
+        race_time_ms=200.0,
+    )
+
+    assert first.reason is None
+    assert second.reason is None
+    assert not second.terminated
 
 
 def test_trajectory_recorder_writes_portable_csv(tmp_path: Path) -> None:
@@ -273,6 +747,10 @@ def test_gamepad_reset_uses_the_trackmania_respawn_button(monkeypatch: pytest.Mo
     class FakeGamepad:
         def __init__(self) -> None:
             self.events: list[object] = []
+            self.callback: object | None = None
+
+        def register_notification(self, *, callback_function: object) -> None:
+            self.callback = callback_function
 
         def reset(self) -> None:
             self.events.append("reset")
@@ -307,6 +785,10 @@ def test_gamepad_ignores_a_brake_tap_callback_cancelled_by_a_newer_action(
     class FakeGamepad:
         def __init__(self) -> None:
             self.events: list[object] = []
+            self.callback: object | None = None
+
+        def register_notification(self, *, callback_function: object) -> None:
+            self.callback = callback_function
 
         def right_trigger_float(self, value: float) -> None:
             self.events.append(("gas", value))
@@ -328,6 +810,39 @@ def test_gamepad_ignores_a_brake_tap_callback_cancelled_by_a_newer_action(
     gamepad._release_tap(1, 1.0, 0.0)
 
     assert gamepad._gamepad.events == []
+
+
+def test_gamepad_consumes_haptic_collision_events(monkeypatch: pytest.MonkeyPatch) -> None:
+    class FakeGamepad:
+        def __init__(self) -> None:
+            self.callback: object | None = None
+
+        def register_notification(self, *, callback_function: object) -> None:
+            self.callback = callback_function
+
+    from tmrl.trackmania import control
+
+    monkeypatch.setitem(sys.modules, "vgamepad", SimpleNamespace(VX360Gamepad=FakeGamepad))
+    gamepad = control.GamepadController()
+    assert callable(gamepad._gamepad.callback)
+    from inspect import signature
+
+    def expected_callback(
+        client: object,
+        target: object,
+        large_motor: int,
+        small_motor: int,
+        led_number: int,
+        user_data: object,
+    ) -> None:
+        return None
+
+    expected_callback.__annotations__.clear()
+    assert signature(gamepad._on_vibration) == signature(expected_callback)
+    gamepad._gamepad.callback(None, None, 101, 0, 0, None)
+
+    assert gamepad.consume_collision()
+    assert not gamepad.consume_collision()
 
 
 def test_trackmania_template_contains_first_party_components(tmp_path: Path) -> None:

@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import multiprocessing
 import socket
+import sys
 import threading
 import time
 from collections.abc import Mapping
+from dataclasses import asdict
 from pathlib import Path
 from queue import Queue
 from types import SimpleNamespace
@@ -98,6 +100,14 @@ class _SlowLearner:
         self.value = int(state["value"])
 
 
+class _RestoreSpy:
+    def __init__(self) -> None:
+        self.restored: Mapping[str, Any] | None = None
+
+    def load_state_dict(self, state: Mapping[str, Any]) -> None:
+        self.restored = state
+
+
 class _Logger:
     def __init__(self) -> None:
         self.events: list[str] = []
@@ -112,6 +122,12 @@ class _Logger:
 
 def _spawn_probe(queue: Any) -> None:
     queue.put("spawn-ok")
+
+
+def _environment_probe(queue: Any) -> None:
+    import torch
+
+    queue.put((sys.prefix, torch.__version__, torch.version.cuda))
 
 
 def _transition(actor: str, step: int, reward: float, *, terminal: bool = False) -> Transition:
@@ -421,8 +437,8 @@ def test_actor_evaluation_is_greedy_and_never_spooled_as_training_data() -> None
                     False,
                     False,
                     {
-                        "reward_progress": 2.0,
-                        "reward_speed": 0.5,
+                        "reward_time": -0.1,
+                        "reward_pbrs": 2.1,
                     },
                 )
             return (
@@ -433,7 +449,8 @@ def test_actor_evaluation_is_greedy_and_never_spooled_as_training_data() -> None
                 {
                     "termination_reason": "finished",
                     "race_time_ms": 12_500.0,
-                    "reward_progress": 3.0,
+                    "reward_time": -0.2,
+                    "reward_pbrs": 3.2,
                     "reward_terminal": 10.0,
                 },
             )
@@ -453,9 +470,46 @@ def test_actor_evaluation_is_greedy_and_never_spooled_as_training_data() -> None
     assert deterministic_calls == [True, True]
     assert spooled[0][0:3] == ([], [], 9)
     assert spooled[0][3][0]["finish_time_s"] == 12.5
-    assert spooled[0][3][0]["reward/progress"] == 5.0
-    assert spooled[0][3][0]["reward/speed"] == 0.5
+    assert spooled[0][3][0]["reward/time"] == pytest.approx(-0.3)
+    assert spooled[0][3][0]["reward/pbrs"] == pytest.approx(5.3)
     assert spooled[0][3][0]["reward/terminal"] == 10.0
+
+
+def test_actor_evaluation_runs_the_configured_trial_count() -> None:
+    spooled: list[tuple[list[Any], list[Any], int, list[dict[str, Any]]]] = []
+
+    class Policy:
+        def act(self, observation: Any, *, deterministic: bool = False) -> int:
+            del observation
+            assert deterministic
+            return 0
+
+    class Environment:
+        def reset(self, *, seed: int) -> tuple[int, dict[str, Any]]:
+            del seed
+            return 0, {}
+
+        def step(self, action: int) -> tuple[int, float, bool, bool, dict[str, Any]]:
+            assert action == 0
+            return 0, 1.0, True, False, {"termination_reason": "finished", "race_time_ms": 1_000.0}
+
+    actor = object.__new__(ActorRuntime)
+    actor.spec = SimpleNamespace(
+        training=SimpleNamespace(max_episode_steps=2),
+        evaluation=SimpleNamespace(trials_per_map=3),
+    )
+    actor.stop = threading.Event()
+    actor._evaluation_index = 0
+    actor._actor_seed = lambda: 7
+    actor._policy = lambda: (Policy(), 0.0, 9)
+    actor._spool = lambda transitions, episodes, version, *, evaluations=None: spooled.append(
+        (transitions, episodes, version, evaluations or [])
+    )
+
+    actor._evaluate(Environment(), _Pipeline())
+
+    assert len(spooled[0][3]) == 3
+    assert actor._evaluation_index == 3
 
 
 def test_distributed_ingest_normalizes_source_demo_marker() -> None:
@@ -538,6 +592,17 @@ def test_actor_retries_a_rejected_rollout_before_deleting_it(tmp_path: Path) -> 
     assert not path.exists()
 
 
+def test_actor_spool_bytes_ignores_a_rollout_deleted_during_scan(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    missing = tmp_path / "00000000000000000000.rollout"
+    actor = object.__new__(ActorRuntime)
+    actor.spool_dir = tmp_path
+    monkeypatch.setattr(Path, "glob", lambda _path, _pattern: iter((missing,)))
+
+    assert actor._spool_bytes() == 0
+
+
 def test_windows_compatible_spawn_entrypoint() -> None:
     context = multiprocessing.get_context("spawn")
     queue = context.Queue()
@@ -551,6 +616,66 @@ def test_windows_compatible_spawn_entrypoint() -> None:
         if process.is_alive():
             process.terminate()
         process.join(timeout=2)
+
+
+def test_cli_spawn_context_inherits_the_active_virtual_environment() -> None:
+    from tmrl import cli
+
+    context = cli._spawn_context()
+    queue = context.Queue()
+    process = context.Process(target=_environment_probe, args=(queue,))
+    process.start()
+    process.join(timeout=10)
+    try:
+        assert process.exitcode == 0
+        child_prefix, child_torch, child_cuda = queue.get(timeout=2)
+        assert child_prefix == sys.prefix
+        assert child_torch == torch.__version__
+        assert child_cuda == torch.version.cuda
+    finally:
+        if process.is_alive():
+            process.terminate()
+        process.join(timeout=2)
+
+
+def test_coordinator_reset_replay_restores_only_learner_state(tmp_path: Path) -> None:
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = int(probe.getsockname()[1])
+    learner = _SlowLearner()
+    replay, sampler = _RestoreSpy(), _RestoreSpy()
+    checkpoint = {
+        "schema_version": "2.0",
+        "learner": {"value": 7},
+        "replay_store": {"transitions": ["old"]},
+        "sampler": {"priorities": [1.0]},
+        "distributed": asdict(_Counters(transitions=42, updates=11)),
+    }
+    run = SimpleNamespace(
+        spec=SimpleNamespace(distributed=SimpleNamespace(max_message_bytes=1024 * 1024)),
+        run_dir=tmp_path / "weights-only",
+        learner=learner,
+        replay_store=replay,
+        sampler=sampler,
+        checkpoint_codec=SimpleNamespace(load=lambda _: checkpoint),
+    )
+    coordinator = Coordinator(
+        run,
+        bind=f"127.0.0.1:{port}",
+        token="secret",
+        fingerprint="fingerprint",
+    )
+
+    try:
+        coordinator.restore_checkpoint(tmp_path / "checkpoint.pt", reset_replay=True)
+    finally:
+        coordinator._checkpoint_writer.close()
+        coordinator.journal.close()
+
+    assert learner.value == 7
+    assert replay.restored is None
+    assert sampler.restored is None
+    assert coordinator.counters == _Counters()
 
 
 def test_coordinator_recovers_wal_without_a_checkpoint(tmp_path: Path) -> None:

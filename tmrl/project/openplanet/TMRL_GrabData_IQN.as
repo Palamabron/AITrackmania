@@ -70,7 +70,8 @@ string ReadJsonLine(Net::Socket@ sock, uint timeoutMs = 2000) {
     string request = "";
     uint started = Time::Now;
     while (Time::Now - started < timeoutMs) {
-        if (sock is null || !sock.IsReady()) return "";
+        if (sock is null || sock.IsHungUp()) return "";
+        if (!sock.IsReady()) { yield(); continue; }
         if (sock.Available() > int(MAX_COMMAND_BYTES)) return "";
         if (sock.ReadLine(request)) return request;
         yield();
@@ -118,7 +119,8 @@ void Main() {
         Net::Socket@ sock = null;
         while (sock is null) { yield(); @sock = g_telemetryServer.Accept(); }
         MemoryBuffer@ buf = MemoryBuffer(0);
-        while (sock.IsReady()) {
+        while (!sock.IsHungUp()) {
+            if (!sock.IsReady()) { yield(); continue; }
             CTrackMania@ app = cast<CTrackMania>(GetApp());
             CSmArenaClient@ playground = app is null ? null : cast<CSmArenaClient>(app.CurrentPlayground);
             if (playground is null || playground.GameTerminals.Length == 0) { yield(); continue; }

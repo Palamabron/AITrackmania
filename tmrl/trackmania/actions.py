@@ -65,6 +65,25 @@ def build_brake_tap_action_table(
     return len(table), table
 
 
+def build_brake_tap_exploration_weights() -> np.ndarray:
+    """Return a throttle-biased exploratory distribution for the discrete action table."""
+
+    _, table = build_brake_tap_action_table()
+    weights = []
+    for gas, brake, steer in table:
+        mode_weight = {
+            (1.0, 0.0): 8.0,
+            (1.0, BRAKE_TAP_SENTINEL): 3.0,
+            (1.0, 1.0): 2.0,
+            (0.0, 0.0): 1.0,
+            (0.0, BRAKE_TAP_SENTINEL): 0.5,
+            (0.0, 1.0): 2.0,
+        }[(float(gas), float(brake))]
+        steering_weight = 1.0 - 0.6 * abs(float(steer))
+        weights.append(mode_weight * steering_weight)
+    return np.asarray(weights, dtype=np.float32)
+
+
 def is_brake_tap(control: np.ndarray) -> bool:
     """Return whether a table control requests a timed brake tap."""
     return float(control[1]) == BRAKE_TAP_SENTINEL
