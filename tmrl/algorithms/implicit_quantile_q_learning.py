@@ -63,6 +63,8 @@ class _IQNPolicy:
         self.device = device
         self.quantile_count = quantile_count
         self.exploration_epsilon = exploration_epsilon
+        self.last_q_margin: float | None = None
+        self.last_q_max: float | None = None
 
     def act(self, observation: Any, *, deterministic: bool = False) -> Any:
         observation = tree_to_device(sanitize_finite(observation), self.device)
@@ -72,6 +74,7 @@ class _IQNPolicy:
         with torch.no_grad():
             q_values = self.model.q_values(observation, self.quantile_count)
             action = q_values.argmax(dim=-1)
+            self._record_action_gap(q_values, single=is_single_observation)
             if not deterministic and self.exploration_epsilon:
                 exploratory = (
                     torch.rand(action.shape, device=self.device) < self.exploration_epsilon
@@ -81,6 +84,15 @@ class _IQNPolicy:
         if is_single_observation:
             return int(action.item())
         return action.cpu().numpy()
+
+    def _record_action_gap(self, q_values: torch.Tensor, *, single: bool) -> None:
+        if not single or q_values.shape[-1] < 2:
+            self.last_q_margin = None
+            self.last_q_max = None
+            return
+        best, runner_up = q_values[0].topk(2).values.tolist()
+        self.last_q_max = float(best)
+        self.last_q_margin = float(best - runner_up)
 
     def _exploration_actions(self, q_values: torch.Tensor, actions: torch.Tensor) -> torch.Tensor:
         weights = getattr(self.model, "exploration_action_weights", None)

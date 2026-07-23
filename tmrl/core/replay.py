@@ -483,9 +483,12 @@ class InMemoryReplayStore:
             return
         with self._lock:
             checkpoint_capacity = int(state["capacity"])
-            if checkpoint_capacity != self.capacity:
+            # Growing the buffer on resume is safe because the stored dense ID
+            # range spans at most the old capacity, so IDs stay collision-free
+            # under the larger modulus; shrinking would evict live transitions.
+            if checkpoint_capacity > self.capacity:
                 raise ValueError(
-                    f"Replay checkpoint capacity {checkpoint_capacity} does not match "
+                    f"Replay checkpoint capacity {checkpoint_capacity} exceeds "
                     f"configured capacity {self.capacity}"
                 )
             self._reset_arrays()

@@ -74,3 +74,23 @@ def test_late_priority_update_for_evicted_id_is_ignored() -> None:
     sampler.update_priorities(PriorityUpdate(transition_ids=[old_id], priorities=[999.0]))
     batch = sampler.sample(store, BatchRequest(batch_size=1))
     assert batch.transition_ids == [1]
+
+
+def test_replay_checkpoint_restores_into_a_larger_capacity_store() -> None:
+    store = InMemoryReplayStore(capacity=4)
+    for step in range(6):
+        store.append(_transition(step, terminated=step == 5))
+    state = store.state_dict()
+
+    grown = InMemoryReplayStore(capacity=8)
+    grown.load_state_dict(state)
+
+    assert len(grown) == 4
+    assert grown.available_ids() == [2, 3, 4, 5]
+    assert [item.reward for item in grown.get([2, 3, 4, 5])] == [3.0, 4.0, 5.0, 6.0]
+    assert grown.n_step_ids(2, 3) == [2, 3, 4]
+    assert grown.append(_transition(6)) == 6
+    assert len(grown) == 5
+
+    with pytest.raises(ValueError, match="exceeds"):
+        InMemoryReplayStore(capacity=2).load_state_dict(state)

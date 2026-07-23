@@ -32,6 +32,42 @@ from tmrl.distributed.protocol import (
     transition_to_wire,
 )
 
+_EPISODE_START_MARGIN_STEPS = 50
+
+
+class _MarginTracker:
+    """Aggregate greedy action gaps reported by a policy across one episode."""
+
+    def __init__(self) -> None:
+        self.total = 0.0
+        self.minimum = float("inf")
+        self.samples = 0
+        self.start_total = 0.0
+        self.start_samples = 0
+
+    def record(self, policy: Any, step: int) -> None:
+        margin = getattr(policy, "last_q_margin", None)
+        if margin is None:
+            return
+        value = float(margin)
+        self.total += value
+        self.minimum = min(self.minimum, value)
+        self.samples += 1
+        if step < _EPISODE_START_MARGIN_STEPS:
+            self.start_total += value
+            self.start_samples += 1
+
+    def summary(self) -> dict[str, float]:
+        if not self.samples:
+            return {"q_margin_mean": 0.0, "q_margin_min": 0.0, "q_margin_start_mean": 0.0}
+        return {
+            "q_margin_mean": self.total / self.samples,
+            "q_margin_min": self.minimum,
+            "q_margin_start_mean": (
+                self.start_total / self.start_samples if self.start_samples else 0.0
+            ),
+        }
+
 
 class _Client:
     def __init__(self, target: str, token: str, codec: WireCodec) -> None:
@@ -255,10 +291,14 @@ class ActorRuntime:
             velocity_ratio_max = 0.0
             final_info: Mapping[str, Any] = {}
             episode_id = f"{self.actor_id}/{self.session_id}/{episode:08d}"
+            # One policy snapshot drives the whole episode: a training lap then
+            # measures a single policy version instead of a refresh mixture.
+            policy, epsilon, version = self._policy()
+            margins = _MarginTracker()
             for step in range(self.spec.training.max_episode_steps):
-                policy, epsilon, version = self._policy()
                 prepared = pipeline.transform_observation(observation)
                 action = policy.act(prepared)
+                margins.record(policy, step)
                 next_observation, reward, terminated, truncated, info = environment.step(action)
                 next_prepared = pipeline.transform_observation(next_observation)
                 transitions.append(
@@ -310,6 +350,7 @@ class ActorRuntime:
                 "projected_velocity_ratio_max": velocity_ratio_max,
                 "actor_epsilon": epsilon,
                 "policy_version": version,
+                **margins.summary(),
             }
             summaries.append(self._summary(total_reward, summary_info, step + 1))
             episode += 1
@@ -346,9 +387,11 @@ class ActorRuntime:
         velocity_ratio_sum = 0.0
         velocity_ratio_max = 0.0
         final_info: Mapping[str, Any] = {}
+        margins = _MarginTracker()
         for _step in range(self.spec.training.max_episode_steps):
             prepared = pipeline.transform_observation(observation)
             action = policy.act(prepared, deterministic=True)
+            margins.record(policy, _step)
             observation, reward, terminated, truncated, info = environment.step(action)
             total_reward += float(reward)
             time_reward += float(info.get("reward_time", 0.0))
@@ -383,6 +426,7 @@ class ActorRuntime:
                 "projected_velocity_ratio_max": velocity_ratio_max,
                 "actor_epsilon": 0.0,
                 "policy_version": version,
+                **margins.summary(),
             },
             _step + 1,
         )
@@ -417,6 +461,9 @@ class ActorRuntime:
             "velocity/ratio_max": float(info.get("projected_velocity_ratio_max", 0.0)),
             "collision/count": int(info.get("collision_count", 0)),
             "collision/detected_count": int(info.get("collision_detected_count", 0)),
+            "q_margin/mean": float(info.get("q_margin_mean", 0.0)),
+            "q_margin/min": float(info.get("q_margin_min", 0.0)),
+            "q_margin/start_mean": float(info.get("q_margin_start_mean", 0.0)),
             "steps": transitions,
             "progress_pct": float(info.get("progress_pct", 0.0)),
             "progress_m": float(info.get("progress_m", 0.0)),

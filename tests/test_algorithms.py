@@ -182,6 +182,35 @@ def test_iqn_rollout_uses_epsilon_greedy_exploration_but_evaluation_is_greedy() 
     assert policy.act(torch.zeros(4), deterministic=True) == 0
 
 
+class RankedIQN(nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.offset = nn.Parameter(torch.zeros(()))
+
+    def q_values(self, observation: torch.Tensor, quantile_count: int) -> torch.Tensor:
+        del quantile_count
+        table = torch.tensor([[1.0, 3.0, 2.5]])
+        return self.offset + table.expand(observation.shape[0], -1)
+
+
+def test_iqn_policy_reports_the_greedy_action_gap_for_single_observations() -> None:
+    learner = ImplicitQuantileQLearning(
+        RankedIQN(),
+        execution={"device": "cpu", "precision": "float32"},
+    )
+    learner.setup({"seed": 0})
+    policy = learner.policy()
+
+    assert policy.act(torch.zeros(4), deterministic=True) == 1
+    assert policy.last_q_max == 3.0
+    assert policy.last_q_margin == 0.5
+
+    policy.act(torch.zeros(2, 1, 4), deterministic=True)
+
+    assert policy.last_q_margin is None
+    assert policy.last_q_max is None
+
+
 def test_iqn_update_reports_clipping_value_and_target_diagnostics() -> None:
     learner = ImplicitQuantileQLearning(
         DiscreteQuantileNetwork(Encoder(), 16, 3, cosine_count=8),
