@@ -23,7 +23,12 @@ from tmrl.core.runtime import ResolvedRun
 from tmrl.core.spec import RunSpec
 from tmrl.distributed.actor import ActorRuntime, _Client, _PolicyReference
 from tmrl.distributed.codec import WireCodec
-from tmrl.distributed.coordinator import Coordinator, _Counters, _MetricAccumulator
+from tmrl.distributed.coordinator import (
+    Coordinator,
+    _Counters,
+    _MetricAccumulator,
+    _PendingRollout,
+)
 from tmrl.distributed.journal import RolloutJournal
 from tmrl.distributed.protocol import (
     PROTOCOL_VERSION,
@@ -518,6 +523,241 @@ def test_actor_evaluation_runs_the_configured_trial_count() -> None:
 
     assert len(spooled[0][3]) == 3
     assert actor._evaluation_index == 3
+
+
+def test_actor_training_episode_freezes_one_policy_and_reports_action_gaps() -> None:
+    policies: list[Any] = []
+    spooled: list[tuple[list[Transition], list[dict[str, Any]], int]] = []
+
+    class MarginPolicy:
+        def __init__(self, version: int) -> None:
+            self.version = version
+            self.margins = iter((3.0, 1.0, 2.0))
+            self.last_q_margin: float | None = None
+            self.calls = 0
+
+        def act(self, observation: Any, *, deterministic: bool = False) -> int:
+            del observation, deterministic
+            self.calls += 1
+            self.last_q_margin = next(self.margins)
+            return 0
+
+    versions = iter(range(100))
+
+    def next_policy() -> tuple[Any, float, int]:
+        policy = MarginPolicy(next(versions))
+        policies.append(policy)
+        return policy, 0.1, policy.version
+
+    class Environment:
+        def __init__(self, stop: threading.Event) -> None:
+            self.stop = stop
+            self.episode_steps = 0
+            self.total_steps = 0
+
+        def reset(self, *, seed: int) -> tuple[Any, dict[str, Any]]:
+            del seed
+            self.episode_steps = 0
+            return np.zeros(1, dtype=np.float32), {}
+
+        def step(self, action: int) -> tuple[Any, float, bool, bool, dict[str, Any]]:
+            assert action == 0
+            self.episode_steps += 1
+            self.total_steps += 1
+            terminal = self.episode_steps == 3
+            if self.total_steps == 6:
+                self.stop.set()
+            info: dict[str, Any] = (
+                {"termination_reason": "finished", "race_time_ms": 1_000.0} if terminal else {}
+            )
+            return np.zeros(1, dtype=np.float32), 1.0, terminal, False, info
+
+    actor = object.__new__(ActorRuntime)
+    actor.spec = SimpleNamespace(
+        training=SimpleNamespace(max_episode_steps=10),
+        distributed=SimpleNamespace(rollout_chunk_transitions=128, rollout_flush_s=60.0),
+    )
+    actor.actor_id = "actor"
+    actor.session_id = "session"
+    actor.stop = threading.Event()
+    actor.evaluate = threading.Event()
+    actor._actor_seed = lambda: 7
+    actor._policy = next_policy
+    actor._spool = lambda transitions, episodes, version, *, evaluations=None: spooled.append(
+        (list(transitions), list(episodes), version)
+    )
+
+    actor._collect(Environment(actor.stop), _Pipeline())
+
+    acting = [policy for policy in policies if policy.calls]
+    assert [policy.calls for policy in acting] == [3, 3]
+    episode_versions = [
+        {item.info["policy_version"] for item in transitions}
+        for transitions, _, _ in spooled
+        if transitions
+    ]
+    assert episode_versions == [{acting[0].version}, {acting[1].version}]
+    summary = spooled[0][1][0]
+    assert summary["q_margin/mean"] == pytest.approx(2.0)
+    assert summary["q_margin/min"] == pytest.approx(1.0)
+    assert summary["q_margin/start_mean"] == pytest.approx(2.0)
+
+
+def test_learner_ingests_the_full_backlog_before_spending_update_credit(tmp_path: Path) -> None:
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = int(probe.getsockname()[1])
+    events: list[str] = []
+
+    class OrderedLearner(_SlowLearner):
+        def update(self, batch: Any) -> Mapping[str, float]:
+            events.append("update")
+            return super().update(batch)
+
+    spec = RunSpec.model_validate(
+        {
+            "api_version": "1.2",
+            "run_id": "drain-first",
+            "artifacts_dir": str(tmp_path),
+            "components": {
+                "learner": {"class_path": "tests.fake:SlowLearner"},
+                "replay_store": {"class_path": "tmrl.core.replay:InMemoryReplayStore"},
+                "sampler": {"class_path": "tmrl.core.replay:UniformSampler"},
+                "feature_pipeline": {"class_path": "tests.fake:Pipeline"},
+            },
+            "training": {
+                "total_transitions": 6,
+                "batch_size": 1,
+                "warmup_transitions": 1,
+                "updates_per_transition": 1.0,
+                "checkpoint_interval_updates": 1000,
+            },
+        }
+    )
+    pipeline = _Pipeline()
+    run = ResolvedRun(
+        spec=spec,
+        run_dir=tmp_path / "drain-first",
+        learner=OrderedLearner(),
+        environment_factory=None,
+        model_factory=None,
+        replay_store=InMemoryReplayStore(),
+        sampler=UniformSampler(pipeline, seed=0),
+        feature_pipeline=pipeline,
+        logger=_Logger(),
+        checkpoint_codec=TorchCheckpointCodec(),
+        evaluator=None,
+    )
+    stop = threading.Event()
+    stop.set()
+    coordinator = Coordinator(
+        run,
+        bind=f"127.0.0.1:{port}",
+        token="secret",
+        fingerprint="fingerprint",
+        external_stop=stop,
+    )
+    ingest = coordinator._ingest
+
+    def tracking_ingest(value: Mapping[str, Any], row_id: int) -> None:
+        events.append("ingest")
+        ingest(value, row_id)
+
+    coordinator._ingest = tracking_ingest
+    for chunk in range(3):
+        payload = {
+            "actor_id": f"actor-{chunk}",
+            "session_id": "session",
+            "sequence": chunk,
+            "policy_version": 0,
+            "transitions": [
+                transition_to_wire(_transition(f"actor-{chunk}", offset, 1.0, terminal=offset == 1))
+                for offset in range(2)
+            ],
+            "episodes": [],
+            "evaluations": [],
+        }
+        coordinator._rollouts.put(_PendingRollout(payload, chunk + 1, time.monotonic()))
+
+    coordinator.run_forever()
+
+    assert events == ["ingest"] * 3 + ["update"] * 5
+    assert coordinator.counters.transitions == 6
+    assert coordinator.counters.updates == 5
+
+
+def test_ingest_aggregates_evaluation_batches_and_checkpoints_best(tmp_path: Path) -> None:
+    events: list[tuple[str, dict[str, Any]]] = []
+
+    class RecordingLogger:
+        def log(self, event: str, payload: Mapping[str, Any], *, step: int | None = None) -> None:
+            del step
+            events.append((event, dict(payload)))
+
+        def close(self) -> None:
+            return
+
+    checkpoints: list[int] = []
+    coordinator = object.__new__(Coordinator)
+    coordinator.run = SimpleNamespace(
+        replay_store=InMemoryReplayStore(),
+        spec=SimpleNamespace(
+            training=SimpleNamespace(
+                warmup_transitions=1,
+                updates_per_transition=1.0,
+                evaluate_every_episodes=None,
+            )
+        ),
+        logger=RecordingLogger(),
+    )
+    coordinator.counters = _Counters()
+    coordinator._last_ingest_at = time.monotonic()
+    coordinator._rollouts = Queue()
+    coordinator._recovering = False
+    coordinator._best_evaluation = None
+    coordinator._checkpoints = []
+    coordinator._checkpoint = lambda: (
+        checkpoints.append(coordinator.counters.updates),
+        tmp_path / "best.pt",
+    )[1]
+
+    def evaluation(finish_time_s: float, *, finished: bool) -> dict[str, Any]:
+        return {
+            "finished": float(finished),
+            "finish_time_s": finish_time_s,
+            "policy_version": 41,
+            "q_margin/start_mean": 0.5,
+        }
+
+    def ingest(evaluations: list[dict[str, Any]]) -> None:
+        coordinator._ingest(
+            {
+                "actor_id": "actor",
+                "session_id": "session",
+                "sequence": 0,
+                "policy_version": 0,
+                "transitions": [],
+                "episodes": [],
+                "evaluations": evaluations,
+            },
+            1,
+        )
+
+    ingest([evaluation(52.0, finished=True), evaluation(0.0, finished=False)])
+    ingest([evaluation(0.0, finished=False), evaluation(0.0, finished=False)])
+    ingest([evaluation(50.0, finished=True), evaluation(46.0, finished=True)])
+
+    summaries = [payload for event, payload in events if event == "eval/summary"]
+    assert [item["finish_rate"] for item in summaries] == [0.5, 0.0, 1.0]
+    assert summaries[0]["finish_time_mean_s"] == pytest.approx(52.0)
+    assert summaries[0]["policy_version"] == 41.0
+    assert summaries[0]["q_margin_start_mean"] == pytest.approx(0.5)
+    assert summaries[2]["finish_time_median_s"] == pytest.approx(48.0)
+    assert summaries[2]["finish_time_best_s"] == pytest.approx(46.0)
+    assert summaries[2]["sub40_rate"] == 0.0
+    assert len(checkpoints) == 2
+    best_events = [payload for event, payload in events if event == "eval/best_checkpoint"]
+    assert [item["finish_rate"] for item in best_events] == [0.5, 1.0]
 
 
 def test_distributed_ingest_normalizes_source_demo_marker() -> None:

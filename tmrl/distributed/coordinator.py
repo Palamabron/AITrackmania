@@ -9,6 +9,7 @@ from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from queue import Empty, Queue
+from statistics import fmean, median
 from threading import RLock
 from time import monotonic, perf_counter, sleep
 from typing import Any, cast
@@ -186,6 +187,8 @@ class Coordinator:
         self._growing_credit_windows = 0
         self._last_logging_s = 0.0
         self._last_metric_transitions = 0
+        self._best_evaluation: tuple[float, float] | None = None
+        self._recovering = False
         self._checkpoint_writer = _AsyncCheckpointWriter(run.checkpoint_codec)
 
     def run_forever(self) -> TrainingResult:
@@ -480,6 +483,9 @@ class Coordinator:
                 f"steps={int(summary['steps'])}, "
                 f"race={float(summary['race_time_s']):.2f}s, "
                 f"epsilon={float(summary['exploration_epsilon']):.3f}, "
+                f"policy={int(summary.get('policy_version', 0))}, "
+                f"q_margin(start={float(summary.get('q_margin/start_mean', 0.0)):.2f}, "
+                f"min={float(summary.get('q_margin/min', 0.0)):.2f}), "
                 f"termination={summary['termination']}",
                 flush=True,
             )
@@ -487,7 +493,8 @@ class Coordinator:
             if interval is not None and self.counters.episodes % interval == 0:
                 with self._lock:
                     self._evaluation_due.add(str(value["actor_id"]))
-        for summary in value.get("evaluations", []):
+        evaluations = [dict(summary) for summary in value.get("evaluations", [])]
+        for summary in evaluations:
             self.counters.evaluations += 1
             finished = bool(summary["finished"])
             finish_time_s = float(summary["finish_time_s"])
@@ -506,6 +513,8 @@ class Coordinator:
                 },
                 step=self.counters.updates,
             )
+        if evaluations:
+            self._finish_evaluation_batch(evaluations)
         self.run.logger.log(
             "distributed/ingest",
             {
@@ -536,8 +545,10 @@ class Coordinator:
             ):
                 did_update = False
                 self._check_actor_timeouts()
-                if self.counters.update_credit < 1.0:
-                    self._drain_rollouts(1)
+                # Ingest the whole backlog every iteration: a standing queue
+                # would otherwise train the learner on minutes-old transitions
+                # and inflate the measured actor policy lag by the queue delay.
+                self._drain_rollouts(max(1, self._rollouts.qsize()))
                 if len(self.run.replay_store) >= ready and self.counters.update_credit >= 1.0:
                     request = spec.batch_request(beta=spec.replay_beta(self.counters.transitions))
                     batch, preparation_s, wait_s = prefetcher.next(request)
@@ -590,6 +601,40 @@ class Coordinator:
             value["_enqueued_at"] = pending.enqueued_at
             self._ingest(value, pending.row_id)
             self._rollouts.task_done()
+
+    def _finish_evaluation_batch(self, summaries: list[dict[str, Any]]) -> None:
+        stats = _evaluation_batch_stats(summaries)
+        self.run.logger.log("eval/summary", stats, step=self.counters.updates)
+        print(
+            f"Deterministic evaluation @update {self.counters.updates}: "
+            f"{int(stats['finished_trials'])}/{int(stats['trials'])} finished, "
+            f"mean={stats['finish_time_mean_s']:.2f}s, "
+            f"best={stats['finish_time_best_s']:.2f}s, "
+            f"policy_version={int(stats['policy_version'])}",
+            flush=True,
+        )
+        self._record_best_evaluation(
+            float(stats["finish_rate"]), float(stats["finish_time_mean_s"])
+        )
+
+    def _record_best_evaluation(self, finish_rate: float, mean_time_s: float) -> None:
+        if self._recovering:
+            return
+        candidate = (finish_rate, -mean_time_s)
+        if self._best_evaluation is not None and candidate <= self._best_evaluation:
+            return
+        self._best_evaluation = candidate
+        path = self._checkpoint()
+        self._checkpoints.append(path)
+        self.run.logger.log(
+            "eval/best_checkpoint",
+            {
+                "finish_rate": finish_rate,
+                "finish_time_mean_s": mean_time_s,
+                "path": str(path),
+            },
+            step=self.counters.updates,
+        )
 
     def _emit_metrics_if_ready(self) -> None:
         interval = self.run.spec.training.metrics_interval_updates
@@ -748,11 +793,15 @@ class Coordinator:
         self._recover_journal(self.counters.journal_watermark)
 
     def _recover_journal(self, watermark: int) -> None:
-        for row_id, payload in self.journal.rows_after(watermark):
-            value = self.codec.decode(payload)
-            if not isinstance(value, Mapping):
-                raise ValueError("journal chunk must decode to a mapping")
-            self._ingest(value, row_id)
+        self._recovering = True
+        try:
+            for row_id, payload in self.journal.rows_after(watermark):
+                value = self.codec.decode(payload)
+                if not isinstance(value, Mapping):
+                    raise ValueError("journal chunk must decode to a mapping")
+                self._ingest(value, row_id)
+        finally:
+            self._recovering = False
 
     def _log_execution(self) -> None:
         execution = getattr(self.run.learner, "execution_manifest", None)
@@ -789,6 +838,26 @@ def learner_process_entry(
         ).run_forever()
     finally:
         run.logger.close()
+
+
+def _evaluation_batch_stats(summaries: list[dict[str, Any]]) -> dict[str, float]:
+    finished_times = sorted(
+        float(item["finish_time_s"]) for item in summaries if bool(item["finished"])
+    )
+    trials = len(summaries)
+    return {
+        "trials": float(trials),
+        "finished_trials": float(len(finished_times)),
+        "finish_rate": len(finished_times) / trials,
+        "finish_time_mean_s": fmean(finished_times) if finished_times else 0.0,
+        "finish_time_median_s": median(finished_times) if finished_times else 0.0,
+        "finish_time_best_s": finished_times[0] if finished_times else 0.0,
+        "sub40_rate": sum(1 for time_s in finished_times if time_s < 40.0) / trials,
+        "policy_version": float(summaries[0].get("policy_version", 0)),
+        "q_margin_start_mean": fmean(
+            float(item.get("q_margin/start_mean", 0.0)) for item in summaries
+        ),
+    }
 
 
 def _state_dict(component: object) -> Mapping[str, object] | None:
