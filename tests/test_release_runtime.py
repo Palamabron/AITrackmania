@@ -427,6 +427,49 @@ def test_trajectory_reward_applies_a_light_nonterminal_collision_penalty() -> No
     assert collision.reward == pytest.approx(baseline.reward - 0.05)
 
 
+def test_trajectory_reward_debounces_collision_penalties_by_race_time() -> None:
+    reward = TrajectoryReward(
+        np.array([[0, 0, 0], [1, 0, 0]], dtype=np.float32),
+        collision_penalty=0.5,
+        collision_cooldown_s=2.0,
+        time_penalty_per_second=0.0,
+        potential_progress_weight=0.0,
+    )
+    reward.reset(np.array([0, 0, 0]), velocity=np.zeros(3), race_time_ms=0.0)
+
+    first = reward.step(
+        np.array([0, 0, 0]),
+        finish_ui_active=False,
+        velocity=np.zeros(3),
+        race_time_ms=100.0,
+        collision=True,
+    )
+    repeated = reward.step(
+        np.array([0, 0, 0]),
+        finish_ui_active=False,
+        velocity=np.zeros(3),
+        race_time_ms=1_100.0,
+        collision=True,
+    )
+    later = reward.step(
+        np.array([0, 0, 0]),
+        finish_ui_active=False,
+        velocity=np.zeros(3),
+        race_time_ms=2_100.0,
+        collision=True,
+    )
+
+    assert first.collision_detected
+    assert first.collided
+    assert first.collision_reward == pytest.approx(-0.5)
+    assert repeated.collision_detected
+    assert not repeated.collided
+    assert repeated.collision_reward == 0.0
+    assert later.collision_detected
+    assert later.collided
+    assert later.collision_reward == pytest.approx(-0.5)
+
+
 def test_trajectory_reward_does_not_skip_ahead_at_a_track_crossover() -> None:
     # Point 4 passes close to point 1, but comes after a distant part of the lap.
     # A global nearest-point lookup would award four samples of progress at once.

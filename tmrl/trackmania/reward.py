@@ -23,6 +23,7 @@ class RewardResult:
     terminal_reward: float = 0.0
     collision_reward: float = 0.0
     collided: bool = False
+    collision_detected: bool = False
     potential_progress: float = 0.0
     projected_velocity_mps: float = 0.0
     projected_velocity_ratio: float = 0.0
@@ -42,6 +43,7 @@ class TrajectoryReward:
         minimum_progress_per_window_m: float = 2.0,
         terminal_failure_penalty: float = 1.0,
         collision_penalty: float = 0.05,
+        collision_cooldown_s: float = 0.0,
         minimum_finish_steps: int = 50,
         nearest_forward_points: int = 500,
         nearest_backward_points: int = 10,
@@ -68,6 +70,7 @@ class TrajectoryReward:
             minimum_progress_per_window_m < 0.0
             or minimum_finish_steps < 1
             or collision_penalty < 0.0
+            or collision_cooldown_s < 0.0
             or nearest_forward_points < 1
             or nearest_backward_points < 0
             or time_penalty_per_second < 0.0
@@ -87,6 +90,7 @@ class TrajectoryReward:
         self.minimum_progress_per_window_m = minimum_progress_per_window_m
         self.terminal_failure_penalty = terminal_failure_penalty
         self.collision_penalty = collision_penalty
+        self.collision_cooldown_s = collision_cooldown_s
         self.minimum_finish_steps = minimum_finish_steps
         self.nearest_forward_points = nearest_forward_points
         self.nearest_backward_points = nearest_backward_points
@@ -110,6 +114,7 @@ class TrajectoryReward:
         self._previous_potential: float | None = None
         self._previous_race_time_s: float | None = None
         self._previous_steering = 0.0
+        self._last_penalized_collision_s: float | None = None
 
     @classmethod
     def from_file(cls, path: str | Path, **kwargs: Any) -> TrajectoryReward:
@@ -131,6 +136,7 @@ class TrajectoryReward:
         self._previous_potential = None
         self._previous_race_time_s = self._race_time_s(race_time_ms)
         self._previous_steering = 0.0
+        self._last_penalized_collision_s = None
         if position is not None:
             self._index, _ = self._nearest_point(np.asarray(position, dtype=np.float32)[:3])
             self._previous_potential = self._potential()
@@ -173,6 +179,7 @@ class TrajectoryReward:
             self._step - self._progress_history[0][0] > self.slow_progress_window_steps
         ):
             self._progress_history.popleft()
+        race_time_s = self._race_time_s(race_time_ms)
         time_reward, elapsed_s = self._time_reward(race_time_ms)
         potential = self._potential()
         progress_potential = potential
@@ -200,6 +207,7 @@ class TrajectoryReward:
                     projected_velocity_ratio,
                 ),
                 collision,
+                race_time_s,
             )
         near_finish = self._index / (len(self.points) - 1) >= self.finish_progress
         if finish_ui_active and near_finish and self._step >= self.minimum_finish_steps:
@@ -216,6 +224,7 @@ class TrajectoryReward:
                     projected_velocity_ratio,
                 ),
                 collision,
+                race_time_s,
             )
         if self._step - self._last_progress_step >= self.no_progress_steps:
             return self._apply_collision(
@@ -231,6 +240,7 @@ class TrajectoryReward:
                     projected_velocity_ratio,
                 ),
                 collision,
+                race_time_s,
             )
         if (
             len(self._progress_history) >= 2
@@ -250,6 +260,7 @@ class TrajectoryReward:
                     projected_velocity_ratio,
                 ),
                 collision,
+                race_time_s,
             )
         pbrs_reward = self.reward_gamma * potential - self._previous_potential
         self._previous_potential = potential
@@ -274,17 +285,28 @@ class TrajectoryReward:
                 projected_velocity_ratio=projected_velocity_ratio,
             ),
             collision,
+            race_time_s,
         )
 
-    def _apply_collision(self, result: RewardResult, collision: bool) -> RewardResult:
+    def _apply_collision(
+        self, result: RewardResult, collision: bool, race_time_s: float | None
+    ) -> RewardResult:
         if not collision:
             return result
+        if (
+            race_time_s is not None
+            and self._last_penalized_collision_s is not None
+            and race_time_s - self._last_penalized_collision_s < self.collision_cooldown_s
+        ):
+            return replace(result, collision_detected=True)
+        self._last_penalized_collision_s = race_time_s
         collision_reward = -self.collision_penalty
         return replace(
             result,
             reward=result.reward + collision_reward,
             collision_reward=collision_reward,
             collided=True,
+            collision_detected=True,
         )
 
     def _nearest_point(self, point: np.ndarray) -> tuple[int, float]:

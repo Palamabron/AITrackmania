@@ -47,6 +47,7 @@ class TrackmaniaEnvironmentConfig(BaseModel):
     minimum_progress_per_window_m: float = Field(default=2.0, ge=0.0)
     terminal_failure_penalty: float = Field(default=1.0, ge=0.0)
     collision_penalty: float = Field(default=0.05, ge=0.0)
+    collision_cooldown_s: float = Field(default=0.0, ge=0.0)
     minimum_finish_steps: int = Field(default=50, ge=1)
     nearest_forward_points: int = Field(default=500, ge=1)
     nearest_backward_points: int = Field(default=10, ge=0)
@@ -83,6 +84,7 @@ class TrackmaniaEnvironmentConfig(BaseModel):
             self.velocity_to_mps_scale,
             self.projected_velocity_scale,
             self.steering_delta_penalty,
+            self.collision_cooldown_s,
             self.reward_gamma,
         )
         if not all(isfinite(value) for value in values):
@@ -109,6 +111,7 @@ class OpenPlanetEnvironment:
             "minimum_progress_per_window_m": config.minimum_progress_per_window_m,
             "terminal_failure_penalty": config.terminal_failure_penalty,
             "collision_penalty": config.collision_penalty,
+            "collision_cooldown_s": config.collision_cooldown_s,
             "minimum_finish_steps": config.minimum_finish_steps,
             "nearest_forward_points": config.nearest_forward_points,
             "nearest_backward_points": config.nearest_backward_points,
@@ -254,6 +257,7 @@ class OpenPlanetEnvironment:
                 "reward_steering_delta": result.steering_delta_reward,
                 "reward_collision": result.collision_reward,
                 "collision": result.collided,
+                "collision_detected": result.collision_detected,
                 "reward_terminal": result.terminal_reward,
                 "potential_progress": result.potential_progress,
                 "projected_velocity_mps": result.projected_velocity_mps,

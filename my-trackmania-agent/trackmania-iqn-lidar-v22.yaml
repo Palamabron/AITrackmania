@@ -1,5 +1,5 @@
 api_version: "1.2"
-run_id: trackmania-iqn-lidar-v20
+run_id: trackmania-iqn-lidar-v22
 seed: 0
 artifacts_dir: artifacts
 distributed:
@@ -46,6 +46,7 @@ components:
         minimum_progress_per_window_m: 5.0
         terminal_failure_penalty: 0.5
         collision_penalty: 0.5
+        collision_cooldown_s: 2.0
         time_penalty_per_second: 0.0
         max_time_delta_s: 1.0
         progress_reward_full_lap: 100.0
@@ -54,7 +55,7 @@ components:
         max_projected_speed_mps: 80.0
         velocity_to_mps_scale: 1.0
         projected_velocity_scale: 0.1
-        steering_delta_penalty: 0.1
+        steering_delta_penalty: 0.01
         reward_gamma: 0.99
   model_factory:
     class_path: tmrl.trackmania.iqn:LidarIqnModelFactory

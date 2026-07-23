@@ -247,6 +247,9 @@ class ActorRuntime:
             progress_reward = 0.0
             projected_velocity_reward = 0.0
             steering_delta_reward = 0.0
+            collision_reward = 0.0
+            collision_count = 0
+            collision_detected_count = 0
             terminal_reward = 0.0
             velocity_ratio_sum = 0.0
             velocity_ratio_max = 0.0
@@ -278,6 +281,9 @@ class ActorRuntime:
                 progress_reward += float(info.get("reward_progress", 0.0))
                 projected_velocity_reward += float(info.get("reward_projected_velocity", 0.0))
                 steering_delta_reward += float(info.get("reward_steering_delta", 0.0))
+                collision_reward += float(info.get("reward_collision", 0.0))
+                collision_count += int(bool(info.get("collision", False)))
+                collision_detected_count += int(bool(info.get("collision_detected", False)))
                 terminal_reward += float(info.get("reward_terminal", 0.0))
                 velocity_ratio = float(info.get("projected_velocity_ratio", 0.0))
                 velocity_ratio_sum += velocity_ratio
@@ -296,6 +302,9 @@ class ActorRuntime:
                 "reward_progress": progress_reward,
                 "reward_projected_velocity": projected_velocity_reward,
                 "reward_steering_delta": steering_delta_reward,
+                "reward_collision": collision_reward,
+                "collision_count": collision_count,
+                "collision_detected_count": collision_detected_count,
                 "reward_terminal": terminal_reward,
                 "projected_velocity_ratio_mean": velocity_ratio_sum / (step + 1),
                 "projected_velocity_ratio_max": velocity_ratio_max,
@@ -330,6 +339,9 @@ class ActorRuntime:
         progress_reward = 0.0
         projected_velocity_reward = 0.0
         steering_delta_reward = 0.0
+        collision_reward = 0.0
+        collision_count = 0
+        collision_detected_count = 0
         terminal_reward = 0.0
         velocity_ratio_sum = 0.0
         velocity_ratio_max = 0.0
@@ -344,6 +356,9 @@ class ActorRuntime:
             progress_reward += float(info.get("reward_progress", 0.0))
             projected_velocity_reward += float(info.get("reward_projected_velocity", 0.0))
             steering_delta_reward += float(info.get("reward_steering_delta", 0.0))
+            collision_reward += float(info.get("reward_collision", 0.0))
+            collision_count += int(bool(info.get("collision", False)))
+            collision_detected_count += int(bool(info.get("collision_detected", False)))
             terminal_reward += float(info.get("reward_terminal", 0.0))
             velocity_ratio = float(info.get("projected_velocity_ratio", 0.0))
             velocity_ratio_sum += velocity_ratio
@@ -360,6 +375,9 @@ class ActorRuntime:
                 "reward_progress": progress_reward,
                 "reward_projected_velocity": projected_velocity_reward,
                 "reward_steering_delta": steering_delta_reward,
+                "reward_collision": collision_reward,
+                "collision_count": collision_count,
+                "collision_detected_count": collision_detected_count,
                 "reward_terminal": terminal_reward,
                 "projected_velocity_ratio_mean": velocity_ratio_sum / (_step + 1),
                 "projected_velocity_ratio_max": velocity_ratio_max,
@@ -390,12 +408,15 @@ class ActorRuntime:
             "reward/progress": float(info.get("reward_progress", 0.0)),
             "reward/projected_velocity": float(info.get("reward_projected_velocity", 0.0)),
             "reward/steering_delta": float(info.get("reward_steering_delta", 0.0)),
+            "reward/collision": float(info.get("reward_collision", 0.0)),
             "reward/terminal": float(info.get("reward_terminal", 0.0)),
             "potential/progress": float(info.get("potential_progress", 0.0)),
             "velocity/projected_mps": float(info.get("projected_velocity_mps", 0.0)),
             "velocity/ratio": float(info.get("projected_velocity_ratio", 0.0)),
             "velocity/ratio_mean": float(info.get("projected_velocity_ratio_mean", 0.0)),
             "velocity/ratio_max": float(info.get("projected_velocity_ratio_max", 0.0)),
+            "collision/count": int(info.get("collision_count", 0)),
+            "collision/detected_count": int(info.get("collision_detected_count", 0)),
             "steps": transitions,
             "progress_pct": float(info.get("progress_pct", 0.0)),
             "progress_m": float(info.get("progress_m", 0.0)),
