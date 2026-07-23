@@ -66,7 +66,12 @@ class _IQNPolicy:
 
     def act(self, observation: Any, *, deterministic: bool = False) -> Any:
         observation = tree_to_device(sanitize_finite(observation), self.device)
-        is_single_observation = _first_tensor(observation).ndim in {1, 2}
+        detector = getattr(self.model, "observation_is_single", None)
+        is_single_observation = (
+            bool(detector(observation))
+            if callable(detector)
+            else _first_tensor(observation).ndim in {1, 2}
+        )
         if is_single_observation:
             observation = _unsqueeze_observation(observation)
         with torch.no_grad():
@@ -357,5 +362,7 @@ class ImplicitQuantileQLearning(TorchLearnerBase):
         self.model.load_state_dict(state["model"])
         self.target_model.load_state_dict(state["target_model"])
         self.optimizer.load_state_dict(state["optimizer"])
+        for parameter_group in self.optimizer.param_groups:
+            parameter_group["lr"] = self.learning_rate
         self.update_count = int(state["update_count"])
         self._restore_rng(state.get("rng", {}))

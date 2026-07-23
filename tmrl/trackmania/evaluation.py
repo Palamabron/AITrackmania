@@ -103,13 +103,17 @@ class TrackmaniaEvaluator:
         finish_time_s: float | None = None
         try:
             observation, _ = environment.reset(seed=seed)
+            reset_pipeline = getattr(self.feature_pipeline, "reset_episode", None)
+            if callable(reset_pipeline):
+                reset_pipeline()
+            prepared = self.feature_pipeline.transform_observation(observation)
             started = perf_counter()
             for _ in range(self.max_episode_steps):
-                prepared = self.feature_pipeline.transform_observation(observation)
                 action_started = perf_counter()
                 action = policy.act(prepared, deterministic=True)
                 action_latency_ms += (perf_counter() - action_started) * 1_000.0
                 observation, reward, terminated, truncated, info = environment.step(action)
+                prepared = self.feature_pipeline.transform_observation(observation)
                 reward_sum += float(reward)
                 steps += 1
                 termination_reason = str(info.get("termination_reason", ""))

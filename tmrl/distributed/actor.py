@@ -15,10 +15,12 @@ from time import monotonic
 from typing import Any
 
 import grpc
+import torch
 from google.protobuf.wrappers_pb2 import BytesValue
 
 from tmrl.core.contracts import ExploratoryPolicy, ReplicablePolicy
 from tmrl.core.data import Transition
+from tmrl.core.pytree import tree_map
 from tmrl.core.runtime import _instantiate
 from tmrl.core.spec import RunSpec
 from tmrl.distributed.codec import WireCodec
@@ -241,11 +243,14 @@ class ActorRuntime:
                 self.evaluate.clear()
                 self._evaluate(environment, pipeline)
             observation, _ = environment.reset(seed=self._actor_seed() + episode)
+            self._reset_pipeline(pipeline)
+            prepared = pipeline.transform_observation(observation)
             total_reward = 0.0
             time_reward = 0.0
             pbrs_reward = 0.0
             progress_reward = 0.0
             projected_velocity_reward = 0.0
+            projected_speed_reward = 0.0
             steering_delta_reward = 0.0
             collision_reward = 0.0
             collision_count = 0
@@ -257,16 +262,15 @@ class ActorRuntime:
             episode_id = f"{self.actor_id}/{self.session_id}/{episode:08d}"
             for step in range(self.spec.training.max_episode_steps):
                 policy, epsilon, version = self._policy()
-                prepared = pipeline.transform_observation(observation)
                 action = policy.act(prepared)
                 next_observation, reward, terminated, truncated, info = environment.step(action)
                 next_prepared = pipeline.transform_observation(next_observation)
                 transitions.append(
                     Transition(
-                        observation=prepared,
+                        observation=self._snapshot_observation(prepared),
                         action=action,
                         reward=float(reward),
-                        next_observation=next_prepared,
+                        next_observation=self._snapshot_observation(next_prepared),
                         terminated=bool(terminated),
                         truncated=bool(truncated),
                         info={**dict(info), "policy_version": version, "actor_epsilon": epsilon},
@@ -274,12 +278,13 @@ class ActorRuntime:
                         step=step,
                     )
                 )
-                observation = next_observation
+                prepared = next_prepared
                 total_reward += float(reward)
                 time_reward += float(info.get("reward_time", 0.0))
                 pbrs_reward += float(info.get("reward_pbrs", 0.0))
                 progress_reward += float(info.get("reward_progress", 0.0))
                 projected_velocity_reward += float(info.get("reward_projected_velocity", 0.0))
+                projected_speed_reward += float(info.get("reward_projected_speed", 0.0))
                 steering_delta_reward += float(info.get("reward_steering_delta", 0.0))
                 collision_reward += float(info.get("reward_collision", 0.0))
                 collision_count += int(bool(info.get("collision", False)))
@@ -301,6 +306,7 @@ class ActorRuntime:
                 "reward_pbrs": pbrs_reward,
                 "reward_progress": progress_reward,
                 "reward_projected_velocity": projected_velocity_reward,
+                "reward_projected_speed": projected_speed_reward,
                 "reward_steering_delta": steering_delta_reward,
                 "reward_collision": collision_reward,
                 "collision_count": collision_count,
@@ -333,11 +339,14 @@ class ActorRuntime:
         observation, _ = environment.reset(
             seed=self._actor_seed() + 1_000_000 + self._evaluation_index
         )
+        self._reset_pipeline(pipeline)
+        prepared = pipeline.transform_observation(observation)
         total_reward = 0.0
         time_reward = 0.0
         pbrs_reward = 0.0
         progress_reward = 0.0
         projected_velocity_reward = 0.0
+        projected_speed_reward = 0.0
         steering_delta_reward = 0.0
         collision_reward = 0.0
         collision_count = 0
@@ -347,14 +356,15 @@ class ActorRuntime:
         velocity_ratio_max = 0.0
         final_info: Mapping[str, Any] = {}
         for _step in range(self.spec.training.max_episode_steps):
-            prepared = pipeline.transform_observation(observation)
             action = policy.act(prepared, deterministic=True)
             observation, reward, terminated, truncated, info = environment.step(action)
+            prepared = pipeline.transform_observation(observation)
             total_reward += float(reward)
             time_reward += float(info.get("reward_time", 0.0))
             pbrs_reward += float(info.get("reward_pbrs", 0.0))
             progress_reward += float(info.get("reward_progress", 0.0))
             projected_velocity_reward += float(info.get("reward_projected_velocity", 0.0))
+            projected_speed_reward += float(info.get("reward_projected_speed", 0.0))
             steering_delta_reward += float(info.get("reward_steering_delta", 0.0))
             collision_reward += float(info.get("reward_collision", 0.0))
             collision_count += int(bool(info.get("collision", False)))
@@ -374,6 +384,7 @@ class ActorRuntime:
                 "reward_pbrs": pbrs_reward,
                 "reward_progress": progress_reward,
                 "reward_projected_velocity": projected_velocity_reward,
+                "reward_projected_speed": projected_speed_reward,
                 "reward_steering_delta": steering_delta_reward,
                 "reward_collision": collision_reward,
                 "collision_count": collision_count,
@@ -389,6 +400,19 @@ class ActorRuntime:
         summary["deterministic"] = 1.0
         self._evaluation_index += 1
         return summary
+
+    @staticmethod
+    def _reset_pipeline(pipeline: Any) -> None:
+        reset = getattr(pipeline, "reset_episode", None)
+        if callable(reset):
+            reset()
+
+    @staticmethod
+    def _snapshot_observation(observation: Any) -> Any:
+        return tree_map(
+            lambda value: value.clone() if isinstance(value, torch.Tensor) else value,
+            observation,
+        )
 
     def _should_flush(self, transitions: list[Transition], started: float) -> bool:
         return len(transitions) >= self.spec.distributed.rollout_chunk_transitions or (
@@ -407,6 +431,7 @@ class ActorRuntime:
             "reward/pbrs": float(info.get("reward_pbrs", 0.0)),
             "reward/progress": float(info.get("reward_progress", 0.0)),
             "reward/projected_velocity": float(info.get("reward_projected_velocity", 0.0)),
+            "reward/projected_speed": float(info.get("reward_projected_speed", 0.0)),
             "reward/steering_delta": float(info.get("reward_steering_delta", 0.0)),
             "reward/collision": float(info.get("reward_collision", 0.0)),
             "reward/terminal": float(info.get("reward_terminal", 0.0)),

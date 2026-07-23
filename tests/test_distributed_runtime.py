@@ -166,6 +166,14 @@ def test_wire_codec_rejects_unknown_objects_and_message_overflow() -> None:
         WireCodec(8).encode({"payload": "too large"})
 
 
+def test_actor_observation_snapshots_do_not_share_tensor_storage() -> None:
+    observation = {"lidar": torch.zeros(4, 60), "telemetry": torch.zeros(20)}
+    first = ActorRuntime._snapshot_observation(observation)
+    second = ActorRuntime._snapshot_observation(observation)
+
+    WireCodec(1024 * 1024).encode({"first": first, "second": second})
+
+
 def test_wire_codec_supports_concurrent_calls() -> None:
     codec = WireCodec(1024 * 1024)
     value = {"tensor": torch.arange(256), "metadata": ["rollout", 17]}

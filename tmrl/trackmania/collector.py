@@ -40,12 +40,15 @@ class TrackmaniaCollector:
         self, environment: TrackmaniaEnvironment, episode_id: str, max_steps: int
     ) -> CollectionResult:
         observation, reset_info = environment.reset()
+        reset_pipeline = getattr(self.pipeline, "reset_episode", None)
+        if callable(reset_pipeline):
+            reset_pipeline()
+        prepared = self.pipeline.transform_observation(observation)
         telemetry: list[Mapping[str, Any]] = []
         actions: list[Any] = []
         rewards: list[float] = []
         observation_refs: list[str] = []
         for step in range(max_steps):
-            prepared = self.pipeline.transform_observation(observation)
             started = perf_counter()
             action = self.policy.act(prepared)
             latency_ms = (perf_counter() - started) * 1000.0
@@ -68,7 +71,7 @@ class TrackmaniaCollector:
             actions.append(action)
             rewards.append(float(reward))
             observation_refs.append(str(info.get("observation_ref", "")))
-            observation = next_observation
+            prepared = next_prepared
             if terminated or truncated:
                 break
         artifact = EpisodeArtifact(

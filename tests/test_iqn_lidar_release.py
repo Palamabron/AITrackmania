@@ -252,6 +252,34 @@ def test_lidar_pipeline_preserves_legacy_right_then_forward_car_frame(tmp_path: 
     assert output["lidar"][:2, 0].tolist() == pytest.approx([0.5, 0.2])
 
 
+def test_lidar_pipeline_stacks_track_relative_history(tmp_path: Path) -> None:
+    pipeline = LidarFeaturePipeline(
+        _asset(tmp_path),
+        expected_map_uid="test-3",
+        history_length=2,
+        include_track_relative=True,
+        max_speed_mps=10.0,
+    )
+    first = np.zeros(33, dtype=np.float32)
+    first[10] = 1.0
+    first[7] = 5.0
+    initial = pipeline.transform_observation(first)
+    second = first.copy()
+    second[4] = 4.0
+    stacked = pipeline.transform_observation(second)
+
+    assert initial["lidar"].shape == (2, 4, 60)
+    assert initial["telemetry"].shape == (2, 26)
+    assert torch.equal(initial["telemetry"][0], initial["telemetry"][1])
+    assert stacked["telemetry"][-1, 20] > stacked["telemetry"][0, 20]
+    assert stacked["telemetry"][-1, 23] == pytest.approx(1.0)
+    assert stacked["telemetry"][-1, 24] == pytest.approx(0.5)
+
+    pipeline.reset_episode()
+    reset = pipeline.transform_observation(second)
+    assert torch.equal(reset["telemetry"][0], reset["telemetry"][1])
+
+
 def test_iqn_lidar_updates_and_handles_single_structured_observation(tmp_path: Path) -> None:
     pipeline = LidarFeaturePipeline(_asset(tmp_path), expected_map_uid="test-3")
     raw = np.zeros(33, dtype=np.float32)
@@ -288,6 +316,48 @@ def test_iqn_lidar_updates_and_handles_single_structured_observation(tmp_path: P
     assert torch.isfinite(torch.tensor(list(metrics.values()))).all()
     assert isinstance(learner.policy().act(single, deterministic=True), int)
     assert learner._current_epsilon() < 1.0
+
+
+def test_temporal_iqn_handles_explicit_history(tmp_path: Path) -> None:
+    pipeline = LidarFeaturePipeline(
+        _asset(tmp_path),
+        expected_map_uid="test-3",
+        history_length=2,
+        include_track_relative=True,
+    )
+    raw = np.zeros(33, dtype=np.float32)
+    raw[10] = 1.0
+    single = pipeline.transform_observation(raw)
+    learner = ImplicitQuantileQLearning(
+        LidarIqnModel(cosine_count=8, telemetry_dim=26, history_length=2),
+        train_quantile_count=8,
+        target_quantile_count=8,
+        evaluation_quantile_count=8,
+        execution={"device": "cpu", "precision": "float32"},
+    )
+    learner.setup({"seed": 0})
+
+    assert isinstance(learner.policy().act(single, deterministic=True), int)
+
+
+def test_iqn_resume_uses_configured_learning_rate(tmp_path: Path) -> None:
+    model = LidarIqnModel(cosine_count=8)
+    first = ImplicitQuantileQLearning(
+        model,
+        learning_rate=3e-5,
+        execution={"device": "cpu", "precision": "float32"},
+    )
+    first.setup({"seed": 0})
+    state = first.state_dict()
+    resumed = ImplicitQuantileQLearning(
+        LidarIqnModel(cosine_count=8),
+        learning_rate=1e-4,
+        execution={"device": "cpu", "precision": "float32"},
+    )
+    resumed.setup({"seed": 0})
+    resumed.load_state_dict(state)
+
+    assert {group["lr"] for group in resumed.optimizer.param_groups} == {1e-4}
 
 
 def test_track_geometry_attention_masks_bfloat16_logits() -> None:

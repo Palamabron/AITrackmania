@@ -19,6 +19,7 @@ class RewardResult:
     pbrs_reward: float = 0.0
     progress_reward: float = 0.0
     projected_velocity_reward: float = 0.0
+    projected_speed_reward: float = 0.0
     steering_delta_reward: float = 0.0
     terminal_reward: float = 0.0
     collision_reward: float = 0.0
@@ -55,6 +56,7 @@ class TrajectoryReward:
         max_projected_speed_mps: float = 100.0,
         velocity_to_mps_scale: float = 0.001,
         projected_velocity_scale: float = 0.0,
+        projected_speed_bonus_scale: float = 0.0,
         steering_delta_penalty: float = 0.0,
         reward_gamma: float = 0.995,
     ) -> None:
@@ -81,6 +83,7 @@ class TrajectoryReward:
             or max_projected_speed_mps <= 0.0
             or velocity_to_mps_scale <= 0.0
             or projected_velocity_scale < 0.0
+            or projected_speed_bonus_scale < 0.0
             or steering_delta_penalty < 0.0
             or not 0.0 <= reward_gamma <= 1.0
         ):
@@ -102,6 +105,7 @@ class TrajectoryReward:
         self.max_projected_speed_mps = max_projected_speed_mps
         self.velocity_to_mps_scale = velocity_to_mps_scale
         self.projected_velocity_scale = projected_velocity_scale
+        self.projected_speed_bonus_scale = projected_speed_bonus_scale
         self.steering_delta_penalty = steering_delta_penalty
         self.reward_gamma = reward_gamma
         self._cumulative_distance = np.r_[
@@ -190,6 +194,9 @@ class TrajectoryReward:
         projected_velocity_reward = (
             self.projected_velocity_scale * projected_velocity_mps * elapsed_s
         )
+        projected_speed_reward = (
+            self.projected_speed_bonus_scale * max(0.0, projected_velocity_ratio) ** 2 * elapsed_s
+        )
         steering_delta_reward = self._steering_delta_reward(steering)
         if self._previous_potential is None:
             self._previous_potential = potential
@@ -202,6 +209,7 @@ class TrajectoryReward:
                     -abs(self.terminal_failure_penalty),
                     progress_reward,
                     projected_velocity_reward,
+                    projected_speed_reward,
                     steering_delta_reward,
                     projected_velocity_mps,
                     projected_velocity_ratio,
@@ -219,6 +227,7 @@ class TrajectoryReward:
                     self.finish_reward,
                     progress_reward,
                     projected_velocity_reward,
+                    projected_speed_reward,
                     steering_delta_reward,
                     projected_velocity_mps,
                     projected_velocity_ratio,
@@ -235,6 +244,7 @@ class TrajectoryReward:
                     -abs(self.terminal_failure_penalty),
                     progress_reward,
                     projected_velocity_reward,
+                    projected_speed_reward,
                     steering_delta_reward,
                     projected_velocity_mps,
                     projected_velocity_ratio,
@@ -255,6 +265,7 @@ class TrajectoryReward:
                     -abs(self.terminal_failure_penalty),
                     progress_reward,
                     projected_velocity_reward,
+                    projected_speed_reward,
                     steering_delta_reward,
                     projected_velocity_mps,
                     projected_velocity_ratio,
@@ -271,6 +282,7 @@ class TrajectoryReward:
                     + pbrs_reward
                     + progress_reward
                     + projected_velocity_reward
+                    + projected_speed_reward
                     + steering_delta_reward
                 ),
                 terminated=False,
@@ -279,6 +291,7 @@ class TrajectoryReward:
                 pbrs_reward=pbrs_reward,
                 progress_reward=progress_reward,
                 projected_velocity_reward=projected_velocity_reward,
+                projected_speed_reward=projected_speed_reward,
                 steering_delta_reward=steering_delta_reward,
                 potential_progress=progress_potential,
                 projected_velocity_mps=projected_velocity_mps,
@@ -386,6 +399,7 @@ class TrajectoryReward:
         terminal_reward: float,
         progress_reward: float,
         projected_velocity_reward: float,
+        projected_speed_reward: float,
         steering_delta_reward: float,
         projected_velocity_mps: float,
         projected_velocity_ratio: float,
@@ -398,6 +412,7 @@ class TrajectoryReward:
                 + pbrs_reward
                 + progress_reward
                 + projected_velocity_reward
+                + projected_speed_reward
                 + steering_delta_reward
                 + terminal_reward
             ),
@@ -407,6 +422,7 @@ class TrajectoryReward:
             pbrs_reward=pbrs_reward,
             progress_reward=progress_reward,
             projected_velocity_reward=projected_velocity_reward,
+            projected_speed_reward=projected_speed_reward,
             steering_delta_reward=steering_delta_reward,
             terminal_reward=terminal_reward,
             potential_progress=progress_potential,

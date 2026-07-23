@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import deque
 from pathlib import Path
 from typing import Any
 
@@ -111,6 +112,14 @@ class LidarFeaturePipeline:
         "input_gas",
         "input_brake",
     )
+    track_relative_fields = (
+        "centerline_progress",
+        "lateral_error",
+        "heading_sin",
+        "heading_cos",
+        "projected_velocity",
+        "lateral_velocity",
+    )
     telemetry_dim = len(telemetry_fields)
 
     def __init__(
@@ -120,36 +129,61 @@ class LidarFeaturePipeline:
         expected_map_uid: str | None = None,
         samples_per_side: int = 60,
         max_distance_m: float = 300.0,
+        history_length: int = 1,
+        include_track_relative: bool = False,
+        max_speed_mps: float = 80.0,
         base_dir: str | Path = ".",
     ) -> None:
         if samples_per_side < 2:
             raise ValueError("samples_per_side must be at least two")
-        if max_distance_m <= 0.0:
-            raise ValueError("max_distance_m must be positive")
+        if max_distance_m <= 0.0 or max_speed_mps <= 0.0:
+            raise ValueError("distance and speed scales must be positive")
+        if history_length < 1:
+            raise ValueError("history_length must be positive")
         path = Path(geometry_path)
         if not path.is_absolute():
             path = (Path(base_dir) / path).resolve()
         self.geometry = BoundaryGeometry(path, expected_map_uid=expected_map_uid)
         self.samples_per_side = samples_per_side
         self.max_distance_m = max_distance_m
+        self.history_length = history_length
+        self.include_track_relative = include_track_relative
+        self.max_speed_mps = max_speed_mps
+        self.telemetry_dim = len(self.telemetry_fields) + (
+            len(self.track_relative_fields) if include_track_relative else 0
+        )
+        self._history: deque[dict[str, torch.Tensor]] = deque(maxlen=history_length)
+        lidar_shape = (
+            (4, self.samples_per_side)
+            if history_length == 1
+            else (history_length, 4, self.samples_per_side)
+        )
+        mask_shape = (
+            (self.samples_per_side,)
+            if history_length == 1
+            else (history_length, self.samples_per_side)
+        )
+        telemetry_shape = (
+            (self.telemetry_dim,) if history_length == 1 else (history_length, self.telemetry_dim)
+        )
         self.observation_space = spaces.Dict(
             {
                 "lidar": spaces.Box(
                     -1.0,
                     1.0,
-                    shape=(4, self.samples_per_side),
+                    shape=lidar_shape,
                     dtype=np.float32,
                 ),
                 "lidar_mask": spaces.Box(
                     0.0,
                     1.0,
-                    shape=(self.samples_per_side,),
+                    shape=mask_shape,
                     dtype=np.float32,
                 ),
                 "telemetry": spaces.Box(
                     -1.0,
                     1.0,
-                    shape=(self.telemetry_dim,),
+                    shape=telemetry_shape,
                     dtype=np.float32,
                 ),
             }
@@ -162,6 +196,10 @@ class LidarFeaturePipeline:
         self.geometry = BoundaryGeometry(
             map_spec.geometry_path, expected_map_uid=map_spec.expected_map_uid
         )
+        self.reset_episode()
+
+    def reset_episode(self) -> None:
+        self._history.clear()
 
     def _telemetry(self, observation: Any) -> np.ndarray:
         values = np.asarray(observation, dtype=np.float32).reshape(-1)
@@ -205,7 +243,7 @@ class LidarFeaturePipeline:
 
     def _local_lidar(self, values: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         position = values[4:7]
-        nearest = int(np.argmin(np.sum((self.geometry.center - position) ** 2, axis=1)))
+        nearest = self._nearest_index(position, self.geometry.center)
         forward = values[10:13].copy()
         forward[1] = 0.0
         length = float(np.linalg.norm(forward))
@@ -237,6 +275,83 @@ class LidarFeaturePipeline:
         local *= mask[None, :]
         return np.clip(local, -1.0, 1.0).astype(np.float32), mask
 
+    @staticmethod
+    def _nearest_index(position: np.ndarray, center: np.ndarray) -> int:
+        return int(np.argmin(np.sum((center - position) ** 2, axis=1)))
+
+    @staticmethod
+    def _unit_horizontal(vector: np.ndarray) -> np.ndarray:
+        horizontal = np.asarray(vector, dtype=np.float32).copy()
+        horizontal[1] = 0.0
+        norm = float(np.linalg.norm(horizontal))
+        if norm <= 1e-5:
+            raise ValueError("track-relative vector has no horizontal component")
+        return horizontal / norm
+
+    def _track_relative(self, values: np.ndarray) -> np.ndarray:
+        center = self.geometry.reward_center
+        position = values[4:7]
+        index = self._nearest_index(position, center)
+        before = max(0, index - 1)
+        after = min(len(center) - 1, index + 1)
+        tangent = self._unit_horizontal(center[after] - center[before])
+        right = np.asarray([tangent[2], 0.0, -tangent[0]], dtype=np.float32)
+        forward = self._unit_horizontal(values[10:13])
+        velocity = values[7:10]
+        half_width = max(
+            0.5 * float(np.linalg.norm(self.geometry.left[index] - self.geometry.right[index])),
+            1.0,
+        )
+        progress = index / max(1, self.geometry.recorded_count - 1)
+        relative = np.asarray(
+            [
+                progress,
+                float(np.dot(position - center[index], right)) / half_width,
+                float(np.dot(forward, right)),
+                float(np.dot(forward, tangent)),
+                float(np.dot(velocity, tangent)) / self.max_speed_mps,
+                float(np.dot(velocity, right)) / self.max_speed_mps,
+            ],
+            dtype=np.float32,
+        )
+        return np.clip(relative, -1.0, 1.0)
+
+    def _frame(self, values: np.ndarray) -> dict[str, torch.Tensor]:
+        lidar, mask = self._local_lidar(values)
+        telemetry = self._scale_telemetry(values)
+        if self.include_track_relative:
+            telemetry = np.concatenate((telemetry, self._track_relative(values)))
+        return {
+            "lidar": torch.from_numpy(lidar),
+            "lidar_mask": torch.from_numpy(mask),
+            "telemetry": torch.from_numpy(telemetry),
+        }
+
+    def _stack_history(self, frame: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+        if self.history_length == 1:
+            return frame
+        self._history.append(frame)
+        frames = [self._history[0]] * (self.history_length - len(self._history)) + list(
+            self._history
+        )
+        return {
+            key: torch.stack([item[key] for item in frames])
+            for key in ("lidar", "lidar_mask", "telemetry")
+        }
+
+    def _prepared_shapes(self) -> dict[str, tuple[int, ...]]:
+        if self.history_length == 1:
+            return {
+                "lidar": (4, self.samples_per_side),
+                "lidar_mask": (self.samples_per_side,),
+                "telemetry": (self.telemetry_dim,),
+            }
+        return {
+            "lidar": (self.history_length, 4, self.samples_per_side),
+            "lidar_mask": (self.history_length, self.samples_per_side),
+            "telemetry": (self.history_length, self.telemetry_dim),
+        }
+
     def transform_observation(self, observation: Any) -> dict[str, torch.Tensor]:
         if isinstance(observation, dict):
             required = {"lidar", "lidar_mask", "telemetry"}
@@ -246,23 +361,16 @@ class LidarFeaturePipeline:
                 key: torch.as_tensor(value, dtype=torch.float32)
                 for key, value in observation.items()
             }
-            if (
-                prepared["lidar"].shape != (4, self.samples_per_side)
-                or prepared["lidar_mask"].shape != (self.samples_per_side,)
-                or prepared["telemetry"].shape != (self.telemetry_dim,)
-                or not all(torch.isfinite(value).all() for value in prepared.values())
+            shapes = self._prepared_shapes()
+            if any(prepared[key].shape != shape for key, shape in shapes.items()) or not all(
+                torch.isfinite(value).all() for value in prepared.values()
             ):
                 raise ValueError(
                     "prepared lidar observation has invalid shape or non-finite values"
                 )
             return prepared
         values = self._telemetry(observation)
-        lidar, mask = self._local_lidar(values)
-        return {
-            "lidar": torch.from_numpy(lidar),
-            "lidar_mask": torch.from_numpy(mask),
-            "telemetry": torch.from_numpy(self._scale_telemetry(values)),
-        }
+        return self._stack_history(self._frame(values))
 
     def collate(self, transitions: list[Transition]) -> dict[str, Any]:
         return dict(self._collator.collate_transitions(transitions))

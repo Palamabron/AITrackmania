@@ -59,6 +59,7 @@ class TrackmaniaEnvironmentConfig(BaseModel):
     max_projected_speed_mps: float = Field(default=100.0, gt=0.0)
     velocity_to_mps_scale: float = Field(default=0.001, gt=0.0)
     projected_velocity_scale: float = Field(default=0.0, ge=0.0)
+    projected_speed_bonus_scale: float = Field(default=0.0, ge=0.0)
     steering_delta_penalty: float = Field(default=0.0, ge=0.0)
     reward_gamma: float = Field(default=0.995, ge=0.0, le=1.0)
 
@@ -83,6 +84,7 @@ class TrackmaniaEnvironmentConfig(BaseModel):
             self.max_projected_speed_mps,
             self.velocity_to_mps_scale,
             self.projected_velocity_scale,
+            self.projected_speed_bonus_scale,
             self.steering_delta_penalty,
             self.collision_cooldown_s,
             self.reward_gamma,
@@ -123,6 +125,7 @@ class OpenPlanetEnvironment:
             "max_projected_speed_mps": config.max_projected_speed_mps,
             "velocity_to_mps_scale": config.velocity_to_mps_scale,
             "projected_velocity_scale": config.projected_velocity_scale,
+            "projected_speed_bonus_scale": config.projected_speed_bonus_scale,
             "steering_delta_penalty": config.steering_delta_penalty,
             "reward_gamma": config.reward_gamma,
         }
@@ -254,6 +257,7 @@ class OpenPlanetEnvironment:
                 "reward_pbrs": result.pbrs_reward,
                 "reward_progress": result.progress_reward,
                 "reward_projected_velocity": result.projected_velocity_reward,
+                "reward_projected_speed": result.projected_speed_reward,
                 "reward_steering_delta": result.steering_delta_reward,
                 "reward_collision": result.collision_reward,
                 "collision": result.collided,

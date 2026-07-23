@@ -275,6 +275,30 @@ def test_openplanet_client_discards_queued_stale_frames() -> None:
         thread.join(timeout=1)
 
 
+def test_openplanet_client_reconnects_after_the_producer_closes() -> None:
+    server = socket.socket()
+    server.bind(("127.0.0.1", 0))
+    server.listen(2)
+    host, port = server.getsockname()
+
+    def serve() -> None:
+        first, _ = server.accept()
+        first.close()
+        second, _ = server.accept()
+        with second:
+            second.sendall(struct.pack("<fff", 4.0, 5.0, 6.0))
+        server.close()
+
+    thread = threading.Thread(target=serve)
+    thread.start()
+    client = OpenPlanetClient(host, port, field_count=3, timeout_s=1)
+    try:
+        assert np.array_equal(client.read().values, np.array([4.0, 5.0, 6.0], dtype=np.float32))
+    finally:
+        client.close()
+        thread.join(timeout=1)
+
+
 def test_openplanet_client_keeps_a_valid_origin_position_after_a_previous_frame() -> None:
     client = OpenPlanetClient(field_count=DEFAULT_TELEMETRY_FIELD_COUNT)
     first = np.zeros(DEFAULT_TELEMETRY_FIELD_COUNT, dtype=np.float32)
@@ -559,6 +583,59 @@ def test_trajectory_reward_penalizes_reverse_projected_velocity() -> None:
 
     assert result.projected_velocity_mps == pytest.approx(-10.0)
     assert result.projected_velocity_reward == pytest.approx(-0.1)
+
+
+def test_trajectory_reward_bonus_separates_high_projected_speed() -> None:
+    trajectory = np.array([[0, 0, 0], [1, 0, 0], [2, 0, 0]], dtype=np.float32)
+
+    def reward_at(speed: float) -> float:
+        reward = TrajectoryReward(
+            trajectory,
+            max_projected_speed_mps=10.0,
+            velocity_to_mps_scale=1.0,
+            projected_speed_bonus_scale=0.5,
+        )
+        reward.reset(np.array([0, 0, 0]), velocity=np.zeros(3), race_time_ms=0.0)
+        result = reward.step(
+            np.array([0, 0, 0]),
+            finish_ui_active=False,
+            velocity=np.array([speed, 0, 0]),
+            race_time_ms=100.0,
+        )
+        return result.projected_speed_reward
+
+    assert reward_at(10.0) == pytest.approx(0.05)
+    assert reward_at(5.0) == pytest.approx(0.0125)
+    assert reward_at(-10.0) == 0.0
+
+
+def test_trajectory_reward_pace_bonus_prefers_a_faster_fixed_distance() -> None:
+    trajectory = np.array([[0, 0, 0], [10, 0, 0]], dtype=np.float32)
+
+    def lap_reward(speed: float, elapsed_s: float) -> float:
+        reward = TrajectoryReward(
+            trajectory,
+            minimum_finish_steps=1,
+            progress_reward_full_lap=100.0,
+            finish_reward=20.0,
+            max_projected_speed_mps=10.0,
+            velocity_to_mps_scale=1.0,
+            projected_velocity_scale=0.1,
+            projected_speed_bonus_scale=8.0,
+            time_penalty_per_second=0.0,
+            potential_progress_weight=0.0,
+        )
+        reward.reset(np.array([0, 0, 0]), velocity=np.zeros(3), race_time_ms=0.0)
+        result = reward.step(
+            np.array([10, 0, 0]),
+            finish_ui_active=True,
+            velocity=np.array([speed, 0, 0]),
+            race_time_ms=elapsed_s * 1_000.0,
+        )
+        assert result.terminated
+        return result.reward
+
+    assert lap_reward(10.0, 1.0) > lap_reward(5.0, 2.0)
 
 
 def test_trajectory_reward_penalizes_steering_delta() -> None:

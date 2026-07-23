@@ -469,6 +469,7 @@ class Coordinator:
                 f"pbrs={float(summary['reward/pbrs']):.3f}, "
                 f"progress={float(summary['reward/progress']):.3f}, "
                 f"projected_velocity={float(summary['reward/projected_velocity']):.3f}, "
+                f"projected_speed={float(summary['reward/projected_speed']):.3f}, "
                 f"steering_delta={float(summary['reward/steering_delta']):.3f}, "
                 f"collision={float(summary['reward/collision']):.3f} "
                 f"({int(summary['collision/count'])}/"

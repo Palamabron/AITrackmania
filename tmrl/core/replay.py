@@ -370,7 +370,11 @@ class InMemoryReplayStore:
         self._next_ids[previous_slot] = transition_id
         self._previous_ids[transition_id % self.capacity] = previous_id
         previous_next = self._next_overrides.get(previous_id)
-        if previous_next is not None and self._tree_equal(previous_next, observation):
+        if (
+            transition_id > previous_id
+            and previous_next is not None
+            and self._tree_equal(previous_next, observation)
+        ):
             self._next_overrides.pop(previous_id)
 
     @staticmethod

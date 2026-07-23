@@ -5,6 +5,7 @@ from __future__ import annotations
 import socket
 import struct
 from dataclasses import dataclass
+from time import monotonic, sleep
 
 import numpy as np
 
@@ -61,6 +62,21 @@ class OpenPlanetClient:
         data and retain only its most recent complete frame.  A trailing
         partial frame remains buffered for the next call.
         """
+        reconnect_deadline = monotonic() + self.timeout_s
+        while True:
+            try:
+                return self._read_connected()
+            except ConnectionError as error:
+                self.close()
+                remaining_s = reconnect_deadline - monotonic()
+                if remaining_s <= 0.0:
+                    raise ConnectionError(
+                        "OpenPlanet telemetry disconnected and did not accept a new "
+                        f"connection within {self.timeout_s:g}s"
+                    ) from error
+                sleep(min(0.1, remaining_s))
+
+    def _read_connected(self) -> TelemetryFrame:
         self.connect()
         assert self._socket is not None
         while len(self._buffer) < self._packet.size:

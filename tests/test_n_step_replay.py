@@ -74,3 +74,25 @@ def test_late_priority_update_for_evicted_id_is_ignored() -> None:
     sampler.update_priorities(PriorityUpdate(transition_ids=[old_id], priorities=[999.0]))
     batch = sampler.sample(store, BatchRequest(batch_size=1))
     assert batch.transition_ids == [1]
+
+
+def test_replay_keeps_next_observation_for_an_out_of_order_episode_link() -> None:
+    store = InMemoryReplayStore(capacity=2)
+    later = store.append(_transition(1))
+    earlier = store.append(_transition(0))
+    store.append(
+        Transition(
+            observation=10.0,
+            action=0.0,
+            reward=1.0,
+            next_observation=11.0,
+            terminated=False,
+            truncated=False,
+            episode_id="other-episode",
+            step=0,
+        )
+    )
+
+    assert not store.contains(later)
+    transition = store.get([earlier])[0]
+    assert transition.next_observation == 1.0
