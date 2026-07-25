@@ -559,9 +559,14 @@ def test_actor_training_episode_freezes_one_policy_and_reports_action_gaps() -> 
             terminal = self.episode_steps == 3
             if self.total_steps == 6:
                 self.stop.set()
-            info: dict[str, Any] = (
-                {"termination_reason": "finished", "race_time_ms": 1_000.0} if terminal else {}
-            )
+            info: dict[str, Any] = {
+                "control_gas": 1.0,
+                "control_brake": 0.0,
+                "control_steer": 0.5,
+                "step_race_time_ms": 66.0,
+            }
+            if terminal:
+                info.update({"termination_reason": "finished", "race_time_ms": 1_000.0})
             return np.zeros(1, dtype=np.float32), 1.0, terminal, False, info
 
     actor = object.__new__(ActorRuntime)
@@ -593,6 +598,10 @@ def test_actor_training_episode_freezes_one_policy_and_reports_action_gaps() -> 
     assert summary["q_margin/mean"] == pytest.approx(2.0)
     assert summary["q_margin/min"] == pytest.approx(1.0)
     assert summary["q_margin/start_mean"] == pytest.approx(2.0)
+    assert summary["control/gas_fraction"] == pytest.approx(1.0)
+    assert summary["control/brake_fraction"] == 0.0
+    assert summary["control/steer_abs_mean"] == pytest.approx(0.5)
+    assert summary["timing/step_race_ms_mean"] == pytest.approx(66.0)
 
 
 def test_learner_ingests_the_full_backlog_before_spending_update_credit(tmp_path: Path) -> None:

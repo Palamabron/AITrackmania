@@ -12,7 +12,10 @@ from tmrl.algorithms import (
 )
 from tmrl.algorithms._torch import polyak_update, weighted_mean
 from tmrl.algorithms.execution import TorchExecutionConfig
-from tmrl.algorithms.implicit_quantile_q_learning import implicit_quantile_huber_loss
+from tmrl.algorithms.implicit_quantile_q_learning import (
+    _neighbor_actions,
+    implicit_quantile_huber_loss,
+)
 from tmrl.core.data import TrainingBatch
 from tmrl.models.actors import CategoricalActor, GaussianActor
 from tmrl.models.critics import ContinuousQCritic, DiscreteQuantileNetwork, QuantileCritic
@@ -179,6 +182,45 @@ def test_iqn_rollout_uses_epsilon_greedy_exploration_but_evaluation_is_greedy() 
     torch.manual_seed(0)
     explored_actions = {policy.act(torch.zeros(4)) for _ in range(32)}
     assert len(explored_actions) > 1
+    assert policy.act(torch.zeros(4), deterministic=True) == 0
+
+
+def test_neighbor_actions_shift_one_stride_and_reflect_at_table_edges() -> None:
+    torch.manual_seed(0)
+    actions = torch.tensor([3, 12, 75])
+    for _ in range(20):
+        first, middle, last = _neighbor_actions(actions, 6, 78).tolist()
+        assert first == 9
+        assert middle in {6, 18}
+        assert last == 69
+
+
+class StridedIQN(nn.Module):
+    exploration_neighbor_stride = 6
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.parameter = nn.Parameter(torch.zeros(()))
+
+    def q_values(self, observation: torch.Tensor, quantile_count: int) -> torch.Tensor:
+        del quantile_count
+        return self.parameter.expand(observation.shape[0], 78)
+
+
+def test_exploration_mixes_neighbor_nudges_with_global_actions() -> None:
+    learner = ImplicitQuantileQLearning(
+        StridedIQN(),
+        exploration_epsilon=1.0,
+        execution={"device": "cpu", "precision": "float32"},
+    )
+    learner.setup({"seed": 0})
+    policy = learner.policy()
+    torch.manual_seed(0)
+    explored = [policy.act(torch.zeros(4)) for _ in range(300)]
+
+    neighbor_fraction = sum(action == 6 for action in explored) / len(explored)
+    assert 0.35 < neighbor_fraction < 0.65
+    assert len(set(explored)) > 10
     assert policy.act(torch.zeros(4), deterministic=True) == 0
 
 

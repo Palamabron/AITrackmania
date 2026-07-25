@@ -15,6 +15,8 @@ from tmrl.algorithms.execution import TorchExecutionConfig
 from tmrl.core.data import PriorityUpdate, TrainingBatch
 from tmrl.core.pytree import sanitize_finite, tree_map, tree_to_device
 
+_NEIGHBOR_EXPLORATION_FRACTION = 0.5
+
 
 def _first_tensor(value: Any) -> torch.Tensor:
     if isinstance(value, torch.Tensor):
@@ -38,6 +40,15 @@ def _unsqueeze_observation(value: Any) -> Any:
     return tree_map(
         lambda leaf: leaf.unsqueeze(0) if isinstance(leaf, torch.Tensor) else leaf, value
     )
+
+
+def _neighbor_actions(actions: torch.Tensor, stride: int, action_count: int) -> torch.Tensor:
+    """Shift greedy actions by one stride block, reflecting at the table edges."""
+
+    direction = torch.where(torch.rand(actions.shape, device=actions.device) < 0.5, -stride, stride)
+    candidates = actions + direction
+    candidates = torch.where(candidates < 0, actions + stride, candidates)
+    return torch.where(candidates >= action_count, actions - stride, candidates)
 
 
 def implicit_quantile_huber_loss(
@@ -95,6 +106,22 @@ class _IQNPolicy:
         self.last_q_margin = float(best - runner_up)
 
     def _exploration_actions(self, q_values: torch.Tensor, actions: torch.Tensor) -> torch.Tensor:
+        global_actions = self._global_exploration_actions(q_values, actions)
+        stride = int(getattr(self.model, "exploration_neighbor_stride", 0))
+        if stride <= 0 or stride >= q_values.shape[-1]:
+            return global_actions
+        # Half of the exploratory decisions nudge the greedy steering by one
+        # bin: at a low epsilon this perturbs the racing line for refinement
+        # instead of injecting random brake or no-throttle at full speed.
+        neighbors = _neighbor_actions(actions, stride, q_values.shape[-1])
+        prefer_neighbor = (
+            torch.rand(actions.shape, device=self.device) < _NEIGHBOR_EXPLORATION_FRACTION
+        )
+        return torch.where(prefer_neighbor, neighbors, global_actions)
+
+    def _global_exploration_actions(
+        self, q_values: torch.Tensor, actions: torch.Tensor
+    ) -> torch.Tensor:
         weights = getattr(self.model, "exploration_action_weights", None)
         if isinstance(weights, torch.Tensor) and weights.shape == (q_values.shape[-1],):
             sampled = torch.multinomial(

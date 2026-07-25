@@ -170,6 +170,7 @@ class OpenPlanetEnvironment:
             race_time_ms=float(frame.values[3]),
         )
         self._episode_started_at = monotonic()
+        self._last_race_time_ms = float(frame.values[3])
         return frame.values, {"telemetry_health": "ok"}
 
     def _restart_race(self) -> TelemetryFrame:
@@ -229,11 +230,14 @@ class OpenPlanetEnvironment:
         assert frame is not None
         position = frame.values[list(self.config.position_indices)]
         collision = self.controller.consume_collision()
+        race_time_ms = float(frame.values[3])
+        step_race_time_ms = max(0.0, race_time_ms - self._last_race_time_ms)
+        self._last_race_time_ms = race_time_ms
         result = self.reward.step(
             position,
             finish_ui_active=bool(frame.values[2]),
             velocity=frame.values[list(self.config.velocity_indices)],
-            race_time_ms=float(frame.values[3]),
+            race_time_ms=race_time_ms,
             collision=collision,
             steering=float(control[2]),
         )
@@ -246,7 +250,11 @@ class OpenPlanetEnvironment:
                 "termination_reason": result.reason,
                 "telemetry_health": "ok",
                 "position": position.tolist(),
-                "race_time_ms": float(frame.values[3]),
+                "race_time_ms": race_time_ms,
+                "step_race_time_ms": step_race_time_ms,
+                "control_gas": float(control[0]),
+                "control_brake": float(control[1]),
+                "control_steer": float(control[2]),
                 "episode_elapsed_s": monotonic() - self._episode_started_at,
                 "progress_m": self.reward.progress_m,
                 "progress_pct": self.reward.progress_pct,

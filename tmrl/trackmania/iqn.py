@@ -11,6 +11,7 @@ from torch import nn
 from tmrl.models.critics import DiscreteQuantileNetwork
 from tmrl.models.encoders.track_geometry import TrackGeometryEncoder
 from tmrl.trackmania.actions import (
+    BRAKE_TAP_STEERING_STRIDE,
     build_brake_tap_action_table,
     build_brake_tap_exploration_weights,
 )
@@ -38,6 +39,8 @@ class _LidarObservationEncoder(nn.Module):
 
 class LidarIqnModel(DiscreteQuantileNetwork):
     """Dueling IQN network for the fixed 13 x 2 x 3 TrackMania action table."""
+
+    exploration_neighbor_stride = BRAKE_TAP_STEERING_STRIDE
 
     def __init__(self, *, cosine_count: int = 64) -> None:
         action_count, _ = build_brake_tap_action_table()

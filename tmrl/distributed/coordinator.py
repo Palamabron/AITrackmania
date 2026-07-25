@@ -23,6 +23,7 @@ from tmrl.core.runtime import ResolvedRun, prepare_run, resolve_run
 from tmrl.core.spec import RunSpec
 from tmrl.core.training import TrainingResult
 from tmrl.distributed.codec import WireCodec
+from tmrl.distributed.demos import load_demonstration_transitions, resolve_demo_files
 from tmrl.distributed.journal import RolloutJournal
 from tmrl.distributed.protocol import (
     PROTOCOL_VERSION,
@@ -156,6 +157,7 @@ class Coordinator:
         resume_checkpoint: Path | None = None,
         reset_replay: bool = False,
         external_stop: Any | None = None,
+        demo_paths: tuple[Path, ...] = (),
     ) -> None:
         self.run = run
         self.bind = require_loopback_bind(bind)
@@ -164,6 +166,7 @@ class Coordinator:
         self.resume_checkpoint = resume_checkpoint
         self.reset_replay = reset_replay
         self.external_stop = external_stop
+        self.demo_paths = demo_paths
         self.codec = WireCodec(run.spec.distributed.max_message_bytes)
         self.journal = RolloutJournal(run.run_dir / "distributed" / "rollouts.sqlite3")
         self.counters = _Counters()
@@ -216,6 +219,8 @@ class Coordinator:
             )
         else:
             self._recover_journal(0)
+        if self.demo_paths:
+            self._load_demonstrations()
         self._publish_policy(force=True)
         self._start_server()
         print(
@@ -601,6 +606,27 @@ class Coordinator:
             self._ingest(value, pending.row_id)
             self._rollouts.task_done()
 
+    def _load_demonstrations(self) -> None:
+        # Demonstrations seed the replay only: they grant no update credit and
+        # do not advance the collected-transition counters or epsilon schedule.
+        files = resolve_demo_files(self.demo_paths)
+        loaded = 0
+        for path in files:
+            transitions = load_demonstration_transitions(path)
+            for transition in transitions:
+                self.run.replay_store.append(transition)
+            loaded += len(transitions)
+            print(f"Loaded demonstration {path.name}: {len(transitions)} transitions", flush=True)
+        self.run.logger.log(
+            "demo/loaded",
+            {
+                "files": len(files),
+                "transitions": loaded,
+                "replay_size": len(self.run.replay_store),
+            },
+            step=self.counters.updates,
+        )
+
     def _finish_evaluation_batch(self, summaries: list[dict[str, Any]]) -> None:
         stats = _evaluation_batch_stats(summaries)
         self.run.logger.log("eval/summary", stats, step=self.counters.updates)
@@ -819,6 +845,7 @@ def learner_process_entry(
     resume_checkpoint: str | None = None,
     reset_replay: bool = False,
     external_stop: Any | None = None,
+    demo_paths: tuple[str, ...] = (),
 ) -> None:
     """Spawn-safe learner entrypoint used by both local and remote launchers."""
 
@@ -834,6 +861,7 @@ def learner_process_entry(
             resume_checkpoint=Path(resume_checkpoint) if resume_checkpoint else None,
             reset_replay=reset_replay,
             external_stop=external_stop,
+            demo_paths=tuple(Path(item) for item in demo_paths),
         ).run_forever()
     finally:
         run.logger.close()

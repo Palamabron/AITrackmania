@@ -69,6 +69,41 @@ class _MarginTracker:
         }
 
 
+class _ControlUsageTracker:
+    """Aggregate applied-control and step-timing statistics from environment info."""
+
+    def __init__(self) -> None:
+        self.gas_total = 0.0
+        self.brake_engaged = 0
+        self.steer_abs_total = 0.0
+        self.race_ms_total = 0.0
+        self.samples = 0
+
+    def record(self, info: Mapping[str, Any]) -> None:
+        if "control_gas" not in info:
+            return
+        self.gas_total += float(info["control_gas"])
+        self.brake_engaged += int(float(info["control_brake"]) != 0.0)
+        self.steer_abs_total += abs(float(info["control_steer"]))
+        self.race_ms_total += float(info.get("step_race_time_ms", 0.0))
+        self.samples += 1
+
+    def summary(self) -> dict[str, float]:
+        if not self.samples:
+            return {
+                "control_gas_fraction": 0.0,
+                "control_brake_fraction": 0.0,
+                "control_steer_abs_mean": 0.0,
+                "step_race_time_ms_mean": 0.0,
+            }
+        return {
+            "control_gas_fraction": self.gas_total / self.samples,
+            "control_brake_fraction": self.brake_engaged / self.samples,
+            "control_steer_abs_mean": self.steer_abs_total / self.samples,
+            "step_race_time_ms_mean": self.race_ms_total / self.samples,
+        }
+
+
 class _Client:
     def __init__(self, target: str, token: str, codec: WireCodec) -> None:
         options = (
@@ -295,11 +330,13 @@ class ActorRuntime:
             # measures a single policy version instead of a refresh mixture.
             policy, epsilon, version = self._policy()
             margins = _MarginTracker()
+            controls = _ControlUsageTracker()
             for step in range(self.spec.training.max_episode_steps):
                 prepared = pipeline.transform_observation(observation)
                 action = policy.act(prepared)
                 margins.record(policy, step)
                 next_observation, reward, terminated, truncated, info = environment.step(action)
+                controls.record(info)
                 next_prepared = pipeline.transform_observation(next_observation)
                 transitions.append(
                     Transition(
@@ -351,6 +388,7 @@ class ActorRuntime:
                 "actor_epsilon": epsilon,
                 "policy_version": version,
                 **margins.summary(),
+                **controls.summary(),
             }
             summaries.append(self._summary(total_reward, summary_info, step + 1))
             episode += 1
@@ -388,11 +426,13 @@ class ActorRuntime:
         velocity_ratio_max = 0.0
         final_info: Mapping[str, Any] = {}
         margins = _MarginTracker()
+        controls = _ControlUsageTracker()
         for _step in range(self.spec.training.max_episode_steps):
             prepared = pipeline.transform_observation(observation)
             action = policy.act(prepared, deterministic=True)
             margins.record(policy, _step)
             observation, reward, terminated, truncated, info = environment.step(action)
+            controls.record(info)
             total_reward += float(reward)
             time_reward += float(info.get("reward_time", 0.0))
             pbrs_reward += float(info.get("reward_pbrs", 0.0))
@@ -427,6 +467,7 @@ class ActorRuntime:
                 "actor_epsilon": 0.0,
                 "policy_version": version,
                 **margins.summary(),
+                **controls.summary(),
             },
             _step + 1,
         )
@@ -464,6 +505,10 @@ class ActorRuntime:
             "q_margin/mean": float(info.get("q_margin_mean", 0.0)),
             "q_margin/min": float(info.get("q_margin_min", 0.0)),
             "q_margin/start_mean": float(info.get("q_margin_start_mean", 0.0)),
+            "control/gas_fraction": float(info.get("control_gas_fraction", 0.0)),
+            "control/brake_fraction": float(info.get("control_brake_fraction", 0.0)),
+            "control/steer_abs_mean": float(info.get("control_steer_abs_mean", 0.0)),
+            "timing/step_race_ms_mean": float(info.get("step_race_time_ms_mean", 0.0)),
             "steps": transitions,
             "progress_pct": float(info.get("progress_pct", 0.0)),
             "progress_m": float(info.get("progress_m", 0.0)),

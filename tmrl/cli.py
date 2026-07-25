@@ -110,6 +110,7 @@ def _train(args: argparse.Namespace) -> None:
             str(args.checkpoint) if getattr(args, "checkpoint", None) else None,
             bool(getattr(args, "reset_replay", False)),
             shutdown,
+            tuple(str(path) for path in (getattr(args, "demos", None) or ())),
         ),
         name="tmrl-learner",
     )
@@ -179,6 +180,7 @@ def _learner(args: argparse.Namespace) -> None:
         args.bind or f"127.0.0.1:{spec.distributed.port}",
         token,
         str(args.checkpoint) if args.checkpoint else None,
+        demo_paths=tuple(str(path) for path in (args.demos or ())),
     )
 
 
@@ -199,6 +201,7 @@ def _learner_process(
     resume_checkpoint: str | None = None,
     reset_replay: bool = False,
     external_stop: Any | None = None,
+    demo_paths: tuple[str, ...] = (),
 ) -> None:
     if external_stop is not None:
         signal.signal(signal.SIGINT, signal.SIG_IGN)
@@ -213,6 +216,7 @@ def _learner_process(
         resume_checkpoint,
         reset_replay,
         external_stop,
+        demo_paths,
     )
 
 
@@ -323,6 +327,14 @@ def _restore_smoke_checkpoint(config: Path, spec: RunSpec) -> None:
         coordinator._checkpoint_writer.close()
         coordinator.journal.close()
         run.logger.close()
+
+
+def _record_demos(args: argparse.Namespace) -> None:
+    from tmrl.trackmania.demos import record_demonstrations
+
+    saved = record_demonstrations(args.config, args.output, episodes=args.episodes)
+    print(f"Recorded {len(saved)} demonstration file(s) in {args.output}")
+    print(f"Seed a run with them via: tmrl resume <config> <checkpoint> --demos {args.output}")
 
 
 def _record_trajectory(args: argparse.Namespace) -> None:
@@ -456,8 +468,10 @@ def entrypoint(argv: list[str] | None = None) -> None:
     )
     validate.add_argument("config", type=Path)
     validate.set_defaults(handler=_validate)
+    demo_help = "demonstration .tmdemo files or directories loaded into replay at startup"
     train = commands.add_parser("train", help="start a local asynchronous learner and actor")
     train.add_argument("config", type=Path)
+    train.add_argument("--demos", type=Path, nargs="*", help=demo_help)
     train.set_defaults(handler=_train)
     resume = commands.add_parser("resume", help="resume a local asynchronous training run")
     resume.add_argument("config", type=Path)
@@ -467,11 +481,13 @@ def entrypoint(argv: list[str] | None = None) -> None:
         action="store_true",
         help="restore learner state while starting with an empty replay and sampler",
     )
+    resume.add_argument("--demos", type=Path, nargs="*", help=demo_help)
     resume.set_defaults(handler=_train)
     learner = commands.add_parser("learner", help="run a distributed coordinator/learner")
     learner.add_argument("config", type=Path)
     learner.add_argument("--bind")
     learner.add_argument("--checkpoint", type=Path)
+    learner.add_argument("--demos", type=Path, nargs="*", help=demo_help)
     learner.set_defaults(handler=_learner)
     actor = commands.add_parser("actor", help="run a remote continuous rollout actor")
     actor.add_argument("config", type=Path)
@@ -513,6 +529,13 @@ def entrypoint(argv: list[str] | None = None) -> None:
     boundary.add_argument("--field-count", type=int, default=DEFAULT_TELEMETRY_FIELD_COUNT)
     boundary.add_argument("--timeout", type=float, default=10.0)
     boundary.set_defaults(handler=_record_boundary)
+    record_demos = track_commands.add_parser(
+        "record-demos", help="record human reference laps as demonstration transition files"
+    )
+    record_demos.add_argument("config", type=Path)
+    record_demos.add_argument("output", type=Path)
+    record_demos.add_argument("--episodes", type=int, default=5)
+    record_demos.set_defaults(handler=_record_demos)
     geometry = track_commands.add_parser(
         "build-geometry", help="build a versioned lidar geometry .npz from two boundaries"
     )
