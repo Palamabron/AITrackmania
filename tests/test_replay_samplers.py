@@ -49,6 +49,12 @@ def test_prioritized_sampler_normalizes_weights_and_accepts_priority_feedback() 
     assert min(batch.weights) > 0.0
 
 
+def test_prioritized_sampler_disables_prefetch_across_fifo_eviction() -> None:
+    sampler = PrioritizedSampler(IdentityFeaturePipeline())
+
+    assert not sampler.thread_safe_prefetch
+
+
 def test_sequence_sampler_never_crosses_episode_or_terminal_boundary() -> None:
     store = _store(episodes=2, steps=3)
     batch = SequenceSampler(IdentityFeaturePipeline(), sequence_length=2, seed=1).sample(

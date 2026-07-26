@@ -804,7 +804,10 @@ class UniformSampler:
 class PrioritizedSampler:
     """Array-backed proportional PER with normalized importance weights."""
 
-    thread_safe_prefetch = True
+    # Sampling must run after the coordinator drains rollouts. A prefetched
+    # batch can otherwise retain IDs that FIFO eviction replaces before its
+    # n-step transitions are materialized.
+    thread_safe_prefetch = False
 
     def __init__(
         self,
