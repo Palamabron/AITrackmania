@@ -41,6 +41,7 @@ def test_jsonl_events_have_release_envelope(tmp_path: Path) -> None:
     assert event["run_id"] == "release"
     assert event["timestamp_utc"]
     assert event["elapsed_s"] >= 0
+    assert event["segment_id"]
 
 
 def test_spawn_context_uses_the_active_virtual_environment(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -84,6 +85,23 @@ def test_torch_checkpoints_are_zstd_streamed_and_round_trip(tmp_path: Path) -> N
     assert path.stat().st_size < state["tensor"].numel() * state["tensor"].element_size()
     assert torch.equal(restored["tensor"], state["tensor"])
     assert restored["counter"] == 3
+
+
+def test_torch_checkpoint_uses_a_protocol_that_supports_large_replays(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    protocol: list[int] = []
+    original_save = torch.save
+
+    def save(*args: object, **kwargs: object) -> None:
+        protocol.append(int(kwargs["pickle_protocol"]))
+        original_save(*args, **kwargs)
+
+    monkeypatch.setattr(torch, "save", save)
+
+    TorchCheckpointCodec().save({"value": torch.zeros(1)}, tmp_path / "checkpoint.pt")
+
+    assert protocol == [4]
 
 
 def test_wandb_metrics_use_readable_sections() -> None:
@@ -168,6 +186,60 @@ def test_actor_episode_summary_reports_finish_time() -> None:
 
     assert summary["finish_time_s"] == pytest.approx(12.345)
     assert summary["finished"] == 1.0
+
+
+def test_environment_step_reports_applied_control_and_race_time_delta() -> None:
+    from tmrl.trackmania.actions import build_brake_tap_action_table
+    from tmrl.trackmania.control import RecordingController
+
+    class Client:
+        def read(self) -> TelemetryFrame:
+            values = np.zeros(33, dtype=np.float32)
+            values[3] = 166.0
+            return TelemetryFrame(values)
+
+    def reward_step(position: np.ndarray, **kwargs: object) -> SimpleNamespace:
+        del position, kwargs
+        return SimpleNamespace(
+            reward=1.0,
+            terminated=False,
+            reason=None,
+            time_reward=0.0,
+            pbrs_reward=0.0,
+            progress_reward=0.0,
+            projected_velocity_reward=0.0,
+            projected_speed_reward=0.0,
+            steering_delta_reward=0.0,
+            collision_reward=0.0,
+            collided=False,
+            collision_detected=False,
+            terminal_reward=0.0,
+            potential_progress=0.0,
+            projected_velocity_mps=0.0,
+            projected_velocity_ratio=0.0,
+        )
+
+    environment = object.__new__(OpenPlanetEnvironment)
+    environment.config = SimpleNamespace(
+        action_repeat_frames=2,
+        position_indices=(4, 5, 6),
+        velocity_indices=(7, 8, 9),
+    )
+    environment.client = Client()
+    environment.controller = RecordingController()
+    environment.reward = SimpleNamespace(step=reward_step, progress_m=12.0, progress_pct=0.5)
+    environment._episode_started_at = 0.0
+    environment._last_race_time_ms = 100.0
+    environment._action_count, environment._action_table = build_brake_tap_action_table()
+
+    _, _, _, _, info = environment.step(3)
+
+    assert info["control_gas"] == 1.0
+    assert info["control_brake"] == 0.0
+    assert info["control_steer"] == -1.0
+    assert info["step_race_time_ms"] == pytest.approx(66.0)
+    assert info["race_time_ms"] == pytest.approx(166.0)
+    assert environment._last_race_time_ms == pytest.approx(166.0)
 
 
 def test_environment_waits_for_race_timer_restart() -> None:

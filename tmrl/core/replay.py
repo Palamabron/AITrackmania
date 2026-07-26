@@ -8,6 +8,7 @@ from collections.abc import Mapping
 from dataclasses import replace
 from math import ceil, floor, isfinite
 from numbers import Number
+from statistics import fmean
 from threading import RLock
 from typing import Any, Protocol, TypeGuard, cast
 
@@ -41,6 +42,16 @@ class _IncrementalReplayStore(Protocol):
     def affected_n_step_starts(
         self, transition_id: TransitionId, n_step: int
     ) -> list[TransitionId]: ...
+
+    def history_ids(
+        self, transition_id: TransitionId, sequence_length: int
+    ) -> list[TransitionId]: ...
+
+    def next_history_observations(
+        self, transition_id: TransitionId, n_step: int, sequence_length: int
+    ) -> list[Any]: ...
+
+    def sampling_pace_s(self, transition_id: TransitionId) -> float: ...
 
     def changes_since(
         self, revision: int | None
@@ -242,6 +253,7 @@ class InMemoryReplayStore:
         self._steps = np.full(capacity, -1, dtype=np.int64)
         self._previous_ids = np.full(capacity, -1, dtype=np.int64)
         self._next_ids = np.full(capacity, -1, dtype=np.int64)
+        self._sampling_pace = np.full(capacity, np.inf, dtype=np.float32)
         self._observations: _TreeColumns | None = None
         self._actions: _TreeColumns | None = None
         self._next_overrides: dict[TransitionId, Any] = {}
@@ -281,9 +293,13 @@ class InMemoryReplayStore:
             self._steps[slot] = transition.step if transition.step is not None else -1
             self._previous_ids[slot] = previous_id
             self._next_ids[slot] = -1
+            transition_info = dict(transition.info)
+            self._sampling_pace[slot] = float(
+                transition_info.pop("sampling/projected_lap_time_s", np.inf)
+            )
             self._next_overrides[transition_id] = transition.next_observation
-            if transition.info:
-                self._info[transition_id] = transition.info
+            if transition_info:
+                self._info[transition_id] = transition_info
             self._link_previous(previous_id, transition_id, transition.observation)
             if episode_code >= 0 and transition.step is not None:
                 self._register_episode_step(episode_code, transition.step, transition_id)
@@ -468,6 +484,7 @@ class InMemoryReplayStore:
                 "steps": np.array(self._steps[slots], copy=True, order="C"),
                 "previous_ids": np.array(self._previous_ids[slots], copy=True, order="C"),
                 "next_ids": np.array(self._next_ids[slots], copy=True, order="C"),
+                "sampling_pace": np.array(self._sampling_pace[slots], copy=True, order="C"),
                 "episode_names": dict(self._episode_names),
                 "next_overrides": dict(self._next_overrides),
                 "info": dict(self._info),
@@ -528,6 +545,10 @@ class InMemoryReplayStore:
                     ("next_ids", self._next_ids),
                 ):
                     target[slots] = state[name]
+                self._sampling_pace[slots] = state.get(
+                    "sampling_pace",
+                    np.full(self._size, np.inf, dtype=np.float32),
+                )
             self._episode_names = {
                 int(code): str(name)
                 for code, name in cast(Mapping[Any, Any], state.get("episode_names", {})).items()
@@ -545,6 +566,7 @@ class InMemoryReplayStore:
         self._steps.fill(-1)
         self._previous_ids.fill(-1)
         self._next_ids.fill(-1)
+        self._sampling_pace.fill(np.inf)
         self._observations = None
         self._actions = None
         self._next_overrides.clear()
@@ -658,6 +680,50 @@ class InMemoryReplayStore:
                 return []
             return self._predecessor_ids_locked(transition_id, n_step)
 
+    def history_ids(self, transition_id: TransitionId, sequence_length: int) -> list[TransitionId]:
+        """Return actor-equivalent left-padded history ending at ``transition_id``."""
+
+        if sequence_length < 1:
+            raise ValueError("sequence_length must be positive")
+        with self._lock:
+            if not self.contains(transition_id):
+                return []
+            result: list[TransitionId] = []
+            candidate = transition_id
+            for _ in range(sequence_length):
+                if not self.contains(candidate):
+                    break
+                result.append(candidate)
+                slot = candidate % self.capacity
+                candidate = int(self._previous_ids[slot])
+            result.reverse()
+            return [result[0]] * (sequence_length - len(result)) + result
+
+    def next_history_observations(
+        self, transition_id: TransitionId, n_step: int, sequence_length: int
+    ) -> list[Any]:
+        """Return recurrent history ending at the resolved n-step next state."""
+
+        if sequence_length < 1:
+            raise ValueError("sequence_length must be positive")
+        with self._lock:
+            horizon = self.n_step_ids(transition_id, n_step)
+            if not horizon:
+                return []
+            final_id = horizon[-1]
+            history = self.history_ids(final_id, max(1, sequence_length - 1))
+            if sequence_length == 1:
+                history = []
+            observations = [self._transition(item).observation for item in history]
+            observations.append(self._transition(final_id).next_observation)
+            return observations
+
+    def sampling_pace_s(self, transition_id: TransitionId) -> float:
+        with self._lock:
+            if not self.contains(transition_id):
+                return float("inf")
+            return float(self._sampling_pace[transition_id % self.capacity])
+
     def changes_since(
         self, revision: int | None
     ) -> tuple[int, list[tuple[TransitionId, TransitionId | None]] | None]:
@@ -747,30 +813,47 @@ class PrioritizedSampler:
         alpha: float = 0.6,
         beta: float = 0.4,
         priority_epsilon: float = 1e-6,
+        elite_time_s: float | None = None,
+        elite_priority_boost: float = 1.0,
+        uniform_mix: float = 0.0,
         seed: int = 0,
     ) -> None:
-        if alpha < 0.0 or beta < 0.0 or priority_epsilon <= 0.0:
-            raise ValueError("alpha/beta must be non-negative and priority_epsilon positive")
+        if (
+            alpha < 0.0
+            or beta < 0.0
+            or priority_epsilon <= 0.0
+            or (elite_time_s is not None and elite_time_s <= 0.0)
+            or elite_priority_boost < 1.0
+            or not 0.0 <= uniform_mix <= 1.0
+        ):
+            raise ValueError("invalid prioritized replay parameters")
         self.pipeline = pipeline
         self.alpha = alpha
         self.beta = beta
         self.priority_epsilon = priority_epsilon
+        self.elite_time_s = elite_time_s
+        self.elite_priority_boost = elite_priority_boost
+        self.uniform_mix = uniform_mix
         self._fallback_priorities: dict[int, float] = {}
         self._priorities = np.empty(0, dtype=np.float32)
         self._slot_ids = np.empty(0, dtype=np.int64)
+        self._elite_slots = np.empty(0, dtype=np.bool_)
         self._rng = random.Random(seed)
         self._active_count = 0
+        self._elite_active_count = 0
         self._tree: _FenwickTree | None = None
+        self._uniform_tree: _FenwickTree | None = None
         self._replay_revision: int | None = None
         self._n_step: int | None = None
+        self._sequence_length: int | None = None
         self._maximum_priority = 1.0
         self._lock = RLock()
 
     def sample(self, store: ReplayStore, request: BatchRequest) -> TrainingBatch:
-        if request.sequence_length != 1:
-            raise ValueError("PrioritizedSampler supports sequence_length=1")
         if _is_incremental_store(store):
             return self._sample_incrementally(store, request)
+        if request.sequence_length != 1:
+            raise ValueError("sequence PER requires InMemoryReplayStore")
         chosen, normalized, beta = self._sample_fallback(store, request)
         return _make_batch(
             store,
@@ -801,6 +884,12 @@ class PrioritizedSampler:
                 if total > 0.0
                 else [1 / len(transition_ids)] * len(transition_ids)
             )
+            if self.uniform_mix:
+                uniform = 1.0 / len(transition_ids)
+                probabilities = [
+                    (1.0 - self.uniform_mix) * probability + self.uniform_mix * uniform
+                    for probability in probabilities
+                ]
             chosen = self._rng.choices(transition_ids, weights=probabilities, k=request.batch_size)
             by_id = dict(zip(transition_ids, probabilities, strict=True))
             beta = self.beta if request.beta is None else request.beta
@@ -826,7 +915,8 @@ class PrioritizedSampler:
                 slot = transition_id % self._tree.size
                 if self._slot_ids[slot] == transition_id and self._tree.leaves[slot] > 0.0:
                     self._priorities[slot] = value
-                    self._tree.set(slot, value**self.alpha)
+                    boost = self.elite_priority_boost if self._elite_slots[slot] else 1.0
+                    self._tree.set(slot, value**self.alpha * boost)
 
     def _synchronize_fallback(self, transition_ids: list[TransitionId]) -> None:
         active = set(transition_ids)
@@ -864,89 +954,201 @@ class PrioritizedSampler:
             self._priorities = np.empty(0, dtype=np.float32)
             self._slot_ids = np.empty(0, dtype=np.int64)
         self._active_count = 0
+        self._elite_active_count = 0
         self._tree = None
+        self._uniform_tree = None
         self._replay_revision = None
         self._n_step = None
+        self._sequence_length = None
         self._rng.setstate(state["rng"])
 
     def _sample_incrementally(
         self, store: _IncrementalReplayStore, request: BatchRequest
     ) -> TrainingBatch:
-        transition_ids, normalized, beta = self._sample_incremental_ids(store, request)
+        transition_ids, normalized, beta, sampling = self._sample_incremental_ids(store, request)
+        if request.sequence_length > 1:
+            histories = [
+                store.history_ids(transition_id, request.sequence_length)
+                for transition_id in transition_ids
+            ]
+            if any(len(history) != request.sequence_length for history in histories):
+                raise RuntimeError("prioritized sequence index is out of sync with replay")
+            flattened = [transition_id for history in histories for transition_id in history]
+            next_histories = [
+                store.next_history_observations(
+                    transition_id,
+                    request.n_step,
+                    request.sequence_length,
+                )
+                for transition_id in transition_ids
+            ]
+            if any(len(history) != request.sequence_length for history in next_histories):
+                raise RuntimeError("prioritized next-history index is out of sync with replay")
+            batch = _make_batch(
+                store,
+                self.pipeline,
+                flattened,
+                request,
+                importance_weights=normalized,
+                metadata={
+                    "sampling": "prioritized_sequence",
+                    "beta": beta,
+                    "sequence_length": request.sequence_length,
+                    "priority_transition_ids": tuple(transition_ids),
+                    **sampling,
+                },
+            )
+            reshaped = _reshape_batch_sequences(batch, request.batch_size, request.sequence_length)
+            flattened_next = [observation for history in next_histories for observation in history]
+            return replace(
+                reshaped,
+                next_observations=_reshape_sequence_batch(
+                    tree_collate(flattened_next),
+                    request.batch_size,
+                    request.sequence_length,
+                ),
+            )
         return _make_batch(
             store,
             self.pipeline,
             transition_ids,
             request,
             importance_weights=normalized,
-            metadata={"sampling": "prioritized", "beta": beta},
+            metadata={"sampling": "prioritized", "beta": beta, **sampling},
         )
 
     def _sample_incremental_ids(
         self, store: _IncrementalReplayStore, request: BatchRequest
-    ) -> tuple[list[TransitionId], tuple[float, ...], float]:
+    ) -> tuple[list[TransitionId], tuple[float, ...], float, dict[str, float]]:
         with self._lock:
-            self._synchronize_incremental_store(store, request.n_step)
+            self._synchronize_incremental_store(
+                store,
+                request.n_step,
+                request.sequence_length,
+            )
             if self._active_count < request.batch_size:
                 raise RuntimeError(
                     f"Need {request.batch_size} transitions, replay has {self._active_count}"
                 )
             assert self._tree is not None
+            assert self._uniform_tree is not None
             total = self._tree.total
             if total <= 0.0:
                 raise RuntimeError("Prioritized replay has no positive sampling mass")
             transition_ids: list[TransitionId] = []
             probabilities: list[float] = []
-            for _ in range(request.batch_size):
-                slot = self._tree.find(self._rng.random() * total)
+            while len(transition_ids) < request.batch_size:
+                if self.uniform_mix and self._rng.random() < self.uniform_mix:
+                    slot = self._uniform_tree.find(self._rng.random() * self._uniform_tree.total)
+                else:
+                    slot = self._tree.find(self._rng.random() * total)
                 transition_id = int(self._slot_ids[slot])
                 if transition_id < 0:
                     raise RuntimeError(
                         "Prioritized replay tree is out of sync with active transitions"
                     )
+                if (
+                    request.sequence_length > 1
+                    and len(store.history_ids(transition_id, request.sequence_length))
+                    != request.sequence_length
+                ):
+                    self._deactivate(transition_id)
+                    total = self._tree.total
+                    if total <= 0.0:
+                        raise RuntimeError("prioritized replay has no complete sequences")
+                    continue
                 transition_ids.append(transition_id)
-                probabilities.append(float(self._tree.leaves[slot]) / total)
+                proportional = float(self._tree.leaves[slot]) / total
+                uniform = 1.0 / self._active_count
+                probabilities.append(
+                    (1.0 - self.uniform_mix) * proportional + self.uniform_mix * uniform
+                )
             beta = self.beta if request.beta is None else request.beta
             weights = [
                 (self._active_count * probability) ** (-beta) for probability in probabilities
             ]
             maximum = max(weights)
-            return transition_ids, tuple(weight / maximum for weight in weights), beta
+            elite_samples = sum(
+                int(self._elite_slots[transition_id % self._tree.size])
+                for transition_id in transition_ids
+            )
+            metadata = {
+                "replay/active_count": float(self._active_count),
+                "replay/elite_active_fraction": self._elite_active_count / self._active_count,
+                "replay/elite_sample_fraction": elite_samples / len(transition_ids),
+                "replay/sampling_probability_mean": fmean(probabilities),
+                "replay/sampling_probability_min": min(probabilities),
+                "replay/sampling_probability_max": max(probabilities),
+            }
+            return (
+                transition_ids,
+                tuple(weight / maximum for weight in weights),
+                beta,
+                metadata,
+            )
 
-    def _synchronize_incremental_store(self, store: _IncrementalReplayStore, n_step: int) -> None:
+    def _synchronize_incremental_store(
+        self,
+        store: _IncrementalReplayStore,
+        n_step: int,
+        sequence_length: int = 1,
+    ) -> None:
         capacity = store.capacity
-        if self._tree is None or self._n_step != n_step or self._tree.size != capacity:
+        if (
+            self._tree is None
+            or self._n_step != n_step
+            or self._sequence_length != sequence_length
+            or self._tree.size != capacity
+        ):
             self._tree = _FenwickTree(capacity)
+            self._uniform_tree = _FenwickTree(capacity)
             if self._slot_ids.shape != (capacity,):
                 self._slot_ids = np.full(capacity, -1, dtype=np.int64)
                 self._priorities = np.zeros(capacity, dtype=np.float32)
+            if self._elite_slots.shape != (capacity,):
+                self._elite_slots = np.zeros(capacity, dtype=np.bool_)
             self._active_count = 0
+            self._elite_active_count = 0
             self._replay_revision = None
             self._n_step = n_step
+            self._sequence_length = sequence_length
         revision, changes = store.changes_since(self._replay_revision)
         if changes is None:
             self._active_count = 0
+            self._elite_active_count = 0
             self._tree = _FenwickTree(capacity)
+            self._uniform_tree = _FenwickTree(capacity)
             for transition_id in store.eligible_transition_ids(n_step):
-                self._activate(transition_id)
+                if len(store.history_ids(transition_id, sequence_length)) == sequence_length:
+                    self._activate(store, transition_id)
         else:
             for appended, evicted in changes:
                 if evicted is not None:
                     self._deactivate(evicted)
                 for candidate in store.affected_n_step_starts(appended, n_step):
-                    if store.contains(candidate) and store.is_n_step_eligible(candidate, n_step):
-                        self._activate(candidate)
+                    if (
+                        store.contains(candidate)
+                        and store.is_n_step_eligible(candidate, n_step)
+                        and len(store.history_ids(candidate, sequence_length)) == sequence_length
+                    ):
+                        self._activate(store, candidate)
                     else:
                         self._deactivate(candidate)
         self._replay_revision = revision
 
-    def _activate(self, transition_id: TransitionId) -> None:
+    def _activate(
+        self,
+        store: _IncrementalReplayStore,
+        transition_id: TransitionId,
+    ) -> None:
         assert self._tree is not None
+        assert self._uniform_tree is not None
         slot = transition_id % self._tree.size
         if self._slot_ids[slot] == transition_id and self._tree.leaves[slot] > 0.0:
             return
         if self._tree.leaves[slot] > 0.0:
             self._active_count -= 1
+            self._elite_active_count -= int(self._elite_slots[slot])
         priority = (
             float(self._priorities[slot])
             if self._slot_ids[slot] == transition_id and self._priorities[slot] > 0.0
@@ -954,15 +1156,24 @@ class PrioritizedSampler:
         )
         self._priorities[slot] = priority
         self._slot_ids[slot] = transition_id
-        self._tree.set(slot, priority**self.alpha)
+        pace = store.sampling_pace_s(transition_id)
+        elite = self.elite_time_s is not None and pace <= self.elite_time_s
+        self._elite_slots[slot] = elite
+        boost = self.elite_priority_boost if elite else 1.0
+        self._tree.set(slot, priority**self.alpha * boost)
+        self._uniform_tree.set(slot, 1.0)
         self._active_count += 1
+        self._elite_active_count += int(elite)
 
     def _deactivate(self, transition_id: TransitionId) -> None:
         assert self._tree is not None
+        assert self._uniform_tree is not None
         slot = transition_id % self._tree.size
         if self._slot_ids[slot] == transition_id and self._tree.leaves[slot] > 0.0:
             self._active_count -= 1
+            self._elite_active_count -= int(self._elite_slots[slot])
             self._tree.set(slot, 0.0)
+            self._uniform_tree.set(slot, 0.0)
 
 
 class SequenceSampler:
@@ -1165,6 +1376,29 @@ def _reshape_sequence_batch(value: Any, batch_size: int, sequence_length: int) -
         return leaf
 
     return tree_map(reshape, value)
+
+
+def _reshape_batch_sequences(
+    batch: TrainingBatch,
+    batch_size: int,
+    sequence_length: int,
+) -> TrainingBatch:
+    return replace(
+        batch,
+        data=_reshape_sequence_batch(batch.data, batch_size, sequence_length),
+        observations=_reshape_sequence_batch(batch.observations, batch_size, sequence_length),
+        actions=_reshape_sequence_batch(batch.actions, batch_size, sequence_length),
+        rewards=_reshape_sequence_batch(batch.rewards, batch_size, sequence_length),
+        next_observations=_reshape_sequence_batch(
+            batch.next_observations, batch_size, sequence_length
+        ),
+        terminated=_reshape_sequence_batch(batch.terminated, batch_size, sequence_length),
+        truncated=_reshape_sequence_batch(batch.truncated, batch_size, sequence_length),
+        bootstrap_discounts=_reshape_sequence_batch(
+            batch.bootstrap_discounts, batch_size, sequence_length
+        ),
+        masks=torch.ones((batch_size, sequence_length), dtype=torch.bool),
+    )
 
 
 def _make_batch(

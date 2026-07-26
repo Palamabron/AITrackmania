@@ -134,6 +134,37 @@ def test_geometry_centerline_spacing_is_uniform_on_bends(tmp_path: Path) -> None
     assert abs(float(steps.mean()) - 2.0) < 0.15
 
 
+def test_racing_line_stays_inside_boundaries_and_cuts_a_corner(tmp_path: Path) -> None:
+    left = np.asarray(
+        [[float(x), 0.0, 0.0] for x in range(21)] + [[20.0, 0.0, float(z)] for z in range(1, 21)],
+        dtype=np.float32,
+    )
+    right = np.asarray(
+        [[float(x), 0.0, 10.0] for x in range(21)] + [[10.0, 0.0, float(z)] for z in range(1, 21)],
+        dtype=np.float32,
+    )
+    np.save(tmp_path / "left-racing.npy", left)
+    np.save(tmp_path / "right-racing.npy", right)
+    (tmp_path / "test-3.Map.Gbx").write_bytes(b"test-3-map")
+    asset = build_geometry_asset(
+        tmp_path / "racing.npz",
+        tmp_path / "left-racing.npy",
+        tmp_path / "right-racing.npy",
+        map_uid="test-3",
+        map_path=tmp_path / "test-3.Map.Gbx",
+        spacing_m=1.0,
+        lookahead_points=0,
+    )
+    geometry = BoundaryGeometry(asset)
+    corridor = geometry.right - geometry.left
+    fractions = np.sum((geometry.racing_line - geometry.left) * corridor, axis=1) / np.sum(
+        np.square(corridor), axis=1
+    )
+
+    assert np.all((fractions >= 0.1) & (fractions <= 0.9))
+    assert not np.allclose(geometry.racing_line, geometry.reward_center)
+
+
 def test_geometry_smoothing_reduces_boundary_jitter(tmp_path: Path) -> None:
     left = np.asarray([[float(x), 0.0, 0.05 * ((-1) ** x)] for x in range(40)], dtype=np.float32)
     right = left + np.asarray([0.0, 0.0, 10.0], dtype=np.float32)
@@ -259,6 +290,7 @@ def test_lidar_pipeline_stacks_track_relative_history(tmp_path: Path) -> None:
         history_length=2,
         include_track_relative=True,
         max_speed_mps=10.0,
+        velocity_to_mps_scale=1.0,
     )
     first = np.zeros(33, dtype=np.float32)
     first[10] = 1.0
@@ -278,6 +310,24 @@ def test_lidar_pipeline_stacks_track_relative_history(tmp_path: Path) -> None:
     pipeline.reset_episode()
     reset = pipeline.transform_observation(second)
     assert torch.equal(reset["telemetry"][0], reset["telemetry"][1])
+
+
+def test_track_relative_velocity_uses_the_same_native_unit_scale_as_telemetry(
+    tmp_path: Path,
+) -> None:
+    pipeline = LidarFeaturePipeline(
+        _asset(tmp_path),
+        expected_map_uid="test-3",
+        include_track_relative=True,
+        max_speed_mps=20.0,
+    )
+    observation = np.zeros(33, dtype=np.float32)
+    observation[10] = 1.0
+    observation[7] = 10_000.0
+
+    prepared = pipeline.transform_observation(observation)
+
+    assert prepared["telemetry"][-2] == pytest.approx(0.5)
 
 
 def test_iqn_lidar_updates_and_handles_single_structured_observation(tmp_path: Path) -> None:
@@ -322,22 +372,53 @@ def test_temporal_iqn_handles_explicit_history(tmp_path: Path) -> None:
     pipeline = LidarFeaturePipeline(
         _asset(tmp_path),
         expected_map_uid="test-3",
-        history_length=2,
+        history_length=1,
         include_track_relative=True,
     )
     raw = np.zeros(33, dtype=np.float32)
     raw[10] = 1.0
     single = pipeline.transform_observation(raw)
     learner = ImplicitQuantileQLearning(
-        LidarIqnModel(cosine_count=8, telemetry_dim=26, history_length=2),
+        LidarIqnModel(
+            cosine_count=8,
+            telemetry_dim=26,
+            history_length=2,
+            burn_in=1,
+            spatial_bins=2,
+        ),
         train_quantile_count=8,
         target_quantile_count=8,
         evaluation_quantile_count=8,
         execution={"device": "cpu", "precision": "float32"},
     )
     learner.setup({"seed": 0})
+    policy = learner.policy()
 
-    assert isinstance(learner.policy().act(single, deterministic=True), int)
+    assert isinstance(policy.act(single, deterministic=True), int)
+    assert isinstance(policy.act(single, deterministic=True), int)
+    policy.reset_episode()
+
+    observations = {
+        key: value.view(1, 1, *value.shape).repeat(2, 2, *([1] * value.ndim))
+        for key, value in single.items()
+    }
+    batch = TrainingBatch(
+        data=observations,
+        observations=observations,
+        actions=torch.tensor([[0, 1], [2, 3]]),
+        rewards=torch.tensor([[0.0, 1.0], [0.0, 2.0]]),
+        next_observations=observations,
+        terminated=torch.zeros((2, 2), dtype=torch.bool),
+        truncated=torch.zeros((2, 2), dtype=torch.bool),
+        bootstrap_discounts=torch.full((2, 2), 0.99),
+        transition_ids=[1, 2, 3, 4],
+        importance_weights=torch.ones(2),
+        metadata={"priority_transition_ids": (2, 4)},
+    )
+    metrics, priorities = learner.update(batch)
+
+    assert torch.isfinite(torch.tensor(list(metrics.values()))).all()
+    assert priorities.transition_ids == [2, 4]
 
 
 def test_iqn_resume_uses_configured_learning_rate(tmp_path: Path) -> None:
@@ -360,6 +441,26 @@ def test_iqn_resume_uses_configured_learning_rate(tmp_path: Path) -> None:
     assert {group["lr"] for group in resumed.optimizer.param_groups} == {1e-4}
 
 
+def test_iqn_best_evaluation_checkpoint_uses_the_exact_policy_and_clean_optimizer() -> None:
+    learner = ImplicitQuantileQLearning(
+        LidarIqnModel(cosine_count=8),
+        execution={"device": "cpu", "precision": "float32"},
+    )
+    learner.setup({"seed": 0})
+    policy_state = {
+        name: torch.zeros_like(value) for name, value in learner.policy().export_state().items()
+    }
+
+    checkpoint = learner.state_dict_for_policy(policy_state)
+
+    assert all(torch.count_nonzero(value) == 0 for value in checkpoint["model"].values())
+    assert all(
+        torch.equal(checkpoint["model"][name], checkpoint["target_model"][name])
+        for name in checkpoint["model"]
+    )
+    assert checkpoint["optimizer"]["state"] == {}
+
+
 def test_track_geometry_attention_masks_bfloat16_logits() -> None:
     encoder = TrackGeometryEncoder(channels=4, telemetry_dim=0)
     track = torch.randn(2, 4, 60)
@@ -370,6 +471,15 @@ def test_track_geometry_attention_masks_bfloat16_logits() -> None:
         output = encoder(track, mask=mask)
 
     assert torch.isfinite(output).all()
+
+
+def test_track_geometry_encoder_can_preserve_ordered_spatial_bins() -> None:
+    encoder = TrackGeometryEncoder(4, 6, output_dim=32, spatial_bins=6)
+    track = torch.randn(3, 4, 90)
+    telemetry = torch.randn(3, 6)
+    mask = torch.ones(3, 90)
+
+    assert encoder(track, telemetry, mask).shape == (3, 32)
 
 
 def test_iqn_action_table_has_all_78_indices_and_brake_taps() -> None:

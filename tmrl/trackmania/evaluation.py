@@ -101,13 +101,17 @@ class TrackmaniaEvaluator:
         crashed = False
         termination_reason: str | None = None
         finish_time_s: float | None = None
+        progress_pct = 0.0
+        started = perf_counter()
         try:
             observation, _ = environment.reset(seed=seed)
             reset_pipeline = getattr(self.feature_pipeline, "reset_episode", None)
             if callable(reset_pipeline):
                 reset_pipeline()
+            reset_policy = getattr(policy, "reset_episode", None)
+            if callable(reset_policy):
+                reset_policy()
             prepared = self.feature_pipeline.transform_observation(observation)
-            started = perf_counter()
             for _ in range(self.max_episode_steps):
                 action_started = perf_counter()
                 action = policy.act(prepared, deterministic=True)
@@ -117,6 +121,7 @@ class TrackmaniaEvaluator:
                 reward_sum += float(reward)
                 steps += 1
                 termination_reason = str(info.get("termination_reason", ""))
+                progress_pct = float(info.get("progress_pct", progress_pct))
                 finished = termination_reason == "finished"
                 crashed = termination_reason in {"crashed", "off_track"}
                 if finished:
@@ -139,6 +144,7 @@ class TrackmaniaEvaluator:
             reward=reward_sum,
             action_latency_ms=action_latency_ms / max(steps, 1),
             throughput_fps=steps / elapsed_s if elapsed_s > 0.0 else 0.0,
+            progress_pct=progress_pct,
             map_id="" if map_spec is None else map_spec.id,
             map_uid="" if map_spec is None else map_spec.expected_map_uid,
             trial_index=trial_index,
@@ -164,6 +170,7 @@ class TrackmaniaEvaluator:
                     "reward": result.reward,
                     "action_latency_ms": result.action_latency_ms,
                     "throughput_fps": result.throughput_fps,
+                    "progress_pct": result.progress_pct,
                     "telemetry_error": result.telemetry_error,
                     "controller_error": result.controller_error,
                 }

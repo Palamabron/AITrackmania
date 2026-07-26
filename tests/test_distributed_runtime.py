@@ -57,6 +57,19 @@ def test_metric_accumulator_averages_windows_and_preserves_maxima() -> None:
     assert output == {"loss": 3.0, "debug/gradient_norm_max": 3.0}
 
 
+def test_coordinator_requires_an_active_actor_before_spending_update_credit() -> None:
+    coordinator = object.__new__(Coordinator)
+    coordinator._lock = threading.RLock()
+    coordinator._last_heartbeats = {"actor": 1.0}
+    coordinator._timed_out_actors = {"actor"}
+
+    assert not coordinator._has_active_actor()
+
+    coordinator._timed_out_actors.clear()
+
+    assert coordinator._has_active_actor()
+
+
 class _Policy:
     def __init__(self, value: int) -> None:
         self.value = value
@@ -474,8 +487,10 @@ def test_actor_evaluation_is_greedy_and_never_spooled_as_training_data() -> None
     actor._evaluation_index = 0
     actor._actor_seed = lambda: 7
     actor._policy = lambda: (Policy(), 0.5, 9)
-    actor._spool = lambda transitions, episodes, version, *, evaluations=None: spooled.append(
-        (transitions, episodes, version, evaluations or [])
+    actor._spool = (
+        lambda transitions, episodes, version, *, evaluations=None, evaluation_snapshot=None: (
+            spooled.append((transitions, episodes, version, evaluations or []))
+        )
     )
 
     actor._evaluate(Environment(), _Pipeline())
@@ -515,14 +530,46 @@ def test_actor_evaluation_runs_the_configured_trial_count() -> None:
     actor._evaluation_index = 0
     actor._actor_seed = lambda: 7
     actor._policy = lambda: (Policy(), 0.0, 9)
-    actor._spool = lambda transitions, episodes, version, *, evaluations=None: spooled.append(
-        (transitions, episodes, version, evaluations or [])
+    actor._spool = (
+        lambda transitions, episodes, version, *, evaluations=None, evaluation_snapshot=None: (
+            spooled.append((transitions, episodes, version, evaluations or []))
+        )
     )
 
     actor._evaluate(Environment(), _Pipeline())
 
     assert len(spooled[0][3]) == 3
     assert actor._evaluation_index == 3
+
+
+def test_actor_evaluation_uses_the_snapshot_bound_to_the_request() -> None:
+    class Policy:
+        def __init__(self) -> None:
+            self.state: Mapping[str, Any] = {}
+            self.epsilon = 1.0
+
+        def load_state(self, state: Mapping[str, Any]) -> None:
+            self.state = state
+
+        def act(self, observation: Any, *, deterministic: bool = False) -> int:
+            del observation, deterministic
+            return 0
+
+        def set_exploration_epsilon(self, epsilon: float) -> None:
+            self.epsilon = epsilon
+
+    actor = object.__new__(ActorRuntime)
+    actor._evaluation_request_lock = threading.Lock()
+    actor._evaluation_request = (b"snapshot", 17)
+    actor.codec = SimpleNamespace(decode=lambda _: {"weight": 3.0})
+    actor._new_policy = Policy
+
+    policy, version = actor._evaluation_policy()
+
+    assert policy.state == {"weight": 3.0}
+    assert policy.epsilon == 0.0
+    assert version == 17
+    assert actor._evaluation_request is None
 
 
 def test_actor_training_episode_freezes_one_policy_and_reports_action_gaps() -> None:
@@ -567,9 +614,14 @@ def test_actor_training_episode_freezes_one_policy_and_reports_action_gaps() -> 
             terminal = self.episode_steps == 3
             if self.total_steps == 6:
                 self.stop.set()
-            info: dict[str, Any] = (
-                {"termination_reason": "finished", "race_time_ms": 1_000.0} if terminal else {}
-            )
+            info: dict[str, Any] = {
+                "control_gas": 1.0,
+                "control_brake": 0.0,
+                "control_steer": 0.5,
+                "step_race_time_ms": 66.0,
+            }
+            if terminal:
+                info.update({"termination_reason": "finished", "race_time_ms": 1_000.0})
             return np.zeros(1, dtype=np.float32), 1.0, terminal, False, info
 
     actor = object.__new__(ActorRuntime)
@@ -601,9 +653,13 @@ def test_actor_training_episode_freezes_one_policy_and_reports_action_gaps() -> 
     assert summary["q_margin/mean"] == pytest.approx(2.0)
     assert summary["q_margin/min"] == pytest.approx(1.0)
     assert summary["q_margin/start_mean"] == pytest.approx(2.0)
+    assert summary["control/gas_fraction"] == pytest.approx(1.0)
+    assert summary["control/brake_fraction"] == 0.0
+    assert summary["control/steer_abs_mean"] == pytest.approx(0.5)
+    assert summary["timing/step_race_ms_mean"] == pytest.approx(66.0)
 
 
-def test_learner_ingests_the_full_backlog_before_spending_update_credit(tmp_path: Path) -> None:
+def test_external_stop_does_not_ingest_or_train_a_queued_backlog(tmp_path: Path) -> None:
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
         port = int(probe.getsockname()[1])
@@ -681,9 +737,10 @@ def test_learner_ingests_the_full_backlog_before_spending_update_credit(tmp_path
 
     coordinator.run_forever()
 
-    assert events == ["ingest"] * 3 + ["update"] * 5
-    assert coordinator.counters.transitions == 6
-    assert coordinator.counters.updates == 5
+    assert events == []
+    assert coordinator.counters.transitions == 0
+    assert coordinator.counters.updates == 0
+    assert coordinator._rollouts.qsize() == 3
 
 
 def test_ingest_aggregates_evaluation_batches_and_checkpoints_best(tmp_path: Path) -> None:
@@ -702,11 +759,12 @@ def test_ingest_aggregates_evaluation_batches_and_checkpoints_best(tmp_path: Pat
     coordinator.run = SimpleNamespace(
         replay_store=InMemoryReplayStore(),
         spec=SimpleNamespace(
+            distributed=SimpleNamespace(max_update_credit=512),
             training=SimpleNamespace(
                 warmup_transitions=1,
                 updates_per_transition=1.0,
                 evaluate_every_episodes=None,
-            )
+            ),
         ),
         logger=RecordingLogger(),
     )
@@ -766,17 +824,19 @@ def test_distributed_ingest_normalizes_source_demo_marker() -> None:
     coordinator.run = SimpleNamespace(
         replay_store=store,
         spec=SimpleNamespace(
+            distributed=SimpleNamespace(max_update_credit=512),
             training=SimpleNamespace(
                 warmup_transitions=1,
                 updates_per_transition=1.0,
                 evaluate_every_episodes=None,
-            )
+            ),
         ),
         logger=_Logger(),
     )
     coordinator.counters = _Counters()
     coordinator._last_ingest_at = time.monotonic()
     coordinator._rollouts = Queue()
+    coordinator._recovering = False
 
     transition = Transition(
         observation=np.asarray([0], dtype=np.float32),
@@ -836,6 +896,41 @@ def test_actor_retries_a_rejected_rollout_before_deleting_it(tmp_path: Path) -> 
     actor._sender_loop()
 
     assert actor.client.calls == 2
+    assert actor.force_refresh.is_set()
+    assert not path.exists()
+
+
+def test_actor_drops_a_rollout_that_is_too_stale_to_submit(tmp_path: Path) -> None:
+    codec = WireCodec(1024 * 1024)
+    path = tmp_path / "00000000000000000000.rollout"
+    path.write_bytes(codec.encode({"sequence": 0}))
+
+    class Client:
+        def __init__(self, stop: threading.Event) -> None:
+            self.stop = stop
+
+        def call(self, method: str, value: Mapping[str, Any]) -> Mapping[str, Any]:
+            assert method == "Submit"
+            assert value["sequence"] == 0
+            self.stop.set()
+            return {
+                "accepted": False,
+                "reason": "hard_policy_lag",
+                "force_refresh": True,
+                "stop": False,
+            }
+
+    actor = object.__new__(ActorRuntime)
+    actor.stop = threading.Event()
+    actor.force_refresh = threading.Event()
+    actor.stop_reason = "running"
+    actor.queue = Queue()
+    actor.queue.put(path)
+    actor.codec = codec
+    actor.client = Client(actor.stop)
+
+    actor._sender_loop()
+
     assert actor.force_refresh.is_set()
     assert not path.exists()
 

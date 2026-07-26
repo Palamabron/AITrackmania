@@ -10,7 +10,11 @@ from typing import Any
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from tmrl.trackmania.actions import build_brake_tap_action_table
+from tmrl.trackmania.actions import (
+    BRAKE_TAP_DURATION_S,
+    BRAKE_TAP_SENTINEL,
+    build_brake_tap_action_table,
+)
 from tmrl.trackmania.control import Controller, GamepadController
 from tmrl.trackmania.geometry import BoundaryGeometry
 from tmrl.trackmania.reward import TrajectoryReward
@@ -29,6 +33,7 @@ class TrackmaniaEnvironmentConfig(BaseModel):
 
     trajectory_path: Path | None = None
     geometry_path: Path | None = None
+    use_racing_line: bool = False
     expected_map_uid: str | None = None
     host: str = "127.0.0.1"
     port: int = Field(default=9000, ge=1, le=65535)
@@ -143,7 +148,10 @@ class OpenPlanetEnvironment:
             else None
         )
         if self.geometry is not None:
-            self.reward = TrajectoryReward(self.geometry.reward_center, **reward_kwargs)
+            reference = (
+                self.geometry.racing_line if config.use_racing_line else self.geometry.reward_center
+            )
+            self.reward = TrajectoryReward(reference, **reward_kwargs)
         else:
             assert config.trajectory_path is not None
             self.reward = TrajectoryReward.from_file(config.trajectory_path, **reward_kwargs)
@@ -173,6 +181,7 @@ class OpenPlanetEnvironment:
             race_time_ms=float(frame.values[3]),
         )
         self._episode_started_at = monotonic()
+        self._last_race_time_ms = float(frame.values[3])
         return frame.values, {"telemetry_health": "ok"}
 
     def _restart_race(self) -> TelemetryFrame:
@@ -232,11 +241,20 @@ class OpenPlanetEnvironment:
         assert frame is not None
         position = frame.values[list(self.config.position_indices)]
         collision = self.controller.consume_collision()
+        race_time_ms = float(frame.values[3])
+        step_race_time_ms = max(0.0, race_time_ms - self._last_race_time_ms)
+        self._last_race_time_ms = race_time_ms
+        brake_tap = float(control[1]) == BRAKE_TAP_SENTINEL
+        applied_brake = (
+            min(1.0, BRAKE_TAP_DURATION_S * 1_000.0 / max(step_race_time_ms, 1.0))
+            if brake_tap
+            else float(np.clip(control[1], 0.0, 1.0))
+        )
         result = self.reward.step(
             position,
             finish_ui_active=bool(frame.values[2]),
             velocity=frame.values[list(self.config.velocity_indices)],
-            race_time_ms=float(frame.values[3]),
+            race_time_ms=race_time_ms,
             collision=collision,
             steering=float(control[2]),
         )
@@ -249,7 +267,12 @@ class OpenPlanetEnvironment:
                 "termination_reason": result.reason,
                 "telemetry_health": "ok",
                 "position": position.tolist(),
-                "race_time_ms": float(frame.values[3]),
+                "race_time_ms": race_time_ms,
+                "step_race_time_ms": step_race_time_ms,
+                "control_gas": float(control[0]),
+                "control_brake": applied_brake,
+                "control_brake_tap": float(brake_tap),
+                "control_steer": float(control[2]),
                 "episode_elapsed_s": monotonic() - self._episode_started_at,
                 "progress_m": self.reward.progress_m,
                 "progress_pct": self.reward.progress_pct,

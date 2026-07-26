@@ -8,6 +8,7 @@ from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
+from uuid import uuid4
 
 from tmrl.core.data import SampleBatch, Transition
 
@@ -73,6 +74,7 @@ class JsonlRunLogger:
         self.run_dir.mkdir(parents=True, exist_ok=True)
         self._path = self.run_dir / "events.jsonl"
         self._run_id = run_id
+        self._segment_id = uuid4().hex
         self._started_at = datetime.now(UTC)
 
     def log(self, event: str, payload: Mapping[str, Any], *, step: int | None = None) -> None:
@@ -81,6 +83,7 @@ class JsonlRunLogger:
             "timestamp_utc": datetime.now(UTC).isoformat(),
             "elapsed_s": (datetime.now(UTC) - self._started_at).total_seconds(),
             "run_id": self._run_id,
+            "segment_id": self._segment_id,
             "event": event,
             "payload": dict(payload),
             "step": step,
@@ -131,7 +134,7 @@ class TorchCheckpointCodec:
                 destination, closefd=False
             ) as compressed,
         ):
-            torch.save(dict(state), compressed)
+            torch.save(dict(state), compressed, pickle_protocol=4)
         temporary.replace(path)
 
     def load(self, path: Path) -> Mapping[str, Any]:

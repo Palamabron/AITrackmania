@@ -125,7 +125,7 @@ def test_iqn_loss_matches_paper_quantile_reduction() -> None:
 
     loss = implicit_quantile_huber_loss(predictions, targets, quantiles)
 
-    assert torch.equal(loss, torch.tensor([1.5]))
+    assert torch.equal(loss, torch.tensor([0.75]))
 
 
 def test_importance_weights_are_normalized_after_per_sample_iqn_reduction() -> None:

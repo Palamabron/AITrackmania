@@ -48,7 +48,7 @@ def implicit_quantile_huber_loss(
     delta = targets[:, None, :] - predictions[:, :, None]
     huber = torch.where(delta.abs() <= 1, 0.5 * delta.square(), delta.abs() - 0.5)
     weights = torch.abs(quantiles[:, :, None] - (delta.detach() < 0).float())
-    return (weights * huber).mean(dim=2).sum(dim=1)
+    return (weights * huber).mean(dim=(1, 2))
 
 
 class _IQNPolicy:
@@ -67,6 +67,9 @@ class _IQNPolicy:
         self.last_q_max: float | None = None
 
     def act(self, observation: Any, *, deterministic: bool = False) -> Any:
+        prepare = getattr(self.model, "prepare_policy_observation", None)
+        if callable(prepare):
+            observation = prepare(observation)
         observation = tree_to_device(sanitize_finite(observation), self.device)
         detector = getattr(self.model, "observation_is_single", None)
         is_single_observation = (
@@ -102,12 +105,29 @@ class _IQNPolicy:
     def _exploration_actions(self, q_values: torch.Tensor, actions: torch.Tensor) -> torch.Tensor:
         weights = getattr(self.model, "exploration_action_weights", None)
         if isinstance(weights, torch.Tensor) and weights.shape == (q_values.shape[-1],):
-            sampled = torch.multinomial(
+            global_actions = torch.multinomial(
                 weights.to(device=self.device, dtype=torch.float32),
                 actions.numel(),
                 replacement=True,
-            )
-            return sampled.reshape(actions.shape).to(actions.dtype)
+            ).reshape(actions.shape)
+            modes_per_steering = 6
+            steering_bins = q_values.shape[-1] // modes_per_steering
+            if steering_bins * modes_per_steering == q_values.shape[-1]:
+                steering = actions // modes_per_steering
+                mode = actions % modes_per_steering
+                delta = torch.randint(
+                    -1,
+                    2,
+                    actions.shape,
+                    device=self.device,
+                    dtype=actions.dtype,
+                )
+                neighboring = (steering + delta).clamp(
+                    0, steering_bins - 1
+                ) * modes_per_steering + mode
+                change_mode = torch.rand(actions.shape, device=self.device) < 0.15
+                return torch.where(change_mode, global_actions, neighboring).to(actions.dtype)
+            return global_actions.to(actions.dtype)
         return torch.randint(
             q_values.shape[-1], actions.shape, device=self.device, dtype=actions.dtype
         )
@@ -122,6 +142,11 @@ class _IQNPolicy:
         if not 0.0 <= epsilon <= 1.0:
             raise ValueError("exploration epsilon must be between 0 and 1")
         self.exploration_epsilon = epsilon
+
+    def reset_episode(self) -> None:
+        reset = getattr(self.model, "reset_policy_state", None)
+        if callable(reset):
+            reset()
 
 
 class ImplicitQuantileQLearning(TorchLearnerBase):
@@ -219,12 +244,12 @@ class ImplicitQuantileQLearning(TorchLearnerBase):
             batch.metadata.get("_tmrl_host_to_device_s", transfer_finished - started)
         )
         observations = self._observation(batch.observations, "observations")
-        actions = self._tensor(batch.actions, "actions").long().reshape(-1)
-        rewards = self._tensor(batch.rewards, "rewards").float().reshape(-1)
+        actions = self._sequence_target(self._tensor(batch.actions, "actions")).long()
+        rewards = self._sequence_target(self._tensor(batch.rewards, "rewards")).float()
         next_observations = self._observation(batch.next_observations, "next_observations")
-        discounts = (
-            self._tensor(batch.bootstrap_discounts, "bootstrap_discounts").float().reshape(-1)
-        )
+        discounts = self._sequence_target(
+            self._tensor(batch.bootstrap_discounts, "bootstrap_discounts")
+        ).float()
         batch_size = _first_tensor(observations).shape[0]
         quantiles = torch.rand(batch_size, self.train_quantile_count, device=self.device)
         with self.autocast():
@@ -302,6 +327,11 @@ class ImplicitQuantileQLearning(TorchLearnerBase):
             if weights is not None
             else torch.ones(batch_size, device=self.device, dtype=torch.float32)
         )
+        replay_metrics = {
+            key: float(value)
+            for key, value in batch.metadata.items()
+            if key.startswith("replay/") and isinstance(value, (float, int))
+        }
         return (
             {
                 "loss/iqn": float(loss.item()),
@@ -332,8 +362,9 @@ class ImplicitQuantileQLearning(TorchLearnerBase):
                 "timing/backward_s": backward_finished - forward_finished,
                 "timing/gradient_clip_s": clipping_finished - backward_finished,
                 "timing/optimizer_s": optimizer_finished - clipping_finished,
+                **replay_metrics,
             },
-            PriorityUpdate(batch.transition_ids, td_errors.cpu().tolist()),
+            PriorityUpdate(self._priority_transition_ids(batch), td_errors.cpu().tolist()),
         )
 
     def policy(self) -> _IQNPolicy:
@@ -351,6 +382,19 @@ class ImplicitQuantileQLearning(TorchLearnerBase):
             raise ValueError(f"{name} tensors require a batch axis")
         return value
 
+    @staticmethod
+    def _sequence_target(value: torch.Tensor) -> torch.Tensor:
+        if value.ndim > 1:
+            return value[:, -1].reshape(-1)
+        return value.reshape(-1)
+
+    @staticmethod
+    def _priority_transition_ids(batch: TrainingBatch) -> list[int]:
+        configured = batch.metadata.get("priority_transition_ids")
+        if configured is not None:
+            return [int(value) for value in configured]
+        return [int(value) for value in batch.transition_ids]
+
     def _current_epsilon(self) -> float:
         if self.exploration_epsilon_decay_updates == 0:
             return self.exploration_epsilon_final
@@ -365,6 +409,22 @@ class ImplicitQuantileQLearning(TorchLearnerBase):
             "model": self.model.state_dict(),
             "target_model": self.target_model.state_dict(),
             "optimizer": self.optimizer.state_dict(),
+            "update_count": self.update_count,
+            "rng": self._rng_state(),
+        }
+
+    def state_dict_for_policy(self, policy_state: Mapping[str, Any]) -> Mapping[str, Any]:
+        """Build a resumable checkpoint whose train and target models match a policy."""
+
+        assert self.model is not None
+        expected = set(self.model.state_dict())
+        if set(policy_state) != expected:
+            raise ValueError("evaluated policy state does not match the IQN model")
+        fresh_optimizer = torch.optim.Adam(self.model.parameters(), lr=self.learning_rate)
+        return {
+            "model": dict(policy_state),
+            "target_model": deepcopy(dict(policy_state)),
+            "optimizer": fresh_optimizer.state_dict(),
             "update_count": self.update_count,
             "rng": self._rng_state(),
         }

@@ -45,6 +45,8 @@ class _Counters:
     evaluations: int = 0
     evaluation_finishes: int = 0
     evaluation_sub40: int = 0
+    evaluation_sub38: int = 0
+    evaluation_sub36: int = 0
     updates: int = 0
     update_credit: float = 0.0
     journal_watermark: int = 0
@@ -188,6 +190,7 @@ class Coordinator:
         self._last_logging_s = 0.0
         self._last_metric_transitions = 0
         self._best_evaluation: tuple[float, float] | None = None
+        self._evaluation_policy_states: dict[int, Mapping[str, Any]] = {}
         self._recovering = False
         self._checkpoint_writer = _AsyncCheckpointWriter(run.checkpoint_codec)
 
@@ -352,6 +355,15 @@ class Coordinator:
             actor_id = str(value["actor_id"])
             evaluate = actor_id in self._evaluation_due
             self._evaluation_due.discard(actor_id)
+            evaluation_version = self.counters.policy_version
+            evaluation_snapshot = self._policy_payload if evaluate else b""
+            if evaluate:
+                policy_state = self.codec.decode(evaluation_snapshot)
+                if not isinstance(policy_state, Mapping):
+                    raise ValueError("published policy snapshot must decode to a mapping")
+                self._evaluation_policy_states[evaluation_version] = _snapshot_value(policy_state)
+                while len(self._evaluation_policy_states) > 16:
+                    self._evaluation_policy_states.pop(next(iter(self._evaluation_policy_states)))
         return self._response(
             {
                 "accepted": True,
@@ -360,6 +372,8 @@ class Coordinator:
                 "stop": stop,
                 "policy_lag_updates": lag,
                 "evaluate": evaluate,
+                "evaluation_policy_version": evaluation_version,
+                "evaluation_snapshot": evaluation_snapshot,
             }
         )
 
@@ -417,22 +431,15 @@ class Coordinator:
         self._last_ingest_at = now
         before = self.counters.transitions
         for transition in transitions:
-            replay_info = (
-                {
-                    "is_demo": bool(
-                        transition.info.get("is_demo", False)
-                        or transition.info.get("source") == "demo"
-                    )
-                }
-                if "is_demo" in transition.info or transition.info.get("source") == "demo"
-                else {}
-            )
+            replay_info = self._replay_info(transition.info)
             self.run.replay_store.append(replace(transition, info=replay_info))
         self.counters.transitions += len(transitions)
         ready = self.run.spec.training.warmup_transitions
         newly_trainable = max(0, self.counters.transitions - ready) - max(0, before - ready)
-        self.counters.update_credit += (
-            newly_trainable * self.run.spec.training.updates_per_transition
+        self.counters.update_credit = min(
+            self.run.spec.distributed.max_update_credit,
+            self.counters.update_credit
+            + newly_trainable * self.run.spec.training.updates_per_transition,
         )
         self.counters.journal_watermark = max(self.counters.journal_watermark, row_id)
         session_id = str(value["session_id"])
@@ -451,85 +458,130 @@ class Coordinator:
                     or finish_time_s < self.counters.best_finish_time_s
                 ):
                     self.counters.best_finish_time_s = finish_time_s
-            self.run.logger.log(
-                "train/episode",
-                {
-                    **summary,
-                    "index": self.counters.episodes,
-                    "finish_count": self.counters.finishes,
-                    "finish_rate": self.counters.finishes / self.counters.episodes,
-                    "best_finish_time_s": self.counters.best_finish_time_s,
-                    "actor_id": value["actor_id"],
-                    "replay_size": len(self.run.replay_store),
-                },
-                step=self.counters.updates,
-            )
-            print(
-                f"Actor {value['actor_id']} episode {self.counters.episodes}: "
-                f"progress={float(summary['progress_pct']):.1f}%, "
-                f"return={float(summary['return']):.3f}, "
-                f"reward(time={float(summary['reward/time']):.3f}, "
-                f"pbrs={float(summary['reward/pbrs']):.3f}, "
-                f"progress={float(summary['reward/progress']):.3f}, "
-                f"projected_velocity={float(summary['reward/projected_velocity']):.3f}, "
-                f"projected_speed={float(summary['reward/projected_speed']):.3f}, "
-                f"steering_delta={float(summary['reward/steering_delta']):.3f}, "
-                f"collision={float(summary['reward/collision']):.3f} "
-                f"({int(summary['collision/count'])}/"
-                f"{int(summary['collision/detected_count'])}), "
-                f"terminal={float(summary['reward/terminal']):.3f}), "
-                f"velocity_ratio(mean={float(summary['velocity/ratio_mean']):.3f}, "
-                f"max={float(summary['velocity/ratio_max']):.3f}), "
-                f"steps={int(summary['steps'])}, "
-                f"race={float(summary['race_time_s']):.2f}s, "
-                f"epsilon={float(summary['exploration_epsilon']):.3f}, "
-                f"policy={int(summary.get('policy_version', 0))}, "
-                f"q_margin(start={float(summary.get('q_margin/start_mean', 0.0)):.2f}, "
-                f"min={float(summary.get('q_margin/min', 0.0)):.2f}), "
-                f"termination={summary['termination']}",
-                flush=True,
-            )
-            interval = self.run.spec.training.evaluate_every_episodes
-            if interval is not None and self.counters.episodes % interval == 0:
-                with self._lock:
-                    self._evaluation_due.add(str(value["actor_id"]))
+            if not self._recovering:
+                self._log_episode(value, summary)
+                interval = self.run.spec.training.evaluate_every_episodes
+                if interval is not None and self.counters.episodes % interval == 0:
+                    with self._lock:
+                        self._evaluation_due.add(str(value["actor_id"]))
         evaluations = [dict(summary) for summary in value.get("evaluations", [])]
+        evaluation_snapshot = value.get("evaluation_snapshot", b"")
+        if evaluations and evaluation_snapshot:
+            if not isinstance(evaluation_snapshot, bytes):
+                raise ValueError("evaluation snapshot must be bytes")
+            policy_state = self.codec.decode(evaluation_snapshot)
+            if not isinstance(policy_state, Mapping):
+                raise ValueError("evaluation snapshot must decode to a mapping")
+            versions = {int(summary.get("policy_version", 0)) for summary in evaluations}
+            if len(versions) != 1:
+                raise ValueError("evaluation snapshot cannot cover mixed policy versions")
+            with self._lock:
+                self._evaluation_policy_states[versions.pop()] = _snapshot_value(policy_state)
         for summary in evaluations:
             self.counters.evaluations += 1
             finished = bool(summary["finished"])
             finish_time_s = float(summary["finish_time_s"])
             sub40 = finished and finish_time_s < 40.0
+            sub38 = finished and finish_time_s < 38.0
+            sub36 = finished and finish_time_s < 36.0
             self.counters.evaluation_finishes += int(finished)
             self.counters.evaluation_sub40 += int(sub40)
+            self.counters.evaluation_sub38 += int(sub38)
+            self.counters.evaluation_sub36 += int(sub36)
+            if not self._recovering:
+                self.run.logger.log(
+                    "eval/episode",
+                    {
+                        **summary,
+                        "index": self.counters.evaluations,
+                        "finish_rate": self.counters.evaluation_finishes
+                        / self.counters.evaluations,
+                        "sub40": float(sub40),
+                        "sub40_rate": self.counters.evaluation_sub40 / self.counters.evaluations,
+                        "sub38": float(sub38),
+                        "sub38_rate": self.counters.evaluation_sub38 / self.counters.evaluations,
+                        "sub36": float(sub36),
+                        "sub36_rate": self.counters.evaluation_sub36 / self.counters.evaluations,
+                        "actor_id": value["actor_id"],
+                    },
+                    step=self.counters.updates,
+                )
+        if evaluations and not self._recovering:
+            self._finish_evaluation_batch(evaluations)
+        if not self._recovering:
             self.run.logger.log(
-                "eval/episode",
+                "distributed/ingest",
                 {
-                    **summary,
-                    "index": self.counters.evaluations,
-                    "finish_rate": self.counters.evaluation_finishes / self.counters.evaluations,
-                    "sub40": float(sub40),
-                    "sub40_rate": self.counters.evaluation_sub40 / self.counters.evaluations,
                     "actor_id": value["actor_id"],
+                    "chunk_transitions": len(transitions),
+                    "transitions": self.counters.transitions,
+                    "replay_size": len(self.run.replay_store),
+                    "ingest_fps": ingest_fps,
+                    "policy_lag_updates": max(
+                        0, self.counters.updates - int(value["policy_version"])
+                    ),
+                    "utd": self.counters.updates
+                    / max(
+                        1,
+                        self.counters.transitions - self.run.spec.training.warmup_transitions,
+                    ),
+                    "queue_delay_s": max(0.0, now - float(value.get("_enqueued_at", now))),
+                    "rollout_queue_depth": self._rollouts.qsize(),
                 },
                 step=self.counters.updates,
             )
-        if evaluations:
-            self._finish_evaluation_batch(evaluations)
+
+    @staticmethod
+    def _replay_info(info: Mapping[str, Any]) -> dict[str, Any]:
+        replay_info: dict[str, Any] = {}
+        if "is_demo" in info or info.get("source") == "demo":
+            replay_info["is_demo"] = bool(
+                info.get("is_demo", False) or info.get("source") == "demo"
+            )
+        progress = float(info.get("progress_pct", 0.0))
+        race_time_s = float(info.get("race_time_ms", 0.0)) / 1_000.0
+        if progress >= 10.0 and race_time_s > 0.0:
+            replay_info["sampling/projected_lap_time_s"] = race_time_s * 100.0 / progress
+        return replay_info
+
+    def _log_episode(self, value: Mapping[str, Any], summary: Mapping[str, Any]) -> None:
         self.run.logger.log(
-            "distributed/ingest",
+            "train/episode",
             {
+                **summary,
+                "index": self.counters.episodes,
+                "finish_count": self.counters.finishes,
+                "finish_rate": self.counters.finishes / self.counters.episodes,
+                "best_finish_time_s": self.counters.best_finish_time_s,
                 "actor_id": value["actor_id"],
-                "chunk_transitions": len(transitions),
-                "transitions": self.counters.transitions,
                 "replay_size": len(self.run.replay_store),
-                "ingest_fps": ingest_fps,
-                "policy_lag_updates": max(0, self.counters.updates - int(value["policy_version"])),
-                "utd": self.counters.updates
-                / max(1, self.counters.transitions - self.run.spec.training.warmup_transitions),
-                "queue_delay_s": max(0.0, now - float(value.get("_enqueued_at", now))),
-                "rollout_queue_depth": self._rollouts.qsize(),
             },
             step=self.counters.updates,
+        )
+        print(
+            f"Actor {value['actor_id']} episode {self.counters.episodes}: "
+            f"progress={float(summary['progress_pct']):.1f}%, "
+            f"return={float(summary['return']):.3f}, "
+            f"reward(time={float(summary['reward/time']):.3f}, "
+            f"pbrs={float(summary['reward/pbrs']):.3f}, "
+            f"progress={float(summary['reward/progress']):.3f}, "
+            f"projected_velocity={float(summary['reward/projected_velocity']):.3f}, "
+            f"projected_speed={float(summary['reward/projected_speed']):.3f}, "
+            f"steering_delta={float(summary['reward/steering_delta']):.3f}, "
+            f"collision={float(summary['reward/collision']):.3f} "
+            f"({int(summary['collision/count'])}/"
+            f"{int(summary['collision/detected_count'])}), "
+            f"terminal={float(summary['reward/terminal']):.3f}), "
+            f"velocity_ratio(mean={float(summary['velocity/ratio_mean']):.3f}, "
+            f"max={float(summary['velocity/ratio_max']):.3f}), "
+            f"steps={int(summary['steps'])}, "
+            f"race={float(summary['race_time_s']):.2f}s, "
+            f"epsilon={float(summary['exploration_epsilon']):.3f}, "
+            f"policy={int(summary.get('policy_version', 0))}, "
+            f"q_margin(start={float(summary.get('q_margin/start_mean', 0.0)):.2f}, "
+            f"min={float(summary.get('q_margin/min', 0.0)):.2f}), "
+            f"termination={summary['termination']}",
+            flush=True,
         )
 
     def _learn(self) -> None:
@@ -538,7 +590,7 @@ class Coordinator:
         ready = max(spec.warmup_transitions, footprint)
         prefetcher = _BatchPrefetcher(self.run)
         try:
-            while (
+            while not self._external_stop_requested() and (
                 not self._should_stop()
                 or (len(self.run.replay_store) >= ready and self.counters.update_credit >= 1.0)
                 or not self._rollouts.empty()
@@ -549,7 +601,11 @@ class Coordinator:
                 # would otherwise train the learner on minutes-old transitions
                 # and inflate the measured actor policy lag by the queue delay.
                 self._drain_rollouts(max(1, self._rollouts.qsize()))
-                if len(self.run.replay_store) >= ready and self.counters.update_credit >= 1.0:
+                if (
+                    self._has_active_actor()
+                    and len(self.run.replay_store) >= ready
+                    and self.counters.update_credit >= 1.0
+                ):
                     request = spec.batch_request(beta=spec.replay_beta(self.counters.transitions))
                     batch, preparation_s, wait_s = prefetcher.next(request)
                     update_started = perf_counter()
@@ -614,23 +670,39 @@ class Coordinator:
             flush=True,
         )
         self._record_best_evaluation(
-            float(stats["finish_rate"]), float(stats["finish_time_mean_s"])
+            float(stats["finish_rate"]),
+            float(stats["finish_time_mean_s"]),
+            int(stats["policy_version"]),
         )
 
-    def _record_best_evaluation(self, finish_rate: float, mean_time_s: float) -> None:
+    def _record_best_evaluation(
+        self, finish_rate: float, mean_time_s: float, policy_version: int
+    ) -> None:
         if self._recovering:
             return
         candidate = (finish_rate, -mean_time_s)
         if self._best_evaluation is not None and candidate <= self._best_evaluation:
             return
         self._best_evaluation = candidate
-        path = self._checkpoint()
+        lock = getattr(self, "_lock", None)
+        if lock is None:
+            policy_state = getattr(self, "_evaluation_policy_states", {}).get(policy_version)
+        else:
+            with lock:
+                policy_state = getattr(self, "_evaluation_policy_states", {}).get(policy_version)
+        path = (
+            self._checkpoint(policy_state=policy_state, policy_version=policy_version)
+            if policy_state is not None
+            else self._checkpoint()
+        )
         self._checkpoints.append(path)
         self.run.logger.log(
             "eval/best_checkpoint",
             {
                 "finish_rate": finish_rate,
                 "finish_time_mean_s": mean_time_s,
+                "policy_version": policy_version,
+                "exact_policy": float(policy_state is not None),
                 "path": str(path),
             },
             step=self.counters.updates,
@@ -705,6 +777,10 @@ class Coordinator:
                 step=self.counters.updates,
             )
 
+    def _has_active_actor(self) -> bool:
+        with self._lock:
+            return bool(set(self._last_heartbeats) - self._timed_out_actors)
+
     def _publish_policy(self, *, force: bool = False) -> None:
         now = monotonic()
         if not force and (
@@ -732,18 +808,36 @@ class Coordinator:
         )
 
     def _should_stop(self) -> bool:
-        return self.counters.transitions >= self.run.spec.training.total_transitions or bool(
-            self.external_stop is not None and self.external_stop.is_set()
+        return (
+            self.counters.transitions >= self.run.spec.training.total_transitions
+            or self._external_stop_requested()
         )
 
-    def _checkpoint(self) -> Path:
+    def _external_stop_requested(self) -> bool:
+        return bool(self.external_stop is not None and self.external_stop.is_set())
+
+    def _checkpoint(
+        self,
+        *,
+        policy_state: Mapping[str, Any] | None = None,
+        policy_version: int | None = None,
+    ) -> Path:
         checkpoint_started = perf_counter()
-        path = (
-            self.run.run_dir / "checkpoints" / f"distributed-update-{self.counters.updates:08d}.pt"
+        name = (
+            f"best-eval-policy-{policy_version:08d}-at-update-{self.counters.updates:08d}.pt"
+            if policy_state is not None and policy_version is not None
+            else f"distributed-update-{self.counters.updates:08d}.pt"
         )
+        path = self.run.run_dir / "checkpoints" / name
+        learner_state = self.run.learner.state_dict()
+        if policy_state is not None:
+            exact_state = getattr(self.run.learner, "state_dict_for_policy", None)
+            if not callable(exact_state):
+                raise TypeError("learner cannot build an exact evaluated-policy checkpoint")
+            learner_state = exact_state(policy_state)
         state = {
             "schema_version": "2.0",
-            "learner": _snapshot_value(self.run.learner.state_dict()),
+            "learner": _snapshot_value(learner_state),
             "replay_store": _state_dict(self.run.replay_store),
             "sampler": _state_dict(self.run.sampler),
             "distributed": {
@@ -754,12 +848,15 @@ class Coordinator:
                 "evaluations": self.counters.evaluations,
                 "evaluation_finishes": self.counters.evaluation_finishes,
                 "evaluation_sub40": self.counters.evaluation_sub40,
+                "evaluation_sub38": self.counters.evaluation_sub38,
+                "evaluation_sub36": self.counters.evaluation_sub36,
                 "updates": self.counters.updates,
                 "update_credit": self.counters.update_credit,
                 "journal_watermark": self.counters.journal_watermark,
                 "policy_version": self.counters.policy_version,
                 "actor_sequences": dict(self.counters.actor_sequences),
             },
+            "evaluated_policy_version": policy_version,
         }
         self._checkpoint_writer.submit(state, path)
         self.run.logger.log(
@@ -788,6 +885,10 @@ class Coordinator:
             return
         distributed = state["distributed"]
         self.counters = _Counters(**distributed)
+        self.counters.update_credit = min(
+            self.counters.update_credit,
+            float(self.run.spec.distributed.max_update_credit),
+        )
         _load_state_dict(self.run.replay_store, state["replay_store"])
         _load_state_dict(self.run.sampler, state["sampler"])
         self._recover_journal(self.counters.journal_watermark)
@@ -841,9 +942,17 @@ def learner_process_entry(
 
 
 def _evaluation_batch_stats(summaries: list[dict[str, Any]]) -> dict[str, float]:
+    if not summaries:
+        raise ValueError("deterministic evaluation batch must not be empty")
+    policy_versions = {int(item.get("policy_version", 0)) for item in summaries}
+    if len(policy_versions) != 1:
+        raise ValueError("deterministic evaluation batch mixed policy versions")
     finished_times = sorted(
         float(item["finish_time_s"]) for item in summaries if bool(item["finished"])
     )
+    failure_progress = [
+        float(item.get("progress_pct", 0.0)) for item in summaries if not bool(item["finished"])
+    ]
     trials = len(summaries)
     return {
         "trials": float(trials),
@@ -853,7 +962,23 @@ def _evaluation_batch_stats(summaries: list[dict[str, Any]]) -> dict[str, float]
         "finish_time_median_s": median(finished_times) if finished_times else 0.0,
         "finish_time_best_s": finished_times[0] if finished_times else 0.0,
         "sub40_rate": sum(1 for time_s in finished_times if time_s < 40.0) / trials,
-        "policy_version": float(summaries[0].get("policy_version", 0)),
+        "sub38_rate": sum(1 for time_s in finished_times if time_s < 38.0) / trials,
+        "sub36_rate": sum(1 for time_s in finished_times if time_s < 36.0) / trials,
+        "failure_progress_mean_pct": fmean(failure_progress) if failure_progress else 100.0,
+        "failure_progress_median_pct": median(failure_progress) if failure_progress else 100.0,
+        "failure_progress_best_pct": max(failure_progress) if failure_progress else 100.0,
+        "collision_rate": sum(
+            int(float(item.get("collision/count", 0.0)) > 0.0) for item in summaries
+        )
+        / trials,
+        "off_track_rate": sum(
+            int(str(item.get("termination", "")) == "off_track") for item in summaries
+        )
+        / trials,
+        "projected_velocity_ratio_mean": fmean(
+            float(item.get("velocity/ratio_mean", 0.0)) for item in summaries
+        ),
+        "policy_version": float(policy_versions.pop()),
         "q_margin_start_mean": fmean(
             float(item.get("q_margin/start_mean", 0.0)) for item in summaries
         ),

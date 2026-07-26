@@ -71,6 +71,43 @@ class _MarginTracker:
         }
 
 
+class _ControlUsageTracker:
+    def __init__(self) -> None:
+        self.gas_total = 0.0
+        self.brake_total = 0.0
+        self.brake_taps = 0
+        self.steer_abs_total = 0.0
+        self.race_ms_total = 0.0
+        self.samples = 0
+
+    def record(self, info: Mapping[str, Any]) -> None:
+        if "control_gas" not in info:
+            return
+        self.gas_total += float(info["control_gas"])
+        self.brake_total += float(info["control_brake"])
+        self.brake_taps += int(bool(info.get("control_brake_tap", False)))
+        self.steer_abs_total += abs(float(info["control_steer"]))
+        self.race_ms_total += float(info.get("step_race_time_ms", 0.0))
+        self.samples += 1
+
+    def summary(self) -> dict[str, float]:
+        if not self.samples:
+            return {
+                "control_gas_fraction": 0.0,
+                "control_brake_fraction": 0.0,
+                "control_brake_tap_fraction": 0.0,
+                "control_steer_abs_mean": 0.0,
+                "step_race_time_ms_mean": 0.0,
+            }
+        return {
+            "control_gas_fraction": self.gas_total / self.samples,
+            "control_brake_fraction": self.brake_total / self.samples,
+            "control_brake_tap_fraction": self.brake_taps / self.samples,
+            "control_steer_abs_mean": self.steer_abs_total / self.samples,
+            "step_race_time_ms_mean": self.race_ms_total / self.samples,
+        }
+
+
 class _Client:
     def __init__(self, target: str, token: str, codec: WireCodec) -> None:
         options = (
@@ -147,6 +184,8 @@ class ActorRuntime:
         self.stop_reason = "running"
         self.force_refresh = threading.Event()
         self.evaluate = threading.Event()
+        self._evaluation_request_lock = threading.Lock()
+        self._evaluation_request: tuple[bytes, int] | None = None
         self._evaluation_index = 0
         # The disk spool is the backpressure boundary. Keeping this queue
         # unbounded prevents a temporarily slow learner from pausing the game.
@@ -299,11 +338,14 @@ class ActorRuntime:
             # One policy snapshot drives the whole episode: a training lap then
             # measures a single policy version instead of a refresh mixture.
             policy, epsilon, version = self._policy()
+            self._reset_policy(policy)
             margins = _MarginTracker()
+            controls = _ControlUsageTracker()
             for step in range(self.spec.training.max_episode_steps):
                 action = policy.act(prepared)
                 margins.record(policy, step)
                 next_observation, reward, terminated, truncated, info = environment.step(action)
+                controls.record(info)
                 next_prepared = pipeline.transform_observation(next_observation)
                 transitions.append(
                     Transition(
@@ -357,6 +399,7 @@ class ActorRuntime:
                 "actor_epsilon": epsilon,
                 "policy_version": version,
                 **margins.summary(),
+                **controls.summary(),
             }
             summaries.append(self._summary(total_reward, summary_info, step + 1))
             episode += 1
@@ -368,11 +411,40 @@ class ActorRuntime:
     def _evaluate(self, environment: Any, pipeline: Any) -> None:
         suite = getattr(self.spec, "evaluation", None)
         trials = int(getattr(suite, "trials_per_map", 1))
-        policy, _, version = self._policy()
+        policy, version = self._evaluation_policy()
         summaries = [
             self._evaluate_episode(environment, pipeline, policy, version) for _ in range(trials)
         ]
-        self._spool([], [], version, evaluations=summaries)
+        export_state = getattr(policy, "export_state", None)
+        snapshot = self.codec.encode(dict(export_state())) if callable(export_state) else None
+        self._spool(
+            [],
+            [],
+            version,
+            evaluations=summaries,
+            evaluation_snapshot=snapshot,
+        )
+
+    def _evaluation_policy(self) -> tuple[ReplicablePolicy, int]:
+        lock = getattr(self, "_evaluation_request_lock", None)
+        if lock is None:
+            policy, _, version = self._policy()
+            return policy, version
+        with lock:
+            request = self._evaluation_request
+            self._evaluation_request = None
+        if request is None:
+            policy, _, version = self._policy()
+            return policy, version
+        snapshot, version = request
+        state = self.codec.decode(snapshot)
+        if not isinstance(state, Mapping):
+            raise ValueError("evaluation policy snapshot must decode to a mapping")
+        policy = self._new_policy()
+        policy.load_state(state)
+        if isinstance(policy, ExploratoryPolicy):
+            policy.set_exploration_epsilon(0.0)
+        return policy, version
 
     def _evaluate_episode(
         self, environment: Any, pipeline: Any, policy: Any, version: int
@@ -382,6 +454,7 @@ class ActorRuntime:
         )
         self._reset_pipeline(pipeline)
         prepared = pipeline.transform_observation(observation)
+        self._reset_policy(policy)
         total_reward = 0.0
         time_reward = 0.0
         pbrs_reward = 0.0
@@ -397,10 +470,12 @@ class ActorRuntime:
         velocity_ratio_max = 0.0
         final_info: Mapping[str, Any] = {}
         margins = _MarginTracker()
+        controls = _ControlUsageTracker()
         for _step in range(self.spec.training.max_episode_steps):
             action = policy.act(prepared, deterministic=True)
             margins.record(policy, _step)
             observation, reward, terminated, truncated, info = environment.step(action)
+            controls.record(info)
             prepared = pipeline.transform_observation(observation)
             total_reward += float(reward)
             time_reward += float(info.get("reward_time", 0.0))
@@ -438,6 +513,7 @@ class ActorRuntime:
                 "actor_epsilon": 0.0,
                 "policy_version": version,
                 **margins.summary(),
+                **controls.summary(),
             },
             _step + 1,
         )
@@ -448,6 +524,12 @@ class ActorRuntime:
     @staticmethod
     def _reset_pipeline(pipeline: Any) -> None:
         reset = getattr(pipeline, "reset_episode", None)
+        if callable(reset):
+            reset()
+
+    @staticmethod
+    def _reset_policy(policy: Any) -> None:
+        reset = getattr(policy, "reset_episode", None)
         if callable(reset):
             reset()
 
@@ -489,6 +571,11 @@ class ActorRuntime:
             "q_margin/mean": float(info.get("q_margin_mean", 0.0)),
             "q_margin/min": float(info.get("q_margin_min", 0.0)),
             "q_margin/start_mean": float(info.get("q_margin_start_mean", 0.0)),
+            "control/gas_fraction": float(info.get("control_gas_fraction", 0.0)),
+            "control/brake_fraction": float(info.get("control_brake_fraction", 0.0)),
+            "control/brake_tap_fraction": float(info.get("control_brake_tap_fraction", 0.0)),
+            "control/steer_abs_mean": float(info.get("control_steer_abs_mean", 0.0)),
+            "timing/step_race_ms_mean": float(info.get("step_race_time_ms_mean", 0.0)),
             "steps": transitions,
             "progress_pct": float(info.get("progress_pct", 0.0)),
             "progress_m": float(info.get("progress_m", 0.0)),
@@ -513,6 +600,7 @@ class ActorRuntime:
         policy_version: int,
         *,
         evaluations: list[dict[str, Any]] | None = None,
+        evaluation_snapshot: bytes | None = None,
     ) -> None:
         if not transitions and not summaries and not evaluations:
             return
@@ -526,6 +614,7 @@ class ActorRuntime:
             "transitions": [transition_to_wire(item) for item in transitions],
             "episodes": summaries,
             "evaluations": evaluations or [],
+            "evaluation_snapshot": evaluation_snapshot or b"",
         }
         payload = self.codec.encode(value)
         if self._spool_bytes() + len(payload) > self.spec.distributed.spool_max_bytes:
@@ -550,6 +639,14 @@ class ActorRuntime:
                     if response.get("force_refresh"):
                         self.force_refresh.set()
                     if response.get("evaluate"):
+                        snapshot = response.get("evaluation_snapshot", b"")
+                        version = int(response.get("evaluation_policy_version", -1))
+                        if not isinstance(snapshot, bytes) or not snapshot or version < 0:
+                            raise ValueError(
+                                "evaluation request requires a policy snapshot/version"
+                            )
+                        with self._evaluation_request_lock:
+                            self._evaluation_request = (snapshot, version)
                         self.evaluate.set()
                     if response.get("stop"):
                         self.stop_reason = "learner requested stop"
@@ -557,6 +654,10 @@ class ActorRuntime:
                     if response.get("accepted"):
                         path.unlink(missing_ok=True)
                         continue
+                    if response.get("reason") == "hard_policy_lag":
+                        path.unlink(missing_ok=True)
+                        self.force_refresh.set()
+                        break
                     if self.stop.is_set():
                         break
                     self.force_refresh.set()

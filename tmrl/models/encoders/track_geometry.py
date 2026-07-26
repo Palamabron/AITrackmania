@@ -27,13 +27,15 @@ class TrackGeometryEncoder(nn.Module):
         *,
         hidden_dim: int = 192,
         output_dim: int = 256,
+        spatial_bins: int = 0,
     ) -> None:
         super().__init__()
-        if channels < 1 or telemetry_dim < 0:
+        if channels < 1 or telemetry_dim < 0 or spatial_bins < 0:
             raise ValueError("channels must be positive and telemetry_dim non-negative")
         self.channels = channels
         self.telemetry_dim = telemetry_dim
         self.output_dim = output_dim
+        self.spatial_bins = spatial_bins
         self.track = nn.Sequential(
             nn.Conv1d(channels, hidden_dim // 2, kernel_size=5, padding=2),
             nn.SiLU(),
@@ -50,7 +52,8 @@ class TrackGeometryEncoder(nn.Module):
             if telemetry_dim
             else None
         )
-        joined = hidden_dim * (2 if telemetry_dim else 1)
+        track_feature_count = 1 + spatial_bins
+        joined = hidden_dim * (track_feature_count + int(bool(telemetry_dim)))
         self.projection = nn.Sequential(
             nn.Linear(joined, output_dim), nn.LayerNorm(output_dim), nn.SiLU()
         )
@@ -83,6 +86,11 @@ class TrackGeometryEncoder(nn.Module):
             attention = attention / attention.sum(dim=1, keepdim=True).clamp_min(1e-8)
         track_features = (encoded_track * attention.unsqueeze(1)).sum(dim=2)
         features = [track_features]
+        if self.spatial_bins:
+            ordered = torch.nn.functional.adaptive_avg_pool1d(
+                encoded_track, self.spatial_bins
+            ).flatten(1)
+            features.append(ordered)
         if self.telemetry is not None:
             if telemetry is None or telemetry.shape != (track.shape[0], self.telemetry_dim):
                 raise ValueError(
@@ -103,19 +111,23 @@ class TemporalTrackGeometryEncoder(nn.Module):
         history_length: int,
         hidden_dim: int = 192,
         output_dim: int = 256,
+        spatial_bins: int = 0,
+        burn_in: int = 0,
     ) -> None:
         super().__init__()
-        if history_length < 2:
+        if history_length < 2 or not 0 <= burn_in < history_length:
             raise ValueError("temporal encoder requires history_length >= 2")
         self.channels = channels
         self.telemetry_dim = telemetry_dim
         self.history_length = history_length
         self.output_dim = output_dim
+        self.burn_in = burn_in
         self.frame = TrackGeometryEncoder(
             channels,
             telemetry_dim,
             hidden_dim=hidden_dim,
             output_dim=output_dim,
+            spatial_bins=spatial_bins,
         )
         self.recurrent = nn.GRU(output_dim, output_dim, batch_first=True)
         self.normalization = nn.LayerNorm(output_dim)
@@ -155,5 +167,10 @@ class TemporalTrackGeometryEncoder(nn.Module):
         encoded = self.frame(flat_track, flat_telemetry, flat_mask).reshape(
             batch, history, self.output_dim
         )
-        recurrent, _ = self.recurrent(encoded)
+        hidden = None
+        if self.burn_in:
+            with torch.no_grad():
+                _, hidden = self.recurrent(encoded[:, : self.burn_in])
+            encoded = encoded[:, self.burn_in :]
+        recurrent, _ = self.recurrent(encoded, hidden)
         return cast(torch.Tensor, self.normalization(recurrent[:, -1]))

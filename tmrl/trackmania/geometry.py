@@ -105,6 +105,31 @@ def _smooth_polyline(points: np.ndarray, window: int) -> np.ndarray:
     return out.astype(np.float32)
 
 
+def _minimum_curvature_line(
+    left: np.ndarray,
+    right: np.ndarray,
+    center: np.ndarray,
+    *,
+    iterations: int = 256,
+    edge_margin_fraction: float = 0.12,
+) -> np.ndarray:
+    line = np.asarray(center, dtype=np.float64).copy()
+    inner_left = left + edge_margin_fraction * (right - left)
+    inner_right = right + edge_margin_fraction * (left - right)
+    corridor = np.asarray(inner_right - inner_left, dtype=np.float64)
+    origin = np.asarray(inner_left, dtype=np.float64)
+    denominator = np.square(corridor).sum(axis=1).clip(min=1e-8)
+    closed = _is_closed_loop(center)
+    for _ in range(iterations):
+        neighbors = 0.5 * (np.roll(line, 1, axis=0) + np.roll(line, -1, axis=0))
+        candidate = 0.35 * line + 0.65 * neighbors
+        fraction = np.sum((candidate - origin) * corridor, axis=1) / denominator
+        line = origin + np.clip(fraction, 0.0, 1.0)[:, None] * corridor
+        if not closed:
+            line[[0, -1]] = center[[0, -1]]
+    return np.asarray(line, dtype=np.float32)
+
+
 def _is_closed_loop(center: np.ndarray) -> bool:
     """True when the recording is a full lap (start and finish are the same place)."""
 
@@ -305,12 +330,24 @@ class BoundaryGeometry:
         if expected_map_uid is not None and self.map_uid != expected_map_uid:
             raise ValueError("geometry asset map UID does not match evaluation map")
         self.sha256 = file_sha256(self.path)
+        recorded = slice(0, self.recorded_count)
+        self._racing_line = _minimum_curvature_line(
+            self.left[recorded],
+            self.right[recorded],
+            self.center[recorded],
+        )
 
     @property
     def reward_center(self) -> np.ndarray:
         """Centerline used for progress/finish (excludes virtual lidar extension)."""
 
         return self.center[: self.recorded_count]
+
+    @property
+    def racing_line(self) -> np.ndarray:
+        """Minimum-curvature reference constrained to the recorded road corridor."""
+
+        return self._racing_line
 
     def validate_map(self, map_path: str | Path) -> None:
         """Reject missing map files and assets built from a different local map binary."""

@@ -131,12 +131,22 @@ class LidarFeaturePipeline:
         max_distance_m: float = 300.0,
         history_length: int = 1,
         include_track_relative: bool = False,
+        use_racing_line: bool = False,
         max_speed_mps: float = 80.0,
+        velocity_to_mps_scale: float = 0.001,
+        nearest_forward_points: int = 128,
+        nearest_backward_points: int = 10,
         base_dir: str | Path = ".",
     ) -> None:
         if samples_per_side < 2:
             raise ValueError("samples_per_side must be at least two")
-        if max_distance_m <= 0.0 or max_speed_mps <= 0.0:
+        if (
+            max_distance_m <= 0.0
+            or max_speed_mps <= 0.0
+            or velocity_to_mps_scale <= 0.0
+            or nearest_forward_points < 1
+            or nearest_backward_points < 0
+        ):
             raise ValueError("distance and speed scales must be positive")
         if history_length < 1:
             raise ValueError("history_length must be positive")
@@ -148,7 +158,12 @@ class LidarFeaturePipeline:
         self.max_distance_m = max_distance_m
         self.history_length = history_length
         self.include_track_relative = include_track_relative
+        self.use_racing_line = use_racing_line
         self.max_speed_mps = max_speed_mps
+        self.velocity_to_mps_scale = velocity_to_mps_scale
+        self.nearest_forward_points = nearest_forward_points
+        self.nearest_backward_points = nearest_backward_points
+        self._progress_index = 0
         self.telemetry_dim = len(self.telemetry_fields) + (
             len(self.track_relative_fields) if include_track_relative else 0
         )
@@ -200,6 +215,7 @@ class LidarFeaturePipeline:
 
     def reset_episode(self) -> None:
         self._history.clear()
+        self._progress_index = 0
 
     def _telemetry(self, observation: Any) -> np.ndarray:
         values = np.asarray(observation, dtype=np.float32).reshape(-1)
@@ -241,9 +257,8 @@ class LidarFeaturePipeline:
         )
         return np.clip(selected, -1.0, 1.0)
 
-    def _local_lidar(self, values: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    def _local_lidar(self, values: np.ndarray, nearest: int) -> tuple[np.ndarray, np.ndarray]:
         position = values[4:7]
-        nearest = self._nearest_index(position, self.geometry.center)
         forward = values[10:13].copy()
         forward[1] = 0.0
         length = float(np.linalg.norm(forward))
@@ -275,9 +290,16 @@ class LidarFeaturePipeline:
         local *= mask[None, :]
         return np.clip(local, -1.0, 1.0).astype(np.float32), mask
 
-    @staticmethod
-    def _nearest_index(position: np.ndarray, center: np.ndarray) -> int:
-        return int(np.argmin(np.sum((center - position) ** 2, axis=1)))
+    def _nearest_progress_index(self, position: np.ndarray) -> int:
+        start = max(0, self._progress_index - self.nearest_backward_points)
+        stop = min(
+            len(self.geometry.center),
+            self._progress_index + self.nearest_forward_points + 1,
+        )
+        distances = np.sum((self.geometry.center[start:stop] - position) ** 2, axis=1)
+        nearest = start + int(np.argmin(distances))
+        self._progress_index = max(self._progress_index, nearest)
+        return self._progress_index
 
     @staticmethod
     def _unit_horizontal(vector: np.ndarray) -> np.ndarray:
@@ -288,16 +310,16 @@ class LidarFeaturePipeline:
             raise ValueError("track-relative vector has no horizontal component")
         return horizontal / norm
 
-    def _track_relative(self, values: np.ndarray) -> np.ndarray:
-        center = self.geometry.reward_center
+    def _track_relative(self, values: np.ndarray, geometry_index: int) -> np.ndarray:
+        center = self.geometry.racing_line if self.use_racing_line else self.geometry.reward_center
         position = values[4:7]
-        index = self._nearest_index(position, center)
+        index = min(geometry_index, len(center) - 1)
         before = max(0, index - 1)
         after = min(len(center) - 1, index + 1)
         tangent = self._unit_horizontal(center[after] - center[before])
         right = np.asarray([tangent[2], 0.0, -tangent[0]], dtype=np.float32)
         forward = self._unit_horizontal(values[10:13])
-        velocity = values[7:10]
+        velocity = values[7:10] * self.velocity_to_mps_scale
         half_width = max(
             0.5 * float(np.linalg.norm(self.geometry.left[index] - self.geometry.right[index])),
             1.0,
@@ -317,10 +339,11 @@ class LidarFeaturePipeline:
         return np.clip(relative, -1.0, 1.0)
 
     def _frame(self, values: np.ndarray) -> dict[str, torch.Tensor]:
-        lidar, mask = self._local_lidar(values)
+        nearest = self._nearest_progress_index(values[4:7])
+        lidar, mask = self._local_lidar(values, nearest)
         telemetry = self._scale_telemetry(values)
         if self.include_track_relative:
-            telemetry = np.concatenate((telemetry, self._track_relative(values)))
+            telemetry = np.concatenate((telemetry, self._track_relative(values, nearest)))
         return {
             "lidar": torch.from_numpy(lidar),
             "lidar_mask": torch.from_numpy(mask),

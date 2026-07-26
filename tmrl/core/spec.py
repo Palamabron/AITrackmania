@@ -109,6 +109,7 @@ class DistributedSpec(BaseModel):
     max_message_bytes: PositiveInt = 16 * 1024**2
     soft_policy_lag_updates: PositiveInt = 1_000
     hard_policy_lag_updates: PositiveInt = 5_000
+    max_update_credit: PositiveInt = 512
     epsilon_profiles: tuple[float, ...] = (1.0, 0.4, 0.1, 0.02)
     epsilon_start: float = Field(default=0.5, ge=0.0, le=1.0)
     epsilon_final: float = Field(default=0.05, ge=0.0, le=1.0)
