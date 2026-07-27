@@ -10,6 +10,8 @@ from typing import Any
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from tmrl.core.contracts import FeaturePipeline
+from tmrl.core.data import Transition
 from tmrl.trackmania.actions import (
     BRAKE_TAP_DURATION_S,
     BRAKE_TAP_SENTINEL,
@@ -98,6 +100,32 @@ class TrackmaniaEnvironmentConfig(BaseModel):
             raise ValueError("reward values must be finite")
         return self
 
+    def reward_kwargs(self) -> dict[str, Any]:
+        names = (
+            "crash_distance",
+            "no_progress_steps",
+            "slow_progress_window_steps",
+            "minimum_progress_per_window_m",
+            "terminal_failure_penalty",
+            "collision_penalty",
+            "collision_cooldown_s",
+            "minimum_finish_steps",
+            "nearest_forward_points",
+            "nearest_backward_points",
+            "time_penalty_per_second",
+            "max_time_delta_s",
+            "progress_reward_full_lap",
+            "finish_reward",
+            "potential_progress_weight",
+            "max_projected_speed_mps",
+            "velocity_to_mps_scale",
+            "projected_velocity_scale",
+            "projected_speed_bonus_scale",
+            "steering_delta_penalty",
+            "reward_gamma",
+        )
+        return {name: getattr(self, name) for name in names}
+
 
 class OpenPlanetEnvironment:
     def __init__(
@@ -111,29 +139,7 @@ class OpenPlanetEnvironment:
         self.client = OpenPlanetClient(
             config.host, config.port, field_count=config.field_count, timeout_s=config.timeout_s
         )
-        reward_kwargs: dict[str, Any] = {
-            "crash_distance": config.crash_distance,
-            "no_progress_steps": config.no_progress_steps,
-            "slow_progress_window_steps": config.slow_progress_window_steps,
-            "minimum_progress_per_window_m": config.minimum_progress_per_window_m,
-            "terminal_failure_penalty": config.terminal_failure_penalty,
-            "collision_penalty": config.collision_penalty,
-            "collision_cooldown_s": config.collision_cooldown_s,
-            "minimum_finish_steps": config.minimum_finish_steps,
-            "nearest_forward_points": config.nearest_forward_points,
-            "nearest_backward_points": config.nearest_backward_points,
-            "time_penalty_per_second": config.time_penalty_per_second,
-            "max_time_delta_s": config.max_time_delta_s,
-            "progress_reward_full_lap": config.progress_reward_full_lap,
-            "finish_reward": config.finish_reward,
-            "potential_progress_weight": config.potential_progress_weight,
-            "max_projected_speed_mps": config.max_projected_speed_mps,
-            "velocity_to_mps_scale": config.velocity_to_mps_scale,
-            "projected_velocity_scale": config.projected_velocity_scale,
-            "projected_speed_bonus_scale": config.projected_speed_bonus_scale,
-            "steering_delta_penalty": config.steering_delta_penalty,
-            "reward_gamma": config.reward_gamma,
-        }
+        reward_kwargs = config.reward_kwargs()
         geometry_path = (
             evaluation_map.geometry_path if evaluation_map is not None else config.geometry_path
         )
@@ -324,3 +330,13 @@ class OpenPlanetEnvironmentFactory:
         return OpenPlanetEnvironment(
             self.config, self._controller or GamepadController(), evaluation_map=evaluation_map
         )
+
+    def load_demonstration(self, path: str | Path, pipeline: FeaturePipeline) -> list[Transition]:
+        from tmrl.trackmania.demonstrations import demonstration_transitions
+
+        if self.config.geometry_path is None:
+            raise ValueError("TrackMania demonstrations require environment.geometry_path")
+        geometry = BoundaryGeometry(
+            self.config.geometry_path, expected_map_uid=self.config.expected_map_uid
+        )
+        return demonstration_transitions(path, pipeline, self.config, geometry)

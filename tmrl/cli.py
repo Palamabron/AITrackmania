@@ -18,7 +18,10 @@ from tmrl.core.runtime import resolve_run, validate_resolved_run
 from tmrl.core.spec import RunSpec
 from tmrl.project.scaffold import create_project
 from tmrl.trackmania.assets import record_boundary, record_trajectory
-from tmrl.trackmania.geometry import build_geometry_asset
+from tmrl.trackmania.demonstrations import record_demonstration, save_demonstration
+from tmrl.trackmania.environment import OpenPlanetEnvironmentFactory
+from tmrl.trackmania.geometry import BoundaryGeometry, build_geometry_asset
+from tmrl.trackmania.session import OpenPlanetSessionClient
 from tmrl.trackmania.telemetry import DEFAULT_TELEMETRY_FIELD_COUNT, OpenPlanetClient
 
 
@@ -110,6 +113,7 @@ def _train(args: argparse.Namespace) -> None:
             str(args.checkpoint) if getattr(args, "checkpoint", None) else None,
             bool(getattr(args, "reset_replay", False)),
             shutdown,
+            tuple(str(path.resolve()) for path in getattr(args, "demo", ())),
         ),
         name="tmrl-learner",
     )
@@ -186,6 +190,7 @@ def _learner(args: argparse.Namespace) -> None:
         args.bind or f"127.0.0.1:{spec.distributed.port}",
         token,
         str(args.checkpoint) if args.checkpoint else None,
+        demo_paths=tuple(str(path.resolve()) for path in args.demo),
     )
 
 
@@ -206,6 +211,7 @@ def _learner_process(
     resume_checkpoint: str | None = None,
     reset_replay: bool = False,
     external_stop: Any | None = None,
+    demo_paths: tuple[str, ...] = (),
 ) -> None:
     if external_stop is not None:
         signal.signal(signal.SIGINT, signal.SIG_IGN)
@@ -220,6 +226,7 @@ def _learner_process(
         resume_checkpoint,
         reset_replay,
         external_stop,
+        demo_paths,
     )
 
 
@@ -362,6 +369,43 @@ def _record_boundary(args: argparse.Namespace) -> None:
     print(f"Recorded {args.side} boundary: {path}")
 
 
+def _trackmania_factory(config_path: Path) -> OpenPlanetEnvironmentFactory:
+    spec = RunSpec.from_yaml(config_path)
+    component = spec.components.environment
+    expected = "tmrl.trackmania.environment:OpenPlanetEnvironmentFactory"
+    if component is None or component.class_path != expected:
+        raise ValueError("record-demo requires the first-party TrackMania environment")
+    return OpenPlanetEnvironmentFactory(**component.kwargs, base_dir=config_path.parent)
+
+
+def _record_demo(args: argparse.Namespace) -> None:
+    config_path = args.config.resolve()
+    factory = _trackmania_factory(config_path)
+    if args.start_timeout <= 0.0:
+        raise ValueError("start timeout must be positive")
+    config = factory.config.model_copy(update={"start_timeout_s": args.start_timeout})
+    if config.geometry_path is None or config.expected_map_uid is None:
+        raise ValueError("record-demo requires geometry_path and expected_map_uid")
+    geometry = BoundaryGeometry(config.geometry_path, expected_map_uid=config.expected_map_uid)
+    session = OpenPlanetSessionClient(config.host, config.session_port, timeout_s=config.timeout_s)
+    session.verify_loaded_map(config.expected_map_uid)
+    client = OpenPlanetClient(
+        config.host, config.port, field_count=config.field_count, timeout_s=config.timeout_s
+    )
+    try:
+        demo = record_demonstration(
+            client,
+            config,
+            geometry,
+            max_duration_s=args.max_duration,
+            status=print,
+        )
+        path = save_demonstration(args.output, demo)
+    finally:
+        client.close()
+    print(f"Recorded demonstration: {path} ({len(demo.actions)} transitions)")
+
+
 def _build_geometry(args: argparse.Namespace) -> None:
     path = build_geometry_asset(
         args.output,
@@ -465,6 +509,13 @@ def entrypoint(argv: list[str] | None = None) -> None:
     validate.set_defaults(handler=_validate)
     train = commands.add_parser("train", help="start a local asynchronous learner and actor")
     train.add_argument("config", type=Path)
+    train.add_argument(
+        "--demo",
+        action="append",
+        type=Path,
+        default=[],
+        help="validated TrackMania demonstration .npz to add to replay (repeatable)",
+    )
     train.set_defaults(handler=_train)
     resume = commands.add_parser("resume", help="resume a local asynchronous training run")
     resume.add_argument("config", type=Path)
@@ -474,11 +525,19 @@ def entrypoint(argv: list[str] | None = None) -> None:
         action="store_true",
         help="restore learner state while starting with an empty replay and sampler",
     )
+    resume.add_argument(
+        "--demo",
+        action="append",
+        type=Path,
+        default=[],
+        help="validated TrackMania demonstration .npz to add to replay (repeatable)",
+    )
     resume.set_defaults(handler=_train)
     learner = commands.add_parser("learner", help="run a distributed coordinator/learner")
     learner.add_argument("config", type=Path)
     learner.add_argument("--bind")
     learner.add_argument("--checkpoint", type=Path)
+    learner.add_argument("--demo", action="append", type=Path, default=[])
     learner.set_defaults(handler=_learner)
     actor = commands.add_parser("actor", help="run a remote continuous rollout actor")
     actor.add_argument("config", type=Path)
@@ -508,6 +567,14 @@ def entrypoint(argv: list[str] | None = None) -> None:
     record.add_argument("--field-count", type=int, default=DEFAULT_TELEMETRY_FIELD_COUNT)
     record.add_argument("--timeout", type=float, default=10.0)
     record.set_defaults(handler=_record_trajectory)
+    demo = track_commands.add_parser(
+        "record-demo", help="record one finished human lap for replay seeding"
+    )
+    demo.add_argument("output", type=Path)
+    demo.add_argument("--config", type=Path, required=True)
+    demo.add_argument("--start-timeout", type=float, default=120.0)
+    demo.add_argument("--max-duration", type=float, default=180.0)
+    demo.set_defaults(handler=_record_demo)
     boundary = track_commands.add_parser(
         "record-boundary", help="record a manually driven left or right boundary"
     )

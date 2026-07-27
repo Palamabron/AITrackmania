@@ -158,6 +158,7 @@ class Coordinator:
         resume_checkpoint: Path | None = None,
         reset_replay: bool = False,
         external_stop: Any | None = None,
+        demo_paths: tuple[Path, ...] = (),
     ) -> None:
         self.run = run
         self.bind = require_loopback_bind(bind)
@@ -166,6 +167,7 @@ class Coordinator:
         self.resume_checkpoint = resume_checkpoint
         self.reset_replay = reset_replay
         self.external_stop = external_stop
+        self.demo_paths = demo_paths
         self.codec = WireCodec(run.spec.distributed.max_message_bytes)
         self.journal = RolloutJournal(run.run_dir / "distributed" / "rollouts.sqlite3")
         self.counters = _Counters()
@@ -219,6 +221,7 @@ class Coordinator:
             )
         else:
             self._recover_journal(0)
+        self._import_demonstrations()
         self._publish_policy(force=True)
         self._start_server()
         print(
@@ -286,6 +289,36 @@ class Coordinator:
         server.start()
         self._server = server
         self._rpc_executor = executor
+
+    def _import_demonstrations(self) -> None:
+        if not self.demo_paths:
+            return
+        factory = self.run.environment_factory
+        loader = getattr(factory, "load_demonstration", None)
+        if not callable(loader):
+            raise ValueError("configured environment does not support replay demonstrations")
+        imported = 0
+        finish_times: list[float] = []
+        for path in self.demo_paths:
+            transitions = loader(path, self.run.feature_pipeline)
+            for transition in transitions:
+                self.run.replay_store.append(transition)
+            imported += len(transitions)
+            finish_times.append(float(transitions[0].info["sampling/projected_lap_time_s"]))
+            print(
+                f"Imported demonstration {path}: {len(transitions)} transitions",
+                flush=True,
+            )
+        self.run.logger.log(
+            "train/demonstrations",
+            {
+                "files": len(self.demo_paths),
+                "transitions": imported,
+                "best_finish_time_s": min(finish_times),
+                "replay_size": len(self.run.replay_store),
+            },
+            step=self.counters.updates,
+        )
 
     def _request(
         self, request: BytesValue, context: grpc.ServicerContext[Any, Any]
@@ -927,6 +960,7 @@ def learner_process_entry(
     resume_checkpoint: str | None = None,
     reset_replay: bool = False,
     external_stop: Any | None = None,
+    demo_paths: tuple[str, ...] = (),
 ) -> None:
     """Spawn-safe learner entrypoint used by both local and remote launchers."""
 
@@ -942,6 +976,7 @@ def learner_process_entry(
             resume_checkpoint=Path(resume_checkpoint) if resume_checkpoint else None,
             reset_replay=reset_replay,
             external_stop=external_stop,
+            demo_paths=tuple(Path(item) for item in demo_paths),
         ).run_forever()
     finally:
         run.logger.close()
