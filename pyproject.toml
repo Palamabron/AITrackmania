@@ -82,11 +82,11 @@ vision = [
 default-groups = ["dev"]
 
 [tool.uv.sources]
-# Windows (the platform that runs TrackMania) gets CUDA wheels; other
-# platforms default to CPU wheels and can override the index explicitly.
+# TrackMania hosts on Windows and Linux use the tested CUDA wheels. Other
+# platforms use the CPU index and can override it for ROCm or another backend.
 torch = [
-    { index = "pytorch-cuda", marker = "sys_platform == 'win32'" },
-    { index = "pytorch-cpu", marker = "sys_platform != 'win32'" },
+    { index = "pytorch-cuda", marker = "sys_platform == 'win32' or sys_platform == 'linux'" },
+    { index = "pytorch-cpu", marker = "sys_platform != 'win32' and sys_platform != 'linux'" },
 ]
 
 [[tool.uv.index]]
