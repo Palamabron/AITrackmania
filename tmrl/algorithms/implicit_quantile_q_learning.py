@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from copy import deepcopy
+from dataclasses import dataclass
 from time import perf_counter
 from typing import Any
 
@@ -14,6 +15,21 @@ from tmrl.algorithms._torch import TorchLearnerBase, backward, polyak_update, we
 from tmrl.algorithms.execution import TorchExecutionConfig
 from tmrl.core.data import PriorityUpdate, TrainingBatch
 from tmrl.core.pytree import sanitize_finite, tree_map, tree_to_device
+
+_SEQUENCE_PRIORITY_MAX_WEIGHT = 0.9
+_VALUE_RESCALING_EPSILON = 1e-3
+
+
+def rescale_value(value: torch.Tensor) -> torch.Tensor:
+    """R2D2 invertible value rescaling ``h(x) = sign(x)(sqrt(|x|+1)-1) + eps*x``."""
+
+    return value.sign() * ((value.abs() + 1.0).sqrt() - 1.0) + _VALUE_RESCALING_EPSILON * value
+
+
+def inverse_rescale_value(value: torch.Tensor) -> torch.Tensor:
+    epsilon = _VALUE_RESCALING_EPSILON
+    inner = (1.0 + 4.0 * epsilon * (value.abs() + 1.0 + epsilon)).sqrt() - 1.0
+    return value.sign() * ((inner / (2.0 * epsilon)).square() - 1.0)
 
 
 def _first_tensor(value: Any) -> torch.Tensor:
@@ -49,6 +65,19 @@ def implicit_quantile_huber_loss(
     huber = torch.where(delta.abs() <= 1, 0.5 * delta.square(), delta.abs() - 0.5)
     weights = torch.abs(quantiles[:, :, None] - (delta.detach() < 0).float())
     return (weights * huber).mean(dim=(1, 2))
+
+
+@dataclass(slots=True)
+class _LossComputation:
+    per_sample_losses: torch.Tensor
+    priorities: torch.Tensor
+    selected: torch.Tensor
+    targets: torch.Tensor
+    step_actions: torch.Tensor
+    action_count: int
+    rewards: torch.Tensor
+    margin_loss: torch.Tensor | None
+    trained_positions: int
 
 
 class _IQNPolicy:
@@ -167,6 +196,9 @@ class ImplicitQuantileQLearning(TorchLearnerBase):
         exploration_epsilon: float = 0.1,
         exploration_epsilon_final: float | None = None,
         exploration_epsilon_decay_updates: int = 0,
+        value_rescaling: bool = False,
+        demonstration_margin: float = 0.8,
+        demonstration_margin_weight: float = 0.0,
         execution: TorchExecutionConfig | Mapping[str, Any] | None = None,
         seed: int = 0,
     ) -> None:
@@ -190,6 +222,11 @@ class ImplicitQuantileQLearning(TorchLearnerBase):
             raise ValueError("IQN epsilon schedule parameters are invalid")
         self.exploration_epsilon_final = final
         self.exploration_epsilon_decay_updates = exploration_epsilon_decay_updates
+        if demonstration_margin < 0.0 or demonstration_margin_weight < 0.0:
+            raise ValueError("demonstration margin parameters must be non-negative")
+        self.value_rescaling = value_rescaling
+        self.demonstration_margin = demonstration_margin
+        self.demonstration_margin_weight = demonstration_margin_weight
         self.update_count = 0
         self._train_model: Any = None
         self._compile_pending = False
@@ -243,6 +280,81 @@ class ImplicitQuantileQLearning(TorchLearnerBase):
         host_to_device_s = float(
             batch.metadata.get("_tmrl_host_to_device_s", transfer_finished - started)
         )
+        if self._is_sequence_batch(batch):
+            computation = self._sequence_losses(batch)
+        else:
+            computation = self._single_step_losses(batch)
+        forward_finished = perf_counter()
+        weights = (
+            batch.importance_weights.float().reshape(-1)
+            if isinstance(batch.importance_weights, torch.Tensor)
+            else None
+        )
+        loss = weighted_mean(computation.per_sample_losses, weights)
+        if computation.margin_loss is not None:
+            loss = loss + self.demonstration_margin_weight * computation.margin_loss
+        self.optimizer.zero_grad(set_to_none=True)
+        assert self.scaler is not None
+        backward(self.scaler.scale(loss))
+        self.scaler.unscale_(self.optimizer)
+        backward_finished = perf_counter()
+        gradient_norm = torch.nn.utils.clip_grad_norm_(
+            self.model.parameters(), self.gradient_clip_norm
+        )
+        clipping_finished = perf_counter()
+        self.scaler.step(self.optimizer)
+        self.scaler.update()
+        optimizer_finished = perf_counter()
+        self.update_count += 1
+        if self._compile_pending:
+            self._compile_pending = False
+            assert self.resolved_execution is not None
+            self.resolved_execution = self.resolved_execution.with_compile_result(effective=True)
+            self._record_execution_result()
+        target_synced = False
+        if self.target_tau > 0:
+            polyak_update(self.model, self.target_model, self.target_tau)
+            target_synced = True
+        elif self.update_count % self.target_update_interval == 0:
+            self.target_model.load_state_dict(self.model.state_dict())
+            target_synced = True
+        metrics, priorities = self._transfer_metrics(
+            batch, computation, loss, gradient_norm, weights
+        )
+        metrics.update(
+            {
+                "debug/target_synced_fraction": float(target_synced),
+                "debug/trained_positions": float(computation.trained_positions),
+                "timing/host_to_device_s": host_to_device_s,
+                "timing/forward_s": forward_finished - transfer_finished,
+                "timing/backward_s": backward_finished - forward_finished,
+                "timing/gradient_clip_s": clipping_finished - backward_finished,
+                "timing/optimizer_s": optimizer_finished - clipping_finished,
+            }
+        )
+        metrics.update(
+            {
+                key: float(value)
+                for key, value in batch.metadata.items()
+                if key.startswith("replay/") and isinstance(value, (float, int))
+            }
+        )
+        return metrics, PriorityUpdate(self._priority_transition_ids(batch), priorities)
+
+    def _is_sequence_batch(self, batch: TrainingBatch) -> bool:
+        rewards = self._tensor(batch.rewards, "rewards")
+        if rewards.ndim != 2:
+            return False
+        supports = getattr(self.model, "supports_sequence_training", None)
+        return (
+            callable(supports)
+            and bool(supports())
+            and isinstance(batch.masks, torch.Tensor)
+            and "gamma" in batch.metadata
+            and "n_step" in batch.metadata
+        )
+
+    def _single_step_losses(self, batch: TrainingBatch) -> _LossComputation:
         observations = self._observation(batch.observations, "observations")
         actions = self._sequence_target(self._tensor(batch.actions, "actions")).long()
         rewards = self._sequence_target(self._tensor(batch.rewards, "rewards")).float()
@@ -272,100 +384,272 @@ class ImplicitQuantileQLearning(TorchLearnerBase):
                     )
                     .squeeze(-1)
                 )
-                targets = rewards[:, None] + discounts[:, None] * target_values
-        forward_finished = perf_counter()
+                targets = self._bootstrap_targets(
+                    rewards[:, None], discounts[:, None], target_values
+                )
         selected_fp32 = selected.float()
         targets_fp32 = targets.float()
         losses = implicit_quantile_huber_loss(selected_fp32, targets_fp32, quantiles)
-        weights = (
-            batch.importance_weights.float().reshape(-1)
-            if isinstance(batch.importance_weights, torch.Tensor)
-            else None
-        )
-        loss = weighted_mean(losses, weights)
-        self.optimizer.zero_grad(set_to_none=True)
-        assert self.scaler is not None
-        backward(self.scaler.scale(loss))
-        self.scaler.unscale_(self.optimizer)
-        backward_finished = perf_counter()
-        gradient_norm = torch.nn.utils.clip_grad_norm_(
-            self.model.parameters(), self.gradient_clip_norm
-        )
-        gradient_norm_value = float(gradient_norm)
-        gradient_clipped = gradient_norm_value > self.gradient_clip_norm
-        clip_coefficient = min(
-            1.0,
-            self.gradient_clip_norm / max(gradient_norm_value, 1e-12),
-        )
-        clipping_finished = perf_counter()
-        self.scaler.step(self.optimizer)
-        self.scaler.update()
-        optimizer_finished = perf_counter()
-        self.update_count += 1
-        if self._compile_pending:
-            self._compile_pending = False
-            assert self.resolved_execution is not None
-            self.resolved_execution = self.resolved_execution.with_compile_result(effective=True)
-            self._record_execution_result()
-        target_synced = False
-        if self.target_tau > 0:
-            polyak_update(self.model, self.target_model, self.target_tau)
-            target_synced = True
-        elif self.update_count % self.target_update_interval == 0:
-            self.target_model.load_state_dict(self.model.state_dict())
-            target_synced = True
         td_errors = (selected_fp32.mean(1) - targets_fp32.mean(1)).detach().abs()
-        action_counts = torch.bincount(actions, minlength=predictions.shape[-1]).float()
+        margin_loss = self._margin_loss(
+            batch,
+            predictions.float().mean(dim=1),
+            actions,
+            valid=None,
+        )
+        return _LossComputation(
+            per_sample_losses=losses,
+            priorities=td_errors,
+            selected=selected_fp32,
+            targets=targets_fp32,
+            step_actions=actions,
+            action_count=int(predictions.shape[-1]),
+            rewards=rewards,
+            margin_loss=margin_loss,
+            trained_positions=1,
+        )
+
+    def _sequence_losses(self, batch: TrainingBatch) -> _LossComputation:
+        observations = self._observation(batch.observations, "observations")
+        next_observations = self._observation(batch.next_observations, "next_observations")
+        actions = self._tensor(batch.actions, "actions").long()
+        rewards = self._tensor(batch.rewards, "rewards").float()
+        discounts = self._tensor(batch.bootstrap_discounts, "bootstrap_discounts").float()
+        masks = self._tensor(batch.masks, "masks").bool()
+        gamma = float(batch.metadata["gamma"])
+        n_step = int(batch.metadata["n_step"])
+        burn_in = int(getattr(self.model, "sequence_burn_in", 0))
+        batch_size, sequence_length = actions.shape
+        inner = list(range(burn_in, sequence_length - n_step))
+        positions = [*inner, sequence_length - 1]
+        feature_positions = torch.tensor(
+            [position - burn_in for position in positions], device=self.device
+        )
+        step_actions = actions[:, positions]
+        quantiles = torch.rand(batch_size, self.train_quantile_count, device=self.device)
+        with self.autocast():
+            features = self._train_model.encode_sequence(observations)
+            predictions = self._train_model.quantiles_from_features(
+                features[:, feature_positions], quantiles
+            )
+            selected = predictions.gather(
+                3,
+                step_actions[:, :, None, None].expand(-1, -1, self.train_quantile_count, 1),
+            ).squeeze(-1)
+            with torch.no_grad():
+                target_quantiles = torch.rand(
+                    batch_size, self.target_quantile_count, device=self.device
+                )
+                final_targets = self._final_step_targets(
+                    next_observations, rewards, discounts, target_quantiles
+                )
+                if inner:
+                    inner_targets = self._inner_step_targets(
+                        observations,
+                        features,
+                        rewards,
+                        target_quantiles,
+                        inner=inner,
+                        burn_in=burn_in,
+                        n_step=n_step,
+                        gamma=gamma,
+                    )
+                    targets = torch.cat([inner_targets, final_targets[:, None]], dim=1)
+                else:
+                    targets = final_targets[:, None]
+        selected_fp32 = selected.float()
+        targets_fp32 = targets.float()
+        position_count = len(positions)
+        losses = implicit_quantile_huber_loss(
+            selected_fp32.flatten(0, 1),
+            targets_fp32.flatten(0, 1),
+            quantiles.repeat_interleave(position_count, dim=0),
+        ).reshape(batch_size, position_count)
+        valid = masks[:, positions]
+        per_sample_losses = (losses * valid).sum(dim=1) / valid.sum(dim=1).clamp_min(1)
+        td_matrix = (selected_fp32.mean(2) - targets_fp32.mean(2)).detach().abs() * valid
+        td_max = td_matrix.max(dim=1).values
+        td_mean = td_matrix.sum(dim=1) / valid.sum(dim=1).clamp_min(1)
+        priorities = (
+            _SEQUENCE_PRIORITY_MAX_WEIGHT * td_max + (1.0 - _SEQUENCE_PRIORITY_MAX_WEIGHT) * td_mean
+        )
+        margin_loss = self._margin_loss(
+            batch,
+            predictions.float().mean(dim=2),
+            step_actions,
+            valid=valid,
+        )
+        return _LossComputation(
+            per_sample_losses=per_sample_losses,
+            priorities=priorities,
+            selected=selected_fp32.flatten(0, 1),
+            targets=targets_fp32.flatten(0, 1),
+            step_actions=step_actions.reshape(-1),
+            action_count=int(predictions.shape[-1]),
+            rewards=rewards[:, -1],
+            margin_loss=margin_loss,
+            trained_positions=position_count,
+        )
+
+    def _final_step_targets(
+        self,
+        next_observations: Any,
+        rewards: torch.Tensor,
+        discounts: torch.Tensor,
+        target_quantiles: torch.Tensor,
+    ) -> torch.Tensor:
+        next_actions = self._train_model.q_values(
+            next_observations, self.evaluation_quantile_count
+        ).argmax(dim=-1)
+        target_values = (
+            self.target_model(next_observations, target_quantiles)
+            .gather(
+                2,
+                next_actions[:, None, None].expand(-1, self.target_quantile_count, 1),
+            )
+            .squeeze(-1)
+        )
+        return self._bootstrap_targets(rewards[:, -1, None], discounts[:, -1, None], target_values)
+
+    def _inner_step_targets(
+        self,
+        observations: Any,
+        online_features: torch.Tensor,
+        rewards: torch.Tensor,
+        target_quantiles: torch.Tensor,
+        *,
+        inner: list[int],
+        burn_in: int,
+        n_step: int,
+        gamma: float,
+    ) -> torch.Tensor:
+        bootstrap_positions = torch.tensor(
+            [position + n_step - burn_in for position in inner], device=self.device
+        )
+        evaluation_quantiles = self.model.evaluation_quantiles(
+            self.evaluation_quantile_count, rewards.shape[0]
+        )
+        bootstrap_actions = (
+            self._train_model.quantiles_from_features(
+                online_features.detach()[:, bootstrap_positions], evaluation_quantiles
+            )
+            .mean(dim=2)
+            .argmax(dim=-1)
+        )
+        target_features = self.target_model.encode_sequence(observations)
+        target_values = (
+            self.target_model.quantiles_from_features(
+                target_features[:, bootstrap_positions], target_quantiles
+            )
+            .gather(
+                3,
+                bootstrap_actions[:, :, None, None].expand(-1, -1, self.target_quantile_count, 1),
+            )
+            .squeeze(-1)
+        )
+        kernel = gamma ** torch.arange(n_step, device=self.device, dtype=rewards.dtype)
+        windows = rewards.unfold(1, n_step, 1)[:, burn_in : rewards.shape[1] - n_step]
+        returns = (windows * kernel).sum(dim=-1)
+        return self._bootstrap_targets(
+            returns[:, :, None],
+            torch.full_like(returns[:, :, None], gamma**n_step),
+            target_values,
+        )
+
+    def _bootstrap_targets(
+        self, rewards: torch.Tensor, discounts: torch.Tensor, target_values: torch.Tensor
+    ) -> torch.Tensor:
+        if not self.value_rescaling:
+            return rewards + discounts * target_values
+        return rescale_value(rewards + discounts * inverse_rescale_value(target_values))
+
+    def _margin_loss(
+        self,
+        batch: TrainingBatch,
+        expected_q: torch.Tensor,
+        actions: torch.Tensor,
+        *,
+        valid: torch.Tensor | None,
+    ) -> torch.Tensor | None:
+        if not self.demonstration_margin_weight:
+            return None
+        flags = batch.metadata.get("demo_flags")
+        if flags is None:
+            return None
+        demo = torch.as_tensor(flags, dtype=torch.bool, device=self.device)
+        if not bool(demo.any()):
+            return None
+        margins = torch.full(
+            expected_q.shape, self.demonstration_margin, device=self.device
+        ).scatter(-1, actions.unsqueeze(-1), 0.0)
+        margin_losses = (expected_q + margins).max(dim=-1).values - expected_q.gather(
+            -1, actions.unsqueeze(-1)
+        ).squeeze(-1)
+        weight = demo.float() if valid is None else valid.float() * demo[:, None].float()
+        return (margin_losses * weight).sum() / weight.sum().clamp_min(1.0)
+
+    def _transfer_metrics(
+        self,
+        batch: TrainingBatch,
+        computation: _LossComputation,
+        loss: torch.Tensor,
+        gradient_norm: torch.Tensor,
+        weights: torch.Tensor | None,
+    ) -> tuple[dict[str, float], list[float]]:
+        selected = computation.selected
+        targets = computation.targets
+        rewards = computation.rewards
+        action_counts = torch.bincount(
+            computation.step_actions, minlength=computation.action_count
+        ).float()
         action_probabilities = action_counts / action_counts.sum().clamp_min(1.0)
-        positive_probabilities = action_probabilities[action_probabilities > 0.0]
-        action_entropy = -(positive_probabilities * positive_probabilities.log()).sum()
-        normalized_action_entropy = action_entropy / torch.log(
-            torch.tensor(float(max(2, predictions.shape[-1])), device=self.device)
+        positive = action_probabilities[action_probabilities > 0.0]
+        action_entropy = -(positive * positive.log()).sum() / torch.log(
+            torch.tensor(float(max(2, computation.action_count)), device=self.device)
         )
-        importance_weights = (
-            weights.float()
+        importance = (
+            weights
             if weights is not None
-            else torch.ones(batch_size, device=self.device, dtype=torch.float32)
+            else torch.ones(rewards.shape[0], device=self.device, dtype=torch.float32)
         )
-        replay_metrics = {
-            key: float(value)
-            for key, value in batch.metadata.items()
-            if key.startswith("replay/") and isinstance(value, (float, int))
+        margin = (
+            computation.margin_loss
+            if computation.margin_loss is not None
+            else torch.zeros((), device=self.device)
+        )
+        named = {
+            "loss/iqn": loss.detach().float(),
+            "loss/demonstration_margin": margin.detach().float(),
+            "debug/gradient_norm": gradient_norm.detach().float(),
+            "debug/td_abs_mean": computation.priorities.mean(),
+            "debug/td_abs_max": computation.priorities.max(),
+            "debug/reward_mean": rewards.mean(),
+            "debug/reward_abs_max": rewards.abs().max(),
+            "debug/q_selected_mean": selected.mean(),
+            "debug/q_selected_max": selected.max(),
+            "debug/q_selected_abs_max": selected.abs().max(),
+            "debug/q_selected_std_mean": selected.std(dim=1, correction=0).mean(),
+            "debug/target_mean": targets.mean(),
+            "debug/target_abs_max": targets.abs().max(),
+            "debug/target_std_mean": targets.std(dim=1, correction=0).mean(),
+            "debug/action_entropy": action_entropy,
+            "debug/action_unique_fraction": (action_counts > 0.0).float().mean(),
+            "debug/importance_weight_mean": importance.mean(),
+            "debug/importance_weight_min": importance.min(),
         }
-        return (
-            {
-                "loss/iqn": float(loss.item()),
-                "debug/gradient_norm": gradient_norm_value,
-                "debug/gradient_norm_max": gradient_norm_value,
-                "debug/gradient_clipped_fraction": float(gradient_clipped),
-                "debug/gradient_clip_coefficient": clip_coefficient,
-                "debug/td_abs_mean": float(td_errors.mean().item()),
-                "debug/td_abs_max": float(td_errors.max().item()),
-                "debug/reward_mean": float(rewards.mean().item()),
-                "debug/reward_abs_max": float(rewards.abs().max().item()),
-                "debug/q_selected_mean": float(selected_fp32.mean().item()),
-                "debug/q_selected_max": float(selected_fp32.max().item()),
-                "debug/q_selected_abs_max": float(selected_fp32.abs().max().item()),
-                "debug/q_selected_std_mean": float(
-                    selected_fp32.std(dim=1, correction=0).mean().item()
-                ),
-                "debug/target_mean": float(targets_fp32.mean().item()),
-                "debug/target_abs_max": float(targets_fp32.abs().max().item()),
-                "debug/target_std_mean": float(targets_fp32.std(dim=1, correction=0).mean().item()),
-                "debug/action_entropy": float(normalized_action_entropy.item()),
-                "debug/action_unique_fraction": float((action_counts > 0.0).float().mean().item()),
-                "debug/importance_weight_mean": float(importance_weights.mean().item()),
-                "debug/importance_weight_min": float(importance_weights.min().item()),
-                "debug/target_synced_fraction": float(target_synced),
-                "timing/host_to_device_s": host_to_device_s,
-                "timing/forward_s": forward_finished - transfer_finished,
-                "timing/backward_s": backward_finished - forward_finished,
-                "timing/gradient_clip_s": clipping_finished - backward_finished,
-                "timing/optimizer_s": optimizer_finished - clipping_finished,
-                **replay_metrics,
-            },
-            PriorityUpdate(self._priority_transition_ids(batch), td_errors.cpu().tolist()),
+        scalars = torch.stack(list(named.values()))
+        transferred = torch.cat([scalars, computation.priorities]).cpu()
+        metrics = dict(zip(named, transferred[: len(named)].tolist(), strict=True))
+        priorities = transferred[len(named) :].tolist()
+        gradient_norm_value = metrics["debug/gradient_norm"]
+        metrics["debug/gradient_norm_max"] = gradient_norm_value
+        metrics["debug/gradient_clipped_fraction"] = float(
+            gradient_norm_value > self.gradient_clip_norm
         )
+        metrics["debug/gradient_clip_coefficient"] = min(
+            1.0, self.gradient_clip_norm / max(gradient_norm_value, 1e-12)
+        )
+        return metrics, priorities
 
     def policy(self) -> _IQNPolicy:
         assert self.model is not None

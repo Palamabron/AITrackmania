@@ -164,6 +164,7 @@ class LidarFeaturePipeline:
         self.nearest_forward_points = nearest_forward_points
         self.nearest_backward_points = nearest_backward_points
         self._progress_index = 0
+        self._last_heading = np.asarray([0.0, 0.0, 1.0], dtype=np.float32)
         self.telemetry_dim = len(self.telemetry_fields) + (
             len(self.track_relative_fields) if include_track_relative else 0
         )
@@ -216,6 +217,7 @@ class LidarFeaturePipeline:
     def reset_episode(self) -> None:
         self._history.clear()
         self._progress_index = 0
+        self._last_heading = np.asarray([0.0, 0.0, 1.0], dtype=np.float32)
 
     def _telemetry(self, observation: Any) -> np.ndarray:
         values = np.asarray(observation, dtype=np.float32).reshape(-1)
@@ -261,12 +263,7 @@ class LidarFeaturePipeline:
 
     def _local_lidar(self, values: np.ndarray, nearest: int) -> tuple[np.ndarray, np.ndarray]:
         position = values[4:7]
-        forward = values[10:13].copy()
-        forward[1] = 0.0
-        length = float(np.linalg.norm(forward))
-        if length <= 1e-5:
-            raise ValueError("vehicle direction has no horizontal component")
-        forward /= length
+        forward = self._horizontal_heading(values[10:13])
         # Keep the legacy car-frame convention: lateral/right first, then
         # longitudinal/forward.  For the OpenPlanet X/Z coordinates the right
         # vector is (forward_z, -forward_x), not its opposite.
@@ -312,6 +309,19 @@ class LidarFeaturePipeline:
             raise ValueError("track-relative vector has no horizontal component")
         return horizontal / norm
 
+    def _horizontal_heading(self, direction: np.ndarray) -> np.ndarray:
+        """Project the car heading onto the track plane, holding the last valid one
+        through vertical moments (loops, wallrides, airborne flips)."""
+
+        horizontal = np.asarray(direction, dtype=np.float32).copy()
+        horizontal[1] = 0.0
+        norm = float(np.linalg.norm(horizontal))
+        if norm <= 1e-5:
+            return self._last_heading
+        heading = horizontal / norm
+        self._last_heading = heading
+        return heading
+
     def _track_relative(self, values: np.ndarray, geometry_index: int) -> np.ndarray:
         center = self.geometry.racing_line if self.use_racing_line else self.geometry.reward_center
         position = values[4:7]
@@ -320,7 +330,7 @@ class LidarFeaturePipeline:
         after = min(len(center) - 1, index + 1)
         tangent = self._unit_horizontal(center[after] - center[before])
         right = np.asarray([tangent[2], 0.0, -tangent[0]], dtype=np.float32)
-        forward = self._unit_horizontal(values[10:13])
+        forward = self._horizontal_heading(values[10:13])
         velocity = values[7:10] * self.velocity_to_mps_scale
         half_width = max(
             0.5 * float(np.linalg.norm(self.geometry.left[index] - self.geometry.right[index])),

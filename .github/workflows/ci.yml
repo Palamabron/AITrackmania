@@ -37,12 +37,15 @@ jobs:
         run: uv run mypy tmrl/
 
   test:
-    name: Tests (Python ${{ matrix.python-version }})
-    runs-on: ubuntu-latest
+    name: Tests (${{ matrix.os }}, Python ${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
 
     strategy:
       fail-fast: false
       matrix:
+        os:
+          - ubuntu-latest
+          - windows-latest
         python-version:
           - "3.12"
 
@@ -60,7 +63,7 @@ jobs:
       - name: Run tests
         env:
           TMRL_DISABLE_GAME: "1"
-        run: uv run pytest tests/ -v --tb=short -x
+        run: uv run pytest tests/ -v --tb=short
 
   package:
     name: Build distributables

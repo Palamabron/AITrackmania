@@ -14,6 +14,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 import torch
+
 from tmrl.core.builtins import JsonlRunLogger, TorchCheckpointCodec
 from tmrl.core.spec import RunSpec
 from tmrl.distributed.actor import ActorRuntime
@@ -87,21 +88,27 @@ def test_torch_checkpoints_are_zstd_streamed_and_round_trip(tmp_path: Path) -> N
     assert restored["counter"] == 3
 
 
-def test_torch_checkpoint_uses_a_protocol_that_supports_large_replays(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_torch_checkpoint_round_trips_numpy_replay_state_with_weights_only(
+    tmp_path: Path,
 ) -> None:
-    protocol: list[int] = []
-    original_save = torch.save
+    import random
 
-    def save(*args: object, **kwargs: object) -> None:
-        protocol.append(int(kwargs["pickle_protocol"]))
-        original_save(*args, **kwargs)
+    path = tmp_path / "checkpoint.pt"
+    codec = TorchCheckpointCodec()
+    state = {
+        "array": np.arange(4, dtype=np.float32),
+        "flags": np.zeros(2, dtype=np.bool_),
+        "rng": random.Random(0).getstate(),
+        "info": {3: {"progress_pct": 1.0}},
+    }
 
-    monkeypatch.setattr(torch, "save", save)
+    codec.save(state, path)
+    restored = codec.load(path)
 
-    TorchCheckpointCodec().save({"value": torch.zeros(1)}, tmp_path / "checkpoint.pt")
-
-    assert protocol == [4]
+    np.testing.assert_array_equal(restored["array"], state["array"])
+    np.testing.assert_array_equal(restored["flags"], state["flags"])
+    assert restored["rng"] == state["rng"]
+    assert restored["info"] == state["info"]
 
 
 def test_wandb_metrics_use_readable_sections() -> None:
@@ -1102,6 +1109,57 @@ def test_trackmania_evaluator_runs_every_declared_seed_and_episode() -> None:
     assert metrics["eval/finish_rate"] == 1.0
     assert metrics["eval/reward"] == 2.0
     assert metrics["eval/finish_time_s"] == pytest.approx(12.345)
+
+
+def test_trackmania_evaluator_records_telemetry_errors_and_continues() -> None:
+    class FailingEnvironment:
+        def reset(self, *, seed: int | None = None) -> tuple[float, dict[str, object]]:
+            del seed
+            raise TimeoutError("telemetry stalled")
+
+        def close(self) -> None:
+            return None
+
+    class FinishingEnvironment:
+        def reset(self, *, seed: int | None = None) -> tuple[float, dict[str, object]]:
+            del seed
+            return 0.0, {}
+
+        def step(self, action: object) -> tuple[float, float, bool, bool, dict[str, str | float]]:
+            del action
+            return (
+                1.0,
+                2.0,
+                True,
+                False,
+                {"termination_reason": "finished", "race_time_ms": 12_345.0},
+            )
+
+        def close(self) -> None:
+            return None
+
+    class EnvironmentFactory:
+        def __init__(self) -> None:
+            self.created = 0
+
+        def create(self, *, seed: int) -> object:
+            del seed
+            self.created += 1
+            return FailingEnvironment() if self.created == 1 else FinishingEnvironment()
+
+    class Pipeline:
+        def transform_observation(self, observation: object) -> object:
+            return observation
+
+    class Policy:
+        def act(self, observation: object, *, deterministic: bool = False) -> float:
+            del observation, deterministic
+            return 0.0
+
+    suite = SimpleNamespace(seeds=(1,), episodes_per_seed=2)
+    metrics = TrackmaniaEvaluator(suite, EnvironmentFactory(), Pipeline()).evaluate(Policy())
+
+    assert metrics["eval/finish_rate"] == 0.5
 
 
 def test_trackmania_evaluator_uses_elapsed_time_when_plugin_reports_zero() -> None:

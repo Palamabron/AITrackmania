@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import pytest
 import torch
+from torch import nn
+
 from tmrl.algorithms import ImplicitQuantileQLearning
 from tmrl.algorithms.execution import (
     TorchExecutionConfig,
@@ -11,7 +13,6 @@ from tmrl.algorithms.execution import (
 )
 from tmrl.core.data import TrainingBatch
 from tmrl.models.critics import DiscreteQuantileNetwork
-from torch import nn
 
 
 class _Encoder(nn.Module):

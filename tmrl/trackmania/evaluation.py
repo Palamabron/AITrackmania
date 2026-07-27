@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from statistics import median
 from time import perf_counter
@@ -102,6 +103,7 @@ class TrackmaniaEvaluator:
         termination_reason: str | None = None
         finish_time_s: float | None = None
         progress_pct = 0.0
+        telemetry_error: str | None = None
         started = perf_counter()
         try:
             observation, _ = environment.reset(seed=seed)
@@ -130,6 +132,8 @@ class TrackmaniaEvaluator:
                         finish_time_s = float(race_time_ms) / 1_000.0
                 if terminated or truncated:
                     break
+        except (TimeoutError, ConnectionError) as exc:
+            telemetry_error = f"{type(exc).__name__}: {exc}"
         finally:
             close = getattr(environment, "close", None)
             if callable(close):
@@ -148,6 +152,7 @@ class TrackmaniaEvaluator:
             map_id="" if map_spec is None else map_spec.id,
             map_uid="" if map_spec is None else map_spec.expected_map_uid,
             trial_index=trial_index,
+            telemetry_error=telemetry_error,
         )
 
     def _write_artifact(self, results: list[EvaluationResult], metrics: dict[str, float]) -> None:
@@ -178,4 +183,6 @@ class TrackmaniaEvaluator:
             ],
         }
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+        temporary = target.with_suffix(".json.tmp")
+        temporary.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+        os.replace(temporary, target)

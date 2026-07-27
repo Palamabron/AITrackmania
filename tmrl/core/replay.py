@@ -54,6 +54,8 @@ class _IncrementalReplayStore(Protocol):
 
     def sampling_pace_s(self, transition_id: TransitionId) -> float: ...
 
+    def demo_flags(self, transition_ids: list[TransitionId]) -> list[bool]: ...
+
     def changes_since(
         self, revision: int | None
     ) -> tuple[int, list[tuple[TransitionId, TransitionId | None]] | None]: ...
@@ -266,6 +268,10 @@ class InMemoryReplayStore:
         self._episode_codes_by_name: dict[str, int] = {}
         self._episode_steps: dict[int, dict[int, TransitionId]] = {}
         self._episode_terminal_steps: dict[int, int] = {}
+        self._episode_refcounts: dict[int, int] = {}
+        self._next_episode_code = 0
+        self._demo_flags = np.zeros(capacity, dtype=np.bool_)
+        self._demo_count = 0
         self._next_index = 0
         self._size = 0
         self._lock = RLock()
@@ -275,43 +281,89 @@ class InMemoryReplayStore:
         )
 
     def append(self, transition: Transition) -> TransitionId:
+        """Append one transition; demonstrations displaced by the ring are re-appended."""
+
         with self._lock:
-            episode_code = self._episode_code(transition.episode_id)
-            previous_id = self._previous_transition(transition, episode_code)
-            transition_id = self._next_index
-            slot = transition_id % self.capacity
-            evicted = int(self._ids[slot]) if self._ids[slot] >= 0 else None
-            if evicted is not None:
-                self._info.pop(evicted, None)
-                self._next_overrides.pop(evicted, None)
-            self._allocate_columns(transition)
-            assert self._observations is not None
-            assert self._actions is not None
-            self._observations.write(slot, transition.observation)
-            self._actions.write(slot, transition.action)
-            self._ids[slot] = transition_id
-            self._rewards[slot] = transition.reward
-            self._terminated[slot] = transition.terminated
-            self._truncated[slot] = transition.truncated
-            self._episode_codes[slot] = episode_code
-            self._steps[slot] = transition.step if transition.step is not None else -1
-            self._previous_ids[slot] = previous_id
-            self._next_ids[slot] = -1
-            transition_info = dict(transition.info)
-            self._sampling_pace[slot] = float(
-                transition_info.pop("sampling/projected_lap_time_s", np.inf)
-            )
-            self._next_overrides[transition_id] = transition.next_observation
-            if transition_info:
-                self._info[transition_id] = transition_info
-            self._link_previous(previous_id, transition_id, transition.observation)
-            if episode_code >= 0 and transition.step is not None:
-                self._register_episode_step(episode_code, transition.step, transition_id)
-            self._next_index += 1
-            self._size = min(self.capacity, self._size + 1)
-            self._revision += 1
-            self._changes.append((self._revision, transition_id, evicted))
+            transition_id, resurrected = self._append_locked(transition)
+            while resurrected is not None:
+                _, resurrected = self._append_locked(resurrected)
             return transition_id
+
+    def _append_locked(self, transition: Transition) -> tuple[TransitionId, Transition | None]:
+        episode_code = self._episode_code(transition.episode_id)
+        previous_id = self._previous_transition(transition, episode_code)
+        transition_id = self._next_index
+        slot = transition_id % self.capacity
+        evicted = int(self._ids[slot]) if self._ids[slot] >= 0 else None
+        resurrected: Transition | None = None
+        if evicted is not None:
+            if self._demo_flags[slot]:
+                if self._demo_count * 2 >= self.capacity:
+                    raise RuntimeError(
+                        "replay capacity is too small to protect demonstration transitions"
+                    )
+                resurrected = self._resurrectable_transition(evicted, slot)
+                self._demo_count -= 1
+            self._info.pop(evicted, None)
+            self._next_overrides.pop(evicted, None)
+            self._release_episode_reference(int(self._episode_codes[slot]))
+        self._allocate_columns(transition)
+        assert self._observations is not None
+        assert self._actions is not None
+        self._observations.write(slot, transition.observation)
+        self._actions.write(slot, transition.action)
+        self._ids[slot] = transition_id
+        self._rewards[slot] = transition.reward
+        self._terminated[slot] = transition.terminated
+        self._truncated[slot] = transition.truncated
+        self._episode_codes[slot] = episode_code
+        self._steps[slot] = transition.step if transition.step is not None else -1
+        self._previous_ids[slot] = previous_id
+        self._next_ids[slot] = -1
+        transition_info = dict(transition.info)
+        self._sampling_pace[slot] = float(
+            transition_info.pop("sampling/projected_lap_time_s", np.inf)
+        )
+        is_demo = _is_demo(transition_info)
+        self._demo_flags[slot] = is_demo
+        self._demo_count += int(is_demo)
+        if episode_code >= 0:
+            self._episode_refcounts[episode_code] = self._episode_refcounts.get(episode_code, 0) + 1
+        self._next_overrides[transition_id] = transition.next_observation
+        if transition_info:
+            self._info[transition_id] = transition_info
+        self._link_previous(previous_id, transition_id, transition.observation)
+        if episode_code >= 0 and transition.step is not None:
+            self._register_episode_step(episode_code, transition.step, transition_id)
+        self._next_index += 1
+        self._size = min(self.capacity, self._size + 1)
+        self._revision += 1
+        self._changes.append((self._revision, transition_id, evicted))
+        return transition_id, resurrected
+
+    def _resurrectable_transition(self, transition_id: TransitionId, slot: int) -> Transition:
+        resurrected = self._transition(transition_id)
+        pace = float(self._sampling_pace[slot])
+        if not isfinite(pace):
+            return resurrected
+        return replace(
+            resurrected,
+            info={**resurrected.info, "sampling/projected_lap_time_s": pace},
+        )
+
+    def _release_episode_reference(self, episode_code: int) -> None:
+        if episode_code < 0:
+            return
+        remaining = self._episode_refcounts.get(episode_code, 0) - 1
+        if remaining > 0:
+            self._episode_refcounts[episode_code] = remaining
+            return
+        self._episode_refcounts.pop(episode_code, None)
+        name = self._episode_names.pop(episode_code, None)
+        if name is not None:
+            self._episode_codes_by_name.pop(name, None)
+        self._episode_steps.pop(episode_code, None)
+        self._episode_terminal_steps.pop(episode_code, None)
 
     @contextmanager
     def sampling_transaction(self) -> Iterator[None]:
@@ -331,7 +383,8 @@ class InMemoryReplayStore:
         existing = self._episode_codes_by_name.get(episode_id)
         if existing is not None:
             return existing
-        code = len(self._episode_names)
+        code = self._next_episode_code
+        self._next_episode_code += 1
         self._episode_names[code] = episode_id
         self._episode_codes_by_name[episode_id] = code
         return code
@@ -565,9 +618,11 @@ class InMemoryReplayStore:
                 for code, name in cast(Mapping[Any, Any], state.get("episode_names", {})).items()
             }
             self._episode_codes_by_name = {name: code for code, name in self._episode_names.items()}
+            self._next_episode_code = max(self._episode_names, default=-1) + 1
             self._next_overrides = dict(state.get("next_overrides", {}))
             self._info = dict(state.get("info", {}))
             self._rebuild_episode_steps()
+            self._rebuild_reference_state()
             self._revision += 1
             self._changes.clear()
 
@@ -578,12 +633,25 @@ class InMemoryReplayStore:
         self._previous_ids.fill(-1)
         self._next_ids.fill(-1)
         self._sampling_pace.fill(np.inf)
+        self._demo_flags.fill(False)
+        self._demo_count = 0
         self._observations = None
         self._actions = None
         self._next_overrides.clear()
         self._info.clear()
         self._episode_steps.clear()
         self._episode_terminal_steps.clear()
+        self._episode_refcounts.clear()
+
+    def _rebuild_reference_state(self) -> None:
+        for transition_id in range(self._next_index - self._size, self._next_index):
+            slot = transition_id % self.capacity
+            code = int(self._episode_codes[slot])
+            if code >= 0:
+                self._episode_refcounts[code] = self._episode_refcounts.get(code, 0) + 1
+            is_demo = _is_demo(self._info.get(transition_id, {}))
+            self._demo_flags[slot] = is_demo
+            self._demo_count += int(is_demo)
 
     def _rebuild_episode_steps(self) -> None:
         self._episode_steps.clear()
@@ -734,6 +802,14 @@ class InMemoryReplayStore:
             if not self.contains(transition_id):
                 return float("inf")
             return float(self._sampling_pace[transition_id % self.capacity])
+
+    def demo_flags(self, transition_ids: list[TransitionId]) -> list[bool]:
+        with self._lock:
+            return [
+                self.contains(transition_id)
+                and bool(self._demo_flags[transition_id % self.capacity])
+                for transition_id in transition_ids
+            ]
 
     def changes_since(
         self, revision: int | None
@@ -983,6 +1059,7 @@ class PrioritizedSampler:
         self, store: _IncrementalReplayStore, request: BatchRequest
     ) -> TrainingBatch:
         transition_ids, normalized, beta, sampling = self._sample_incremental_ids(store, request)
+        demo_flags = tuple(store.demo_flags(transition_ids))
         if request.sequence_length > 1:
             histories = [
                 store.history_ids(transition_id, request.sequence_length)
@@ -1011,12 +1088,20 @@ class PrioritizedSampler:
                     "sampling": "prioritized_sequence",
                     "beta": beta,
                     "sequence_length": request.sequence_length,
+                    "n_step": request.n_step,
+                    "gamma": request.gamma,
                     "priority_transition_ids": tuple(transition_ids),
+                    "demo_flags": demo_flags,
                     **sampling,
                 },
                 bootstrap_stride=request.sequence_length,
             )
-            reshaped = _reshape_batch_sequences(batch, request.batch_size, request.sequence_length)
+            reshaped = _reshape_batch_sequences(
+                batch,
+                request.batch_size,
+                request.sequence_length,
+                masks=_history_padding_masks(histories),
+            )
             flattened_next = [observation for history in next_histories for observation in history]
             return replace(
                 reshaped,
@@ -1032,7 +1117,12 @@ class PrioritizedSampler:
             transition_ids,
             request,
             importance_weights=normalized,
-            metadata={"sampling": "prioritized", "beta": beta, **sampling},
+            metadata={
+                "sampling": "prioritized",
+                "beta": beta,
+                "demo_flags": demo_flags,
+                **sampling,
+            },
         )
 
     def _sample_incremental_ids(
@@ -1396,10 +1486,24 @@ def _reshape_sequence_batch(value: Any, batch_size: int, sequence_length: int) -
     return tree_map(reshape, value)
 
 
+def _history_padding_masks(histories: list[list[TransitionId]]) -> torch.Tensor:
+    """Mark left-padded history positions, which repeat the first real transition."""
+
+    sequence_length = len(histories[0])
+    masks = torch.ones((len(histories), sequence_length), dtype=torch.bool)
+    for row, history in enumerate(histories):
+        padding = sequence_length - len(set(history))
+        if padding:
+            masks[row, :padding] = False
+    return masks
+
+
 def _reshape_batch_sequences(
     batch: TrainingBatch,
     batch_size: int,
     sequence_length: int,
+    *,
+    masks: torch.Tensor | None = None,
 ) -> TrainingBatch:
     return replace(
         batch,
@@ -1415,7 +1519,9 @@ def _reshape_batch_sequences(
         bootstrap_discounts=_reshape_sequence_batch(
             batch.bootstrap_discounts, batch_size, sequence_length
         ),
-        masks=torch.ones((batch_size, sequence_length), dtype=torch.bool),
+        masks=masks
+        if masks is not None
+        else torch.ones((batch_size, sequence_length), dtype=torch.bool),
     )
 
 

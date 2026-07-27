@@ -133,6 +133,15 @@ venv.bak/
 .dmypy.json
 dmypy.json
 
+# ruff
+.ruff_cache/
+
+# Local SQLite / event leftovers from distributed training
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+events.jsonl
+
 plotRewardPoints.py
 
 # Generated output

@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 import re
 import socket
 import threading
 import uuid
 from collections.abc import Mapping
+from dataclasses import replace
 from pathlib import Path
 from queue import Empty, Queue
 from time import monotonic
@@ -34,7 +36,14 @@ from tmrl.distributed.protocol import (
     transition_to_wire,
 )
 
+logger = logging.getLogger(__name__)
+
 _EPISODE_START_MARGIN_STEPS = 50
+_TELEMETRY_RESET_ATTEMPTS = 5
+_TELEMETRY_RETRY_INITIAL_S = 5.0
+_TELEMETRY_RETRY_MAX_S = 60.0
+_SPOOL_WAIT_POLL_S = 0.5
+_SPOOL_WAIT_WARN_S = 10.0
 
 
 class _MarginTracker:
@@ -174,7 +183,7 @@ class ActorRuntime:
         self.base_dir = self.config_path.parent
         self.spec = RunSpec.from_yaml(self.config_path)
         self.target = target
-        self.actor_id = actor_id or socket.gethostname()
+        self.actor_id = actor_id or f"{socket.gethostname()}-{os.getpid()}"
         self.token = token
         self.external_stop = external_stop
         self.session_id = uuid.uuid4().hex
@@ -200,6 +209,8 @@ class ActorRuntime:
             / "spool"
         )
         self.spool_dir.mkdir(parents=True, exist_ok=True)
+        self._spool_lock = threading.Lock()
+        self._spool_bytes_total = self._scan_spool_bytes()
         self.sequence = self._next_sequence()
         self.client = _Client(target, token, self.codec)
         self._replica_learner: Any = None
@@ -208,10 +219,12 @@ class ActorRuntime:
     def run_forever(self) -> None:
         pipeline, environment_factory = self._components()
         initial = self._register()
-        print(
-            f"Actor {self.actor_id} (pid={os.getpid()}) registered with learner at "
-            f"{self.target}; collecting rollouts (epsilon={float(initial['epsilon']):.4f})",
-            flush=True,
+        logger.info(
+            "Actor %s (pid=%d) registered with learner at %s; collecting rollouts (epsilon=%.4f)",
+            self.actor_id,
+            os.getpid(),
+            self.target,
+            float(initial["epsilon"]),
         )
         self._policy_ref = _PolicyReference(self._new_policy(), float(initial["epsilon"]), -1)
         self._refresh_policy()
@@ -251,7 +264,7 @@ class ActorRuntime:
             for sender in senders:
                 sender.join(timeout=max(0.0, sender_deadline - monotonic()))
             self.client.close()
-            print(f"Actor {self.actor_id} stopped: {self.stop_reason}", flush=True)
+            logger.info("Actor %s stopped: %s", self.actor_id, self.stop_reason)
 
     def _components(self) -> tuple[Any, Any]:
         components = self.spec.components
@@ -300,10 +313,11 @@ class ActorRuntime:
                     grpc.StatusCode.PERMISSION_DENIED,
                 }:
                     raise RuntimeError(f"actor registration rejected: {exc.details()}") from exc
-                print(
-                    f"Actor {self.actor_id} (pid={os.getpid()}): learner not ready at "
-                    f"{self.target}; retrying...",
-                    flush=True,
+                logger.info(
+                    "Actor %s (pid=%d): learner not ready at %s; retrying...",
+                    self.actor_id,
+                    os.getpid(),
+                    self.target,
                 )
                 self.stop.wait(1.0)
         raise RuntimeError("actor stopped before registering")
@@ -317,7 +331,9 @@ class ActorRuntime:
             if self.evaluate.is_set():
                 self.evaluate.clear()
                 self._evaluate(environment, pipeline)
-            observation, _ = environment.reset(seed=self._actor_seed() + episode)
+            observation = self._reset_environment(environment, episode)
+            if observation is None:
+                break
             self._reset_pipeline(pipeline)
             prepared = pipeline.transform_observation(observation)
             total_reward = 0.0
@@ -341,47 +357,70 @@ class ActorRuntime:
             self._reset_policy(policy)
             margins = _MarginTracker()
             controls = _ControlUsageTracker()
-            for step in range(self.spec.training.max_episode_steps):
-                action = policy.act(prepared)
-                margins.record(policy, step)
-                next_observation, reward, terminated, truncated, info = environment.step(action)
-                controls.record(info)
-                next_prepared = pipeline.transform_observation(next_observation)
-                transitions.append(
-                    Transition(
-                        observation=self._snapshot_observation(prepared),
-                        action=action,
-                        reward=float(reward),
-                        next_observation=self._snapshot_observation(next_prepared),
-                        terminated=bool(terminated),
-                        truncated=bool(truncated),
-                        info={**dict(info), "policy_version": version, "actor_epsilon": epsilon},
-                        episode_id=episode_id,
-                        step=step,
+            try:
+                for step in range(self.spec.training.max_episode_steps):
+                    action = policy.act(prepared)
+                    margins.record(policy, step)
+                    next_observation, reward, terminated, truncated, info = environment.step(action)
+                    if step == self.spec.training.max_episode_steps - 1 and not terminated:
+                        truncated = True
+                    controls.record(info)
+                    next_prepared = pipeline.transform_observation(next_observation)
+                    transitions.append(
+                        Transition(
+                            observation=self._snapshot_observation(prepared),
+                            action=action,
+                            reward=float(reward),
+                            next_observation=self._snapshot_observation(next_prepared),
+                            terminated=bool(terminated),
+                            truncated=bool(truncated),
+                            info={
+                                **dict(info),
+                                "policy_version": version,
+                                "actor_epsilon": epsilon,
+                            },
+                            episode_id=episode_id,
+                            step=step,
+                        )
                     )
+                    prepared = next_prepared
+                    total_reward += float(reward)
+                    time_reward += float(info.get("reward_time", 0.0))
+                    pbrs_reward += float(info.get("reward_pbrs", 0.0))
+                    progress_reward += float(info.get("reward_progress", 0.0))
+                    projected_velocity_reward += float(info.get("reward_projected_velocity", 0.0))
+                    projected_speed_reward += float(info.get("reward_projected_speed", 0.0))
+                    steering_delta_reward += float(info.get("reward_steering_delta", 0.0))
+                    collision_reward += float(info.get("reward_collision", 0.0))
+                    collision_count += int(bool(info.get("collision", False)))
+                    collision_detected_count += int(bool(info.get("collision_detected", False)))
+                    terminal_reward += float(info.get("reward_terminal", 0.0))
+                    velocity_ratio = float(info.get("projected_velocity_ratio", 0.0))
+                    velocity_ratio_sum += velocity_ratio
+                    velocity_ratio_max = max(velocity_ratio_max, velocity_ratio)
+                    final_info = info
+                    if self._should_flush(transitions, chunk_started):
+                        self._spool(transitions, summaries, version)
+                        transitions, summaries = [], []
+                        chunk_started = monotonic()
+                    if terminated or truncated or self.stop.is_set():
+                        break
+            except (TimeoutError, ConnectionError) as exc:
+                logger.warning(
+                    "Actor %s telemetry stalled mid-episode (%s: %s); discarding the "
+                    "episode as truncated",
+                    self.actor_id,
+                    type(exc).__name__,
+                    exc,
                 )
-                prepared = next_prepared
-                total_reward += float(reward)
-                time_reward += float(info.get("reward_time", 0.0))
-                pbrs_reward += float(info.get("reward_pbrs", 0.0))
-                progress_reward += float(info.get("reward_progress", 0.0))
-                projected_velocity_reward += float(info.get("reward_projected_velocity", 0.0))
-                projected_speed_reward += float(info.get("reward_projected_speed", 0.0))
-                steering_delta_reward += float(info.get("reward_steering_delta", 0.0))
-                collision_reward += float(info.get("reward_collision", 0.0))
-                collision_count += int(bool(info.get("collision", False)))
-                collision_detected_count += int(bool(info.get("collision_detected", False)))
-                terminal_reward += float(info.get("reward_terminal", 0.0))
-                velocity_ratio = float(info.get("projected_velocity_ratio", 0.0))
-                velocity_ratio_sum += velocity_ratio
-                velocity_ratio_max = max(velocity_ratio_max, velocity_ratio)
-                final_info = info
-                if self._should_flush(transitions, chunk_started):
-                    self._spool(transitions, summaries, version)
-                    transitions, summaries = [], []
-                    chunk_started = monotonic()
-                if terminated or truncated or self.stop.is_set():
-                    break
+                if transitions:
+                    transitions[-1] = replace(transitions[-1], truncated=True)
+                episode += 1
+                _, _, version = self._policy()
+                self._spool(transitions, summaries, version)
+                transitions, summaries = [], []
+                chunk_started = monotonic()
+                continue
             summary_info = {
                 **dict(final_info),
                 "reward_time": time_reward,
@@ -407,6 +446,34 @@ class ActorRuntime:
             self._spool(transitions, summaries, version)
             transitions, summaries = [], []
             chunk_started = monotonic()
+
+    def _reset_environment(self, environment: Any, episode: int) -> Any:
+        delay = _TELEMETRY_RETRY_INITIAL_S
+        for attempt in range(_TELEMETRY_RESET_ATTEMPTS):
+            try:
+                observation, _ = environment.reset(seed=self._actor_seed() + episode)
+                return observation
+            except (TimeoutError, ConnectionError) as exc:
+                if attempt == _TELEMETRY_RESET_ATTEMPTS - 1:
+                    self.stop_reason = (
+                        f"telemetry unavailable after {_TELEMETRY_RESET_ATTEMPTS} "
+                        f"reset attempts: {type(exc).__name__}: {exc}"
+                    )
+                    self.stop.set()
+                    raise
+                logger.warning(
+                    "Actor %s environment reset failed (%s: %s); retry %d/%d in %.0fs",
+                    self.actor_id,
+                    type(exc).__name__,
+                    exc,
+                    attempt + 1,
+                    _TELEMETRY_RESET_ATTEMPTS - 1,
+                    delay,
+                )
+                if self.stop.wait(delay):
+                    return None
+                delay = min(delay * 2.0, _TELEMETRY_RETRY_MAX_S)
+        raise AssertionError("unreachable")
 
     def _evaluate(self, environment: Any, pipeline: Any) -> None:
         suite = getattr(self.spec, "evaluation", None)
@@ -617,16 +684,40 @@ class ActorRuntime:
             "evaluation_snapshot": evaluation_snapshot or b"",
         }
         payload = self.codec.encode(value)
-        if self._spool_bytes() + len(payload) > self.spec.distributed.spool_max_bytes:
-            raise RuntimeError("actor rollout spool reached its configured byte limit")
+        self._wait_for_spool_capacity(len(payload))
+        if self.stop.is_set():
+            return
         path = self.spool_dir / f"{self.sequence:020d}.rollout"
         temporary = path.with_suffix(".tmp")
         temporary.write_bytes(payload)
         temporary.replace(path)
+        with self._spool_lock:
+            self._spool_bytes_total += len(payload)
         self.sequence += 1
         self.queue.put(path)
 
+    def _wait_for_spool_capacity(self, payload_bytes: int) -> None:
+        warned_at = float("-inf")
+        while not self.stop.is_set():
+            if self._current_spool_bytes() + payload_bytes <= self.spec.distributed.spool_max_bytes:
+                return
+            if monotonic() - warned_at >= _SPOOL_WAIT_WARN_S:
+                logger.warning(
+                    "Actor %s rollout spool is full (%d bytes); pausing collection until "
+                    "the learner drains it",
+                    self.actor_id,
+                    self._current_spool_bytes(),
+                )
+                warned_at = monotonic()
+            self.stop.wait(_SPOOL_WAIT_POLL_S)
+
     def _sender_loop(self) -> None:
+        try:
+            self._send_spooled_rollouts()
+        except Exception as exc:
+            self._stop_from_thread("rollout sender", exc)
+
+    def _send_spooled_rollouts(self) -> None:
         while not self.stop.is_set() or not self.queue.empty():
             try:
                 path = self.queue.get(timeout=0.2)
@@ -634,7 +725,8 @@ class ActorRuntime:
                 continue
             while path.exists():
                 try:
-                    request = self.codec.decode(path.read_bytes())
+                    payload = path.read_bytes()
+                    request = self.codec.decode(payload)
                     response = self.client.call("Submit", request)
                     if response.get("force_refresh"):
                         self.force_refresh.set()
@@ -652,20 +744,26 @@ class ActorRuntime:
                         self.stop_reason = "learner requested stop"
                         self.stop.set()
                     if response.get("accepted"):
-                        path.unlink(missing_ok=True)
+                        self._discard_spooled(path, len(payload))
                         continue
                     if response.get("reason") == "hard_policy_lag":
-                        path.unlink(missing_ok=True)
+                        self._discard_spooled(path, len(payload))
                         self.force_refresh.set()
                         break
                     if self.stop.is_set():
                         break
-                    self.force_refresh.set()
+                    if response.get("reason") != "backpressure":
+                        self.force_refresh.set()
                     self.stop.wait(0.1)
                 except grpc.RpcError:
                     if self.stop.wait(1.0):
                         break
             self.queue.task_done()
+
+    def _discard_spooled(self, path: Path, size: int) -> None:
+        path.unlink(missing_ok=True)
+        with self._spool_lock:
+            self._spool_bytes_total = max(0, self._spool_bytes_total - size)
 
     def _policy_loop(self) -> None:
         refresh_at = monotonic()
@@ -678,6 +776,9 @@ class ActorRuntime:
                 refresh_at = monotonic() + self.spec.distributed.policy_refresh_s
             except grpc.RpcError:
                 continue
+            except Exception as exc:
+                self._stop_from_thread("policy refresh", exc)
+                return
 
     def _refresh_policy(self) -> None:
         _, _, current = self._policy()
@@ -711,7 +812,7 @@ class ActorRuntime:
                     {
                         **self._request_base(),
                         "policy_version": version,
-                        "spool_bytes": self._spool_bytes(),
+                        "spool_bytes": self._current_spool_bytes(),
                     },
                 )
                 if response.get("stop"):
@@ -719,6 +820,14 @@ class ActorRuntime:
                     self.stop.set()
             except grpc.RpcError:
                 continue
+            except Exception as exc:
+                self._stop_from_thread("heartbeat", exc)
+                return
+
+    def _stop_from_thread(self, stage: str, exc: BaseException) -> None:
+        logger.exception("Actor %s %s failed; stopping the actor", self.actor_id, stage)
+        self.stop_reason = f"{stage} failed: {type(exc).__name__}: {exc}"
+        self.stop.set()
 
     def _external_stop_loop(self) -> None:
         if self.external_stop is None:
@@ -732,7 +841,11 @@ class ActorRuntime:
             raise RuntimeError("actor policy is not initialized")
         return self._policy_ref.get()
 
-    def _spool_bytes(self) -> int:
+    def _current_spool_bytes(self) -> int:
+        with self._spool_lock:
+            return self._spool_bytes_total
+
+    def _scan_spool_bytes(self) -> int:
         total = 0
         for path in self.spool_dir.glob("*.rollout"):
             try:
@@ -769,5 +882,5 @@ def actor_process_entry(
             external_stop=external_stop,
         ).run_forever()
     except BaseException as exc:
-        print(f"Actor process failed: {type(exc).__name__}: {exc}", flush=True)
+        logger.error("Actor process failed: %s: %s", type(exc).__name__, exc)
         raise

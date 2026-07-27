@@ -53,13 +53,24 @@ class _LidarObservationEncoder(nn.Module):
         self.encoder = encoder
 
     def forward(self, observation: Mapping[str, torch.Tensor]) -> torch.Tensor:
+        lidar, telemetry, mask = self._unpack(observation)
+        return cast(torch.Tensor, self.encoder(lidar, telemetry, mask))
+
+    def encode_steps(self, observation: Mapping[str, torch.Tensor]) -> torch.Tensor:
+        encode_steps = getattr(self.encoder, "encode_steps", None)
+        if not callable(encode_steps):
+            raise TypeError("single-frame lidar encoder has no per-step sequence features")
+        lidar, telemetry, mask = self._unpack(observation)
+        return cast(torch.Tensor, encode_steps(lidar, telemetry, mask))
+
+    @staticmethod
+    def _unpack(
+        observation: Mapping[str, torch.Tensor],
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         required = {"lidar", "lidar_mask", "telemetry"}
         if set(observation) != required:
             raise ValueError(f"lidar IQN observation keys must be {sorted(required)}")
-        return cast(
-            torch.Tensor,
-            self.encoder(observation["lidar"], observation["telemetry"], observation["lidar_mask"]),
-        )
+        return observation["lidar"], observation["telemetry"], observation["lidar_mask"]
 
 
 class LidarIqnModel(DiscreteQuantileNetwork):
@@ -78,6 +89,7 @@ class LidarIqnModel(DiscreteQuantileNetwork):
         if telemetry_dim < 1 or history_length < 1:
             raise ValueError("telemetry_dim and history_length must be positive")
         self.history_length = history_length
+        self.sequence_burn_in = burn_in if history_length > 1 else 0
         encoder = _LidarObservationEncoder(
             telemetry_dim=telemetry_dim,
             history_length=history_length,

@@ -16,6 +16,8 @@ import grpc
 import numpy as np
 import pytest
 import torch
+from google.protobuf.wrappers_pb2 import BytesValue
+
 from tmrl.core.builtins import TorchCheckpointCodec
 from tmrl.core.data import BatchRequest, Transition
 from tmrl.core.replay import InMemoryReplayStore, PrioritizedSampler, UniformSampler, _make_batch
@@ -249,10 +251,25 @@ def test_rollout_journal_is_idempotent_and_recovers_rows(tmp_path: Path) -> None
         assert second_inserted
         assert not duplicate_inserted
         assert duplicate_id == first_id
-        assert reopened.rows_after(first_id) == [(second_id, b"second")]
+        assert list(reopened.rows_after(first_id)) == [(second_id, b"second")]
         assert reopened.actor_profile("PC-1", 4) == profile
     finally:
         reopened.close()
+
+
+def test_rollout_journal_prunes_rows_up_to_the_watermark(tmp_path: Path) -> None:
+    journal = RolloutJournal(tmp_path / "rollouts.sqlite3")
+    try:
+        first_id, _ = journal.append("session", 0, b"first")
+        second_id, _ = journal.append("session", 1, b"second")
+
+        journal.prune(first_id)
+
+        assert list(journal.rows_after(0)) == [(second_id, b"second")]
+        journal.prune(second_id)
+        assert not journal.has_rows()
+    finally:
+        journal.close()
 
 
 def test_authentication_and_run_fingerprint_cover_geometry(tmp_path: Path) -> None:
@@ -369,6 +386,12 @@ def test_policy_snapshot_is_identical_and_replacement_is_atomic() -> None:
     assert (after[0].act(None), after[1:]) == (2, (0.1, 7))
 
 
+def _ephemeral_port() -> int:
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        return int(probe.getsockname()[1])
+
+
 def test_distributed_epsilon_uses_transition_schedule_and_profile_multiplier(
     tmp_path: Path,
 ) -> None:
@@ -407,7 +430,7 @@ def test_distributed_epsilon_uses_transition_schedule_and_profile_multiplier(
     )
     coordinator = Coordinator(
         run,
-        bind="127.0.0.1:8787",
+        bind=f"127.0.0.1:{_ephemeral_port()}",
         token="secret",
         fingerprint="fingerprint",
     )
@@ -791,6 +814,7 @@ def test_ingest_aggregates_evaluation_batches_and_checkpoints_best(tmp_path: Pat
     coordinator._last_ingest_at = time.monotonic()
     coordinator._rollouts = Queue()
     coordinator._recovering = False
+    coordinator._time_buckets = (40.0, 38.0, 36.0)
     coordinator._best_evaluation = None
     coordinator._checkpoints = []
     coordinator._checkpoint = lambda: (
@@ -831,7 +855,7 @@ def test_ingest_aggregates_evaluation_batches_and_checkpoints_best(tmp_path: Pat
     assert summaries[0]["q_margin_start_mean"] == pytest.approx(0.5)
     assert summaries[2]["finish_time_median_s"] == pytest.approx(48.0)
     assert summaries[2]["finish_time_best_s"] == pytest.approx(46.0)
-    assert summaries[2]["sub40_rate"] == 0.0
+    assert summaries[2]["sub_40_rate"] == 0.0
     assert len(checkpoints) == 2
     best_events = [payload for event, payload in events if event == "eval/best_checkpoint"]
     assert [item["finish_rate"] for item in best_events] == [0.5, 1.0]
@@ -904,6 +928,7 @@ def test_actor_retries_a_rejected_rollout_before_deleting_it(tmp_path: Path) -> 
             return {"accepted": True, "force_refresh": False, "stop": False}
 
     actor = object.__new__(ActorRuntime)
+    actor.actor_id = "actor"
     actor.stop = threading.Event()
     actor.force_refresh = threading.Event()
     actor.stop_reason = "running"
@@ -911,12 +936,15 @@ def test_actor_retries_a_rejected_rollout_before_deleting_it(tmp_path: Path) -> 
     actor.queue.put(path)
     actor.codec = codec
     actor.client = Client(actor.stop)
+    actor._spool_lock = threading.Lock()
+    actor._spool_bytes_total = path.stat().st_size
 
     actor._sender_loop()
 
     assert actor.client.calls == 2
     assert actor.force_refresh.is_set()
     assert not path.exists()
+    assert actor._spool_bytes_total == 0
 
 
 def test_actor_drops_a_rollout_that_is_too_stale_to_submit(tmp_path: Path) -> None:
@@ -940,6 +968,7 @@ def test_actor_drops_a_rollout_that_is_too_stale_to_submit(tmp_path: Path) -> No
             }
 
     actor = object.__new__(ActorRuntime)
+    actor.actor_id = "actor"
     actor.stop = threading.Event()
     actor.force_refresh = threading.Event()
     actor.stop_reason = "running"
@@ -947,6 +976,8 @@ def test_actor_drops_a_rollout_that_is_too_stale_to_submit(tmp_path: Path) -> No
     actor.queue.put(path)
     actor.codec = codec
     actor.client = Client(actor.stop)
+    actor._spool_lock = threading.Lock()
+    actor._spool_bytes_total = path.stat().st_size
 
     actor._sender_loop()
 
@@ -954,7 +985,7 @@ def test_actor_drops_a_rollout_that_is_too_stale_to_submit(tmp_path: Path) -> No
     assert not path.exists()
 
 
-def test_actor_spool_bytes_ignores_a_rollout_deleted_during_scan(
+def test_actor_spool_scan_ignores_a_rollout_deleted_during_scan(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     missing = tmp_path / "00000000000000000000.rollout"
@@ -962,7 +993,7 @@ def test_actor_spool_bytes_ignores_a_rollout_deleted_during_scan(
     actor.spool_dir = tmp_path
     monkeypatch.setattr(Path, "glob", lambda _path, _pattern: iter((missing,)))
 
-    assert actor._spool_bytes() == 0
+    assert actor._scan_spool_bytes() == 0
 
 
 def test_windows_compatible_spawn_entrypoint() -> None:
@@ -1040,14 +1071,11 @@ def test_coordinator_reset_replay_restores_only_learner_state(tmp_path: Path) ->
     assert coordinator.counters == _Counters()
 
 
-def test_coordinator_recovers_wal_without_a_checkpoint(tmp_path: Path) -> None:
-    with socket.socket() as probe:
-        probe.bind(("127.0.0.1", 0))
-        port = int(probe.getsockname()[1])
+def _resolved_run(tmp_path: Path, run_id: str, training: dict[str, Any]) -> ResolvedRun:
     spec = RunSpec.model_validate(
         {
             "api_version": "1.2",
-            "run_id": "journal-recovery",
+            "run_id": run_id,
             "artifacts_dir": str(tmp_path),
             "components": {
                 "learner": {"class_path": "tests.fake:SlowLearner"},
@@ -1055,17 +1083,13 @@ def test_coordinator_recovers_wal_without_a_checkpoint(tmp_path: Path) -> None:
                 "sampler": {"class_path": "tmrl.core.replay:UniformSampler"},
                 "feature_pipeline": {"class_path": "tests.fake:Pipeline"},
             },
-            "training": {
-                "total_transitions": 1,
-                "batch_size": 1,
-                "warmup_transitions": 10,
-            },
+            "training": training,
         }
     )
     pipeline = _Pipeline()
-    run = ResolvedRun(
+    return ResolvedRun(
         spec=spec,
-        run_dir=tmp_path / "journal-recovery",
+        run_dir=tmp_path / run_id,
         learner=_SlowLearner(),
         environment_factory=None,
         model_factory=None,
@@ -1076,14 +1100,19 @@ def test_coordinator_recovers_wal_without_a_checkpoint(tmp_path: Path) -> None:
         checkpoint_codec=TorchCheckpointCodec(),
         evaluator=None,
     )
-    stop = threading.Event()
-    stop.set()
+
+
+def test_coordinator_refuses_a_fresh_start_over_leftover_journal_data(tmp_path: Path) -> None:
+    run = _resolved_run(
+        tmp_path,
+        "journal-leftover",
+        {"total_transitions": 1, "batch_size": 1, "warmup_transitions": 10},
+    )
     coordinator = Coordinator(
         run,
-        bind=f"127.0.0.1:{port}",
+        bind=f"127.0.0.1:{_ephemeral_port()}",
         token="secret",
         fingerprint="fingerprint",
-        external_stop=stop,
     )
     payload = coordinator.codec.encode(
         {
@@ -1097,10 +1126,186 @@ def test_coordinator_recovers_wal_without_a_checkpoint(tmp_path: Path) -> None:
     )
     coordinator.journal.append("session", 0, payload)
 
-    result = coordinator.run_forever()
+    try:
+        with pytest.raises(RuntimeError, match="prior rollout data"):
+            coordinator.run_forever()
+    finally:
+        coordinator._checkpoint_writer.close()
+        coordinator.journal.close()
 
-    assert result.transitions == 1
-    assert len(run.replay_store) == 1
+
+def test_coordinator_prunes_the_journal_after_a_checkpoint_write(tmp_path: Path) -> None:
+    run = _resolved_run(
+        tmp_path,
+        "journal-prune",
+        {"total_transitions": 1, "batch_size": 1, "warmup_transitions": 10},
+    )
+    coordinator = Coordinator(
+        run,
+        bind=f"127.0.0.1:{_ephemeral_port()}",
+        token="secret",
+        fingerprint="fingerprint",
+    )
+    try:
+        first_id, _ = coordinator.journal.append("session", 0, b"first")
+        second_id, _ = coordinator.journal.append("session", 1, b"second")
+        coordinator.counters.journal_watermark = first_id
+
+        path = coordinator._checkpoint()
+        coordinator._checkpoint_writer.wait()
+
+        assert path.is_file()
+        assert list(coordinator.journal.rows_after(0)) == [(second_id, b"second")]
+    finally:
+        coordinator._checkpoint_writer.close()
+        coordinator.journal.close()
+
+
+def test_submit_applies_backpressure_without_journaling_the_chunk(tmp_path: Path) -> None:
+    codec = WireCodec(1024 * 1024)
+    coordinator = object.__new__(Coordinator)
+    coordinator.codec = codec
+    coordinator.token = "secret"
+    coordinator.fingerprint = "fingerprint"
+    coordinator._lock = threading.RLock()
+    coordinator.counters = _Counters()
+    coordinator.external_stop = None
+    coordinator.run = SimpleNamespace(
+        spec=SimpleNamespace(
+            distributed=SimpleNamespace(hard_policy_lag_updates=1000, soft_policy_lag_updates=100),
+            training=SimpleNamespace(total_transitions=1000),
+        )
+    )
+    coordinator.journal = RolloutJournal(tmp_path / "rollouts.sqlite3")
+    coordinator._rollouts = Queue(maxsize=1)
+    coordinator._rollouts.put(_PendingRollout({"session_id": "other"}, 1, time.monotonic()))
+    request = BytesValue(
+        value=codec.encode(
+            {
+                "protocol_version": PROTOCOL_VERSION,
+                "fingerprint": "fingerprint",
+                "actor_id": "actor",
+                "session_id": "session",
+                "sequence": 0,
+                "policy_version": 0,
+                "transitions": [],
+                "episodes": [],
+            }
+        )
+    )
+
+    try:
+        response = coordinator._submit(request, cast(Any, _Context("Bearer secret")))
+        decoded = codec.decode(response.value)
+
+        assert decoded["accepted"] is False
+        assert decoded["reason"] == "backpressure"
+        assert not coordinator.journal.has_rows()
+        assert coordinator._rollouts.qsize() == 1
+    finally:
+        coordinator.journal.close()
+
+
+def test_actor_keeps_a_backpressured_rollout_spooled_and_resubmits(tmp_path: Path) -> None:
+    codec = WireCodec(1024 * 1024)
+    path = tmp_path / "00000000000000000000.rollout"
+    path.write_bytes(codec.encode({"sequence": 0}))
+    observed_paths: list[bool] = []
+
+    class Client:
+        def __init__(self, stop: threading.Event) -> None:
+            self.calls = 0
+            self.stop = stop
+
+        def call(self, method: str, value: Mapping[str, Any]) -> Mapping[str, Any]:
+            assert method == "Submit"
+            self.calls += 1
+            observed_paths.append(path.exists())
+            if self.calls == 1:
+                return {"accepted": False, "reason": "backpressure", "stop": False}
+            self.stop.set()
+            return {"accepted": True, "stop": False}
+
+    actor = object.__new__(ActorRuntime)
+    actor.actor_id = "actor"
+    actor.stop = threading.Event()
+    actor.force_refresh = threading.Event()
+    actor.stop_reason = "running"
+    actor.queue = Queue()
+    actor.queue.put(path)
+    actor.codec = codec
+    actor.client = Client(actor.stop)
+    actor._spool_lock = threading.Lock()
+    actor._spool_bytes_total = path.stat().st_size
+
+    actor._sender_loop()
+
+    assert actor.client.calls == 2
+    assert observed_paths == [True, True]
+    assert not actor.force_refresh.is_set()
+    assert not path.exists()
+
+
+def test_actor_policy_refresh_failure_stops_the_actor_loudly() -> None:
+    actor = object.__new__(ActorRuntime)
+    actor.actor_id = "actor"
+    actor.stop = threading.Event()
+    actor.stop_reason = "running"
+    actor.force_refresh = threading.Event()
+    actor.force_refresh.set()
+    actor.spec = SimpleNamespace(distributed=SimpleNamespace(policy_refresh_s=60.0))
+
+    def broken_refresh() -> None:
+        raise ValueError("policy snapshot must decode to a mapping")
+
+    actor._refresh_policy = broken_refresh
+
+    actor._policy_loop()
+
+    assert actor.stop.is_set()
+    assert "policy refresh failed" in actor.stop_reason
+    assert "ValueError" in actor.stop_reason
+
+
+def test_actor_marks_the_final_transition_truncated_at_the_step_cap() -> None:
+    spooled: list[tuple[list[Transition], list[dict[str, Any]], int]] = []
+
+    class Environment:
+        def __init__(self, stop: threading.Event) -> None:
+            self.stop = stop
+            self.total_steps = 0
+
+        def reset(self, *, seed: int) -> tuple[Any, dict[str, Any]]:
+            del seed
+            return np.zeros(1, dtype=np.float32), {}
+
+        def step(self, action: int) -> tuple[Any, float, bool, bool, dict[str, Any]]:
+            del action
+            self.total_steps += 1
+            if self.total_steps == 2:
+                self.stop.set()
+            return np.zeros(1, dtype=np.float32), 1.0, False, False, {}
+
+    actor = object.__new__(ActorRuntime)
+    actor.spec = SimpleNamespace(
+        training=SimpleNamespace(max_episode_steps=2),
+        distributed=SimpleNamespace(rollout_chunk_transitions=128, rollout_flush_s=60.0),
+    )
+    actor.actor_id = "actor"
+    actor.session_id = "session"
+    actor.stop = threading.Event()
+    actor.evaluate = threading.Event()
+    actor._actor_seed = lambda: 7
+    actor._policy = lambda: (_Policy(0), 0.1, 3)
+    actor._spool = lambda transitions, episodes, version, *, evaluations=None: spooled.append(
+        (list(transitions), list(episodes), version)
+    )
+
+    actor._collect(Environment(actor.stop), _Pipeline())
+
+    transitions = [item for chunk in spooled for item in chunk[0]]
+    assert [item.truncated for item in transitions] == [False, True]
+    assert not transitions[-1].terminated
 
 
 def test_two_fake_actors_feed_slow_learner_without_data_loss(tmp_path: Path) -> None:

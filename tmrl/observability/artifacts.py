@@ -9,6 +9,7 @@ import subprocess
 import sys
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import asdict
+from datetime import UTC, datetime
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -47,46 +48,68 @@ def _redact(value: Any) -> Any:
     return value
 
 
-def write_run_manifest(run: ResolvedRun) -> Path:
-    """Write a stable, redacted manifest before the first worker is started."""
+def _evaluation_assets(run: ResolvedRun) -> list[dict[str, str]]:
+    if run.spec.evaluation is None:
+        return []
+    from tmrl.trackmania.geometry import BoundaryGeometry
+    from tmrl.trackmania.session import PLUGIN_PROTOCOL_VERSION
 
-    run.run_dir.mkdir(parents=True, exist_ok=True)
+    assets: list[dict[str, str]] = []
+    for map_spec in run.spec.evaluation.maps:
+        geometry = BoundaryGeometry(
+            map_spec.geometry_path, expected_map_uid=map_spec.expected_map_uid
+        )
+        assets.append(
+            {
+                "map_id": map_spec.id,
+                "map_uid": map_spec.expected_map_uid,
+                "geometry_sha256": geometry.sha256,
+                "plugin_protocol_version": PLUGIN_PROTOCOL_VERSION,
+            }
+        )
+    return assets
+
+
+def _torch_environment() -> dict[str, Any]:
+    try:
+        import torch
+    except ImportError:
+        return {"version": None}
+    return {
+        "version": torch.__version__,
+        "cuda_build": torch.version.cuda,
+        "rocm_build": torch.version.hip,
+        "cuda_available": torch.cuda.is_available(),
+        "mps_available": bool(hasattr(torch.backends, "mps") and torch.backends.mps.is_available()),
+    }
+
+
+def _append_environment_snapshot(run: ResolvedRun) -> None:
     try:
         tmrl_version = version("tmrl")
     except PackageNotFoundError:
         tmrl_version = "uninstalled"
-    evaluation_assets: list[dict[str, str]] = []
-    if run.spec.evaluation is not None:
-        from tmrl.trackmania.geometry import BoundaryGeometry
-        from tmrl.trackmania.session import PLUGIN_PROTOCOL_VERSION
-
-        for map_spec in run.spec.evaluation.maps:
-            geometry = BoundaryGeometry(
-                map_spec.geometry_path, expected_map_uid=map_spec.expected_map_uid
-            )
-            evaluation_assets.append(
-                {
-                    "map_id": map_spec.id,
-                    "map_uid": map_spec.expected_map_uid,
-                    "geometry_sha256": geometry.sha256,
-                    "plugin_protocol_version": PLUGIN_PROTOCOL_VERSION,
-                }
-            )
-    try:
-        import torch
-
-        torch_environment: dict[str, Any] = {
-            "version": torch.__version__,
-            "cuda_build": torch.version.cuda,
-            "rocm_build": torch.version.hip,
-            "cuda_available": torch.cuda.is_available(),
-            "mps_available": bool(
-                hasattr(torch.backends, "mps") and torch.backends.mps.is_available()
-            ),
-        }
-    except ImportError:
-        torch_environment = {"version": None}
     execution = getattr(run.learner, "execution_manifest", None)
+    snapshot = {
+        "timestamp_utc": datetime.now(UTC).isoformat(),
+        "environment": {
+            "python": sys.version,
+            "platform": platform.platform(),
+            "tmrl": tmrl_version,
+            "git_revision": _git_revision(),
+            "torch": _torch_environment(),
+        },
+        "torch_execution": dict(execution()) if callable(execution) else None,
+    }
+    attempts = run.run_dir / "manifest-attempts.jsonl"
+    with attempts.open("a", encoding="utf-8") as file:
+        file.write(json.dumps(snapshot, sort_keys=True, default=str) + "\n")
+
+
+def write_run_manifest(run: ResolvedRun) -> Path:
+    """Write the immutable config manifest and append a per-attempt environment snapshot."""
+
+    run.run_dir.mkdir(parents=True, exist_ok=True)
     manifest = {
         "api_version": run.spec.api_version,
         "run_id": run.spec.run_id,
@@ -101,21 +124,13 @@ def write_run_manifest(run: ResolvedRun) -> Path:
             + ":"
             + type(run.feature_pipeline).__name__,
         },
-        "environment": {
-            "python": sys.version,
-            "platform": platform.platform(),
-            "tmrl": tmrl_version,
-            "git_revision": _git_revision(),
-            "torch": torch_environment,
-        },
-        "torch_execution": dict(execution()) if callable(execution) else None,
-        "evaluation_assets": evaluation_assets,
+        "evaluation_assets": _evaluation_assets(run),
     }
+    _append_environment_snapshot(run)
     target = run.run_dir / "manifest.json"
+    candidate = json.dumps(manifest, indent=2, sort_keys=True, default=str)
     if target.exists():
-        existing = target.read_text(encoding="utf-8")
-        candidate = json.dumps(manifest, indent=2, sort_keys=True, default=str)
-        if existing != candidate:
+        if target.read_text(encoding="utf-8") != candidate:
             message = (
                 "Immutable manifest already exists for run_id "
                 f"{run.spec.run_id!r}; choose a new run_id"
@@ -123,9 +138,7 @@ def write_run_manifest(run: ResolvedRun) -> Path:
             raise FileExistsError(message)
         return target
     temporary = target.with_suffix(".json.tmp")
-    temporary.write_text(
-        json.dumps(manifest, indent=2, sort_keys=True, default=str), encoding="utf-8"
-    )
+    temporary.write_text(candidate, encoding="utf-8")
     temporary.replace(target)
     return target
 

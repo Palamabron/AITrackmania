@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import logging
 import os
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from concurrent.futures import Future, ThreadPoolExecutor
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from queue import Empty, Queue
+from queue import Empty, Full, Queue
 from statistics import fmean, median
 from threading import RLock
 from time import monotonic, perf_counter, sleep
@@ -20,7 +21,7 @@ from google.protobuf.wrappers_pb2 import BytesValue
 from tmrl.core.contracts import ReplicablePolicy
 from tmrl.core.data import BatchRequest, TrainingBatch
 from tmrl.core.runtime import ResolvedRun, prepare_run, resolve_run
-from tmrl.core.spec import RunSpec
+from tmrl.core.spec import DEFAULT_EVALUATION_TIME_BUCKETS_S, RunSpec
 from tmrl.core.training import TrainingResult
 from tmrl.distributed.codec import WireCodec
 from tmrl.distributed.journal import RolloutJournal
@@ -35,6 +36,14 @@ from tmrl.distributed.protocol import (
     transition_from_wire,
 )
 
+logger = logging.getLogger(__name__)
+
+_ROLLOUT_QUEUE_MAXSIZE = 64
+
+
+def _bucket_key(bucket: float) -> str:
+    return f"sub_{bucket:g}"
+
 
 @dataclass(slots=True)
 class _Counters:
@@ -44,9 +53,7 @@ class _Counters:
     best_finish_time_s: float = 0.0
     evaluations: int = 0
     evaluation_finishes: int = 0
-    evaluation_sub40: int = 0
-    evaluation_sub38: int = 0
-    evaluation_sub36: int = 0
+    evaluation_bucket_finishes: dict[str, int] = field(default_factory=dict)
     updates: int = 0
     update_credit: float = 0.0
     journal_watermark: int = 0
@@ -131,9 +138,24 @@ class _AsyncCheckpointWriter:
         self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="tmrl-checkpoint")
         self.pending: Any = None
 
-    def submit(self, state: Mapping[str, Any], path: Path) -> None:
+    def submit(
+        self,
+        state: Mapping[str, Any],
+        path: Path,
+        on_saved: Callable[[], None] | None = None,
+    ) -> None:
         self.wait()
-        self.pending = self.executor.submit(self.codec.save, state, path)
+        self.pending = self.executor.submit(self._save, state, path, on_saved)
+
+    def _save(
+        self,
+        state: Mapping[str, Any],
+        path: Path,
+        on_saved: Callable[[], None] | None,
+    ) -> None:
+        self.codec.save(state, path)
+        if on_saved is not None:
+            on_saved()
 
     def wait(self) -> None:
         if self.pending is not None:
@@ -184,7 +206,13 @@ class Coordinator:
         self._evaluation_due: set[str] = set()
         self._last_ingest_at = monotonic()
         self._started_at = monotonic()
-        self._rollouts: Queue[_PendingRollout] = Queue()
+        self._rollouts: Queue[_PendingRollout] = Queue(maxsize=_ROLLOUT_QUEUE_MAXSIZE)
+        evaluation = getattr(run.spec, "evaluation", None)
+        self._time_buckets = (
+            evaluation.time_buckets_s
+            if evaluation is not None
+            else DEFAULT_EVALUATION_TIME_BUCKETS_S
+        )
         self._metrics = _MetricAccumulator()
         self._metric_window_started = monotonic()
         self._last_metric_credit = 0.0
@@ -207,28 +235,33 @@ class Coordinator:
         prepare_run(self.run)
         self._log_execution()
         if self.resume_checkpoint is not None:
-            print(f"Restoring checkpoint: {self.resume_checkpoint}", flush=True)
+            logger.info("Restoring checkpoint: %s", self.resume_checkpoint)
             self.restore_checkpoint(self.resume_checkpoint, reset_replay=self.reset_replay)
             restored = (
                 "learner state only; replay and runtime counters reset"
                 if self.reset_replay
                 else "full state"
             )
-            print(
-                f"Checkpoint restored ({restored}): "
-                f"transitions={self.counters.transitions}, updates={self.counters.updates}",
-                flush=True,
+            logger.info(
+                "Checkpoint restored (%s): transitions=%d, updates=%d",
+                restored,
+                self.counters.transitions,
+                self.counters.updates,
             )
-        else:
-            self._recover_journal(0)
+        elif self.journal.has_rows():
+            raise RuntimeError(
+                f"run_id {self.run.spec.run_id!r} has prior rollout data in "
+                f"{self.journal.path}; resume with --checkpoint or choose a new run_id"
+            )
         self._import_demonstrations()
         self._publish_policy(force=True)
         self._start_server()
-        print(
-            f"Async learner ready (pid={os.getpid()}): run_id={self.run.spec.run_id}, "
-            f"gRPC bind={self.bind}, target_transitions="
-            f"{self.run.spec.training.total_transitions}",
-            flush=True,
+        logger.info(
+            "Async learner ready (pid=%d): run_id=%s, gRPC bind=%s, target_transitions=%d",
+            os.getpid(),
+            self.run.spec.run_id,
+            self.bind,
+            self.run.spec.training.total_transitions,
         )
         try:
             self._learn()
@@ -305,10 +338,7 @@ class Coordinator:
                 self.run.replay_store.append(transition)
             imported += len(transitions)
             finish_times.append(float(transitions[0].info["sampling/projected_lap_time_s"]))
-            print(
-                f"Imported demonstration {path}: {len(transitions)} transitions",
-                flush=True,
-            )
+            logger.info("Imported demonstration %s: %d transitions", path, len(transitions))
         self.run.logger.log(
             "train/demonstrations",
             {
@@ -379,11 +409,17 @@ class Coordinator:
                     "stop": stop,
                 }
             )
-        row_id, inserted = self.journal.append(
-            str(value["session_id"]), int(value["sequence"]), request.value
-        )
+        if self._rollouts.full():
+            return self._response({"accepted": False, "reason": "backpressure", "stop": stop})
+        session_id = str(value["session_id"])
+        sequence = int(value["sequence"])
+        row_id, inserted = self.journal.append(session_id, sequence, request.value)
         if inserted:
-            self._rollouts.put(_PendingRollout(value, row_id, monotonic()))
+            try:
+                self._rollouts.put_nowait(_PendingRollout(value, row_id, monotonic()))
+            except Full:
+                self.journal.discard(session_id, sequence)
+                return self._response({"accepted": False, "reason": "backpressure", "stop": stop})
         with self._lock:
             actor_id = str(value["actor_id"])
             evaluate = actor_id in self._evaluation_due
@@ -514,13 +550,15 @@ class Coordinator:
             self.counters.evaluations += 1
             finished = bool(summary["finished"])
             finish_time_s = float(summary["finish_time_s"])
-            sub40 = finished and finish_time_s < 40.0
-            sub38 = finished and finish_time_s < 38.0
-            sub36 = finished and finish_time_s < 36.0
             self.counters.evaluation_finishes += int(finished)
-            self.counters.evaluation_sub40 += int(sub40)
-            self.counters.evaluation_sub38 += int(sub38)
-            self.counters.evaluation_sub36 += int(sub36)
+            bucket_metrics: dict[str, float] = {}
+            for bucket in self._time_buckets:
+                key = _bucket_key(bucket)
+                hit = finished and finish_time_s < bucket
+                count = self.counters.evaluation_bucket_finishes.get(key, 0) + int(hit)
+                self.counters.evaluation_bucket_finishes[key] = count
+                bucket_metrics[key] = float(hit)
+                bucket_metrics[f"{key}_rate"] = count / self.counters.evaluations
             if not self._recovering:
                 self.run.logger.log(
                     "eval/episode",
@@ -529,12 +567,7 @@ class Coordinator:
                         "index": self.counters.evaluations,
                         "finish_rate": self.counters.evaluation_finishes
                         / self.counters.evaluations,
-                        "sub40": float(sub40),
-                        "sub40_rate": self.counters.evaluation_sub40 / self.counters.evaluations,
-                        "sub38": float(sub38),
-                        "sub38_rate": self.counters.evaluation_sub38 / self.counters.evaluations,
-                        "sub36": float(sub36),
-                        "sub36_rate": self.counters.evaluation_sub36 / self.counters.evaluations,
+                        **bucket_metrics,
                         "actor_id": value["actor_id"],
                     },
                     step=self.counters.updates,
@@ -591,30 +624,36 @@ class Coordinator:
             },
             step=self.counters.updates,
         )
-        print(
-            f"Actor {value['actor_id']} episode {self.counters.episodes}: "
-            f"progress={float(summary['progress_pct']):.1f}%, "
-            f"return={float(summary['return']):.3f}, "
-            f"reward(time={float(summary['reward/time']):.3f}, "
-            f"pbrs={float(summary['reward/pbrs']):.3f}, "
-            f"progress={float(summary['reward/progress']):.3f}, "
-            f"projected_velocity={float(summary['reward/projected_velocity']):.3f}, "
-            f"projected_speed={float(summary['reward/projected_speed']):.3f}, "
-            f"steering_delta={float(summary['reward/steering_delta']):.3f}, "
-            f"collision={float(summary['reward/collision']):.3f} "
-            f"({int(summary['collision/count'])}/"
-            f"{int(summary['collision/detected_count'])}), "
-            f"terminal={float(summary['reward/terminal']):.3f}), "
-            f"velocity_ratio(mean={float(summary['velocity/ratio_mean']):.3f}, "
-            f"max={float(summary['velocity/ratio_max']):.3f}), "
-            f"steps={int(summary['steps'])}, "
-            f"race={float(summary['race_time_s']):.2f}s, "
-            f"epsilon={float(summary['exploration_epsilon']):.3f}, "
-            f"policy={int(summary.get('policy_version', 0))}, "
-            f"q_margin(start={float(summary.get('q_margin/start_mean', 0.0)):.2f}, "
-            f"min={float(summary.get('q_margin/min', 0.0)):.2f}), "
-            f"termination={summary['termination']}",
-            flush=True,
+        logger.info(
+            "Actor %s episode %d: progress=%.1f%%, return=%.3f, "
+            "reward(time=%.3f, pbrs=%.3f, progress=%.3f, projected_velocity=%.3f, "
+            "projected_speed=%.3f, steering_delta=%.3f, collision=%.3f (%d/%d), "
+            "terminal=%.3f), velocity_ratio(mean=%.3f, max=%.3f), steps=%d, "
+            "race=%.2fs, epsilon=%.3f, policy=%d, q_margin(start=%.2f, min=%.2f), "
+            "termination=%s",
+            value["actor_id"],
+            self.counters.episodes,
+            float(summary["progress_pct"]),
+            float(summary["return"]),
+            float(summary["reward/time"]),
+            float(summary["reward/pbrs"]),
+            float(summary["reward/progress"]),
+            float(summary["reward/projected_velocity"]),
+            float(summary["reward/projected_speed"]),
+            float(summary["reward/steering_delta"]),
+            float(summary["reward/collision"]),
+            int(summary["collision/count"]),
+            int(summary["collision/detected_count"]),
+            float(summary["reward/terminal"]),
+            float(summary["velocity/ratio_mean"]),
+            float(summary["velocity/ratio_max"]),
+            int(summary["steps"]),
+            float(summary["race_time_s"]),
+            float(summary["exploration_epsilon"]),
+            int(summary.get("policy_version", 0)),
+            float(summary.get("q_margin/start_mean", 0.0)),
+            float(summary.get("q_margin/min", 0.0)),
+            summary["termination"],
         )
 
     def _learn(self) -> None:
@@ -664,13 +703,14 @@ class Coordinator:
                         or self.counters.updates - self._last_progress_print >= 100
                     ):
                         self._last_progress_print = self.counters.updates
-                        print(
-                            "Async training progress: "
-                            f"transitions={self.counters.transitions}/"
-                            f"{spec.total_transitions}, updates={self.counters.updates}, "
-                            f"replay={len(self.run.replay_store)}, "
-                            f"credit={self.counters.update_credit:.1f}",
-                            flush=True,
+                        logger.info(
+                            "Async training progress: transitions=%d/%d, updates=%d, "
+                            "replay=%d, credit=%.1f",
+                            self.counters.transitions,
+                            spec.total_transitions,
+                            self.counters.updates,
+                            len(self.run.replay_store),
+                            self.counters.update_credit,
                         )
                     if self.counters.updates % spec.checkpoint_interval_updates == 0:
                         self._checkpoints.append(self._checkpoint())
@@ -692,15 +732,17 @@ class Coordinator:
             self._rollouts.task_done()
 
     def _finish_evaluation_batch(self, summaries: list[dict[str, Any]]) -> None:
-        stats = _evaluation_batch_stats(summaries)
+        stats = _evaluation_batch_stats(summaries, self._time_buckets)
         self.run.logger.log("eval/summary", stats, step=self.counters.updates)
-        print(
-            f"Deterministic evaluation @update {self.counters.updates}: "
-            f"{int(stats['finished_trials'])}/{int(stats['trials'])} finished, "
-            f"mean={stats['finish_time_mean_s']:.2f}s, "
-            f"best={stats['finish_time_best_s']:.2f}s, "
-            f"policy_version={int(stats['policy_version'])}",
-            flush=True,
+        logger.info(
+            "Deterministic evaluation @update %d: %d/%d finished, mean=%.2fs, "
+            "best=%.2fs, policy_version=%d",
+            self.counters.updates,
+            int(stats["finished_trials"]),
+            int(stats["trials"]),
+            stats["finish_time_mean_s"],
+            stats["finish_time_best_s"],
+            int(stats["policy_version"]),
         )
         self._record_best_evaluation(
             float(stats["finish_rate"]),
@@ -801,9 +843,11 @@ class Coordinator:
         with self._lock:
             heartbeats = tuple(self._last_heartbeats.items())
         for actor_id, heartbeat in heartbeats:
-            if now - heartbeat <= timeout or actor_id in self._timed_out_actors:
+            if now - heartbeat <= timeout:
                 continue
-            self._timed_out_actors.add(actor_id)
+            with self._lock:
+                self._last_heartbeats.pop(actor_id, None)
+                self._timed_out_actors.discard(actor_id)
             self.run.logger.log(
                 "actor/timeout",
                 {"actor_id": actor_id, "silence_s": now - heartbeat},
@@ -886,9 +930,7 @@ class Coordinator:
                 "best_finish_time_s": self.counters.best_finish_time_s,
                 "evaluations": self.counters.evaluations,
                 "evaluation_finishes": self.counters.evaluation_finishes,
-                "evaluation_sub40": self.counters.evaluation_sub40,
-                "evaluation_sub38": self.counters.evaluation_sub38,
-                "evaluation_sub36": self.counters.evaluation_sub36,
+                "evaluation_bucket_finishes": dict(self.counters.evaluation_bucket_finishes),
                 "updates": self.counters.updates,
                 "update_credit": self.counters.update_credit,
                 "journal_watermark": self.counters.journal_watermark,
@@ -897,7 +939,8 @@ class Coordinator:
             },
             "evaluated_policy_version": policy_version,
         }
-        self._checkpoint_writer.submit(state, path)
+        watermark = self.counters.journal_watermark
+        self._checkpoint_writer.submit(state, path, lambda: self.journal.prune(watermark))
         self.run.logger.log(
             "train/checkpoint",
             {
@@ -906,7 +949,7 @@ class Coordinator:
             },
             step=self.counters.updates,
         )
-        print(f"Checkpoint queued: {path}", flush=True)
+        logger.info("Checkpoint queued: %s", path)
         return path
 
     def restore_checkpoint(self, path: Path, *, reset_replay: bool = False) -> None:
@@ -982,7 +1025,9 @@ def learner_process_entry(
         run.logger.close()
 
 
-def _evaluation_batch_stats(summaries: list[dict[str, Any]]) -> dict[str, float]:
+def _evaluation_batch_stats(
+    summaries: list[dict[str, Any]], time_buckets_s: tuple[float, ...]
+) -> dict[str, float]:
     if not summaries:
         raise ValueError("deterministic evaluation batch must not be empty")
     policy_versions = {int(item.get("policy_version", 0)) for item in summaries}
@@ -1002,9 +1047,11 @@ def _evaluation_batch_stats(summaries: list[dict[str, Any]]) -> dict[str, float]
         "finish_time_mean_s": fmean(finished_times) if finished_times else 0.0,
         "finish_time_median_s": median(finished_times) if finished_times else 0.0,
         "finish_time_best_s": finished_times[0] if finished_times else 0.0,
-        "sub40_rate": sum(1 for time_s in finished_times if time_s < 40.0) / trials,
-        "sub38_rate": sum(1 for time_s in finished_times if time_s < 38.0) / trials,
-        "sub36_rate": sum(1 for time_s in finished_times if time_s < 36.0) / trials,
+        **{
+            f"{_bucket_key(bucket)}_rate": sum(1 for time_s in finished_times if time_s < bucket)
+            / trials
+            for bucket in time_buckets_s
+        },
         "failure_progress_mean_pct": fmean(failure_progress) if failure_progress else 100.0,
         "failure_progress_median_pct": median(failure_progress) if failure_progress else 100.0,
         "failure_progress_best_pct": max(failure_progress) if failure_progress else 100.0,

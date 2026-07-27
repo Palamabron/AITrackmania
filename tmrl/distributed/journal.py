@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Iterator
 from pathlib import Path
 from threading import RLock
+
+_RECOVERY_BATCH_ROWS = 256
 
 
 class RolloutJournal:
     def __init__(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
+        self.path = path
         self._connection = sqlite3.connect(path, check_same_thread=False)
         self._lock = RLock()
         self._connection.execute("PRAGMA journal_mode=WAL")
@@ -49,12 +53,36 @@ class RolloutJournal:
             raise RuntimeError("rollout journal failed to persist a chunk")
         return int(row[0]), cursor.rowcount == 1
 
-    def rows_after(self, watermark: int) -> list[tuple[int, bytes]]:
+    def rows_after(self, watermark: int) -> Iterator[tuple[int, bytes]]:
+        last = watermark
+        while True:
+            with self._lock:
+                rows = self._connection.execute(
+                    "SELECT id, payload FROM chunks WHERE id > ? ORDER BY id LIMIT ?",
+                    (last, _RECOVERY_BATCH_ROWS),
+                ).fetchall()
+            if not rows:
+                return
+            for row in rows:
+                last = int(row[0])
+                yield last, bytes(row[1])
+
+    def has_rows(self) -> bool:
         with self._lock:
-            rows = self._connection.execute(
-                "SELECT id, payload FROM chunks WHERE id > ? ORDER BY id", (watermark,)
-            ).fetchall()
-        return [(int(row[0]), bytes(row[1])) for row in rows]
+            return self._connection.execute("SELECT 1 FROM chunks LIMIT 1").fetchone() is not None
+
+    def prune(self, watermark: int) -> None:
+        with self._lock:
+            self._connection.execute("DELETE FROM chunks WHERE id <= ?", (watermark,))
+            self._connection.commit()
+
+    def discard(self, session_id: str, sequence: int) -> None:
+        with self._lock:
+            self._connection.execute(
+                "DELETE FROM chunks WHERE session_id = ? AND sequence = ?",
+                (session_id, sequence),
+            )
+            self._connection.commit()
 
     def actor_profile(self, actor_id: str, profile_count: int) -> int:
         with self._lock:

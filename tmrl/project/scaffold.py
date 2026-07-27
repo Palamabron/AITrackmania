@@ -205,7 +205,7 @@ class TorchCheckpointCodec:
         torch.save(dict(state), path)
 
     def load(self, path: Path) -> Mapping[str, Any]:
-        return cast(Mapping[str, Any], torch.load(path, map_location="cpu", weights_only=False))
+        return cast(Mapping[str, Any], torch.load(path, map_location="cpu", weights_only=True))
 '''
 
 

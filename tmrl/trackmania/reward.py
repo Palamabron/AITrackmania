@@ -172,7 +172,7 @@ class TrajectoryReward:
         point = np.asarray(position, dtype=np.float32)[:3]
         nearest, nearest_distance = self._nearest_point(point)
         previous_index = self._index
-        self._index = max(self._index, nearest)
+        self._index = max(self._index, self._bounded_advance(nearest))
         self._step += 1
         progress_m = float(self._cumulative_distance[self._index])
         progress_reward = self._progress_reward(previous_index)
@@ -328,6 +328,17 @@ class TrajectoryReward:
         distances = np.linalg.norm(self.points[window_start:window_stop] - point, axis=1)
         nearest = window_start + int(np.argmin(distances))
         return nearest, float(distances[nearest - window_start])
+
+    def _bounded_advance(self, nearest: int) -> int:
+        """Cap index jumps at a physically reachable arc length, so a reference
+        line folding back within ``crash_distance`` (hairpins) cannot be cut."""
+
+        limit_m = (
+            float(self._cumulative_distance[self._index])
+            + self.max_projected_speed_mps * self.max_time_delta_s
+        )
+        reachable = int(np.searchsorted(self._cumulative_distance, limit_m, side="right")) - 1
+        return min(nearest, max(reachable, self._index))
 
     def _potential(self) -> float:
         return (

@@ -7,6 +7,7 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
+
 from tmrl.builtins.algorithms import algorithm_class
 from tmrl.builtins.features import TransitionFeaturePipeline
 from tmrl.core.data import EpisodeArtifact, Transition
@@ -79,6 +80,30 @@ def test_resolved_run_writes_manifest_and_smoke_checkpoint(tmp_path: Path) -> No
     assert json.loads(manifest.read_text(encoding="utf-8"))["run_id"] == "smoke"
     assert metrics["train/updates"] == 1.0
     assert (run.run_dir / "checkpoints" / "validation.json").is_file()
+
+
+def test_manifest_allows_resume_when_only_environment_fields_change(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tmrl.observability import artifacts
+
+    run = resolve_run(_spec(tmp_path))
+    try:
+        first = artifacts.write_run_manifest(run)
+        monkeypatch.setattr(artifacts.platform, "platform", lambda: "hypothetical-os")
+        monkeypatch.setattr(artifacts, "_git_revision", lambda: "deadbeef")
+        second = artifacts.write_run_manifest(run)
+    finally:
+        run.logger.close()
+
+    assert first == second
+    manifest = json.loads(first.read_text(encoding="utf-8"))
+    assert "environment" not in manifest
+    attempts = (run.run_dir / "manifest-attempts.jsonl").read_text(encoding="utf-8").splitlines()
+    assert len(attempts) >= 2
+    latest = json.loads(attempts[-1])
+    assert latest["environment"]["git_revision"] == "deadbeef"
+    assert latest["environment"]["platform"] == "hypothetical-os"
 
 
 def test_episode_artifacts_are_compressed_and_background_written(tmp_path: Path) -> None:

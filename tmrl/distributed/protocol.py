@@ -109,16 +109,10 @@ def run_fingerprint(spec: Any, base_dir: Path) -> str:
             source_bytes = Path(source).read_bytes().replace(b"\r\n", b"\n")
             component_code[class_path] = hashlib.sha256(source_bytes).hexdigest()
     config["component_code_sha256"] = component_code
-    from tmrl.trackmania.actions import build_brake_tap_action_table
-    from tmrl.trackmania.features import LidarFeaturePipeline
-
-    _, action_table = build_brake_tap_action_table()
-    action_bytes = b"".join(item.tobytes() for item in action_table)
-    config["builtin_contracts"] = {
-        "action_table_sha256": hashlib.sha256(action_bytes).hexdigest(),
-        "feature_schema": LidarFeaturePipeline.schema_version,
-        "feature_fields": LidarFeaturePipeline.source_fields,
-    }
+    if any(
+        class_path.partition(":")[0].startswith("tmrl.trackmania") for class_path in component_code
+    ):
+        config["builtin_contracts"] = _trackmania_contracts()
     config = _hash_geometry_paths(config, base_dir)
     evaluation = config.get("evaluation")
     maps = evaluation.get("maps", []) if isinstance(evaluation, dict) else []
@@ -126,6 +120,19 @@ def run_fingerprint(spec: Any, base_dir: Path) -> str:
         map_spec.pop("map_path", None)
     canonical = json.dumps(config, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode()).hexdigest()
+
+
+def _trackmania_contracts() -> dict[str, Any]:
+    from tmrl.trackmania.actions import build_brake_tap_action_table
+    from tmrl.trackmania.features import LidarFeaturePipeline
+
+    _, action_table = build_brake_tap_action_table()
+    action_bytes = b"".join(item.tobytes() for item in action_table)
+    return {
+        "action_table_sha256": hashlib.sha256(action_bytes).hexdigest(),
+        "feature_schema": LidarFeaturePipeline.schema_version,
+        "feature_fields": LidarFeaturePipeline.source_fields,
+    }
 
 
 def _hash_geometry_paths(value: Any, base_dir: Path) -> Any:

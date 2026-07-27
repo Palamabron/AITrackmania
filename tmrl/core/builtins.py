@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import threading
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
@@ -76,6 +77,7 @@ class JsonlRunLogger:
         self._run_id = run_id
         self._segment_id = uuid4().hex
         self._started_at = datetime.now(UTC)
+        self._write_lock = threading.Lock()
 
     def log(self, event: str, payload: Mapping[str, Any], *, step: int | None = None) -> None:
         item = {
@@ -88,8 +90,9 @@ class JsonlRunLogger:
             "payload": dict(payload),
             "step": step,
         }
-        with self._path.open("a", encoding="utf-8") as file:
-            file.write(json.dumps(item, default=str, sort_keys=True) + "\n")
+        line = json.dumps(item, default=str, sort_keys=True) + "\n"
+        with self._write_lock, self._path.open("a", encoding="utf-8") as file:
+            file.write(line)
 
     def close(self) -> None:
         return None
@@ -119,6 +122,27 @@ class CompositeRunLogger:
             raise errors[0]
 
 
+def _numpy_safe_globals() -> list[Any]:
+    """Non-executable numpy pickle entry points required by replay snapshots."""
+
+    import numpy
+    import numpy.dtypes
+
+    reconstruct = cast(Any, numpy)._core.multiarray._reconstruct
+    dtype_classes = [value for value in vars(numpy.dtypes).values() if isinstance(value, type)]
+    return [reconstruct, numpy.ndarray, numpy.dtype, *dtype_classes]
+
+
+def _load_torch_checkpoint(path: Path) -> Mapping[str, Any]:
+    import torch
+
+    with torch.serialization.safe_globals(_numpy_safe_globals()):
+        return cast(
+            Mapping[str, Any],
+            torch.load(path, map_location="cpu", weights_only=True),
+        )
+
+
 class TorchCheckpointCodec:
     """Atomic zstd-streamed Torch checkpoints with legacy uncompressed reads."""
 
@@ -134,20 +158,18 @@ class TorchCheckpointCodec:
                 destination, closefd=False
             ) as compressed,
         ):
-            torch.save(dict(state), compressed, pickle_protocol=4)
+            # The weights-only unpickler cannot parse pickle protocol >= 4;
+            # torch's default protocol keeps checkpoints loadable safely.
+            torch.save(dict(state), compressed)
         temporary.replace(path)
 
     def load(self, path: Path) -> Mapping[str, Any]:
-        import torch
         import zstandard
 
         with path.open("rb") as source:
             compressed = source.read(4) == b"\x28\xb5\x2f\xfd"
         if not compressed:
-            return cast(
-                Mapping[str, Any],
-                torch.load(path, map_location="cpu", weights_only=False),
-            )
+            return _load_torch_checkpoint(path)
         temporary = path.with_suffix(path.suffix + ".decompressed.tmp")
         try:
             with (
@@ -156,10 +178,7 @@ class TorchCheckpointCodec:
                 zstandard.ZstdDecompressor().stream_reader(source) as reader,
             ):
                 shutil.copyfileobj(reader, destination, length=8 * 1024**2)
-            return cast(
-                Mapping[str, Any],
-                torch.load(temporary, map_location="cpu", weights_only=False),
-            )
+            return _load_torch_checkpoint(temporary)
         finally:
             temporary.unlink(missing_ok=True)
 

@@ -70,13 +70,25 @@ class DiscreteQuantileNetwork(nn.Module):
         self.value = nn.Linear(feature_dim, 1) if dueling else None
 
     def forward(self, observation: Any, quantiles: torch.Tensor) -> torch.Tensor:
+        features = cast(torch.Tensor, self.encoder(observation))
+        return self.quantiles_from_features(features, quantiles)
+
+    def quantiles_from_features(
+        self, features: torch.Tensor, quantiles: torch.Tensor
+    ) -> torch.Tensor:
+        """Apply the IQN head to ``(batch, dim)`` or per-step ``(batch, steps, dim)`` features."""
+
         if quantiles.ndim != 2:
             raise ValueError("quantiles must have shape (batch, quantile_count)")
-        features = cast(torch.Tensor, self.encoder(observation))
         frequencies = cast(torch.Tensor, self.frequencies)
         cosine = torch.cos(torch.pi * quantiles.unsqueeze(-1) * frequencies)
         embedding = cast(torch.Tensor, self.quantile_embedding(cosine))
-        combined = features.unsqueeze(1) * embedding
+        if features.ndim == 2:
+            combined = features.unsqueeze(1) * embedding
+        elif features.ndim == 3:
+            combined = features.unsqueeze(2) * embedding.unsqueeze(1)
+        else:
+            raise ValueError("features must have shape (batch, dim) or (batch, steps, dim)")
         advantages = self.head(combined)
         if self.value is None:
             return cast(torch.Tensor, advantages)
@@ -85,15 +97,30 @@ class DiscreteQuantileNetwork(nn.Module):
             self.value(combined) + advantages - advantages.mean(dim=-1, keepdim=True),
         )
 
-    def q_values(self, observation: Any, quantile_count: int = 32) -> torch.Tensor:
-        device, batch_size = _observation_device_and_batch(observation)
+    def supports_sequence_training(self) -> bool:
+        return callable(getattr(self.encoder, "encode_steps", None))
+
+    def encode_sequence(self, observation: Any) -> torch.Tensor:
+        """Return per-step features when the encoder exposes ``encode_steps``."""
+
+        encode_steps = getattr(self.encoder, "encode_steps", None)
+        if not callable(encode_steps):
+            raise TypeError("encoder does not expose per-step sequence features")
+        return cast(torch.Tensor, encode_steps(observation))
+
+    def evaluation_quantiles(self, quantile_count: int, batch_size: int) -> torch.Tensor:
+        device = cast(torch.Tensor, self.frequencies).device
         quantiles = torch.linspace(
             0.5 / quantile_count,
             1 - 0.5 / quantile_count,
             quantile_count,
             device=device,
         )
-        quantiles = quantiles.expand(batch_size, -1)
+        return quantiles.expand(batch_size, -1)
+
+    def q_values(self, observation: Any, quantile_count: int = 32) -> torch.Tensor:
+        _, batch_size = _observation_device_and_batch(observation)
+        quantiles = self.evaluation_quantiles(quantile_count, batch_size)
         return cast(torch.Tensor, self(observation, quantiles).mean(dim=1))
 
 

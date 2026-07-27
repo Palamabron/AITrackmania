@@ -138,6 +138,16 @@ class TemporalTrackGeometryEncoder(nn.Module):
         telemetry: torch.Tensor | None = None,
         mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
+        return self.encode_steps(track, telemetry, mask)[:, -1]
+
+    def encode_steps(
+        self,
+        track: torch.Tensor,
+        telemetry: torch.Tensor | None = None,
+        mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """Return normalized recurrent features for every post-burn-in step."""
+
         if track.ndim != 4 or track.shape[1:3] != (
             self.history_length,
             self.channels,
@@ -146,31 +156,49 @@ class TemporalTrackGeometryEncoder(nn.Module):
                 "temporal track must have shape "
                 f"(batch, {self.history_length}, {self.channels}, points)"
             )
-        batch, history, channels, points = track.shape
-        flat_track = track.reshape(batch * history, channels, points)
-        flat_telemetry = None
-        if self.telemetry_dim:
-            if telemetry is None or telemetry.shape != (
-                batch,
-                history,
-                self.telemetry_dim,
-            ):
-                raise ValueError(
-                    f"temporal telemetry must have shape (batch, {history}, {self.telemetry_dim})"
-                )
-            flat_telemetry = telemetry.reshape(batch * history, self.telemetry_dim)
-        flat_mask = None
-        if mask is not None:
-            if mask.shape != (batch, history, points):
-                raise ValueError("temporal mask must have shape (batch, history, points)")
-            flat_mask = mask.reshape(batch * history, points)
-        encoded = self.frame(flat_track, flat_telemetry, flat_mask).reshape(
-            batch, history, self.output_dim
-        )
+        batch, history, _, points = track.shape
+        if self.telemetry_dim and (
+            telemetry is None or telemetry.shape != (batch, history, self.telemetry_dim)
+        ):
+            raise ValueError(
+                f"temporal telemetry must have shape (batch, {history}, {self.telemetry_dim})"
+            )
+        if mask is not None and mask.shape != (batch, history, points):
+            raise ValueError("temporal mask must have shape (batch, history, points)")
         hidden = None
         if self.burn_in:
             with torch.no_grad():
-                _, hidden = self.recurrent(encoded[:, : self.burn_in])
-            encoded = encoded[:, self.burn_in :]
+                context = self._encode_frames(track, telemetry, mask, stop=self.burn_in)
+                _, hidden = self.recurrent(context)
+        encoded = self._encode_frames(track, telemetry, mask, start=self.burn_in)
         recurrent, _ = self.recurrent(encoded, hidden)
-        return cast(torch.Tensor, self.normalization(recurrent[:, -1]))
+        return cast(torch.Tensor, self.normalization(recurrent))
+
+    def _encode_frames(
+        self,
+        track: torch.Tensor,
+        telemetry: torch.Tensor | None,
+        mask: torch.Tensor | None,
+        *,
+        start: int = 0,
+        stop: int | None = None,
+    ) -> torch.Tensor:
+        window = track[:, start:stop]
+        batch, history = window.shape[:2]
+        flat_track = window.reshape(batch * history, *window.shape[2:])
+        flat_telemetry = (
+            telemetry[:, start:stop].reshape(batch * history, self.telemetry_dim)
+            if telemetry is not None and self.telemetry_dim
+            else None
+        )
+        flat_mask = (
+            mask[:, start:stop].reshape(batch * history, mask.shape[-1])
+            if mask is not None
+            else None
+        )
+        return cast(
+            torch.Tensor,
+            self.frame(flat_track, flat_telemetry, flat_mask).reshape(
+                batch, history, self.output_dim
+            ),
+        )

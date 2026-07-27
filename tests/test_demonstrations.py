@@ -5,6 +5,7 @@ from typing import Any
 
 import numpy as np
 import pytest
+
 from tmrl.core.data import Transition
 from tmrl.trackmania.actions import (
     build_brake_tap_action_table,

@@ -10,6 +10,7 @@ import re
 import secrets
 import signal
 import sys
+from math import ceil
 from pathlib import Path
 from time import sleep, time_ns
 from typing import Any
@@ -469,16 +470,19 @@ def _check_track_connection(args: argparse.Namespace) -> None:
 
 def _benchmark(args: argparse.Namespace) -> None:
     spec = RunSpec.from_yaml(args.config)
-    if (
-        spec.evaluation is None
-        or spec.evaluation.trials_per_map != 20
-        or len(spec.evaluation.maps) != 1
-        or spec.evaluation.maps[0].id != "test-3"
-    ):
-        raise ValueError("benchmark requires exactly one test-3 map with exactly 20 trials")
+    evaluation = spec.evaluation
+    if evaluation is None or not evaluation.maps:
+        raise ValueError("benchmark requires an evaluation suite with at least one map")
+    if evaluation.target_median_s is None:
+        raise ValueError(
+            "benchmark requires evaluation.target_median_s "
+            "(for example 37.0 for a sub-37s release gate)"
+        )
     run = resolve_run(spec, base_dir=Path(args.config).parent)
     if run.evaluator is None:
         raise ValueError("benchmark requires components.evaluator")
+    expected_trials = evaluation.trials_per_map * len(evaluation.maps)
+    expected_map_ids = {item.id for item in evaluation.maps}
     try:
         run.learner.setup(
             {"seed": spec.seed, "run_dir": run.run_dir, "model_factory": run.model_factory}
@@ -496,28 +500,32 @@ def _benchmark(args: argparse.Namespace) -> None:
     trials = artifact["trials"]
     if artifact.get("checkpoint") != str(args.checkpoint):
         raise RuntimeError("benchmark artifact checkpoint does not match the evaluated checkpoint")
-    if len(trials) != 20 or any(trial["map_id"] != "test-3" for trial in trials):
-        raise RuntimeError("benchmark artifact must contain exactly 20 test-3 trials")
+    if len(trials) != expected_trials or {trial["map_id"] for trial in trials} != expected_map_ids:
+        raise RuntimeError(
+            f"benchmark artifact must contain exactly {expected_trials} trials covering "
+            f"{sorted(expected_map_ids)}"
+        )
     completed = [trial for trial in trials if trial["finished"]]
     telemetry_or_controller_errors = [
         trial
         for trial in trials
         if trial["telemetry_error"] is not None or trial["controller_error"] is not None
     ]
+    required_finishes = ceil(evaluation.min_finish_rate * expected_trials)
+    median = float(metrics["eval/median_finish_time_s"])
     passed = (
-        len(completed) >= 18
-        and metrics["eval/median_finish_time_s"] < 37.0
+        len(completed) >= required_finishes
+        and median < evaluation.target_median_s
         and not telemetry_or_controller_errors
     )
     if not passed:
         raise RuntimeError(
-            "benchmark failed: require >=18/20 finishes, median completed time <37.0s, "
+            "benchmark failed: require "
+            f">={required_finishes}/{expected_trials} finishes, "
+            f"median completed time <{evaluation.target_median_s}s, "
             "and no telemetry/controller errors"
         )
-    print(
-        f"Benchmark passed: {len(completed)}/20 finishes, median "
-        f"{metrics['eval/median_finish_time_s']:.3f}s"
-    )
+    print(f"Benchmark passed: {len(completed)}/{expected_trials} finishes, median {median:.3f}s")
 
 
 def entrypoint(argv: list[str] | None = None) -> None:

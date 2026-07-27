@@ -10,6 +10,8 @@ from pydantic import BaseModel, ConfigDict, Field, PositiveInt, field_validator
 
 from tmrl.core.data import BatchRequest
 
+DEFAULT_EVALUATION_TIME_BUCKETS_S: tuple[float, ...] = (40.0, 38.0, 36.0)
+
 
 class ComponentSpec(BaseModel):
     """A locally installed project component selected by import path."""
@@ -144,6 +146,9 @@ class EvaluationSuiteSpec(BaseModel):
     version: str = Field(min_length=1)
     maps: tuple[EvaluationMapSpec, ...] = ()
     trials_per_map: PositiveInt = 1
+    time_buckets_s: tuple[float, ...] = DEFAULT_EVALUATION_TIME_BUCKETS_S
+    target_median_s: float | None = None
+    min_finish_rate: float = 0.9
 
     @field_validator("maps")
     @classmethod
@@ -151,6 +156,27 @@ class EvaluationSuiteSpec(BaseModel):
         if len({item.id for item in maps}) != len(maps):
             raise ValueError("evaluation map ids must be unique")
         return maps
+
+    @field_validator("time_buckets_s")
+    @classmethod
+    def _positive_time_buckets(cls, values: tuple[float, ...]) -> tuple[float, ...]:
+        if any(value <= 0.0 for value in values):
+            raise ValueError("time_buckets_s must contain positive finish times")
+        return values
+
+    @field_validator("target_median_s")
+    @classmethod
+    def _positive_target_median(cls, value: float | None) -> float | None:
+        if value is not None and value <= 0.0:
+            raise ValueError("target_median_s must be positive")
+        return value
+
+    @field_validator("min_finish_rate")
+    @classmethod
+    def _valid_finish_rate(cls, value: float) -> float:
+        if not 0.0 <= value <= 1.0:
+            raise ValueError("min_finish_rate must be between 0 and 1")
+        return value
 
 
 class RunSpec(BaseModel):

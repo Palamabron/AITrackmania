@@ -8,7 +8,7 @@ off-policy updates. The same commands work in PowerShell, bash, WSL and CI.
 uv sync --group dev --extra algorithms
 uv run tmrl init my-trackmania-agent
 cd my-trackmania-agent
-uv run pip install -e .
+uv sync
 uv run tmrl validate run.yaml
 uv run tmrl train run.yaml
 ```

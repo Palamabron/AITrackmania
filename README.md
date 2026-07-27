@@ -34,19 +34,13 @@ uv run tmrl track check
 uv run tmrl smoke run.yaml --transitions 100
 ```
 
-On an NVIDIA training host, select the locked CUDA wheel before training:
-
-```bash
-uv sync --extra torch-cuda
-```
-
-Use `--extra torch-cpu` for an explicit CPU-only environment. `torch-cuda`
-selects the project's tested PyTorch CUDA runtime; it does not need the same
-locally installed CUDA Toolkit version, and a newer NVIDIA driver remains
-compatible. ROCm hosts require the matching AMD Torch build, while macOS MPS
-uses the normal PyPI Torch wheel. The locked backend extras conflict by design;
-`device: auto` then resolves CUDA, ROCm, MPS or CPU from the installed Torch
-build and fails early when visible accelerator hardware cannot be used.
+On Windows (the platform that runs TrackMania), `uv sync` installs the locked
+CUDA PyTorch wheel by default via `[tool.uv.sources]`. On other platforms it
+installs the CPU wheel. The CUDA wheel does not need the same locally installed
+CUDA Toolkit version, and a newer NVIDIA driver remains compatible. ROCm hosts
+require the matching AMD Torch build, while macOS MPS uses the normal PyPI Torch
+wheel. `device: auto` then resolves CUDA, ROCm, MPS or CPU from the installed
+Torch build and fails early when visible accelerator hardware cannot be used.
 
 The smoke command starts the same local async learner/actor pair as training,
 checks a live policy refresh, and writes a checkpoint.

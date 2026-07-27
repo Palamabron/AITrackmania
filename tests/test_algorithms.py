@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import torch
+from torch import nn
+
 from tmrl.algorithms import (
     ImplicitQuantileQLearning,
     RandomizedEnsembleSAC,
@@ -16,7 +18,6 @@ from tmrl.algorithms.implicit_quantile_q_learning import implicit_quantile_huber
 from tmrl.core.data import TrainingBatch
 from tmrl.models.actors import CategoricalActor, GaussianActor
 from tmrl.models.critics import ContinuousQCritic, DiscreteQuantileNetwork, QuantileCritic
-from torch import nn
 
 
 class Encoder(nn.Module):

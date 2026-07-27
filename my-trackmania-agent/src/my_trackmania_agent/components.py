@@ -5,8 +5,9 @@ from pathlib import Path
 from typing import Any, cast
 
 import torch
-from tmrl.core.data import SampleBatch, Transition
 from torch import nn
+
+from tmrl.core.data import SampleBatch, Transition
 
 
 class StarterFeaturePipeline:
