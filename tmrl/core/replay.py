@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import random
 from collections import deque
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
+from contextlib import AbstractContextManager, contextmanager
 from dataclasses import replace
 from math import ceil, floor, isfinite
 from numbers import Number
@@ -57,6 +58,8 @@ class _IncrementalReplayStore(Protocol):
         self, revision: int | None
     ) -> tuple[int, list[tuple[TransitionId, TransitionId | None]] | None]: ...
 
+    def sampling_transaction(self) -> AbstractContextManager[None]: ...
+
 
 def _is_incremental_store(store: ReplayStore) -> TypeGuard[_IncrementalReplayStore]:
     return all(
@@ -66,6 +69,7 @@ def _is_incremental_store(store: ReplayStore) -> TypeGuard[_IncrementalReplaySto
             "eligible_transition_ids",
             "is_n_step_eligible",
             "affected_n_step_starts",
+            "sampling_transaction",
         )
     ) and isinstance(getattr(store, "capacity", None), int)
 
@@ -308,6 +312,13 @@ class InMemoryReplayStore:
             self._revision += 1
             self._changes.append((self._revision, transition_id, evicted))
             return transition_id
+
+    @contextmanager
+    def sampling_transaction(self) -> Iterator[None]:
+        """Keep sampled IDs valid until their batch is fully materialized."""
+
+        with self._lock:
+            yield
 
     def _allocate_columns(self, transition: Transition) -> None:
         if self._observations is None:
@@ -804,10 +815,7 @@ class UniformSampler:
 class PrioritizedSampler:
     """Array-backed proportional PER with normalized importance weights."""
 
-    # Sampling must run after the coordinator drains rollouts. A prefetched
-    # batch can otherwise retain IDs that FIFO eviction replaces before its
-    # n-step transitions are materialized.
-    thread_safe_prefetch = False
+    thread_safe_prefetch = True
 
     def __init__(
         self,
@@ -966,6 +974,12 @@ class PrioritizedSampler:
         self._rng.setstate(state["rng"])
 
     def _sample_incrementally(
+        self, store: _IncrementalReplayStore, request: BatchRequest
+    ) -> TrainingBatch:
+        with store.sampling_transaction():
+            return self._sample_incremental_snapshot(store, request)
+
+    def _sample_incremental_snapshot(
         self, store: _IncrementalReplayStore, request: BatchRequest
     ) -> TrainingBatch:
         transition_ids, normalized, beta, sampling = self._sample_incremental_ids(store, request)

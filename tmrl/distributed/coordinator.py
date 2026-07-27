@@ -602,7 +602,7 @@ class Coordinator:
                 # and inflate the measured actor policy lag by the queue delay.
                 self._drain_rollouts(max(1, self._rollouts.qsize()))
                 if (
-                    self._has_active_actor()
+                    self._can_update()
                     and len(self.run.replay_store) >= ready
                     and self.counters.update_credit >= 1.0
                 ):
@@ -780,6 +780,12 @@ class Coordinator:
     def _has_active_actor(self) -> bool:
         with self._lock:
             return bool(set(self._last_heartbeats) - self._timed_out_actors)
+
+    def _can_update(self) -> bool:
+        return not self._external_stop_requested() and (
+            self._has_active_actor()
+            or self.counters.transitions >= self.run.spec.training.total_transitions
+        )
 
     def _publish_policy(self, *, force: bool = False) -> None:
         now = monotonic()

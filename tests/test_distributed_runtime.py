@@ -70,6 +70,25 @@ def test_coordinator_requires_an_active_actor_before_spending_update_credit() ->
     assert coordinator._has_active_actor()
 
 
+def test_coordinator_spends_remaining_credit_after_transition_target() -> None:
+    coordinator = object.__new__(Coordinator)
+    coordinator._lock = threading.RLock()
+    coordinator._last_heartbeats = {}
+    coordinator._timed_out_actors = set()
+    coordinator.external_stop = None
+    coordinator.counters = _Counters(transitions=10)
+    coordinator.run = SimpleNamespace(
+        spec=SimpleNamespace(training=SimpleNamespace(total_transitions=10))
+    )
+
+    assert coordinator._can_update()
+
+    coordinator.external_stop = threading.Event()
+    coordinator.external_stop.set()
+
+    assert not coordinator._can_update()
+
+
 class _Policy:
     def __init__(self, value: int) -> None:
         self.value = value

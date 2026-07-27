@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import threading
+
 import pytest
 import torch
 from tmrl.core.builtins import IdentityFeaturePipeline
@@ -49,10 +51,72 @@ def test_prioritized_sampler_normalizes_weights_and_accepts_priority_feedback() 
     assert min(batch.weights) > 0.0
 
 
-def test_prioritized_sampler_disables_prefetch_across_fifo_eviction() -> None:
-    sampler = PrioritizedSampler(IdentityFeaturePipeline())
+def test_prioritized_prefetch_blocks_fifo_eviction_until_batch_is_materialized() -> None:
+    class BlockingStore(InMemoryReplayStore):
+        def __init__(self) -> None:
+            super().__init__(capacity=1)
+            self.block_sampling = False
+            self.sampling_started = threading.Event()
+            self.release_sampling = threading.Event()
 
-    assert not sampler.thread_safe_prefetch
+        def n_step_ids(self, transition_id: int, n_step: int) -> list[int]:
+            result = super().n_step_ids(transition_id, n_step)
+            if self.block_sampling:
+                self.sampling_started.set()
+                assert self.release_sampling.wait(timeout=2.0)
+            return result
+
+    store = BlockingStore()
+    store.append(
+        Transition(
+            observation=0.0,
+            action=0.0,
+            reward=1.0,
+            next_observation=1.0,
+            terminated=True,
+            truncated=False,
+            episode_id="episode-0",
+            step=0,
+        )
+    )
+    sampler = PrioritizedSampler(IdentityFeaturePipeline())
+    sampler.sample(store, BatchRequest(batch_size=1))
+    store.block_sampling = True
+    sampled: list[object] = []
+    appended = threading.Event()
+
+    sample_thread = threading.Thread(
+        target=lambda: sampled.append(sampler.sample(store, BatchRequest(batch_size=1)))
+    )
+    append_thread = threading.Thread(
+        target=lambda: (
+            store.append(
+                Transition(
+                    observation=1.0,
+                    action=0.0,
+                    reward=1.0,
+                    next_observation=2.0,
+                    terminated=True,
+                    truncated=False,
+                    episode_id="episode-1",
+                    step=0,
+                )
+            ),
+            appended.set(),
+        )
+    )
+    sample_thread.start()
+    assert store.sampling_started.wait(timeout=2.0)
+    append_thread.start()
+
+    assert not appended.wait(timeout=0.05)
+    store.release_sampling.set()
+    sample_thread.join(timeout=2.0)
+    append_thread.join(timeout=2.0)
+
+    assert sampler.thread_safe_prefetch
+    assert len(sampled) == 1
+    assert appended.is_set()
 
 
 def test_sequence_sampler_never_crosses_episode_or_terminal_boundary() -> None:

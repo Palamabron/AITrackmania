@@ -140,11 +140,20 @@ def _train(args: argparse.Namespace) -> None:
             sleep(0.25)
         actor_finished_first = not actor.is_alive() and learner.is_alive()
         if actor_finished_first:
-            print(
-                f"Actor process (pid={actor.pid}) exited first with code={actor.exitcode}; "
-                f"stopping learner (pid={learner.pid}) gracefully...",
-                flush=True,
-            )
+            if actor.exitcode == 0:
+                print(
+                    f"Actor process (pid={actor.pid}) completed rollout collection; "
+                    f"waiting for learner (pid={learner.pid}) to drain update credit...",
+                    flush=True,
+                )
+                while learner.is_alive():
+                    sleep(0.25)
+            else:
+                print(
+                    f"Actor process (pid={actor.pid}) exited first with code={actor.exitcode}; "
+                    f"stopping learner (pid={learner.pid}) gracefully...",
+                    flush=True,
+                )
     except KeyboardInterrupt:
         stopped_by_user = True
         print("Stopping async training; saving the learner checkpoint...", flush=True)
@@ -165,8 +174,6 @@ def _train(args: argparse.Namespace) -> None:
     ]
     if failures:
         raise RuntimeError("; ".join(failures))
-    if actor_finished_first:
-        raise RuntimeError("actor stopped before the learner completed the run")
     print(f"Finished async run {spec.run_id}. Artifacts: {config.parent / spec.artifacts_dir}")
 
 
