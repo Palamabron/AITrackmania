@@ -18,7 +18,12 @@ from tmrl.core.runtime import resolve_run, validate_resolved_run
 from tmrl.core.spec import RunSpec
 from tmrl.project.scaffold import create_project
 from tmrl.trackmania.assets import record_boundary, record_trajectory
-from tmrl.trackmania.demonstrations import record_demonstration, save_demonstration
+from tmrl.trackmania.demonstrations import (
+    Demonstration,
+    record_demonstration_session,
+    reject_outliers,
+    save_demonstration,
+)
 from tmrl.trackmania.environment import OpenPlanetEnvironmentFactory
 from tmrl.trackmania.geometry import BoundaryGeometry, build_geometry_asset
 from tmrl.trackmania.session import OpenPlanetSessionClient
@@ -383,6 +388,10 @@ def _record_demo(args: argparse.Namespace) -> None:
     factory = _trackmania_factory(config_path)
     if args.start_timeout <= 0.0:
         raise ValueError("start timeout must be positive")
+    if args.count < 1:
+        raise ValueError("count must be positive")
+    if args.max_gap < 0.0:
+        raise ValueError("max gap must be non-negative")
     config = factory.config.model_copy(update={"start_timeout_s": args.start_timeout})
     if config.geometry_path is None or config.expected_map_uid is None:
         raise ValueError("record-demo requires geometry_path and expected_map_uid")
@@ -393,17 +402,36 @@ def _record_demo(args: argparse.Namespace) -> None:
         config.host, config.port, field_count=config.field_count, timeout_s=config.timeout_s
     )
     try:
-        demo = record_demonstration(
+        demonstrations = record_demonstration_session(
             client,
             config,
             geometry,
+            count=args.count,
             max_duration_s=args.max_duration,
             status=print,
         )
-        path = save_demonstration(args.output, demo)
     finally:
         client.close()
-    print(f"Recorded demonstration: {path} ({len(demo.actions)} transitions)")
+    _save_session_demonstrations(args.output, demonstrations, args.max_gap)
+
+
+def _save_session_demonstrations(
+    output: Path, demonstrations: list[Demonstration], max_gap_s: float
+) -> None:
+    kept = reject_outliers(demonstrations, max_gap_s=max_gap_s)
+    for rank, demonstration in enumerate(kept, start=1):
+        path = save_demonstration(
+            output / f"demo-{rank:02d}-{demonstration.finish_time_s:.3f}s", demonstration
+        )
+        print(f"Saved demonstration: {path} ({len(demonstration.actions)} transitions)")
+    discarded = len(demonstrations) - len(kept)
+    if discarded:
+        best = min(demonstration.finish_time_s for demonstration in demonstrations)
+        print(
+            f"Discarded {discarded} outlier "
+            f"{'lap' if discarded == 1 else 'laps'} "
+            f"(slower than {best + max_gap_s:.3f}s)."
+        )
 
 
 def _build_geometry(args: argparse.Namespace) -> None:
@@ -568,10 +596,18 @@ def entrypoint(argv: list[str] | None = None) -> None:
     record.add_argument("--timeout", type=float, default=10.0)
     record.set_defaults(handler=_record_trajectory)
     demo = track_commands.add_parser(
-        "record-demo", help="record one finished human lap for replay seeding"
+        "record-demo",
+        help="record finished human laps and drop outliers for replay seeding",
     )
-    demo.add_argument("output", type=Path)
+    demo.add_argument("output", type=Path, help="directory that receives the kept .npz laps")
     demo.add_argument("--config", type=Path, required=True)
+    demo.add_argument("--count", type=int, default=1, help="laps to record in one session")
+    demo.add_argument(
+        "--max-gap",
+        type=float,
+        default=1.0,
+        help="discard laps slower than the best finish by more than this many seconds",
+    )
     demo.add_argument("--start-timeout", type=float, default=120.0)
     demo.add_argument("--max-duration", type=float, default=180.0)
     demo.set_defaults(handler=_record_demo)

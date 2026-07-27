@@ -1014,6 +1014,7 @@ class PrioritizedSampler:
                     "priority_transition_ids": tuple(transition_ids),
                     **sampling,
                 },
+                bootstrap_stride=request.sequence_length,
             )
             reshaped = _reshape_batch_sequences(batch, request.batch_size, request.sequence_length)
             flattened_next = [observation for history in next_histories for observation in history]
@@ -1427,33 +1428,36 @@ def _make_batch(
     importance_weights: tuple[float, ...] | None = None,
     masks: Any = None,
     metadata: Mapping[str, Any] | None = None,
+    bootstrap_stride: int = 1,
 ) -> TrainingBatch:
-    """Build a batch whose n-step returns are derived from replay order, not batch order."""
+    """Build a batch whose n-step returns are derived from replay order, not batch order.
 
+    With ``bootstrap_stride > 1`` the ids form contiguous groups of that length and
+    only the last id of each group receives a full n-step return; the earlier ids
+    are recurrent context whose reward fields the learner never consumes.
+    """
+
+    resolver = getattr(store, "n_step_ids", None)
     requested_ids: list[TransitionId] = []
-    horizons: dict[TransitionId, list[TransitionId]] = {}
+    horizons: list[list[TransitionId]] = []
     seen: set[TransitionId] = set()
-    for transition_id in transition_ids:
-        resolver = getattr(store, "n_step_ids", None)
-        horizon = (
-            cast(list[TransitionId], resolver(transition_id, request.n_step))
-            if callable(resolver)
-            else [transition_id + offset for offset in range(request.n_step)]
-        )
-        horizons[transition_id] = horizon
+    for index, transition_id in enumerate(transition_ids):
+        needs_return = bootstrap_stride == 1 or index % bootstrap_stride == bootstrap_stride - 1
+        if not needs_return:
+            horizon = [transition_id]
+        elif callable(resolver):
+            horizon = cast(list[TransitionId], resolver(transition_id, request.n_step))
+        else:
+            horizon = [transition_id + offset for offset in range(request.n_step)]
+        horizons.append(horizon)
         for candidate in horizon:
             if candidate not in seen and store.contains(candidate):
                 seen.add(candidate)
                 requested_ids.append(candidate)
     available = dict(zip(requested_ids, store.get(requested_ids), strict=True))
     n_step = [
-        _n_step_transition(
-            transition_id,
-            available,
-            request,
-            horizon=horizons[transition_id],
-        )
-        for transition_id in transition_ids
+        _n_step_transition(transition_id, available, request, horizon=horizon)
+        for transition_id, horizon in zip(transition_ids, horizons, strict=True)
     ]
     transitions = [item[0] for item in n_step]
     discounts = [item[1] for item in n_step]

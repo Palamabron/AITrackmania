@@ -153,6 +153,20 @@ def test_prioritized_sampler_returns_episode_local_sequences_and_target_prioriti
     sampler.update_priorities(PriorityUpdate(priority_ids, [2.0, 3.0, 4.0]))
 
 
+def test_prioritized_sequence_builds_full_n_step_return_only_on_the_final_step() -> None:
+    store = _store(episodes=1, steps=6)
+    sampler = PrioritizedSampler(IdentityFeaturePipeline(), seed=2)
+
+    batch = sampler.sample(
+        store, BatchRequest(batch_size=2, sequence_length=3, n_step=2, gamma=0.5)
+    )
+
+    assert torch.equal(batch.rewards[:, :-1], torch.ones((2, 2)))
+    priority_ids = batch.metadata["priority_transition_ids"]
+    expected = [1.0 if transition_id == 5 else 1.5 for transition_id in priority_ids]
+    assert batch.rewards[:, -1].tolist() == pytest.approx(expected)
+
+
 def test_recurrent_history_left_pads_episode_start_like_the_actor() -> None:
     store = _store(episodes=1, steps=5)
 

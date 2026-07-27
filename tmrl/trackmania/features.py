@@ -227,19 +227,21 @@ class LidarFeaturePipeline:
             raise ValueError("lidar telemetry contains non-finite values")
         return values
 
-    @staticmethod
-    def _scale_telemetry(values: np.ndarray) -> np.ndarray:
+    def _scale_telemetry(self, values: np.ndarray) -> np.ndarray:
         # Stable 20-field projection from the supported 33-field GrabData packet.
+        # Velocity and speed use the configured native unit scale normalized by
+        # the top speed so they span [-1, 1] instead of collapsing toward zero.
+        velocity_scale = self.velocity_to_mps_scale / self.max_speed_mps
         selected = np.asarray(
             [
                 values[0] / 100.0,
                 values[1] / 10.0,
                 values[2],
                 values[3] / 60_000.0,
-                values[7] / 1_000.0,
-                values[8] / 1_000.0,
-                values[9] / 1_000.0,
-                values[16] / 1_000.0,
+                values[7] * velocity_scale,
+                values[8] * velocity_scale,
+                values[9] * velocity_scale,
+                values[16] * velocity_scale,
                 values[17] / 10_000.0,
                 values[18] / 6.0,
                 values[19],

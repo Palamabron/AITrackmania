@@ -15,6 +15,8 @@ from tmrl.trackmania.demonstrations import (
     demonstration_transitions,
     load_demonstration,
     record_demonstration,
+    record_demonstration_session,
+    reject_outliers,
     save_demonstration,
 )
 from tmrl.trackmania.environment import TrackmaniaEnvironmentConfig
@@ -35,10 +37,13 @@ class _IdentityPipeline:
 
 class _TelemetryClient:
     def __init__(self, frames: list[np.ndarray]) -> None:
-        self.frames = iter(frames)
+        self.frames = list(frames)
+        self.cursor = 0
 
     def read(self) -> TelemetryFrame:
-        return TelemetryFrame(next(self.frames))
+        frame = self.frames[min(self.cursor, len(self.frames) - 1)]
+        self.cursor += 1
+        return TelemetryFrame(frame)
 
 
 def _geometry(tmp_path: Path) -> BoundaryGeometry:
@@ -61,12 +66,17 @@ def _geometry(tmp_path: Path) -> BoundaryGeometry:
 
 
 def _config(
-    geometry: BoundaryGeometry, *, action_repeat_frames: int = 2
+    geometry: BoundaryGeometry,
+    *,
+    action_repeat_frames: int = 2,
+    start_timeout_s: float = 15.0,
 ) -> TrackmaniaEnvironmentConfig:
     return TrackmaniaEnvironmentConfig(
         geometry_path=geometry.path,
         expected_map_uid=geometry.map_uid,
         action_repeat_frames=action_repeat_frames,
+        start_timeout_s=start_timeout_s,
+        start_poll_s=0.0,
         velocity_to_mps_scale=1.0,
         minimum_finish_steps=50,
         no_progress_steps=100,
@@ -161,3 +171,94 @@ def test_recorder_waits_for_restart_and_quantizes_human_control(tmp_path: Path) 
     )
     assert demo.actions.tolist() == [expected]
     assert demo.finish_time_s == pytest.approx(0.048)
+
+
+def _lap_frames(*race_times_ms: float) -> list[np.ndarray]:
+    """Frames for one full-throttle run: an idle frame, a reset, then the driven lap."""
+
+    baseline = _frames(1)[0]
+    baseline[2] = 0.0
+    baseline[31] = 1.0
+    idle = baseline.copy()
+    idle[3] = 1_000.0
+    reset = baseline.copy()
+    reset[3] = 0.0
+    driven = []
+    for race_time_ms in race_times_ms:
+        frame = baseline.copy()
+        frame[3] = race_time_ms
+        driven.append(frame)
+    driven[-1][2] = 1.0
+    return [idle, reset, *driven]
+
+
+def test_recorder_discards_partial_lap_after_mid_lap_restart(tmp_path: Path) -> None:
+    geometry = _geometry(tmp_path)
+    frames = _lap_frames(16.0, 32.0)
+    restarted = frames[2].copy()
+    restarted[3] = 5.0
+    restarted[2] = 0.0
+    continued = restarted.copy()
+    continued[3] = 15.0
+    finish = continued.copy()
+    finish[2] = 1.0
+    finish[3] = 25.0
+    frames = [*frames[:4], restarted, continued, finish]
+    frames[3][2] = 0.0
+
+    demo = record_demonstration(
+        _TelemetryClient(frames),
+        _config(geometry),
+        geometry,
+        max_duration_s=1.0,
+        status=lambda _message: None,
+    )
+
+    assert demo.frames[:, 3].tolist() == [5.0, 25.0]
+    assert demo.finish_time_s == pytest.approx(0.025)
+
+
+def test_session_records_each_lap_and_reject_outliers_drops_slow_laps(
+    tmp_path: Path,
+) -> None:
+    geometry = _geometry(tmp_path)
+    frames = (
+        _lap_frames(16.0, 32.0, 36_000.0)
+        + _lap_frames(10.0, 20.0, 36_500.0)
+        + _lap_frames(10.0, 20.0, 38_000.0)
+    )
+
+    demos = record_demonstration_session(
+        _TelemetryClient(frames),
+        _config(geometry),
+        geometry,
+        count=3,
+        max_duration_s=1.0,
+        status=lambda _message: None,
+    )
+
+    assert [demo.finish_time_s for demo in demos] == pytest.approx([36.0, 36.5, 38.0])
+    kept = reject_outliers(demos, max_gap_s=1.0)
+    assert kept == [demos[0], demos[1]]
+    assert reject_outliers(demos, max_gap_s=0.0) == [demos[0]]
+    with pytest.raises(ValueError, match="max_gap_s must be non-negative"):
+        reject_outliers(demos, max_gap_s=-0.1)
+
+
+def test_session_returns_completed_laps_when_the_next_start_never_happens(
+    tmp_path: Path,
+) -> None:
+    geometry = _geometry(tmp_path)
+    frames = _lap_frames(16.0, 32.0, 48.0)
+
+    demos = record_demonstration_session(
+        _TelemetryClient(frames),
+        _config(geometry, start_timeout_s=0.05),
+        geometry,
+        count=3,
+        max_duration_s=1.0,
+        status=lambda _message: None,
+    )
+
+    assert len(demos) == 1
+    assert demos[0].finish_time_s == pytest.approx(0.048)

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from time import monotonic, sleep
@@ -167,6 +167,15 @@ def record_demonstration(
         controls.append(control)
         for _ in range(config.action_repeat_frames):
             current = client.read()
+        if float(current.values[3]) < float(frames[-1][3]):
+            status("Restart detected; the partial lap was discarded. Recording the new run.")
+            deadline = monotonic() + max_duration_s
+            while float(current.values[3]) <= 0.0 and monotonic() < deadline:
+                current = client.read()
+            frames = [current.values.copy()]
+            actions.clear()
+            controls.clear()
+            continue
         frames.append(current.values.copy())
         if bool(current.values[2]):
             finish_time_s = float(current.values[3]) / 1_000.0
@@ -181,6 +190,57 @@ def record_demonstration(
                 finish_time_s=finish_time_s,
             )
     raise TimeoutError("demonstration did not reach the finish before max_duration_s")
+
+
+def record_demonstration_session(
+    client: TelemetryReader,
+    config: TrackmaniaEnvironmentConfig,
+    geometry: BoundaryGeometry,
+    *,
+    count: int,
+    max_duration_s: float,
+    status: Callable[[str], None] = print,
+) -> list[Demonstration]:
+    """Record up to ``count`` finished laps, stopping early once a lap start times out."""
+
+    if count < 1:
+        raise ValueError("count must be positive")
+    demonstrations: list[Demonstration] = []
+    for lap in range(1, count + 1):
+        status(f"Recording lap {lap} of {count}.")
+        try:
+            demonstrations.append(
+                record_demonstration(
+                    client, config, geometry, max_duration_s=max_duration_s, status=status
+                )
+            )
+        except TimeoutError as error:
+            if not demonstrations:
+                raise
+            status(f"Stopping the session after {len(demonstrations)} laps: {error}")
+            break
+    return demonstrations
+
+
+def reject_outliers(
+    demonstrations: Sequence[Demonstration], *, max_gap_s: float = 1.0
+) -> list[Demonstration]:
+    """Keep laps within ``max_gap_s`` of the best finish time, ranked fastest-first."""
+
+    if max_gap_s < 0.0:
+        raise ValueError("max_gap_s must be non-negative")
+    if not demonstrations:
+        return []
+    best = min(demonstration.finish_time_s for demonstration in demonstrations)
+    cutoff = best + max_gap_s
+    return sorted(
+        (
+            demonstration
+            for demonstration in demonstrations
+            if demonstration.finish_time_s <= cutoff
+        ),
+        key=lambda demonstration: demonstration.finish_time_s,
+    )
 
 
 def validate_demonstration(

@@ -240,8 +240,8 @@ def test_lidar_pipeline_validates_schema_and_builds_masked_local_observation(
     observation = np.zeros(33, dtype=np.float32)
     observation[4:7] = [0, 0, 0]
     observation[10:13] = [1, 0, 0]
-    observation[7] = 250.0
-    observation[16] = 500.0
+    observation[7] = 20_000.0
+    observation[16] = 40_000.0
     observation[17] = 5_000.0
     observation[30] = -0.5
     output = pipeline.transform_observation(observation)
@@ -327,6 +327,7 @@ def test_track_relative_velocity_uses_the_same_native_unit_scale_as_telemetry(
 
     prepared = pipeline.transform_observation(observation)
 
+    assert prepared["telemetry"][4] == pytest.approx(0.5)
     assert prepared["telemetry"][-2] == pytest.approx(0.5)
 
 
