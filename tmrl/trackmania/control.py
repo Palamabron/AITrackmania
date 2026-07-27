@@ -46,7 +46,9 @@ class GamepadController:
         self._tap_timer: Timer | None = None
         self._tap_generation = 0
         self._collision_detected = False
-        self._gamepad.register_notification(callback_function=self._on_vibration)
+        register_notification = getattr(self._gamepad, "register_notification", None)
+        if callable(register_notification):
+            register_notification(callback_function=self._on_vibration)
 
     @_vgamepad_callback
     def _on_vibration(

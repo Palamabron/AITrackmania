@@ -1044,6 +1044,20 @@ def test_gamepad_consumes_haptic_collision_events(monkeypatch: pytest.MonkeyPatc
     assert not gamepad.consume_collision()
 
 
+def test_gamepad_allows_platforms_without_haptic_notifications(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeGamepad:
+        pass
+
+    from tmrl.trackmania import control
+
+    monkeypatch.setitem(sys.modules, "vgamepad", SimpleNamespace(VX360Gamepad=FakeGamepad))
+    gamepad = control.GamepadController()
+
+    assert not gamepad.consume_collision()
+
+
 def test_trackmania_template_contains_first_party_components(tmp_path: Path) -> None:
     target = create_project(tmp_path / "agent", "agent", template="trackmania")
     config = (target / "run.yaml").read_text(encoding="utf-8")
