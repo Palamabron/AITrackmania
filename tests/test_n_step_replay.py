@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 import torch
 
@@ -117,3 +119,17 @@ def test_replay_checkpoint_restores_into_a_larger_capacity_store() -> None:
 
     with pytest.raises(ValueError, match="exceeds"):
         InMemoryReplayStore(capacity=2).load_state_dict(state)
+
+
+def test_mark_episode_demo_promotes_only_the_named_episode() -> None:
+    store = InMemoryReplayStore(capacity=8)
+    for step in range(3):
+        store.append(replace(_transition(step, terminated=step == 2), episode_id="lap-a"))
+    for step in range(2):
+        store.append(replace(_transition(step, terminated=step == 1), episode_id="lap-b"))
+
+    assert store.mark_episode_demo("lap-a") == 3
+    assert store.mark_episode_demo("lap-a") == 0
+    assert store.mark_episode_demo("missing") == 0
+    assert store.demo_flags([0, 1, 2, 3, 4]) == [True, True, True, False, False]
+    assert store.demo_fraction() == pytest.approx(0.6)

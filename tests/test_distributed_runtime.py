@@ -861,6 +861,60 @@ def test_ingest_aggregates_evaluation_batches_and_checkpoints_best(tmp_path: Pat
     assert [item["finish_rate"] for item in best_events] == [0.5, 1.0]
 
 
+def test_finished_lap_near_the_best_is_promoted_to_self_imitation_demo() -> None:
+    store = InMemoryReplayStore()
+    coordinator = object.__new__(Coordinator)
+    coordinator.run = SimpleNamespace(
+        replay_store=store,
+        spec=SimpleNamespace(
+            distributed=SimpleNamespace(max_update_credit=512),
+            training=SimpleNamespace(
+                warmup_transitions=1,
+                updates_per_transition=1.0,
+                evaluate_every_episodes=None,
+                self_imitation_window_s=1.0,
+                self_imitation_max_demo_fraction=0.5,
+            ),
+        ),
+        logger=_Logger(),
+    )
+    coordinator.counters = _Counters()
+    coordinator._last_ingest_at = time.monotonic()
+    coordinator._rollouts = Queue()
+    coordinator._recovering = True
+
+    def chunk(episode: str, sequence: int, finish_time_s: float, *, finished: bool) -> None:
+        transitions = [
+            _transition(episode, step, 1.0, terminal=finished and step == 1) for step in range(2)
+        ]
+        coordinator._ingest(
+            {
+                "actor_id": "actor",
+                "session_id": "session",
+                "sequence": sequence,
+                "policy_version": 0,
+                "transitions": [transition_to_wire(item) for item in transitions],
+                "episodes": [
+                    {
+                        "finished": float(finished),
+                        "finish_time_s": finish_time_s,
+                        "episode_id": f"{episode}/session/episode",
+                    }
+                ],
+                "evaluations": [],
+            },
+            sequence + 1,
+        )
+
+    chunk("fast", 0, 37.0, finished=True)
+    chunk("slow", 1, 44.0, finished=True)
+    chunk("crash", 2, 0.0, finished=False)
+
+    assert store.demo_flags([0, 1, 2, 3, 4, 5]) == [True, True, False, False, False, False]
+    assert coordinator.counters.best_finish_time_s == 37.0
+    assert store.demo_fraction() == pytest.approx(2 / 6)
+
+
 def test_distributed_ingest_normalizes_source_demo_marker() -> None:
     store = InMemoryReplayStore()
     coordinator = object.__new__(Coordinator)

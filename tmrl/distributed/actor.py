@@ -437,6 +437,7 @@ class ActorRuntime:
                 "projected_velocity_ratio_max": velocity_ratio_max,
                 "actor_epsilon": epsilon,
                 "policy_version": version,
+                "episode_id": episode_id,
                 **margins.summary(),
                 **controls.summary(),
             }
@@ -658,6 +659,7 @@ class ActorRuntime:
             "termination/max_steps": float(termination == "max_steps"),
             "exploration_epsilon": float(info.get("actor_epsilon", 0.0)),
             "policy_version": int(info.get("policy_version", 0)),
+            "episode_id": str(info.get("episode_id", "")),
         }
 
     def _spool(

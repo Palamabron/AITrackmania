@@ -530,6 +530,7 @@ class Coordinator:
                     or finish_time_s < self.counters.best_finish_time_s
                 ):
                     self.counters.best_finish_time_s = finish_time_s
+                self._maybe_promote_episode(summary, finish_time_s)
             if not self._recovering:
                 self._log_episode(value, summary)
                 interval = self.run.spec.training.evaluate_every_episodes
@@ -612,6 +613,33 @@ class Coordinator:
         if progress >= 10.0 and race_time_s > 0.0:
             replay_info["sampling/projected_lap_time_s"] = race_time_s * 100.0 / progress
         return replay_info
+
+    def _maybe_promote_episode(self, summary: Mapping[str, Any], finish_time_s: float) -> None:
+        window = self.run.spec.training.self_imitation_window_s
+        if window is None:
+            return
+        episode_id = str(summary.get("episode_id", ""))
+        if not episode_id or finish_time_s > self.counters.best_finish_time_s + window:
+            return
+        store = self.run.replay_store
+        mark = getattr(store, "mark_episode_demo", None)
+        fraction = getattr(store, "demo_fraction", None)
+        if not callable(mark) or not callable(fraction):
+            return
+        if fraction() >= self.run.spec.training.self_imitation_max_demo_fraction:
+            return
+        promoted = int(mark(episode_id))
+        if promoted and not self._recovering:
+            self.run.logger.log(
+                "demo/self_imitation",
+                {
+                    "episode_id": episode_id,
+                    "finish_time_s": finish_time_s,
+                    "promoted_transitions": promoted,
+                    "demo_fraction": float(fraction()),
+                },
+                step=self.counters.updates,
+            )
 
     def _log_episode(self, value: Mapping[str, Any], summary: Mapping[str, Any]) -> None:
         self.run.logger.log(

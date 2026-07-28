@@ -811,6 +811,27 @@ class InMemoryReplayStore:
                 for transition_id in transition_ids
             ]
 
+    def demo_fraction(self) -> float:
+        with self._lock:
+            return self._demo_count / max(1, self._size)
+
+    def mark_episode_demo(self, episode_id: str) -> int:
+        """Promote every live transition of one episode to protected demonstrations."""
+
+        with self._lock:
+            code = self._episode_codes_by_name.get(episode_id)
+            if code is None:
+                return 0
+            slots = np.flatnonzero((self._episode_codes == code) & (self._ids >= 0))
+            promoted = 0
+            for slot in slots.tolist():
+                if self._demo_flags[slot]:
+                    continue
+                self._demo_flags[slot] = True
+                self._demo_count += 1
+                promoted += 1
+            return promoted
+
     def changes_since(
         self, revision: int | None
     ) -> tuple[int, list[tuple[TransitionId, TransitionId | None]] | None]:

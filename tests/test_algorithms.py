@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from typing import Any
+
+import pytest
 import torch
 from torch import nn
 
@@ -192,6 +195,55 @@ class RankedIQN(nn.Module):
         del quantile_count
         table = torch.tensor([[1.0, 3.0, 2.5]])
         return self.offset + table.expand(observation.shape[0], -1)
+
+
+class TauSensitiveIQN(DiscreteQuantileNetwork):
+    """Action 0 is constant while action 1 pays out only in the upper quantiles."""
+
+    def __init__(self) -> None:
+        super().__init__(nn.Identity(), 4, 2, cosine_count=8)
+
+    def forward(self, observation: Any, quantiles: torch.Tensor) -> torch.Tensor:
+        del observation
+        return torch.stack([torch.ones_like(quantiles), 2.0 * quantiles], dim=-1)
+
+
+def test_evaluation_quantiles_map_the_midpoint_grid_into_the_tau_window() -> None:
+    network = TauSensitiveIQN()
+
+    default = network.evaluation_quantiles(4, 1)[0]
+    upper = network.evaluation_quantiles(4, 1, tau_min=0.5, tau_max=1.0)[0]
+
+    assert torch.allclose(default, torch.tensor([0.125, 0.375, 0.625, 0.875]))
+    assert torch.allclose(upper, torch.tensor([0.5625, 0.6875, 0.8125, 0.9375]))
+    with pytest.raises(ValueError, match="tau window"):
+        network.evaluation_quantiles(4, 1, tau_min=0.8, tau_max=0.2)
+
+
+def test_tau_window_tilts_the_deployed_policy_between_risk_profiles() -> None:
+    def build_policy(**kwargs: float) -> Any:
+        learner = ImplicitQuantileQLearning(
+            TauSensitiveIQN(),
+            execution={"device": "cpu", "precision": "float32"},
+            **kwargs,
+        )
+        learner.setup({"seed": 0})
+        return learner.policy()
+
+    neutral = build_policy()
+    optimistic = build_policy(evaluation_tau_min=0.5, evaluation_tau_max=1.0)
+    conservative = build_policy(evaluation_tau_min=0.0, evaluation_tau_max=0.5)
+
+    assert neutral.act(torch.zeros(4), deterministic=True) == 0
+    assert optimistic.act(torch.zeros(4), deterministic=True) == 1
+    assert conservative.act(torch.zeros(4), deterministic=True) == 0
+    with pytest.raises(ValueError, match="tau window"):
+        ImplicitQuantileQLearning(
+            TauSensitiveIQN(),
+            evaluation_tau_min=1.0,
+            evaluation_tau_max=0.5,
+            execution={"device": "cpu", "precision": "float32"},
+        )
 
 
 def test_iqn_policy_reports_the_greedy_action_gap_for_single_observations() -> None:
