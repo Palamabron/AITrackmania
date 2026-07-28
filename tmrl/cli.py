@@ -115,11 +115,89 @@ def _spawn_context() -> multiprocessing.context.SpawnContext:
     return multiprocessing.get_context("spawn")
 
 
+def _next_versioned_run_id(run_id: str, artifacts_dir: Path) -> str:
+    """Return the first free local run identifier for a new training attempt."""
+
+    match = re.fullmatch(r"(?P<base>.+-v\d+)(?P<suffix>[a-z]*)", run_id)
+    if match is None:
+        index = 1
+        while (artifacts_dir / f"{run_id}-{index}").exists():
+            index += 1
+        return f"{run_id}-{index}"
+    base = match.group("base")
+    suffix = match.group("suffix")
+    index = _alphabetic_suffix_index(suffix) + 1
+    while (artifacts_dir / f"{base}{_alphabetic_suffix(index)}").exists():
+        index += 1
+    return f"{base}{_alphabetic_suffix(index)}"
+
+
+def _alphabetic_suffix(index: int) -> str:
+    """Format a one-based alphabetic sequence number."""
+
+    value = ""
+    while index:
+        index, remainder = divmod(index - 1, 26)
+        value = chr(ord("a") + remainder) + value
+    return value
+
+
+def _alphabetic_suffix_index(value: str) -> int:
+    """Parse a possibly empty alphabetic sequence suffix."""
+
+    index = 0
+    for character in value:
+        index = index * 26 + ord(character) - ord("a") + 1
+    return index
+
+
+def _new_attempt_spec(config: Path, spec: RunSpec, args: argparse.Namespace) -> RunSpec:
+    """Assign a distinct run ID when a fresh local attempt would reuse artifacts."""
+
+    fresh_attempt = bool(getattr(args, "reset_replay", False)) or not bool(
+        getattr(args, "checkpoint", None)
+    )
+    artifacts_dir = config.parent / spec.artifacts_dir
+    if not fresh_attempt or not (artifacts_dir / spec.run_id).exists():
+        return spec
+    run_id = _next_versioned_run_id(spec.run_id, artifacts_dir)
+    print(f"Run ID {spec.run_id!r} already exists; using {run_id!r} for this new attempt.")
+    return spec.model_copy(update={"run_id": run_id})
+
+
+def _resumed_attempt_spec(config: Path, spec: RunSpec, args: argparse.Namespace) -> RunSpec:
+    """Recover an auto-assigned sibling run ID from a local resume checkpoint."""
+
+    checkpoint = getattr(args, "checkpoint", None)
+    if checkpoint is None or bool(getattr(args, "reset_replay", False)):
+        return spec
+    path = Path(checkpoint).resolve()
+    artifacts_dir = (config.parent / spec.artifacts_dir).resolve()
+    run_dir = path.parent.parent
+    if path.parent.name != "checkpoints" or run_dir.parent != artifacts_dir:
+        return spec
+    configured = re.fullmatch(r"(?P<base>.+-v\d+)(?P<suffix>[a-z]*)", spec.run_id)
+    resumed = re.fullmatch(r"(?P<base>.+-v\d+)(?P<suffix>[a-z]*)", run_dir.name)
+    if configured is None or resumed is None or configured.group("base") != resumed.group("base"):
+        return spec
+    if run_dir.name != spec.run_id:
+        print(f"Resuming checkpoint run ID {run_dir.name!r}.")
+    return spec.model_copy(update={"run_id": run_dir.name})
+
+
 def _train(args: argparse.Namespace) -> None:
     """Launch a spawn-safe local learner and actor pair."""
 
-    config = args.config.resolve()
-    spec = RunSpec.from_yaml(config)
+    source_config = args.config.resolve()
+    source_spec = RunSpec.from_yaml(source_config)
+    spec = _resumed_attempt_spec(source_config, source_spec, args)
+    spec = _new_attempt_spec(source_config, spec, args)
+    temporary_config: Path | None = None
+    config = source_config
+    if spec.run_id != source_spec.run_id:
+        temporary_config = source_config.with_name(f".tmrl-{spec.run_id}-{time_ns()}.yaml")
+        temporary_config.write_text(spec.to_yaml(), encoding="utf-8")
+        config = temporary_config
     token = secrets.token_urlsafe(32)
     target = f"127.0.0.1:{spec.distributed.port}"
     bind = target
@@ -190,6 +268,8 @@ def _train(args: argparse.Namespace) -> None:
             if process.is_alive():
                 process.terminate()
             process.join(timeout=5)
+        if temporary_config is not None:
+            temporary_config.unlink(missing_ok=True)
     if stopped_by_user:
         return
     failures = [
@@ -530,6 +610,7 @@ def _benchmark(args: argparse.Namespace) -> None:
     ]
     required_finishes = ceil(evaluation.min_finish_rate * expected_trials)
     median = float(metrics["eval/median_finish_time_s"])
+    _print_benchmark_report(trials, metrics)
     passed = (
         len(completed) >= required_finishes
         and median < evaluation.target_median_s
@@ -543,6 +624,28 @@ def _benchmark(args: argparse.Namespace) -> None:
             "and no telemetry/controller errors"
         )
     print(f"Benchmark passed: {len(completed)}/{expected_trials} finishes, median {median:.3f}s")
+
+
+def _print_benchmark_report(trials: list[dict[str, Any]], metrics: dict[str, float]) -> None:
+    """Print every benchmark trial before applying the release gate."""
+
+    completed = [trial for trial in trials if trial["finished"]]
+    print("Benchmark trials:")
+    for trial in trials:
+        finish_time = trial["finish_time_s"]
+        time_text = "-" if finish_time is None else f"{float(finish_time):.3f}s"
+        print(
+            f"  trial={trial['trial_index']} map={trial['map_id']} "
+            f"finished={trial['finished']} time={time_text} "
+            f"progress={float(trial['progress_pct']):.1f}% "
+            f"telemetry_error={trial['telemetry_error'] or '-'} "
+            f"controller_error={trial['controller_error'] or '-'}"
+        )
+    print(
+        f"Benchmark summary: finishes={len(completed)}/{len(trials)}, "
+        f"mean_completed={float(metrics['eval/finish_time_s']):.3f}s, "
+        f"median_completed={float(metrics['eval/median_finish_time_s']):.3f}s"
+    )
 
 
 def entrypoint(argv: list[str] | None = None) -> None:
