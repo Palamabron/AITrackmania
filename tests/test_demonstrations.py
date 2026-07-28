@@ -18,6 +18,7 @@ from tmrl.trackmania.demonstrations import (
     record_demonstration,
     record_demonstration_session,
     reject_outliers,
+    resolve_demonstration_paths,
     save_demonstration,
 )
 from tmrl.trackmania.environment import TrackmaniaEnvironmentConfig
@@ -126,6 +127,25 @@ def test_demonstration_round_trip_and_transition_conversion(tmp_path: Path) -> N
     assert transitions[-1].terminated
     assert transitions[-1].info["is_demo"] is True
     assert transitions[-1].info["sampling/projected_lap_time_s"] == 36.0
+
+
+def test_resolve_demonstration_paths_expands_directories(tmp_path: Path) -> None:
+    geometry = _geometry(tmp_path)
+    folder = tmp_path / "demos"
+    first = save_demonstration(folder / "demo-01-36.000s", _demonstration(geometry))
+    second = save_demonstration(folder / "demo-02-36.500s", _demonstration(geometry))
+    (folder / "notes.txt").write_text("ignore", encoding="utf-8")
+
+    resolved = resolve_demonstration_paths([folder, first])
+
+    assert resolved == (first.resolve(), second.resolve())
+
+
+def test_resolve_demonstration_paths_rejects_empty_directory(tmp_path: Path) -> None:
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    with pytest.raises(FileNotFoundError, match=r"no \.npz files"):
+        resolve_demonstration_paths([empty])
 
 
 def test_demonstration_rejects_action_repeat_mismatch(tmp_path: Path) -> None:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import multiprocessing
 import os
 import re
@@ -23,12 +24,26 @@ from tmrl.trackmania.demonstrations import (
     Demonstration,
     record_demonstration_session,
     reject_outliers,
+    resolve_demonstration_paths,
     save_demonstration,
 )
 from tmrl.trackmania.environment import OpenPlanetEnvironmentFactory
 from tmrl.trackmania.geometry import BoundaryGeometry, build_geometry_asset
 from tmrl.trackmania.session import OpenPlanetSessionClient
 from tmrl.trackmania.telemetry import DEFAULT_TELEMETRY_FIELD_COUNT, OpenPlanetClient
+
+
+def _configure_process_logging() -> None:
+    """Send library INFO logs (progress, episodes, demos) to the console."""
+
+    root = logging.getLogger()
+    if root.handlers:
+        return
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    root.addHandler(handler)
+    root.setLevel(logging.INFO)
+    logging.getLogger("tmrl").setLevel(logging.INFO)
 
 
 def _package_name(value: str) -> str:
@@ -119,7 +134,7 @@ def _train(args: argparse.Namespace) -> None:
             str(args.checkpoint) if getattr(args, "checkpoint", None) else None,
             bool(getattr(args, "reset_replay", False)),
             shutdown,
-            tuple(str(path.resolve()) for path in getattr(args, "demo", ())),
+            tuple(str(path) for path in resolve_demonstration_paths(getattr(args, "demo", ()))),
         ),
         name="tmrl-learner",
     )
@@ -196,7 +211,7 @@ def _learner(args: argparse.Namespace) -> None:
         args.bind or f"127.0.0.1:{spec.distributed.port}",
         token,
         str(args.checkpoint) if args.checkpoint else None,
-        demo_paths=tuple(str(path.resolve()) for path in args.demo),
+        demo_paths=tuple(str(path) for path in resolve_demonstration_paths(args.demo)),
     )
 
 
@@ -219,6 +234,7 @@ def _learner_process(
     external_stop: Any | None = None,
     demo_paths: tuple[str, ...] = (),
 ) -> None:
+    _configure_process_logging()
     if external_stop is not None:
         signal.signal(signal.SIGINT, signal.SIG_IGN)
     try:
@@ -243,6 +259,7 @@ def _actor_process(
     token: str,
     external_stop: Any | None = None,
 ) -> None:
+    _configure_process_logging()
     if external_stop is not None:
         signal.signal(signal.SIGINT, signal.SIG_IGN)
     try:
@@ -550,7 +567,7 @@ def entrypoint(argv: list[str] | None = None) -> None:
         action="append",
         type=Path,
         default=[],
-        help="validated TrackMania demonstration .npz to add to replay (repeatable)",
+        help="demonstration .npz file or directory of .npz files (repeatable)",
     )
     train.set_defaults(handler=_train)
     resume = commands.add_parser("resume", help="resume a local asynchronous training run")
@@ -566,14 +583,20 @@ def entrypoint(argv: list[str] | None = None) -> None:
         action="append",
         type=Path,
         default=[],
-        help="validated TrackMania demonstration .npz to add to replay (repeatable)",
+        help="demonstration .npz file or directory of .npz files (repeatable)",
     )
     resume.set_defaults(handler=_train)
     learner = commands.add_parser("learner", help="run a distributed coordinator/learner")
     learner.add_argument("config", type=Path)
     learner.add_argument("--bind")
     learner.add_argument("--checkpoint", type=Path)
-    learner.add_argument("--demo", action="append", type=Path, default=[])
+    learner.add_argument(
+        "--demo",
+        action="append",
+        type=Path,
+        default=[],
+        help="demonstration .npz file or directory of .npz files (repeatable)",
+    )
     learner.set_defaults(handler=_learner)
     actor = commands.add_parser("actor", help="run a remote continuous rollout actor")
     actor.add_argument("config", type=Path)

@@ -330,6 +330,7 @@ class Coordinator:
         loader = getattr(factory, "load_demonstration", None)
         if not callable(loader):
             raise ValueError("configured environment does not support replay demonstrations")
+        logger.info("Importing %d demonstration file(s) into replay...", len(self.demo_paths))
         imported = 0
         finish_times: list[float] = []
         for path in self.demo_paths:
@@ -339,6 +340,11 @@ class Coordinator:
             imported += len(transitions)
             finish_times.append(float(transitions[0].info["sampling/projected_lap_time_s"]))
             logger.info("Imported demonstration %s: %d transitions", path, len(transitions))
+        logger.info(
+            "Demonstration import complete: %d transitions from %d file(s)",
+            imported,
+            len(self.demo_paths),
+        )
         self.run.logger.log(
             "train/demonstrations",
             {
@@ -484,11 +490,8 @@ class Coordinator:
         return self._response({"stop": self._should_stop()})
 
     def _epsilon(self, profile: int) -> float:
-        if self.counters.transitions < self.run.spec.training.warmup_transitions:
-            return 1.0
         spec = self.run.spec.distributed
-        elapsed = self.counters.transitions - self.run.spec.training.warmup_transitions
-        fraction = min(1.0, elapsed / spec.epsilon_decay_transitions)
+        fraction = min(1.0, self.counters.transitions / spec.epsilon_decay_transitions)
         scheduled = spec.epsilon_start + fraction * (spec.epsilon_final - spec.epsilon_start)
         return scheduled * spec.epsilon_profiles[profile]
 

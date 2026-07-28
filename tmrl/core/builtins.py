@@ -134,12 +134,37 @@ def _numpy_safe_globals() -> list[Any]:
 
 
 def _load_torch_checkpoint(path: Path) -> Mapping[str, Any]:
+    """Load a local TMRL checkpoint.
+
+    Prefer ``weights_only=True``. Older checkpoints were written with pickle
+    protocol 4 (needed for >4 GiB replay snapshots); PyTorch's weights-only
+    unpickler cannot parse that protocol, so fall back to a full unpickle for
+    those trusted local artifacts only.
+    """
+
+    import logging
+    import pickle
+
     import torch
 
-    with torch.serialization.safe_globals(_numpy_safe_globals()):
+    try:
+        with torch.serialization.safe_globals(_numpy_safe_globals()):
+            return cast(
+                Mapping[str, Any],
+                torch.load(path, map_location="cpu", weights_only=True),
+            )
+    except pickle.UnpicklingError as exc:
+        message = str(exc)
+        if "Unsupported operand 149" not in message and "Weights only load failed" not in message:
+            raise
+        logging.getLogger(__name__).warning(
+            "Loading checkpoint %s with weights_only=False because it uses an "
+            "older pickle protocol; only open checkpoints you trust",
+            path,
+        )
         return cast(
             Mapping[str, Any],
-            torch.load(path, map_location="cpu", weights_only=True),
+            torch.load(path, map_location="cpu", weights_only=False),
         )
 
 

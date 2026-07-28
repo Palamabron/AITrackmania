@@ -63,8 +63,21 @@ class TrackmaniaEvaluator:
                 set_evaluation_map = getattr(self.feature_pipeline, "set_evaluation_map", None)
                 if callable(set_evaluation_map):
                     set_evaluation_map(map_spec)
-                for trial_index in range(self.suite.trials_per_map):
-                    results.append(self._evaluate_episode(policy, map_spec, trial_index))
+                environment = self._create_environment(map_spec, seed=0)
+                try:
+                    for trial_index in range(self.suite.trials_per_map):
+                        results.append(
+                            self._evaluate_episode(
+                                policy,
+                                map_spec,
+                                trial_index,
+                                environment=environment,
+                            )
+                        )
+                finally:
+                    close = getattr(environment, "close", None)
+                    if callable(close):
+                        close()
         else:  # Compatibility for programmatic pre-1.1 test doubles only.
             for seed in getattr(self.suite, "seeds", (0,)):
                 for trial_index in range(getattr(self.suite, "episodes_per_seed", 1)):
@@ -83,18 +96,17 @@ class TrackmaniaEvaluator:
         return float(median(times)) if times else 0.0
 
     def _evaluate_episode(
-        self, policy: Policy, map_spec: Any | None, trial_index: int, *, seed: int = 0
+        self,
+        policy: Policy,
+        map_spec: Any | None,
+        trial_index: int,
+        *,
+        seed: int = 0,
+        environment: Any | None = None,
     ) -> EvaluationResult:
-        if map_spec is None:
-            environment = self.environment_factory.create(seed=seed)
-        else:
-            try:
-                factory = cast(Any, self.environment_factory)
-                environment = factory.create(seed=0, evaluation_map=map_spec)
-            except TypeError as exc:
-                raise RuntimeError(
-                    "evaluation requires an environment factory accepting evaluation_map"
-                ) from exc
+        owns_environment = environment is None
+        if environment is None:
+            environment = self._create_environment(map_spec, seed=seed)
         action_latency_ms = 0.0
         reward_sum = 0.0
         steps = 0
@@ -135,9 +147,10 @@ class TrackmaniaEvaluator:
         except (TimeoutError, ConnectionError) as exc:
             telemetry_error = f"{type(exc).__name__}: {exc}"
         finally:
-            close = getattr(environment, "close", None)
-            if callable(close):
-                close()
+            if owns_environment:
+                close = getattr(environment, "close", None)
+                if callable(close):
+                    close()
         elapsed_s = perf_counter() - started
         return EvaluationResult(
             finished=finished,
@@ -154,6 +167,17 @@ class TrackmaniaEvaluator:
             trial_index=trial_index,
             telemetry_error=telemetry_error,
         )
+
+    def _create_environment(self, map_spec: Any | None, *, seed: int) -> Any:
+        if map_spec is None:
+            return self.environment_factory.create(seed=seed)
+        try:
+            factory = cast(Any, self.environment_factory)
+            return factory.create(seed=seed, evaluation_map=map_spec)
+        except TypeError as exc:
+            raise RuntimeError(
+                "evaluation requires an environment factory accepting evaluation_map"
+            ) from exc
 
     def _write_artifact(self, results: list[EvaluationResult], metrics: dict[str, float]) -> None:
         assert self.run_dir is not None

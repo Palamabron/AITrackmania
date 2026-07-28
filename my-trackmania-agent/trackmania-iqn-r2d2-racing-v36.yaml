@@ -1,5 +1,5 @@
 api_version: "1.2"
-run_id: trackmania-iqn-r2d2-racing-v33b
+run_id: trackmania-iqn-r2d2-racing-v36a
 seed: 0
 artifacts_dir: artifacts
 distributed:
@@ -13,29 +13,25 @@ distributed:
   spool_max_bytes: 2147483648
   soft_policy_lag_updates: 1000
   hard_policy_lag_updates: 5000
-  max_update_credit: 30000
+  max_update_credit: 512
   epsilon_profiles:
     - 1.0
-  epsilon_start: 0.0125
-  epsilon_final: 0.005
+  epsilon_start: 0.005
+  epsilon_final: 0.002
   epsilon_decay_transitions: 150000
 components:
   learner:
     class_path: tmrl.algorithms.implicit_quantile_q_learning:ImplicitQuantileQLearning
     kwargs:
-      learning_rate: 1.0e-4
+      learning_rate: 2.5e-5
       train_quantile_count: 64
       target_quantile_count: 64
       evaluation_quantile_count: 32
       gradient_clip_norm: 10.0
       target_tau: 0.005
-      exploration_epsilon: 0.0125
-      exploration_epsilon_final: 0.005
+      exploration_epsilon: 0.005
+      exploration_epsilon_final: 0.002
       exploration_epsilon_decay_updates: 150000
-      # Keep false when warm-starting from v31/v32 weights trained without h(x).
-      value_rescaling: false
-      demonstration_margin: 0.8
-      demonstration_margin_weight: 1.0
       execution:
         device: cuda
         precision: bfloat16
@@ -67,13 +63,13 @@ components:
         projected_velocity_scale: 0.008
         projected_speed_bonus_scale: 0.2
         steering_delta_penalty: 0.02
-        reward_gamma: 0.997
+        reward_gamma: 0.99
   model_factory:
     class_path: tmrl.trackmania.iqn:LidarIqnModelFactory
     kwargs:
       telemetry_dim: 26
       history_length: 16
-      burn_in: 4
+      burn_in: 8
       spatial_bins: 12
   replay_store:
     class_path: tmrl.core.replay:InMemoryReplayStore
@@ -83,8 +79,8 @@ components:
     class_path: tmrl.core.replay:PrioritizedSampler
     kwargs:
       alpha: 0.4
-      elite_time_s: 46.0
-      elite_priority_boost: 5.0
+      elite_time_s: 38.5
+      elite_priority_boost: 3.0
       uniform_mix: 0.2
   feature_pipeline:
     class_path: tmrl.trackmania.features:LidarFeaturePipeline
@@ -108,7 +104,7 @@ components:
         project: my-trackmania-agent
 evaluation:
   name: test-3-r2d2-racing
-  version: "13"
+  version: "12"
   maps:
     - id: test-3
       map_path: maps/test-3.Map.Gbx
@@ -119,18 +115,17 @@ evaluation:
   min_finish_rate: 0.9
   time_buckets_s: [40.0, 38.0, 36.0]
 training:
-  total_transitions: 1500000
+  total_transitions: 2000000
   max_episode_steps: 5000
   batch_size: 256
   sequence_length: 16
   n_step: 5
-  gamma: 0.997
+  gamma: 0.99
   beta: 0.4
   per_beta_final: 1.0
   per_beta_anneal_transitions: 1200000
-  warmup_transitions: 10000
-  # All-step sequence training is heavier; keep the learner backlog down.
-  updates_per_transition: 0.05
+  warmup_transitions: 50000
+  updates_per_transition: 0.02
   checkpoint_interval_updates: 5000
   metrics_interval_updates: 50
-  evaluate_every_episodes: 50
+  evaluate_every_episodes: 25

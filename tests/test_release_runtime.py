@@ -1176,6 +1176,72 @@ def test_trackmania_evaluator_records_telemetry_errors_and_continues() -> None:
     assert metrics["eval/finish_rate"] == 0.5
 
 
+def test_trackmania_evaluator_reuses_environment_for_map_trials(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Geometry:
+        def __init__(self, path: str, *, expected_map_uid: str) -> None:
+            del path, expected_map_uid
+
+        def validate_map(self, path: str) -> None:
+            del path
+
+    class Environment:
+        def reset(self, *, seed: int | None = None) -> tuple[float, dict[str, object]]:
+            del seed
+            return 0.0, {}
+
+        def step(self, action: object) -> tuple[float, float, bool, bool, dict[str, str | float]]:
+            del action
+            return (
+                1.0,
+                1.0,
+                True,
+                False,
+                {
+                    "termination_reason": "finished",
+                    "race_time_ms": 12_345.0,
+                },
+            )
+
+        def close(self) -> None:
+            return None
+
+    class EnvironmentFactory:
+        def __init__(self) -> None:
+            self.created = 0
+
+        def create(self, *, seed: int, evaluation_map: object) -> Environment:
+            del seed, evaluation_map
+            self.created += 1
+            return Environment()
+
+    class Pipeline:
+        def set_evaluation_map(self, map_spec: object) -> None:
+            del map_spec
+
+        def transform_observation(self, observation: object) -> object:
+            return observation
+
+    class Policy:
+        def act(self, observation: object, *, deterministic: bool = False) -> float:
+            del observation
+            assert deterministic
+            return 0.0
+
+    monkeypatch.setattr("tmrl.trackmania.evaluation.BoundaryGeometry", Geometry)
+    factory = EnvironmentFactory()
+    map_spec = SimpleNamespace(
+        id="test", map_path="map", geometry_path="geometry", expected_map_uid="uid"
+    )
+    suite = SimpleNamespace(maps=(map_spec,), trials_per_map=3)
+
+    metrics = TrackmaniaEvaluator(suite, factory, Pipeline()).evaluate(Policy())
+
+    assert metrics["eval/finish_rate"] == 1.0
+    assert factory.created == 1
+
+
 def test_trackmania_evaluator_uses_elapsed_time_when_plugin_reports_zero() -> None:
     class Environment:
         def reset(self, *, seed: int | None = None) -> tuple[float, dict[str, object]]:

@@ -435,8 +435,8 @@ def test_distributed_epsilon_uses_transition_schedule_and_profile_multiplier(
         fingerprint="fingerprint",
     )
     try:
-        assert coordinator._epsilon(0) == 1.0
-        coordinator.counters.transitions = 60
+        assert coordinator._epsilon(0) == pytest.approx(0.6)
+        coordinator.counters.transitions = 50
         assert coordinator._epsilon(0) == pytest.approx(0.4)
         assert coordinator._epsilon(1) == pytest.approx(0.2)
     finally:
