@@ -63,6 +63,8 @@ class TrainingSpec(BaseModel):
     per_beta_anneal_transitions: PositiveInt | None = None
     evaluate_every_episodes: PositiveInt | None = None
     max_episode_artifacts: PositiveInt = 100
+    self_imitation_window_s: float | None = Field(default=None, gt=0.0)
+    self_imitation_max_demo_fraction: float = Field(default=0.2, gt=0.0, le=0.5)
 
     @field_validator("per_beta_final")
     @classmethod

@@ -565,6 +565,21 @@ def _check_track_connection(args: argparse.Namespace) -> None:
     )
 
 
+def _apply_benchmark_tau_window(learner: Any, tau_min: float | None, tau_max: float | None) -> None:
+    """Override the deployed policy's IQN risk window without a new config file."""
+
+    if tau_min is None and tau_max is None:
+        return
+    window = (
+        tau_min if tau_min is not None else float(getattr(learner, "evaluation_tau_min", 0.0)),
+        tau_max if tau_max is not None else float(getattr(learner, "evaluation_tau_max", 1.0)),
+    )
+    if not 0.0 <= window[0] < window[1] <= 1.0:
+        raise ValueError("benchmark tau window must satisfy 0 <= tau-min < tau-max <= 1")
+    learner.evaluation_tau_min = window[0]
+    learner.evaluation_tau_max = window[1]
+
+
 def _benchmark(args: argparse.Namespace) -> None:
     spec = RunSpec.from_yaml(args.config)
     evaluation = spec.evaluation
@@ -584,6 +599,7 @@ def _benchmark(args: argparse.Namespace) -> None:
         run.learner.setup(
             {"seed": spec.seed, "run_dir": run.run_dir, "model_factory": run.model_factory}
         )
+        _apply_benchmark_tau_window(run.learner, args.tau_min, args.tau_max)
         checkpoint = run.checkpoint_codec.load(args.checkpoint)
         learner_state = checkpoint.get("learner", checkpoint)
         run.learner.load_state_dict(learner_state)
@@ -715,6 +731,16 @@ def entrypoint(argv: list[str] | None = None) -> None:
     benchmark = commands.add_parser("benchmark", help="run the fixed test-3 20-trial release gate")
     benchmark.add_argument("config", type=Path)
     benchmark.add_argument("checkpoint", type=Path)
+    benchmark.add_argument(
+        "--tau-min",
+        type=float,
+        help="lower IQN evaluation quantile; raise above 0 for a risk-seeking policy",
+    )
+    benchmark.add_argument(
+        "--tau-max",
+        type=float,
+        help="upper IQN evaluation quantile; lower below 1 for a conservative policy",
+    )
     benchmark.set_defaults(handler=_benchmark)
     track = commands.add_parser("track", help="TrackMania asset tools")
     track_commands = track.add_subparsers(dest="track_command", required=True)

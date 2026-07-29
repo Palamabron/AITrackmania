@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- IQN evaluation accepts a `[tau_min, tau_max]` risk window: `evaluation_tau_min/max` learner kwargs tilt the deployed policy between conservative and risk-seeking without retraining, and `tmrl benchmark --tau-min/--tau-max` sweeps the window on existing checkpoints; see `docs/v37-always-faster.md`.
+- Added a self-imitation flywheel: with `training.self_imitation_window_s` set, finished laps within the window of the best-so-far are promoted in place to protected demonstrations (`demo/self_imitation` events), capped by `self_imitation_max_demo_fraction`, so the margin anchor tracks the agent's own moving frontier.
+- Added `trackmania-iqn-r2d2-racing-v37-flywheel.yaml`: v36 with the demonstration margin restored (weight 0.25; v36 had silently disabled it) and the self-imitation flywheel enabled.
+
 - Recurrent IQN training now updates every post-burn-in timestep in a sequence (R2D2-style) instead of only the final step, and sequence priorities use a mixed max/mean TD error.
 - Added optional R2D2 value rescaling and a DQfD-style demonstration margin loss to `ImplicitQuantileQLearning`; demonstration transitions are protected from FIFO eviction.
 - Progress rewards bound per-step index advance to a physically reachable arc length, preventing hairpin cuts through folded reference lines.

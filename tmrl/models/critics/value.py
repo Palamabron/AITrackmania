@@ -108,9 +108,22 @@ class DiscreteQuantileNetwork(nn.Module):
             raise TypeError("encoder does not expose per-step sequence features")
         return cast(torch.Tensor, encode_steps(observation))
 
-    def evaluation_quantiles(self, quantile_count: int, batch_size: int) -> torch.Tensor:
+    def evaluation_quantiles(
+        self,
+        quantile_count: int,
+        batch_size: int,
+        *,
+        tau_min: float = 0.0,
+        tau_max: float = 1.0,
+    ) -> torch.Tensor:
+        if not 0.0 <= tau_min < tau_max <= 1.0:
+            raise ValueError("evaluation tau window must satisfy 0 <= tau_min < tau_max <= 1")
         device = cast(torch.Tensor, self.frequencies).device
-        quantiles = torch.linspace(
+        # Restricting the midpoint grid to a sub-window of (0, 1) turns the
+        # risk-neutral mean into a distorted expectation: an upper window
+        # yields an optimistic, risk-seeking policy and a lower window a
+        # conservative one, without retraining (IQN is tau-conditioned).
+        quantiles = tau_min + (tau_max - tau_min) * torch.linspace(
             0.5 / quantile_count,
             1 - 0.5 / quantile_count,
             quantile_count,
@@ -118,9 +131,18 @@ class DiscreteQuantileNetwork(nn.Module):
         )
         return quantiles.expand(batch_size, -1)
 
-    def q_values(self, observation: Any, quantile_count: int = 32) -> torch.Tensor:
+    def q_values(
+        self,
+        observation: Any,
+        quantile_count: int = 32,
+        *,
+        tau_min: float = 0.0,
+        tau_max: float = 1.0,
+    ) -> torch.Tensor:
         _, batch_size = _observation_device_and_batch(observation)
-        quantiles = self.evaluation_quantiles(quantile_count, batch_size)
+        quantiles = self.evaluation_quantiles(
+            quantile_count, batch_size, tau_min=tau_min, tau_max=tau_max
+        )
         return cast(torch.Tensor, self(observation, quantiles).mean(dim=1))
 
 

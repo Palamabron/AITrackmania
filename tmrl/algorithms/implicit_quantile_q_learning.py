@@ -87,11 +87,13 @@ class _IQNPolicy:
         device: torch.device,
         quantile_count: int,
         exploration_epsilon: float,
+        tau_window: tuple[float, float] = (0.0, 1.0),
     ) -> None:
         self.model: Any = deepcopy(model).to(device).eval()
         self.device = device
         self.quantile_count = quantile_count
         self.exploration_epsilon = exploration_epsilon
+        self.tau_window = tau_window
         self.last_q_margin: float | None = None
         self.last_q_max: float | None = None
 
@@ -109,7 +111,15 @@ class _IQNPolicy:
         if is_single_observation:
             observation = _unsqueeze_observation(observation)
         with torch.no_grad():
-            q_values = self.model.q_values(observation, self.quantile_count)
+            if self.tau_window != (0.0, 1.0):
+                q_values = self.model.q_values(
+                    observation,
+                    self.quantile_count,
+                    tau_min=self.tau_window[0],
+                    tau_max=self.tau_window[1],
+                )
+            else:
+                q_values = self.model.q_values(observation, self.quantile_count)
             action = q_values.argmax(dim=-1)
             self._record_action_gap(q_values, single=is_single_observation)
             if not deterministic and self.exploration_epsilon:
@@ -199,6 +209,8 @@ class ImplicitQuantileQLearning(TorchLearnerBase):
         value_rescaling: bool = False,
         demonstration_margin: float = 0.8,
         demonstration_margin_weight: float = 0.0,
+        evaluation_tau_min: float = 0.0,
+        evaluation_tau_max: float = 1.0,
         execution: TorchExecutionConfig | Mapping[str, Any] | None = None,
         seed: int = 0,
     ) -> None:
@@ -224,9 +236,13 @@ class ImplicitQuantileQLearning(TorchLearnerBase):
         self.exploration_epsilon_decay_updates = exploration_epsilon_decay_updates
         if demonstration_margin < 0.0 or demonstration_margin_weight < 0.0:
             raise ValueError("demonstration margin parameters must be non-negative")
+        if not 0.0 <= evaluation_tau_min < evaluation_tau_max <= 1.0:
+            raise ValueError("evaluation tau window must satisfy 0 <= tau_min < tau_max <= 1")
         self.value_rescaling = value_rescaling
         self.demonstration_margin = demonstration_margin
         self.demonstration_margin_weight = demonstration_margin_weight
+        self.evaluation_tau_min = evaluation_tau_min
+        self.evaluation_tau_max = evaluation_tau_max
         self.update_count = 0
         self._train_model: Any = None
         self._compile_pending = False
@@ -658,6 +674,7 @@ class ImplicitQuantileQLearning(TorchLearnerBase):
             self.device,
             self.evaluation_quantile_count,
             self._current_epsilon(),
+            tau_window=(self.evaluation_tau_min, self.evaluation_tau_max),
         )
 
     def _observation(self, value: Any, name: str) -> Any:
