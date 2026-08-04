@@ -105,6 +105,7 @@ components:
     - class_path: tmrl.observability.trackers:WandbTracker
       kwargs:
         project: my-trackmania-agent
+        entity: dsc-pjatk-warsaw
 evaluation:
   name: test-3-r2d2-racing
   version: "13"

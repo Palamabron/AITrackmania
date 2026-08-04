@@ -58,6 +58,7 @@ algorithms = [
 ]
 trackmania = [
     "gymnasium>=0.29",
+    "libevdev>=0.13; sys_platform == 'linux'",
     "vgamepad>=0.1.0; sys_platform == 'win32' or sys_platform == 'linux'",
 ]
 wandb = [
@@ -68,6 +69,7 @@ distributed = [
     "protobuf>=5.27",
     "safetensors>=0.4.5",
     "zstandard>=0.23",
+    "libevdev>=0.13; sys_platform == 'linux'",
     "vgamepad>=0.1.0; sys_platform == 'win32' or sys_platform == 'linux'",
     "wandb>=0.15.8",
 ]
@@ -88,6 +90,8 @@ torch = [
     { index = "pytorch-cuda", marker = "sys_platform == 'win32' or sys_platform == 'linux'" },
     { index = "pytorch-cpu", marker = "sys_platform != 'win32' and sys_platform != 'linux'" },
 ]
+# PR #47: Linux uinput force-feedback / register_notification.
+vgamepad = { git = "https://github.com/yannbouteiller/vgamepad.git", rev = "90f95e3b0781ea7b9b8e24867c5dfbfda0deecea" }
 
 [[tool.uv.index]]
 name = "pytorch-cpu"
@@ -116,6 +120,7 @@ dev = [
     "protobuf>=5.27",
     "safetensors>=0.4.5",
     "zstandard>=0.23",
+    "libevdev>=0.13; sys_platform == 'linux'",
     "vgamepad>=0.1.0; sys_platform == 'win32' or sys_platform == 'linux'",
     "wandb>=0.15.8",
 ]
