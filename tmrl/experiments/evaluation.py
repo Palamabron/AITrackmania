@@ -38,6 +38,7 @@ class EvaluationResult:
     trial_index: int = 0
     telemetry_error: str | None = None
     controller_error: str | None = None
+    progress_bins: Mapping[str, Mapping[str, float]] | None = None
 
 
 def aggregate_results(results: Iterable[EvaluationResult]) -> Mapping[str, float]:

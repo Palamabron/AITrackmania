@@ -15,10 +15,11 @@ from tmrl.core.data import Transition
 from tmrl.trackmania.actions import (
     BRAKE_TAP_DURATION_S,
     BRAKE_TAP_SENTINEL,
-    build_brake_tap_action_table,
+    select_brake_tap_actions,
 )
 from tmrl.trackmania.control import Controller, GamepadController
 from tmrl.trackmania.geometry import BoundaryGeometry
+from tmrl.trackmania.pace import ReferencePaceProfile
 from tmrl.trackmania.reward import TrajectoryReward
 from tmrl.trackmania.session import OpenPlanetSessionClient
 from tmrl.trackmania.telemetry import (
@@ -42,10 +43,12 @@ class TrackmaniaEnvironmentConfig(BaseModel):
     session_port: int = Field(default=9001, ge=1, le=65535)
     field_count: int = Field(default=DEFAULT_TELEMETRY_FIELD_COUNT, ge=3)
     timeout_s: float = Field(default=10.0, gt=0)
-    reset_settle_s: float = Field(default=0.5, ge=0.0)
+    reset_settle_s: float = Field(default=0.0, ge=0.0)
     start_timeout_s: float = Field(default=15.0, gt=0.0)
     start_poll_s: float = Field(default=0.01, ge=0.0)
     action_repeat_frames: int = Field(default=4, ge=1, le=20)
+    decision_interval_ms: float | None = Field(default=None, gt=0.0, le=250.0)
+    compact_action_ids: tuple[int, ...] | None = None
     position_indices: tuple[int, int, int] = DEFAULT_POSITION_INDICES
     velocity_indices: tuple[int, int, int] = DEFAULT_VELOCITY_INDICES
     crash_distance: float = Field(default=25.0, gt=0)
@@ -68,6 +71,12 @@ class TrackmaniaEnvironmentConfig(BaseModel):
     projected_velocity_scale: float = Field(default=0.0, ge=0.0)
     projected_speed_bonus_scale: float = Field(default=0.0, ge=0.0)
     steering_delta_penalty: float = Field(default=0.0, ge=0.0)
+    time_attack_target_s: float | None = Field(default=None, gt=0.0)
+    time_attack_bonus_scale: float = Field(default=0.0, ge=0.0)
+    pace_reference_path: Path | None = None
+    pace_reward_scale: float = Field(default=0.0, ge=0.0)
+    pace_debt_clip_s: float = Field(default=10.0, gt=0.0)
+    pace_step_delta_clip_s: float = Field(default=0.25, gt=0.0)
     reward_gamma: float = Field(default=0.995, ge=0.0, le=1.0)
 
     @model_validator(mode="after")
@@ -93,11 +102,22 @@ class TrackmaniaEnvironmentConfig(BaseModel):
             self.projected_velocity_scale,
             self.projected_speed_bonus_scale,
             self.steering_delta_penalty,
+            self.time_attack_bonus_scale,
+            self.pace_reward_scale,
+            self.pace_debt_clip_s,
+            self.pace_step_delta_clip_s,
             self.collision_cooldown_s,
             self.reward_gamma,
         )
         if not all(isfinite(value) for value in values):
             raise ValueError("reward values must be finite")
+        if self.time_attack_bonus_scale and self.time_attack_target_s is None:
+            raise ValueError("time_attack_bonus_scale requires time_attack_target_s")
+        if self.pace_reference_path is not None and self.geometry_path is None:
+            raise ValueError("pace_reference_path requires geometry_path")
+        if self.pace_reward_scale and self.pace_reference_path is None:
+            raise ValueError("pace_reward_scale requires pace_reference_path")
+        select_brake_tap_actions(self.compact_action_ids)
         return self
 
     def reward_kwargs(self) -> dict[str, Any]:
@@ -122,6 +142,11 @@ class TrackmaniaEnvironmentConfig(BaseModel):
             "projected_velocity_scale",
             "projected_speed_bonus_scale",
             "steering_delta_penalty",
+            "time_attack_target_s",
+            "time_attack_bonus_scale",
+            "pace_reward_scale",
+            "pace_debt_clip_s",
+            "pace_step_delta_clip_s",
             "reward_gamma",
         )
         return {name: getattr(self, name) for name in names}
@@ -157,7 +182,14 @@ class OpenPlanetEnvironment:
             reference = (
                 self.geometry.racing_line if config.use_racing_line else self.geometry.reward_center
             )
-            self.reward = TrajectoryReward(reference, **reward_kwargs)
+            pace_profile = (
+                ReferencePaceProfile.from_demonstration(
+                    config.pace_reference_path, self.geometry, reference
+                )
+                if config.pace_reference_path is not None
+                else None
+            )
+            self.reward = TrajectoryReward(reference, pace_profile=pace_profile, **reward_kwargs)
         else:
             assert config.trajectory_path is not None
             self.reward = TrajectoryReward.from_file(config.trajectory_path, **reward_kwargs)
@@ -167,7 +199,8 @@ class OpenPlanetEnvironment:
             if evaluation_map is not None
             else None
         )
-        self._action_count, self._action_table = build_brake_tap_action_table()
+        self._action_count, self._action_table = select_brake_tap_actions(config.compact_action_ids)
+        self._finish_confirmation_pending = True
 
     def reset(self, *, seed: int | None = None) -> tuple[np.ndarray, dict[str, Any]]:
         del seed
@@ -191,18 +224,30 @@ class OpenPlanetEnvironment:
         return frame.values, {"telemetry_health": "ok"}
 
     def _restart_race(self) -> TelemetryFrame:
+        previous_race_time_ms = getattr(self, "_last_race_time_ms", None)
         for attempt in range(2):
-            previous_race_time_ms = float(self.client.read().values[3])
+            self._confirm_finish_if_needed()
+            if previous_race_time_ms is None:
+                previous_race_time_ms = float(self.client.read().values[3])
             self.controller.reset()
             if self.evaluation_map is not None:
                 assert self._session is not None
                 self._session.confirm_ready(self.evaluation_map.expected_map_uid)
             try:
-                return self._wait_for_active_run(previous_race_time_ms)
+                frame = self._wait_for_active_run(previous_race_time_ms)
             except TimeoutError:
+                self._finish_confirmation_pending = True
                 if attempt:
                     raise
+            else:
+                self._finish_confirmation_pending = False
+                return frame
         raise AssertionError("unreachable")
+
+    def _confirm_finish_if_needed(self) -> None:
+        if not getattr(self, "_finish_confirmation_pending", False):
+            return
+        self.controller.confirm_finish()
 
     def _wait_for_active_run(self, previous_race_time_ms: float) -> TelemetryFrame:
         deadline = monotonic() + self.config.start_timeout_s
@@ -245,6 +290,13 @@ class OpenPlanetEnvironment:
         for _ in range(self.config.action_repeat_frames):
             frame = self.client.read()
         assert frame is not None
+        decision_interval_ms = getattr(self.config, "decision_interval_ms", None)
+        if decision_interval_ms is not None:
+            target_race_time_ms = self._last_race_time_ms + decision_interval_ms
+            for _ in range(64):
+                if float(frame.values[3]) >= target_race_time_ms:
+                    break
+                frame = self.client.read()
         position = frame.values[list(self.config.position_indices)]
         collision = self.controller.consume_collision()
         race_time_ms = float(frame.values[3])
@@ -264,6 +316,8 @@ class OpenPlanetEnvironment:
             collision=collision,
             steering=float(control[2]),
         )
+        if result.reason == "finished":
+            self._finish_confirmation_pending = True
         return (
             frame.values,
             result.reward,
@@ -275,6 +329,10 @@ class OpenPlanetEnvironment:
                 "position": position.tolist(),
                 "race_time_ms": race_time_ms,
                 "step_race_time_ms": step_race_time_ms,
+                "decision_interval_ms": float(decision_interval_ms or 0.0),
+                "decision_interval_error_ms": (
+                    step_race_time_ms - decision_interval_ms if decision_interval_ms else 0.0
+                ),
                 "control_gas": float(control[0]),
                 "control_brake": applied_brake,
                 "control_brake_tap": float(brake_tap),
@@ -288,11 +346,17 @@ class OpenPlanetEnvironment:
                 "reward_projected_velocity": result.projected_velocity_reward,
                 "reward_projected_speed": result.projected_speed_reward,
                 "reward_steering_delta": result.steering_delta_reward,
+                "reward_time_attack_terminal": float(
+                    getattr(result, "time_attack_terminal_reward", 0.0)
+                ),
+                "reward_pace": result.pace_reward,
                 "reward_collision": result.collision_reward,
                 "collision": result.collided,
                 "collision_detected": result.collision_detected,
                 "reward_terminal": result.terminal_reward,
                 "potential_progress": result.potential_progress,
+                "reference_time_s": result.reference_time_s,
+                "time_debt_s": result.time_debt_s,
                 "projected_velocity_mps": result.projected_velocity_mps,
                 "projected_velocity_ratio": result.projected_velocity_ratio,
             },
@@ -321,6 +385,11 @@ class OpenPlanetEnvironmentFactory:
         if geometry_path is not None and not geometry_path.is_absolute():
             parsed = parsed.model_copy(
                 update={"geometry_path": (Path(base_dir) / geometry_path).resolve()}
+            )
+        pace_reference_path = parsed.pace_reference_path
+        if pace_reference_path is not None and not pace_reference_path.is_absolute():
+            parsed = parsed.model_copy(
+                update={"pace_reference_path": (Path(base_dir) / pace_reference_path).resolve()}
             )
         self.config = parsed
         self._controller = controller

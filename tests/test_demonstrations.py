@@ -141,6 +141,17 @@ def test_resolve_demonstration_paths_expands_directories(tmp_path: Path) -> None
     assert resolved == (first.resolve(), second.resolve())
 
 
+def test_resolve_demonstration_paths_expands_nested_directories(tmp_path: Path) -> None:
+    geometry = _geometry(tmp_path)
+    folder = tmp_path / "demos"
+    first = save_demonstration(folder / "elite" / "demo-01-36.000s", _demonstration(geometry))
+    second = save_demonstration(folder / "recovery" / "demo-02-36.500s", _demonstration(geometry))
+
+    resolved = resolve_demonstration_paths([folder])
+
+    assert resolved == (first.resolve(), second.resolve())
+
+
 def test_resolve_demonstration_paths_rejects_empty_directory(tmp_path: Path) -> None:
     empty = tmp_path / "empty"
     empty.mkdir()
@@ -159,6 +170,30 @@ def test_demonstration_rejects_action_repeat_mismatch(tmp_path: Path) -> None:
             _config(geometry, action_repeat_frames=4),
             geometry,
         )
+
+
+def test_demonstration_import_preserves_completed_recovery_lap(tmp_path: Path) -> None:
+    geometry = _geometry(tmp_path)
+    demonstration = _demonstration(geometry)
+    frames = demonstration.frames.copy()
+    frames[:21, 4] = 0.0
+    frames[21:, 4] = np.linspace(0.0, 100.0, len(frames) - 21)
+    recovery = Demonstration(
+        map_uid=demonstration.map_uid,
+        geometry_sha256=demonstration.geometry_sha256,
+        action_repeat_frames=demonstration.action_repeat_frames,
+        frames=frames,
+        actions=demonstration.actions,
+        controls=demonstration.controls,
+        finish_time_s=demonstration.finish_time_s,
+    )
+    path = save_demonstration(tmp_path / "recovery.npz", recovery)
+    config = _config(geometry).model_copy(update={"no_progress_steps": 10})
+
+    transitions = demonstration_transitions(path, _IdentityPipeline(), config, geometry)
+
+    assert len(transitions) == len(recovery.actions)
+    assert transitions[-1].terminated
 
 
 def test_recorder_waits_for_restart_and_quantizes_human_control(tmp_path: Path) -> None:

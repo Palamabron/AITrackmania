@@ -52,6 +52,16 @@ def test_prioritized_sampler_normalizes_weights_and_accepts_priority_feedback() 
     assert min(batch.weights) > 0.0
 
 
+def test_prioritized_sampler_uses_demo_flags_without_an_expert_threshold() -> None:
+    store = _store(demos=4)
+    sampler = PrioritizedSampler(IdentityFeaturePipeline(), seed=1)
+
+    batch = sampler.sample(store, BatchRequest(batch_size=4))
+
+    assert "expert_demo_flags" not in batch.metadata
+    assert any(batch.metadata["demo_flags"])
+
+
 def test_prioritized_prefetch_blocks_fifo_eviction_until_batch_is_materialized() -> None:
     class BlockingStore(InMemoryReplayStore):
         def __init__(self) -> None:
@@ -228,6 +238,100 @@ def test_prioritized_sampler_boosts_elite_pace_without_retaining_sampling_metada
     assert sampler._tree.leaves[0] == pytest.approx(4.0)
     assert sampler._tree.leaves[2] == pytest.approx(1.0)
     assert store.get([0])[0].info == {}
+
+
+def test_prioritized_sequence_sampler_enforces_exact_expert_demo_fraction() -> None:
+    store = InMemoryReplayStore(capacity=64)
+    for episode, (pace, demo) in enumerate(
+        ((36.0, True), (37.4, True), (42.0, True), (39.0, False))
+    ):
+        for step in range(6):
+            store.append(
+                Transition(
+                    observation=float(step),
+                    action=0.0,
+                    reward=1.0,
+                    next_observation=float(step + 1),
+                    terminated=step == 5,
+                    truncated=False,
+                    episode_id=f"episode-{episode}",
+                    step=step,
+                    info={
+                        "is_demo": demo,
+                        "sampling/projected_lap_time_s": pace,
+                    },
+                )
+            )
+    sampler = PrioritizedSampler(
+        IdentityFeaturePipeline(),
+        expert_demo_time_s=37.5,
+        expert_fraction=0.25,
+        seed=7,
+    )
+
+    batch = sampler.sample(
+        store,
+        BatchRequest(batch_size=8, sequence_length=3, n_step=1),
+    )
+
+    assert sum(batch.metadata["expert_demo_flags"]) == 2
+    assert batch.metadata["replay/expert_demo_sample_fraction"] == 0.25
+    assert batch.metadata["replay/demo_sample_fraction"] >= 0.25
+    assert batch.importance_weights is not None
+    assert max(batch.importance_weights) == pytest.approx(1.0)
+    priority_ids = batch.metadata["priority_transition_ids"]
+    for row, expert in enumerate(batch.metadata["expert_demo_flags"]):
+        if expert:
+            history = batch.transition_ids[row * 3 : (row + 1) * 3]
+            assert all(store.demo_flags(list(history)))
+            assert store.sampling_pace_s(priority_ids[row]) <= 37.5
+
+
+def test_prioritized_sampler_full_rebuild_resets_expert_count() -> None:
+    store = InMemoryReplayStore(capacity=64)
+    for episode, demo in (("expert", True), ("online", False)):
+        for step in range(6):
+            store.append(
+                Transition(
+                    observation=float(step),
+                    action=0.0,
+                    reward=1.0,
+                    next_observation=float(step + 1),
+                    terminated=step == 5,
+                    truncated=False,
+                    episode_id=episode,
+                    step=step,
+                    info={
+                        "is_demo": demo,
+                        "sampling/projected_lap_time_s": 36.0 if demo else 40.0,
+                    },
+                )
+            )
+    sampler = PrioritizedSampler(
+        IdentityFeaturePipeline(),
+        expert_demo_time_s=37.5,
+        expert_fraction=0.25,
+        seed=7,
+    )
+    request = BatchRequest(batch_size=4, sequence_length=3, n_step=1)
+    sampler.sample(store, request)
+    expert_count = sampler._expert_active_count
+    sampler._replay_revision = None
+
+    sampler.sample(store, request)
+
+    assert sampler._expert_active_count == expert_count
+
+
+def test_prioritized_sampler_rejects_missing_expert_demo_pool() -> None:
+    sampler = PrioritizedSampler(
+        IdentityFeaturePipeline(),
+        expert_demo_time_s=37.5,
+        expert_fraction=0.25,
+    )
+
+    with pytest.raises(RuntimeError, match="expert_fraction"):
+        sampler.sample(_store(episodes=2, steps=4), BatchRequest(batch_size=4))
 
 
 def test_demo_mix_uses_ceil_minimum_and_floor_maximum() -> None:

@@ -118,7 +118,7 @@ within ~15k further updates, start v27 from scratch (same YAML,
 - `eval/summary` finish rate is the primary metric; `eval/best_checkpoint`
   marks the artifact to keep. Gate 1: >= 9/10 on two consecutive evaluations.
   Gate 2: deterministic mean < 45 s. Gate 3: sub-40 rate, then the 20-trial
-  release benchmark in `docs/benchmark-test-3.md`.
+  release benchmark in `docs/benchmark-tmrl-test.md`.
 - If greedy evaluation still degrades while q_margin stays healthy and the
   queue metrics are clean, the next isolated candidates for v28 are: an EMA
   weight copy used only for evaluation/deployment, and a learning-rate decay

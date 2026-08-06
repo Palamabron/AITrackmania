@@ -6,6 +6,7 @@ import sqlite3
 from collections.abc import Iterator
 from pathlib import Path
 from threading import RLock
+from uuid import uuid4
 
 _RECOVERY_BATCH_ROWS = 256
 
@@ -36,7 +37,29 @@ class RolloutJournal:
             )
             """
         )
+        self._connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS metadata (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            )
+            """
+        )
+        row = self._connection.execute(
+            "SELECT value FROM metadata WHERE key = 'journal_id'"
+        ).fetchone()
+        if row is None:
+            self._connection.execute(
+                "INSERT INTO metadata(key, value) VALUES ('journal_id', ?)",
+                (uuid4().hex,),
+            )
         self._connection.commit()
+        identity = self._connection.execute(
+            "SELECT value FROM metadata WHERE key = 'journal_id'"
+        ).fetchone()
+        if identity is None:
+            raise RuntimeError("rollout journal failed to persist its identity")
+        self.identity = str(identity[0])
 
     def append(self, session_id: str, sequence: int, payload: bytes) -> tuple[int, bool]:
         with self._lock:

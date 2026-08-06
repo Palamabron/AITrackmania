@@ -15,15 +15,13 @@ from tmrl.models.encoders.track_geometry import (
     TrackGeometryEncoder,
 )
 from tmrl.trackmania.actions import (
-    build_brake_tap_action_table,
-    build_brake_tap_exploration_weights,
+    select_brake_tap_actions,
+    select_brake_tap_exploration_weights,
 )
 from tmrl.trackmania.features import LidarFeaturePipeline
 
 
 class _LidarObservationEncoder(nn.Module):
-    output_dim = 256
-
     def __init__(
         self,
         *,
@@ -31,24 +29,33 @@ class _LidarObservationEncoder(nn.Module):
         history_length: int,
         spatial_bins: int,
         burn_in: int,
+        lidar_channels: int = 4,
+        telemetry_group_dims: tuple[int, ...] | None = None,
+        hidden_dim: int = 192,
+        output_dim: int = 256,
     ) -> None:
         super().__init__()
+        self.output_dim = output_dim
         encoder: nn.Module
         if history_length == 1:
             encoder = TrackGeometryEncoder(
-                4,
+                lidar_channels,
                 telemetry_dim,
-                output_dim=self.output_dim,
+                hidden_dim=hidden_dim,
+                output_dim=output_dim,
                 spatial_bins=spatial_bins,
+                telemetry_group_dims=telemetry_group_dims,
             )
         else:
             encoder = TemporalTrackGeometryEncoder(
-                4,
+                lidar_channels,
                 telemetry_dim,
                 history_length=history_length,
-                output_dim=self.output_dim,
+                hidden_dim=hidden_dim,
+                output_dim=output_dim,
                 spatial_bins=spatial_bins,
                 burn_in=burn_in,
+                telemetry_group_dims=telemetry_group_dims,
             )
         self.encoder = encoder
 
@@ -84,10 +91,21 @@ class LidarIqnModel(DiscreteQuantileNetwork):
         history_length: int = 1,
         spatial_bins: int = 0,
         burn_in: int = 0,
+        action_ids: tuple[int, ...] | None = None,
+        lidar_channels: int = 4,
+        telemetry_group_dims: tuple[int, ...] | None = None,
+        encoder_hidden_dim: int = 192,
+        encoder_output_dim: int = 256,
     ) -> None:
-        action_count, _ = build_brake_tap_action_table()
-        if telemetry_dim < 1 or history_length < 1:
-            raise ValueError("telemetry_dim and history_length must be positive")
+        action_count, _ = select_brake_tap_actions(action_ids)
+        if (
+            telemetry_dim < 1
+            or history_length < 1
+            or lidar_channels < 1
+            or encoder_hidden_dim < 1
+            or encoder_output_dim < 1
+        ):
+            raise ValueError("model dimensions and history_length must be positive")
         self.history_length = history_length
         self.sequence_burn_in = burn_in if history_length > 1 else 0
         encoder = _LidarObservationEncoder(
@@ -95,11 +113,15 @@ class LidarIqnModel(DiscreteQuantileNetwork):
             history_length=history_length,
             spatial_bins=spatial_bins,
             burn_in=burn_in,
+            lidar_channels=lidar_channels,
+            telemetry_group_dims=telemetry_group_dims,
+            hidden_dim=encoder_hidden_dim,
+            output_dim=encoder_output_dim,
         )
         super().__init__(encoder, encoder.output_dim, action_count, cosine_count, dueling=True)
         self.register_buffer(
             "exploration_action_weights",
-            torch.from_numpy(build_brake_tap_exploration_weights()),
+            torch.from_numpy(select_brake_tap_exploration_weights(action_ids)),
             persistent=False,
         )
         self._policy_history: deque[Mapping[str, torch.Tensor]] = deque(maxlen=history_length)
@@ -134,12 +156,22 @@ class LidarIqnModelFactory:
         history_length: int = 1,
         spatial_bins: int = 0,
         burn_in: int = 0,
+        action_ids: tuple[int, ...] | None = None,
+        lidar_channels: int = 4,
+        telemetry_group_dims: tuple[int, ...] | None = None,
+        encoder_hidden_dim: int = 192,
+        encoder_output_dim: int = 256,
     ) -> None:
         self.cosine_count = cosine_count
         self.telemetry_dim = telemetry_dim
         self.history_length = history_length
         self.spatial_bins = spatial_bins
         self.burn_in = burn_in
+        self.action_ids = action_ids
+        self.lidar_channels = lidar_channels
+        self.telemetry_group_dims = telemetry_group_dims
+        self.encoder_hidden_dim = encoder_hidden_dim
+        self.encoder_output_dim = encoder_output_dim
 
     def build(self) -> LidarIqnModel:
         return LidarIqnModel(
@@ -148,4 +180,9 @@ class LidarIqnModelFactory:
             history_length=self.history_length,
             spatial_bins=self.spatial_bins,
             burn_in=self.burn_in,
+            action_ids=self.action_ids,
+            lidar_channels=self.lidar_channels,
+            telemetry_group_dims=self.telemetry_group_dims,
+            encoder_hidden_dim=self.encoder_hidden_dim,
+            encoder_output_dim=self.encoder_output_dim,
         )

@@ -14,21 +14,29 @@ import sys
 from math import ceil
 from pathlib import Path
 from time import sleep, time_ns
-from typing import Any
+from typing import Any, cast
 
-from tmrl.core.runtime import resolve_run, validate_resolved_run
+import torch
+
+from tmrl.core.pytree import sanitize_finite, tree_map, tree_to_device
+from tmrl.core.runtime import prepare_run, resolve_run, validate_resolved_run
 from tmrl.core.spec import RunSpec
 from tmrl.project.scaffold import create_project
 from tmrl.trackmania.assets import record_boundary, record_trajectory
 from tmrl.trackmania.demonstrations import (
     Demonstration,
+    load_demonstration,
     record_demonstration_session,
     reject_outliers,
     resolve_demonstration_paths,
     save_demonstration,
+    validate_demonstration,
 )
-from tmrl.trackmania.environment import OpenPlanetEnvironmentFactory
+from tmrl.trackmania.diagnostics import ExpertActionDiagnostics, aggregate_expert_bins
+from tmrl.trackmania.environment import OpenPlanetEnvironmentFactory, TrackmaniaEnvironmentConfig
 from tmrl.trackmania.geometry import BoundaryGeometry, build_geometry_asset
+from tmrl.trackmania.pace import ReferencePaceProfile
+from tmrl.trackmania.reward import TrajectoryReward
 from tmrl.trackmania.session import OpenPlanetSessionClient
 from tmrl.trackmania.telemetry import DEFAULT_TELEMETRY_FIELD_COUNT, OpenPlanetClient
 
@@ -261,7 +269,7 @@ def _train(args: argparse.Namespace) -> None:
         stopped_by_user = True
         print("Stopping async training; saving the learner checkpoint...", flush=True)
     finally:
-        shutdown.set()
+        _signal_shutdown(shutdown, learner, actor)
         learner.join(timeout=10)
         actor.join(timeout=10)
         for process in (actor, learner):
@@ -280,6 +288,11 @@ def _train(args: argparse.Namespace) -> None:
     if failures:
         raise RuntimeError("; ".join(failures))
     print(f"Finished async run {spec.run_id}. Artifacts: {config.parent / spec.artifacts_dir}")
+
+
+def _signal_shutdown(shutdown: Any, *processes: Any) -> None:
+    if any(process.is_alive() for process in processes):
+        shutdown.set()
 
 
 def _learner(args: argparse.Namespace) -> None:
@@ -356,11 +369,15 @@ def _smoke(args: argparse.Namespace) -> None:
     transitions = args.transitions
     if transitions < 8:
         raise ValueError("smoke testing requires at least 8 transitions")
-    batch_size = min(spec.training.batch_size, max(2, transitions // 4))
-    n_step = min(spec.training.n_step, transitions - batch_size + 1)
+    n_step = min(spec.training.n_step, transitions)
+    batch_size = min(
+        spec.training.batch_size,
+        (transitions - n_step + 1) // spec.training.sequence_length,
+    )
+    if batch_size < 1:
+        minimum = spec.training.sequence_length + n_step - 1
+        raise ValueError(f"transitions must be at least {minimum} for one complete replay batch")
     ready = batch_size * spec.training.sequence_length + n_step - 1
-    if transitions < ready:
-        raise ValueError("transitions must cover one complete replay batch")
     training = spec.training.model_copy(
         update={
             "total_transitions": transitions,
@@ -570,6 +587,20 @@ def _benchmark(args: argparse.Namespace) -> None:
     evaluation = spec.evaluation
     if evaluation is None or not evaluation.maps:
         raise ValueError("benchmark requires an evaluation suite with at least one map")
+    evaluation_updates = {
+        key: value
+        for key, value in (
+            ("trials_per_map", getattr(args, "trials", None)),
+            ("target_median_s", getattr(args, "target_median", None)),
+            ("min_finish_rate", getattr(args, "min_finish_rate", None)),
+        )
+        if value is not None
+    }
+    if evaluation_updates:
+        evaluation = type(evaluation).model_validate(
+            {**evaluation.model_dump(), **evaluation_updates}
+        )
+        spec = spec.model_copy(update={"evaluation": evaluation})
     if evaluation.target_median_s is None:
         raise ValueError(
             "benchmark requires evaluation.target_median_s "
@@ -624,6 +655,360 @@ def _benchmark(args: argparse.Namespace) -> None:
             "and no telemetry/controller errors"
         )
     print(f"Benchmark passed: {len(completed)}/{expected_trials} finishes, median {median:.3f}s")
+
+
+def _diagnose_expert(args: argparse.Namespace) -> None:
+    config = args.config.resolve()
+    source_spec = RunSpec.from_yaml(config)
+    spec = source_spec.model_copy(update={"run_id": f"{source_spec.run_id}-expert-{time_ns()}"})
+    run = resolve_run(spec, base_dir=config.parent)
+    paths = resolve_demonstration_paths(args.demo)
+    try:
+        run.learner.setup(_learner_context(run))
+        checkpoint = run.checkpoint_codec.load(args.checkpoint)
+        learner_state = checkpoint.get("learner", checkpoint)
+        run.learner.load_state_dict(learner_state)
+        environment_config = _expert_environment_config(run)
+        if environment_config.geometry_path is None:
+            raise ValueError("expert diagnostics require geometry_path")
+        geometry = BoundaryGeometry(
+            environment_config.geometry_path,
+            expected_map_uid=environment_config.expected_map_uid,
+        )
+        prepare_run(run)
+        reports = [
+            _expert_demonstration_report(
+                path,
+                run.learner,
+                run.feature_pipeline,
+                environment_config,
+                geometry,
+            )
+            for path in paths
+        ]
+        payload = {
+            "schema_version": "1",
+            "checkpoint": str(args.checkpoint),
+            "demos": reports,
+            "summary": {
+                "demonstrations": len(reports),
+                "progress_bins": aggregate_expert_bins(
+                    report["progress_bins"] for report in reports
+                ),
+            },
+        }
+        target = run.run_dir / "expert-diagnostics.json"
+        temporary = target.with_suffix(".json.tmp")
+        temporary.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+        os.replace(temporary, target)
+    finally:
+        run.logger.close()
+    print(f"Expert diagnostics: {target}")
+
+
+def _expert_environment_config(run: Any) -> TrackmaniaEnvironmentConfig:
+    environment_config = getattr(run.environment_factory, "config", None)
+    if not isinstance(environment_config, TrackmaniaEnvironmentConfig):
+        raise ValueError("expert diagnostics require OpenPlanetEnvironmentFactory")
+    if environment_config.compact_action_ids is not None:
+        raise ValueError("expert diagnostics require the canonical 78-action IQN head")
+    if getattr(run.learner.model, "action_count", None) != 78:
+        raise ValueError("expert diagnostics require the canonical 78-action IQN head")
+    return environment_config
+
+
+def _expert_demonstration_report(
+    path: Path,
+    learner: Any,
+    pipeline: Any,
+    config: TrackmaniaEnvironmentConfig,
+    geometry: BoundaryGeometry,
+) -> dict[str, Any]:
+    demonstration = load_demonstration(path)
+    validate_demonstration(demonstration, config, geometry)
+    model = learner.model
+    if model is None:
+        raise RuntimeError("expert diagnostics require an initialized IQN learner model")
+    device = learner.device
+    model.eval()
+    reset = getattr(model, "reset_policy_state", None)
+    if callable(reset):
+        reset()
+    pipeline_reset = getattr(pipeline, "reset_episode", None)
+    if callable(pipeline_reset):
+        pipeline_reset()
+    reference = geometry.racing_line if config.use_racing_line else geometry.reward_center
+    pace_profile = (
+        ReferencePaceProfile.from_demonstration(config.pace_reference_path, geometry, reference)
+        if config.pace_reference_path is not None
+        else None
+    )
+    reward = TrajectoryReward(reference, pace_profile=pace_profile, **config.reward_kwargs())
+    reward.reset(
+        demonstration.frames[0, list(config.position_indices)],
+        velocity=demonstration.frames[0, list(config.velocity_indices)],
+        race_time_ms=float(demonstration.frames[0, 3]),
+    )
+    diagnostics = ExpertActionDiagnostics()
+    for action, frame, next_frame in zip(
+        demonstration.actions, demonstration.frames[:-1], demonstration.frames[1:], strict=True
+    ):
+        q_values = _raw_q_values(model, device, pipeline.transform_observation(frame), learner)
+        source_action = int(action)
+        if not 0 <= source_action < q_values.shape[-1]:
+            raise ValueError("demonstration action is outside the raw IQN action head")
+        expert_q = float(q_values[source_action])
+        greedy_q = float(q_values.max())
+        rank = int((q_values > expert_q).sum()) + 1
+        result = reward.step(
+            next_frame[list(config.position_indices)],
+            finish_ui_active=bool(next_frame[2]),
+            velocity=next_frame[list(config.velocity_indices)],
+            race_time_ms=float(next_frame[3]),
+        )
+        diagnostics.record(reward.progress_pct, expert_q, greedy_q, rank)
+        if result.terminated:
+            break
+    return {
+        "path": str(path),
+        "finish_time_s": demonstration.finish_time_s,
+        "progress_bins": diagnostics.summary(),
+    }
+
+
+def _raw_q_values(model: Any, device: torch.device, observation: Any, learner: Any) -> torch.Tensor:
+    prepare = getattr(model, "prepare_policy_observation", None)
+    if callable(prepare):
+        observation = prepare(observation)
+    observation = tree_to_device(sanitize_finite(observation), device)
+    detector = getattr(model, "observation_is_single", None)
+    single = bool(detector(observation)) if callable(detector) else observation.ndim == 1
+    if single:
+        observation = tree_map(
+            lambda value: value.unsqueeze(0) if isinstance(value, torch.Tensor) else value,
+            observation,
+        )
+    with torch.inference_mode():
+        values = model.q_values(observation, learner.evaluation_quantile_count)
+    return cast(torch.Tensor, values).squeeze(0).float().cpu()
+
+
+def _bc_train(args: argparse.Namespace) -> None:
+    from tmrl.trackmania.behavior_cloning import (
+        augment_behavior_cloning_laps,
+        load_behavior_cloning_laps,
+        split_behavior_cloning_laps,
+    )
+
+    config = args.config.resolve()
+    spec = _new_attempt_spec(config, RunSpec.from_yaml(config), args)
+    paths = resolve_demonstration_paths(args.demo)
+    action_ids = _compact_action_ids(spec)
+    run = resolve_run(spec, base_dir=config.parent)
+    try:
+        run.learner.setup(_learner_context(run))
+        model = getattr(run.learner, "model", None)
+        if model is None or tuple(model.action_ids) != action_ids:
+            raise ValueError(
+                "model action_ids must exactly match environment.config.compact_action_ids"
+            )
+        if bool(getattr(run.feature_pipeline, "include_control_inputs", True)):
+            raise ValueError(
+                "behavior cloning must exclude control inputs to prevent target leakage"
+            )
+        prepare_run(run)
+        environment_config = spec.components.environment
+        assert environment_config is not None
+        action_repeat_frames = int(
+            environment_config.kwargs.get("config", {}).get("action_repeat_frames", 1)
+        )
+        laps = load_behavior_cloning_laps(
+            paths,
+            run.feature_pipeline,
+            action_ids,
+            expected_action_repeat_frames=action_repeat_frames,
+        )
+        train_laps, validation_laps = split_behavior_cloning_laps(laps, spec.seed)
+        use_horizontal_flip = bool(
+            getattr(args, "horizontal_flip_augmentation", False)
+            or getattr(run.learner, "horizontal_flip_augmentation", False)
+        )
+        if use_horizontal_flip:
+            if not getattr(run.feature_pipeline, "local_velocity_features", False):
+                raise ValueError("horizontal flip augmentation requires local_velocity_features")
+            train_laps = augment_behavior_cloning_laps(train_laps, action_ids)
+        _train_behavior_cloning(run, train_laps, validation_laps)
+    finally:
+        run.logger.close()
+
+
+def _compact_action_ids(spec: RunSpec) -> tuple[int, ...]:
+    environment = spec.components.environment
+    if environment is None:
+        raise ValueError("behavior cloning requires components.environment")
+    raw_ids = environment.kwargs.get("config", {}).get("compact_action_ids")
+    if not isinstance(raw_ids, list) or not raw_ids:
+        raise ValueError("behavior cloning requires environment.config.compact_action_ids")
+    return tuple(int(action) for action in raw_ids)
+
+
+def _learner_context(run: Any) -> dict[str, Any]:
+    return {"seed": run.spec.seed, "run_dir": run.run_dir, "model_factory": run.model_factory}
+
+
+def _train_behavior_cloning(run: Any, training: list[Any], validation: list[Any]) -> None:
+    from tmrl.trackmania.behavior_cloning import (
+        class_weights,
+        clone_state,
+        collate_behavior_cloning,
+        flatten_behavior_cloning_laps,
+    )
+
+    learner = run.learner
+    train_observations, train_labels = flatten_behavior_cloning_laps(training)
+    validation_observations, validation_labels = flatten_behavior_cloning_laps(validation)
+    weights = class_weights(train_labels, learner.model.head.out_features)
+    generator = torch.Generator().manual_seed(run.spec.seed)
+    best_loss = float("inf")
+    best_state: dict[str, Any] | None = None
+    best_step = 0
+    stale_validations = 0
+    checkpoint = run.run_dir / "checkpoints" / "bc-best-validation.pt"
+    for step in range(1, learner.max_steps + 1):
+        indices = torch.randint(
+            len(train_labels), (run.spec.training.batch_size,), generator=generator
+        )
+        observations = [train_observations[int(index)] for index in indices]
+        labels = train_labels[indices]
+        metrics = learner.train_batch(collate_behavior_cloning(observations), labels, weights)
+        run.logger.log("bc/train", metrics, step=step)
+        if step % learner.validation_interval == 0:
+            best_loss, best_state, stale_validations, improved = _validate_behavior_cloning(
+                run,
+                validation_observations,
+                validation_labels,
+                weights,
+                step,
+                best_loss,
+                best_state,
+                stale_validations,
+            )
+            if improved:
+                assert best_state is not None
+                best_step = step
+                run.checkpoint_codec.save({"learner": clone_state(best_state)}, checkpoint)
+            if stale_validations >= learner.early_stopping_patience:
+                print(
+                    f"Behavior cloning early-stopped at step {step}: "
+                    f"lr={learner.current_learning_rate():.2e}"
+                )
+                break
+    if best_state is None:
+        raise RuntimeError("behavior cloning completed without a validation checkpoint")
+    learner.load_state_dict(best_state)
+    print(
+        f"Behavior cloning complete: best_step={best_step}, "
+        f"best_loss={best_loss:.5f}, lr={learner.current_learning_rate():.2e}, "
+        f"checkpoint={checkpoint}"
+    )
+
+
+def _validate_behavior_cloning(
+    run: Any,
+    observations: list[Any],
+    labels: Any,
+    weights: Any,
+    step: int,
+    best_loss: float,
+    best_state: dict[str, Any] | None,
+    stale_validations: int,
+) -> tuple[float, dict[str, Any] | None, int, bool]:
+    from tmrl.trackmania.behavior_cloning import clone_state, collate_behavior_cloning
+
+    losses: list[float] = []
+    correct = total = 0
+    action_count = run.learner.model.head.out_features
+    per_action_correct = torch.zeros(action_count, dtype=torch.long)
+    per_action_count = torch.zeros(action_count, dtype=torch.long)
+    for start in range(0, len(labels), run.spec.training.batch_size):
+        end = start + run.spec.training.batch_size
+        loss, hits, count, action_hits, action_samples = run.learner.evaluate_batch(
+            collate_behavior_cloning(observations[start:end]), labels[start:end], weights
+        )
+        losses.append(loss * count)
+        correct += hits
+        total += count
+        per_action_correct += action_hits
+        per_action_count += action_samples
+    loss = sum(losses) / total
+    learning_rate = run.learner.step_scheduler(loss)
+    improved = loss < best_loss
+    action_recall = per_action_correct.float() / per_action_count.clamp_min(1)
+    observed_actions = per_action_count > 0
+    balanced_accuracy = float(action_recall[observed_actions].mean())
+    metrics = {
+        "loss": loss,
+        "accuracy": correct / total,
+        "balanced_accuracy": balanced_accuracy,
+        "learning_rate": learning_rate,
+        "best": float(improved),
+    }
+    for action_id, recall, count in zip(
+        run.learner.model.action_ids,
+        action_recall.tolist(),
+        per_action_count.tolist(),
+        strict=True,
+    ):
+        metrics[f"action_recall/{action_id}"] = recall
+        metrics[f"action_count/{action_id}"] = count
+    run.logger.log("bc/validation", metrics, step=step)
+    print(
+        f"BC validation step={step}: loss={loss:.5f}, accuracy={metrics['accuracy']:.4f}, "
+        f"balanced_accuracy={balanced_accuracy:.4f}, lr={learning_rate:.2e}, best={improved}"
+    )
+    if improved:
+        return loss, clone_state(run.learner.state_dict()), 0, True
+    return best_loss, best_state, stale_validations + 1, False
+
+
+def _bc_benchmark(args: argparse.Namespace) -> None:
+    if args.trials < 1:
+        raise ValueError("bc-benchmark --trials must be positive")
+    spec = RunSpec.from_yaml(args.config)
+    if spec.evaluation is None or not spec.evaluation.maps:
+        raise ValueError("bc-benchmark requires an evaluation suite with at least one map")
+    suite = spec.evaluation.model_copy(update={"trials_per_map": args.trials})
+    benchmark_spec = spec.model_copy(
+        update={"run_id": f"{spec.run_id}-bc-eval-{time_ns()}", "evaluation": suite}
+    )
+    run = resolve_run(benchmark_spec, base_dir=args.config.parent)
+    if run.evaluator is None:
+        raise ValueError("bc-benchmark requires components.evaluator")
+    try:
+        run.learner.setup(_learner_context(run))
+        checkpoint = run.checkpoint_codec.load(args.checkpoint)
+        run.learner.load_state_dict(checkpoint["learner"])
+        set_checkpoint = getattr(run.evaluator, "set_checkpoint", None)
+        if callable(set_checkpoint):
+            set_checkpoint(args.checkpoint)
+        metrics = dict(run.evaluator.evaluate(run.learner.policy()))
+        artifact = json.loads((run.run_dir / "evaluation.json").read_text(encoding="utf-8"))
+    finally:
+        run.logger.close()
+    _print_benchmark_report(artifact["trials"], metrics)
+    _print_bc_rollout_gate(artifact["trials"], metrics)
+
+
+def _print_bc_rollout_gate(trials: list[dict[str, Any]], metrics: dict[str, float]) -> None:
+    completed = [trial for trial in trials if trial["finished"]]
+    sub_37 = [trial for trial in completed if float(trial["finish_time_s"]) < 37.0]
+    median = float(metrics["eval/median_finish_time_s"])
+    go = len(completed) >= ceil(0.9 * len(trials)) and bool(sub_37)
+    full_success = go and median < 37.0
+    print(
+        f"BC rollout gate: go={go}, full_success={full_success}, "
+        f"finishes={len(completed)}/{len(trials)}, sub_37={len(sub_37)}, median={median:.3f}s"
+    )
 
 
 def _print_benchmark_report(trials: list[dict[str, Any]], metrics: dict[str, float]) -> None:
@@ -712,10 +1097,54 @@ def entrypoint(argv: list[str] | None = None) -> None:
     smoke.add_argument("config", type=Path)
     smoke.add_argument("--transitions", type=int, default=100)
     smoke.set_defaults(handler=_smoke)
-    benchmark = commands.add_parser("benchmark", help="run the fixed test-3 20-trial release gate")
+    benchmark = commands.add_parser(
+        "benchmark", help="run the fixed tmrl-test 20-trial release gate"
+    )
     benchmark.add_argument("config", type=Path)
     benchmark.add_argument("checkpoint", type=Path)
+    benchmark.add_argument("--trials", type=int)
+    benchmark.add_argument("--target-median", type=float)
+    benchmark.add_argument("--min-finish-rate", type=float)
     benchmark.set_defaults(handler=_benchmark)
+    diagnose = commands.add_parser("diagnose", help="offline policy diagnostics")
+    diagnose_commands = diagnose.add_subparsers(dest="diagnose_command", required=True)
+    expert = diagnose_commands.add_parser(
+        "expert", help="score complete demonstrations with the unmasked IQN action head"
+    )
+    expert.add_argument("config", type=Path)
+    expert.add_argument("checkpoint", type=Path)
+    expert.add_argument(
+        "--demo",
+        action="append",
+        type=Path,
+        required=True,
+        help="demonstration .npz file or directory of .npz files (repeatable)",
+    )
+    expert.set_defaults(handler=_diagnose_expert)
+    bc_train = commands.add_parser(
+        "bc-train", help="train a compact TrackMania policy from complete demonstrations"
+    )
+    bc_train.add_argument("config", type=Path)
+    bc_train.add_argument(
+        "--demo",
+        action="append",
+        type=Path,
+        required=True,
+        help="demonstration .npz file or directory of .npz files (repeatable)",
+    )
+    bc_train.add_argument(
+        "--horizontal-flip-augmentation",
+        action="store_true",
+        help="add reflected local-frame demonstration laps to behavior-cloning training only",
+    )
+    bc_train.set_defaults(handler=_bc_train)
+    bc_benchmark = commands.add_parser(
+        "bc-benchmark", help="run closed TrackMania rollouts for a behavior-cloning checkpoint"
+    )
+    bc_benchmark.add_argument("config", type=Path)
+    bc_benchmark.add_argument("checkpoint", type=Path)
+    bc_benchmark.add_argument("--trials", type=int, default=30)
+    bc_benchmark.set_defaults(handler=_bc_benchmark)
     track = commands.add_parser("track", help="TrackMania asset tools")
     track_commands = track.add_subparsers(dest="track_command", required=True)
     record = track_commands.add_parser(

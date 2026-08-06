@@ -41,7 +41,7 @@ components:
     class_path: tmrl.trackmania.environment:OpenPlanetEnvironmentFactory
     kwargs:
       config:
-        geometry_path: assets/test-3.geometry.npz
+        geometry_path: assets/tmrl-test.geometry.npz
         use_racing_line: true
         expected_map_uid: oqIJ5rQDRrNwLPTh9H2p_W4tLof
         action_repeat_frames: 2
@@ -85,7 +85,7 @@ components:
   feature_pipeline:
     class_path: tmrl.trackmania.features:LidarFeaturePipeline
     kwargs:
-      geometry_path: assets/test-3.geometry.npz
+      geometry_path: assets/tmrl-test.geometry.npz
       expected_map_uid: oqIJ5rQDRrNwLPTh9H2p_W4tLof
       samples_per_side: 90
       max_distance_m: 180.0
@@ -103,12 +103,12 @@ components:
       kwargs:
         project: my-trackmania-agent
 evaluation:
-  name: test-3-r2d2-racing
+  name: tmrl-test-r2d2-racing
   version: "12"
   maps:
-    - id: test-3
-      map_path: maps/test-3.Map.Gbx
-      geometry_path: assets/test-3.geometry.npz
+    - id: tmrl-test
+      map_path: maps/tmrl-test.Map.Gbx
+      geometry_path: assets/tmrl-test.geometry.npz
       expected_map_uid: oqIJ5rQDRrNwLPTh9H2p_W4tLof
   trials_per_map: 10
   target_median_s: 37.0

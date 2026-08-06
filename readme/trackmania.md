@@ -23,11 +23,11 @@ the two map boundaries by hand and build a UID-bound asset. Do not reuse an
 asset from another map:
 
 ```bash
-uv run tmrl track record-boundary left assets/test-3-left.npy
-uv run tmrl track record-boundary right assets/test-3-right.npy
-uv run tmrl track build-geometry assets/test-3.geometry.npz \
-  --left assets/test-3-left.npy --right assets/test-3-right.npy \
-  --map-uid <test-3-map-uid> --map-path maps/test-3.Map.Gbx
+uv run tmrl track record-boundary left assets/tmrl-test-left.npy
+uv run tmrl track record-boundary right assets/tmrl-test-right.npy
+uv run tmrl track build-geometry assets/tmrl-test.geometry.npz \
+  --left assets/tmrl-test-left.npy --right assets/tmrl-test-right.npy \
+  --map-uid <tmrl-test-map-uid> --map-path maps/tmrl-test.Map.Gbx
 ```
 
 Set that same UID in both `feature_pipeline.kwargs.expected_map_uid` and
@@ -63,7 +63,7 @@ uv run tmrl smoke run.yaml --transitions 100
 
 The release benchmark is deterministic only in the sense that it repeats the
 same local map and assets. It does not claim game-engine seed control. It runs
-exactly 20 `test-3` trials, writes `evaluation.json` with per-trial status,
+exactly 20 `tmrl-test` trials, writes `evaluation.json` with per-trial status,
 latency/FPS and map UID, and passes only with at least 18 finishes, median
 completed time below 37 seconds, and no telemetry/controller errors:
 

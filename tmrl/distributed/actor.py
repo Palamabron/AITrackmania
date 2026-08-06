@@ -35,6 +35,7 @@ from tmrl.distributed.protocol import (
     serialize_message,
     transition_to_wire,
 )
+from tmrl.trackmania.diagnostics import ProgressBinDiagnostics
 
 logger = logging.getLogger(__name__)
 
@@ -115,6 +116,14 @@ class _ControlUsageTracker:
             "control_steer_abs_mean": self.steer_abs_total / self.samples,
             "step_race_time_ms_mean": self.race_ms_total / self.samples,
         }
+
+
+def _policy_action_count(policy: Any) -> int:
+    model = getattr(policy, "model", None)
+    count = getattr(model, "action_count", 78)
+    if not isinstance(count, int) or count < 2:
+        raise ValueError("TrackMania policy must expose at least two actions")
+    return count
 
 
 class _Client:
@@ -276,7 +285,10 @@ class ActorRuntime:
             _instantiate(components.model_factory) if components.model_factory is not None else None
         )
         self._replica_learner = _instantiate(
-            components.learner, seed=self._actor_seed(), model_factory=model_factory
+            components.learner,
+            seed=self._actor_seed(),
+            model_factory=model_factory,
+            base_dir=self.base_dir,
         )
         self._replica_learner.setup(
             {
@@ -347,6 +359,8 @@ class ActorRuntime:
             collision_count = 0
             collision_detected_count = 0
             terminal_reward = 0.0
+            time_attack_terminal_reward = 0.0
+            pace_reward = 0.0
             velocity_ratio_sum = 0.0
             velocity_ratio_max = 0.0
             final_info: Mapping[str, Any] = {}
@@ -357,6 +371,7 @@ class ActorRuntime:
             self._reset_policy(policy)
             margins = _MarginTracker()
             controls = _ControlUsageTracker()
+            diagnostics = ProgressBinDiagnostics(_policy_action_count(policy))
             try:
                 for step in range(self.spec.training.max_episode_steps):
                     action = policy.act(prepared)
@@ -365,6 +380,7 @@ class ActorRuntime:
                     if step == self.spec.training.max_episode_steps - 1 and not terminated:
                         truncated = True
                     controls.record(info)
+                    diagnostics.record(float(info.get("progress_pct", 0.0)), int(action), policy)
                     next_prepared = pipeline.transform_observation(next_observation)
                     transitions.append(
                         Transition(
@@ -395,6 +411,10 @@ class ActorRuntime:
                     collision_count += int(bool(info.get("collision", False)))
                     collision_detected_count += int(bool(info.get("collision_detected", False)))
                     terminal_reward += float(info.get("reward_terminal", 0.0))
+                    time_attack_terminal_reward += float(
+                        info.get("reward_time_attack_terminal", 0.0)
+                    )
+                    pace_reward += float(info.get("reward_pace", 0.0))
                     velocity_ratio = float(info.get("projected_velocity_ratio", 0.0))
                     velocity_ratio_sum += velocity_ratio
                     velocity_ratio_max = max(velocity_ratio_max, velocity_ratio)
@@ -407,14 +427,24 @@ class ActorRuntime:
                         break
             except (TimeoutError, ConnectionError) as exc:
                 logger.warning(
-                    "Actor %s telemetry stalled mid-episode (%s: %s); discarding the "
-                    "episode as truncated",
+                    "Actor %s telemetry stalled mid-episode (%s: %s); closing the "
+                    "available rollout without bootstrap",
                     self.actor_id,
                     type(exc).__name__,
                     exc,
                 )
                 if transitions:
-                    transitions[-1] = replace(transitions[-1], truncated=True)
+                    last = transitions[-1]
+                    transitions[-1] = replace(
+                        last,
+                        terminated=True,
+                        truncated=False,
+                        info={
+                            **dict(last.info),
+                            "termination_reason": "telemetry_interruption",
+                            "telemetry_health": "interrupted",
+                        },
+                    )
                 episode += 1
                 _, _, version = self._policy()
                 self._spool(transitions, summaries, version)
@@ -433,12 +463,15 @@ class ActorRuntime:
                 "collision_count": collision_count,
                 "collision_detected_count": collision_detected_count,
                 "reward_terminal": terminal_reward,
+                "reward_time_attack_terminal": time_attack_terminal_reward,
+                "reward_pace": pace_reward,
                 "projected_velocity_ratio_mean": velocity_ratio_sum / (step + 1),
                 "projected_velocity_ratio_max": velocity_ratio_max,
                 "actor_epsilon": epsilon,
                 "policy_version": version,
                 **margins.summary(),
                 **controls.summary(),
+                **diagnostics.flat_summary(),
             }
             summaries.append(self._summary(total_reward, summary_info, step + 1))
             episode += 1
@@ -447,27 +480,40 @@ class ActorRuntime:
             transitions, summaries = [], []
             chunk_started = monotonic()
 
-    def _reset_environment(self, environment: Any, episode: int) -> Any:
+    def _reset_environment(
+        self,
+        environment: Any,
+        episode: int,
+        *,
+        attempts: int = _TELEMETRY_RESET_ATTEMPTS,
+        stop_on_failure: bool = True,
+    ) -> Any:
+        if attempts < 1:
+            raise ValueError("telemetry reset attempts must be positive")
         delay = _TELEMETRY_RETRY_INITIAL_S
-        for attempt in range(_TELEMETRY_RESET_ATTEMPTS):
+        for attempt in range(attempts):
             try:
                 observation, _ = environment.reset(seed=self._actor_seed() + episode)
                 return observation
             except (TimeoutError, ConnectionError) as exc:
-                if attempt == _TELEMETRY_RESET_ATTEMPTS - 1:
-                    self.stop_reason = (
-                        f"telemetry unavailable after {_TELEMETRY_RESET_ATTEMPTS} "
+                if attempt == attempts - 1:
+                    reason = (
+                        f"telemetry unavailable after {attempts} "
                         f"reset attempts: {type(exc).__name__}: {exc}"
                     )
-                    self.stop.set()
-                    raise
+                    if stop_on_failure:
+                        self.stop_reason = reason
+                        self.stop.set()
+                    else:
+                        logger.warning("Actor %s evaluation %s", self.actor_id, reason)
+                    return None
                 logger.warning(
                     "Actor %s environment reset failed (%s: %s); retry %d/%d in %.0fs",
                     self.actor_id,
                     type(exc).__name__,
                     exc,
                     attempt + 1,
-                    _TELEMETRY_RESET_ATTEMPTS - 1,
+                    attempts - 1,
                     delay,
                 )
                 if self.stop.wait(delay):
@@ -479,9 +525,15 @@ class ActorRuntime:
         suite = getattr(self.spec, "evaluation", None)
         trials = int(getattr(suite, "trials_per_map", 1))
         policy, version = self._evaluation_policy()
-        summaries = [
-            self._evaluate_episode(environment, pipeline, policy, version) for _ in range(trials)
-        ]
+        summaries: list[dict[str, Any]] = []
+        for trial in range(trials):
+            summary = self._evaluate_episode(environment, pipeline, policy, version)
+            summaries.append(summary)
+            if summary["termination"] == "telemetry_error":
+                summaries.extend(
+                    self._evaluation_telemetry_failure(version) for _ in range(trial + 1, trials)
+                )
+                break
         export_state = getattr(policy, "export_state", None)
         snapshot = self.codec.encode(dict(export_state())) if callable(export_state) else None
         self._spool(
@@ -516,9 +568,14 @@ class ActorRuntime:
     def _evaluate_episode(
         self, environment: Any, pipeline: Any, policy: Any, version: int
     ) -> dict[str, Any]:
-        observation, _ = environment.reset(
-            seed=self._actor_seed() + 1_000_000 + self._evaluation_index
+        observation = self._reset_environment(
+            environment,
+            1_000_000 + self._evaluation_index,
+            attempts=1,
+            stop_on_failure=False,
         )
+        if observation is None:
+            return self._evaluation_telemetry_failure(version)
         self._reset_pipeline(pipeline)
         prepared = pipeline.transform_observation(observation)
         self._reset_policy(policy)
@@ -533,16 +590,29 @@ class ActorRuntime:
         collision_count = 0
         collision_detected_count = 0
         terminal_reward = 0.0
+        time_attack_terminal_reward = 0.0
+        pace_reward = 0.0
         velocity_ratio_sum = 0.0
         velocity_ratio_max = 0.0
         final_info: Mapping[str, Any] = {}
         margins = _MarginTracker()
         controls = _ControlUsageTracker()
+        diagnostics = ProgressBinDiagnostics(_policy_action_count(policy))
         for _step in range(self.spec.training.max_episode_steps):
             action = policy.act(prepared, deterministic=True)
             margins.record(policy, _step)
-            observation, reward, terminated, truncated, info = environment.step(action)
+            try:
+                observation, reward, terminated, truncated, info = environment.step(action)
+            except (TimeoutError, ConnectionError) as exc:
+                logger.warning(
+                    "Actor %s deterministic evaluation telemetry failed (%s: %s)",
+                    self.actor_id,
+                    type(exc).__name__,
+                    exc,
+                )
+                return self._evaluation_telemetry_failure(version)
             controls.record(info)
+            diagnostics.record(float(info.get("progress_pct", 0.0)), int(action), policy)
             prepared = pipeline.transform_observation(observation)
             total_reward += float(reward)
             time_reward += float(info.get("reward_time", 0.0))
@@ -555,6 +625,8 @@ class ActorRuntime:
             collision_count += int(bool(info.get("collision", False)))
             collision_detected_count += int(bool(info.get("collision_detected", False)))
             terminal_reward += float(info.get("reward_terminal", 0.0))
+            time_attack_terminal_reward += float(info.get("reward_time_attack_terminal", 0.0))
+            pace_reward += float(info.get("reward_pace", 0.0))
             velocity_ratio = float(info.get("projected_velocity_ratio", 0.0))
             velocity_ratio_sum += velocity_ratio
             velocity_ratio_max = max(velocity_ratio_max, velocity_ratio)
@@ -575,14 +647,32 @@ class ActorRuntime:
                 "collision_count": collision_count,
                 "collision_detected_count": collision_detected_count,
                 "reward_terminal": terminal_reward,
+                "reward_time_attack_terminal": time_attack_terminal_reward,
+                "reward_pace": pace_reward,
                 "projected_velocity_ratio_mean": velocity_ratio_sum / (_step + 1),
                 "projected_velocity_ratio_max": velocity_ratio_max,
                 "actor_epsilon": 0.0,
                 "policy_version": version,
                 **margins.summary(),
                 **controls.summary(),
+                **diagnostics.flat_summary(),
             },
             _step + 1,
+        )
+        summary["deterministic"] = 1.0
+        self._evaluation_index += 1
+        return summary
+
+    def _evaluation_telemetry_failure(self, version: int) -> dict[str, Any]:
+        summary = self._summary(
+            0.0,
+            {
+                "termination_reason": "telemetry_error",
+                "telemetry_error": 1.0,
+                "actor_epsilon": 0.0,
+                "policy_version": version,
+            },
+            1,
         )
         summary["deterministic"] = 1.0
         self._evaluation_index += 1
@@ -628,6 +718,10 @@ class ActorRuntime:
             "reward/steering_delta": float(info.get("reward_steering_delta", 0.0)),
             "reward/collision": float(info.get("reward_collision", 0.0)),
             "reward/terminal": float(info.get("reward_terminal", 0.0)),
+            "reward/time_attack_terminal": float(info.get("reward_time_attack_terminal", 0.0)),
+            "reward/pace": float(info.get("reward_pace", 0.0)),
+            "pace/reference_time_s": float(info.get("reference_time_s", 0.0)),
+            "pace/time_debt_s": float(info.get("time_debt_s", 0.0)),
             "potential/progress": float(info.get("potential_progress", 0.0)),
             "velocity/projected_mps": float(info.get("projected_velocity_mps", 0.0)),
             "velocity/ratio": float(info.get("projected_velocity_ratio", 0.0)),
@@ -656,8 +750,11 @@ class ActorRuntime:
             "termination/slow_progress": float(termination == "slow_progress"),
             "termination/off_track": float(termination == "off_track"),
             "termination/max_steps": float(termination == "max_steps"),
+            "termination/telemetry_error": float(termination == "telemetry_error"),
+            "telemetry/error": float(info.get("telemetry_error", 0.0)),
             "exploration_epsilon": float(info.get("actor_epsilon", 0.0)),
             "policy_version": int(info.get("policy_version", 0)),
+            **{key: float(value) for key, value in info.items() if key.startswith("progress_bin/")},
         }
 
     def _spool(

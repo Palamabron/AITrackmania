@@ -28,12 +28,17 @@ class TrackGeometryEncoder(nn.Module):
         hidden_dim: int = 192,
         output_dim: int = 256,
         spatial_bins: int = 0,
+        telemetry_group_dims: tuple[int, ...] | None = None,
     ) -> None:
         super().__init__()
         if channels < 1 or telemetry_dim < 0 or spatial_bins < 0:
             raise ValueError("channels must be positive and telemetry_dim non-negative")
+        groups = telemetry_group_dims or ((telemetry_dim,) if telemetry_dim else ())
+        if any(group < 1 for group in groups) or sum(groups) != telemetry_dim:
+            raise ValueError("telemetry groups must be positive and sum to telemetry_dim")
         self.channels = channels
         self.telemetry_dim = telemetry_dim
+        self.telemetry_group_dims = groups
         self.output_dim = output_dim
         self.spatial_bins = spatial_bins
         self.track = nn.Sequential(
@@ -47,13 +52,12 @@ class TrackGeometryEncoder(nn.Module):
             nn.SiLU(),
             nn.Conv1d(hidden_dim // 2, 1, kernel_size=1),
         )
-        self.telemetry = (
-            nn.Sequential(nn.Linear(telemetry_dim, hidden_dim), nn.LayerNorm(hidden_dim), nn.SiLU())
-            if telemetry_dim
-            else None
+        self.telemetry = nn.ModuleList(
+            nn.Sequential(nn.Linear(group, hidden_dim), nn.LayerNorm(hidden_dim), nn.SiLU())
+            for group in groups
         )
         track_feature_count = 1 + spatial_bins
-        joined = hidden_dim * (track_feature_count + int(bool(telemetry_dim)))
+        joined = hidden_dim * (track_feature_count + len(groups))
         self.projection = nn.Sequential(
             nn.Linear(joined, output_dim), nn.LayerNorm(output_dim), nn.SiLU()
         )
@@ -91,12 +95,16 @@ class TrackGeometryEncoder(nn.Module):
                 encoded_track, self.spatial_bins
             ).flatten(1)
             features.append(ordered)
-        if self.telemetry is not None:
+        if self.telemetry:
             if telemetry is None or telemetry.shape != (track.shape[0], self.telemetry_dim):
                 raise ValueError(
                     f"telemetry must have shape (batch, {self.telemetry_dim}) when configured"
                 )
-            features.append(self.telemetry(torch.nan_to_num(telemetry.float())))
+            telemetry = torch.nan_to_num(telemetry.float())
+            parts = torch.split(telemetry, list(self.telemetry_group_dims), dim=-1)
+            features.extend(
+                encoder(part) for encoder, part in zip(self.telemetry, parts, strict=True)
+            )
         return cast(torch.Tensor, self.projection(torch.cat(features, dim=-1)))
 
 
@@ -113,6 +121,7 @@ class TemporalTrackGeometryEncoder(nn.Module):
         output_dim: int = 256,
         spatial_bins: int = 0,
         burn_in: int = 0,
+        telemetry_group_dims: tuple[int, ...] | None = None,
     ) -> None:
         super().__init__()
         if history_length < 2 or not 0 <= burn_in < history_length:
@@ -128,6 +137,7 @@ class TemporalTrackGeometryEncoder(nn.Module):
             hidden_dim=hidden_dim,
             output_dim=output_dim,
             spatial_bins=spatial_bins,
+            telemetry_group_dims=telemetry_group_dims,
         )
         self.recurrent = nn.GRU(output_dim, output_dim, batch_first=True)
         self.normalization = nn.LayerNorm(output_dim)

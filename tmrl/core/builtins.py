@@ -195,7 +195,7 @@ class TorchCheckpointCodec:
             compressed = source.read(4) == b"\x28\xb5\x2f\xfd"
         if not compressed:
             return _load_torch_checkpoint(path)
-        temporary = path.with_suffix(path.suffix + ".decompressed.tmp")
+        temporary = path.with_name(f".{path.name}.{uuid4().hex}.decompressed.tmp")
         try:
             with (
                 path.open("rb") as source,

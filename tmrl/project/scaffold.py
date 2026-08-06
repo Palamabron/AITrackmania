@@ -35,11 +35,11 @@ def _pyproject(name: str, *, tmrl_extras: str = "") -> str:
 def _trackmania_poe_tasks() -> str:
     return (
         "\n"
-        'record-left = "tmrl track record-boundary left assets/test-3-left.npy"\n'
-        'record-right = "tmrl track record-boundary right assets/test-3-right.npy"\n'
-        'build-geometry = "tmrl track build-geometry assets/test-3.geometry.npz '
-        "--left assets/test-3-left.npy --right assets/test-3-right.npy "
-        "--map-uid REPLACE_WITH_TEST_3_UID --map-path maps/test-3.Map.Gbx" + '"\n'
+        'record-left = "tmrl track record-boundary left assets/tmrl-test-left.npy"\n'
+        'record-right = "tmrl track record-boundary right assets/tmrl-test-right.npy"\n'
+        'build-geometry = "tmrl track build-geometry assets/tmrl-test.geometry.npz '
+        "--left assets/tmrl-test-left.npy --right assets/tmrl-test-right.npy "
+        "--map-uid REPLACE_WITH_TEST_3_UID --map-path maps/tmrl-test.Map.Gbx" + '"\n'
     )
 
 
@@ -240,7 +240,7 @@ def create_project(directory: str | Path, package: str, *, template: str = "star
 
         boundary = np.asarray([[0, 0, -5], [5, 0, -5], [10, 0, -5]], dtype=np.float32)
         np.savez_compressed(
-            assets / "test-3.geometry.npz",
+            assets / "tmrl-test.geometry.npz",
             version=np.asarray("1"),
             map_uid=np.asarray("REPLACE_WITH_TEST_3_UID"),
             map_sha256=np.asarray(""),
@@ -261,7 +261,7 @@ def create_project(directory: str | Path, package: str, *, template: str = "star
         )
         (plugin_dir / "README.md").write_text(
             "Copy TMRL_GrabData_IQN.as to OpenplanetNext/Scripts, reload OpenPlanet, and "
-            "manually load maps/test-3.Map.Gbx before tmrl smoke or tmrl benchmark.\n",
+            "manually load maps/tmrl-test.Map.Gbx before tmrl smoke or tmrl benchmark.\n",
             encoding="utf-8",
         )
     (target / "run.py").write_text(
@@ -309,7 +309,7 @@ components:
     kwargs:
       config:
         trajectory_path: assets/trajectory.csv
-        geometry_path: assets/test-3.geometry.npz
+        geometry_path: assets/tmrl-test.geometry.npz
         expected_map_uid: REPLACE_WITH_TEST_3_UID
         action_repeat_frames: 4
         slow_progress_window_steps: 300
@@ -324,7 +324,7 @@ components:
   feature_pipeline:
     class_path: tmrl.trackmania.features:LidarFeaturePipeline
     kwargs:
-      geometry_path: assets/test-3.geometry.npz
+      geometry_path: assets/tmrl-test.geometry.npz
       expected_map_uid: REPLACE_WITH_TEST_3_UID
   evaluator:
     class_path: tmrl.trackmania.evaluation:TrackmaniaEvaluator
@@ -333,12 +333,12 @@ components:
       kwargs:
         project: trackmania-iqn-lidar
 evaluation:
-  name: test-3
+  name: tmrl-test
   version: "1"
   maps:
-    - id: test-3
-      map_path: maps/test-3.Map.Gbx
-      geometry_path: assets/test-3.geometry.npz
+    - id: tmrl-test
+      map_path: maps/tmrl-test.Map.Gbx
+      geometry_path: assets/tmrl-test.geometry.npz
       expected_map_uid: REPLACE_WITH_TEST_3_UID
   trials_per_map: 20
 distributed:

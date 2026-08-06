@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import pytest
 import torch
@@ -128,6 +130,7 @@ def _sequence_batch(
     n_step: int = 1,
     gamma: float = 0.5,
     demo: bool = False,
+    expert: bool | None = None,
 ) -> TrainingBatch:
     observations = torch.randn(batch_size, sequence_length, 2)
     next_observations = torch.randn(batch_size, sequence_length, 2)
@@ -152,6 +155,7 @@ def _sequence_batch(
             "n_step": n_step,
             "priority_transition_ids": tuple(range(batch_size)),
             "demo_flags": tuple([demo] * batch_size),
+            **({} if expert is None else {"expert_demo_flags": tuple([expert] * batch_size)}),
         },
     )
 
@@ -167,6 +171,70 @@ def _learner(model: DiscreteQuantileNetwork, **kwargs: object) -> ImplicitQuanti
     )
     learner.setup({})
     return learner
+
+
+class _TailPreferenceModel(nn.Module):
+    action_count = 2
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.bias = nn.Parameter(torch.zeros(()))
+        self.quantiles: torch.Tensor | None = None
+
+    def forward(self, observation: torch.Tensor, quantiles: torch.Tensor) -> torch.Tensor:
+        del observation
+        self.quantiles = quantiles.detach().cpu()
+        values = torch.stack([1.0 - quantiles, quantiles], dim=-1)
+        return values + self.bias
+
+    def q_values(self, observation: torch.Tensor, quantile_count: int) -> torch.Tensor:
+        del quantile_count
+        return torch.tensor([[0.7, 0.6]], device=observation.device) + self.bias
+
+
+def test_upper_cvar_changes_actor_and_evaluation_action_quantiles() -> None:
+    learner = ImplicitQuantileQLearning(
+        _TailPreferenceModel(),
+        exploration_epsilon=0.0,
+        online_quantile_distortion="upper_cvar",
+        evaluation_quantile_distortion="upper_cvar",
+        upper_cvar_alpha=0.25,
+        evaluation_quantile_count=4,
+        execution={"device": "cpu"},
+    )
+    learner.setup({})
+
+    policy = learner.policy()
+
+    assert policy.act(torch.zeros(1), deterministic=False) == 1
+    assert policy.act(torch.zeros(1), deterministic=True) == 1
+    assert isinstance(policy.model.quantiles, torch.Tensor)
+    assert torch.allclose(
+        policy.model.quantiles[0], torch.tensor([0.78125, 0.84375, 0.90625, 0.96875])
+    )
+    assert learner._masked_argmax(torch.tensor([[0.7, 0.6]])).item() == 0
+
+
+def test_hard_target_syncs_only_at_the_configured_interval() -> None:
+    learner = _learner(_constant_model(0.0), target_tau=0.0, target_update_interval=2)
+    batch = _sequence_batch()
+
+    first_metrics, _ = learner.update(batch)
+    first_target = {
+        name: value.clone() for name, value in learner.target_model.state_dict().items()
+    }
+    second_metrics, _ = learner.update(batch)
+
+    assert first_metrics["debug/target_synced_fraction"] == 0.0
+    assert first_metrics["debug/target_update_hard"] == 1.0
+    assert first_metrics["debug/target_update_interval"] == 2.0
+    assert any(
+        not torch.equal(learner.model.state_dict()[name], value)
+        for name, value in first_target.items()
+    )
+    assert second_metrics["debug/target_synced_fraction"] == 1.0
+    for name, value in learner.model.state_dict().items():
+        assert torch.equal(learner.target_model.state_dict()[name], value)
 
 
 def test_sequence_update_trains_every_bootstrappable_position() -> None:
@@ -263,6 +331,145 @@ def test_margin_loss_is_absent_without_demo_samples() -> None:
     metrics, _ = learner.update(batch)
 
     assert metrics["loss/demonstration_margin"] == 0.0
+
+
+def test_margin_loss_ignores_non_expert_recovery_demonstrations() -> None:
+    learner = _learner(
+        _constant_model(0.25),
+        demonstration_margin_weight=1.0,
+    )
+    batch = _sequence_batch(demo=True, expert=False)
+
+    metrics, _ = learner.update(batch)
+
+    assert metrics["loss/demonstration_margin"] == 0.0
+
+
+def test_policy_action_mask_controls_greedy_exploration_and_bootstrap() -> None:
+    model = _constant_model(0.0)
+    with torch.no_grad():
+        model.head.bias.copy_(torch.tensor([0.0, 1.0, 10.0]))
+    learner = _learner(
+        model,
+        policy_action_ids=(0, 1),
+        exploration_epsilon=1.0,
+    )
+    observation = torch.zeros(1, 2)
+    deterministic = learner.policy().act(observation, deterministic=True)
+    exploratory = {learner.policy().act(observation, deterministic=False) for _ in range(20)}
+
+    assert deterministic == 1
+    assert exploratory <= {0, 1}
+    assert learner._masked_argmax(torch.tensor([[0.0, 1.0, 10.0]])).item() == 1
+
+
+def test_policy_action_mask_preserves_full_head_checkpoint_compatibility() -> None:
+    original = _learner(_constant_model(0.0))
+    state = original.state_dict()
+    masked = _learner(_constant_model(0.0), policy_action_ids=(0, 1))
+
+    masked.load_state_dict(state)
+
+    assert masked.model is not None
+    assert masked.model.action_count == 3
+
+
+def test_policy_action_mask_logs_excluded_q_diagnostics() -> None:
+    learner = _learner(_constant_model(0.25), policy_action_ids=(0, 1))
+
+    metrics, _ = learner.update(_sequence_batch())
+
+    assert metrics["debug/q_allowed_max_mean"] == pytest.approx(0.25)
+    assert metrics["debug/q_excluded_max_mean"] == pytest.approx(0.25)
+    assert metrics["debug/q_excluded_advantage_mean"] == pytest.approx(0.0)
+    assert metrics["debug/greedy_masked_out_fraction"] == pytest.approx(0.0)
+
+
+def test_policy_anchor_uses_and_persists_the_loaded_checkpoint() -> None:
+    source = _learner(_constant_model(0.0))
+    with torch.no_grad():
+        source.model.head.bias.copy_(torch.tensor([0.0, 1.0, 2.0]))
+        source.target_model.load_state_dict(source.model.state_dict())
+    anchored = _learner(_constant_model(0.0), policy_anchor_weight=1.0)
+
+    anchored.load_state_dict(source.state_dict())
+    assert anchored.policy_anchor_model is not None
+    original_anchor = {
+        name: value.clone() for name, value in anchored.policy_anchor_model.state_dict().items()
+    }
+    with torch.no_grad():
+        anchored.model.head.bias.add_(torch.tensor([0.5, 0.0, -0.5]))
+
+    metrics, _ = anchored.update(_sequence_batch())
+    resumed = _learner(_constant_model(0.0), policy_anchor_weight=1.0)
+    resumed.load_state_dict(anchored.state_dict())
+
+    assert metrics["loss/policy_anchor"] > 0.0
+    assert metrics["loss/total"] > metrics["loss/iqn"]
+    assert resumed.policy_anchor_model is not None
+    for name, value in original_anchor.items():
+        assert torch.equal(resumed.policy_anchor_model.state_dict()[name], value)
+
+
+def test_external_policy_anchor_overrides_resumed_anchor(tmp_path: Path) -> None:
+    source = _learner(_constant_model(0.0))
+    with torch.no_grad():
+        source.model.head.bias.copy_(torch.tensor([2.0, 1.0, 0.0]))
+        source.target_model.load_state_dict(source.model.state_dict())
+    checkpoint = tmp_path / "anchor.pt"
+    torch.save({"learner": source.state_dict()}, checkpoint)
+    anchored = _learner(
+        _constant_model(0.0),
+        policy_anchor_weight=1.0,
+        policy_anchor_checkpoint="anchor.pt",
+        base_dir=tmp_path,
+    )
+    resumed = source.state_dict()
+    resumed["policy_anchor_model"] = _constant_model(-3.0).state_dict()
+
+    anchored.load_state_dict(resumed)
+
+    assert anchored.policy_anchor_model is not None
+    for name, value in source.model.state_dict().items():
+        assert torch.equal(anchored.policy_anchor_model.state_dict()[name], value)
+
+
+def test_external_policy_anchor_requires_a_nonzero_weight(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="requires policy_anchor_weight"):
+        ImplicitQuantileQLearning(
+            _constant_model(0.0),
+            policy_anchor_checkpoint=tmp_path / "anchor.pt",
+            execution={"device": "cpu"},
+        )
+
+
+def test_external_policy_anchor_rejects_an_incompatible_action_contract(tmp_path: Path) -> None:
+    source = _learner(_constant_model(0.0), policy_action_ids=(0, 1))
+    checkpoint = tmp_path / "anchor.pt"
+    torch.save({"learner": source.state_dict()}, checkpoint)
+
+    with pytest.raises(ValueError, match="action contract"):
+        _learner(
+            _constant_model(0.0),
+            policy_action_ids=(1, 2),
+            policy_anchor_weight=1.0,
+            policy_anchor_checkpoint="anchor.pt",
+            base_dir=tmp_path,
+        )
+
+
+def test_external_policy_anchor_rejects_an_incompatible_model(tmp_path: Path) -> None:
+    unmasked_checkpoint = tmp_path / "unmasked-anchor.pt"
+    unmasked_source = _learner(_constant_model(0.0))
+    torch.save({"learner": unmasked_source.state_dict()}, unmasked_checkpoint)
+    incompatible = DiscreteQuantileNetwork(_SequenceEncoder(), 8, action_count=4, cosine_count=4)
+    with pytest.raises(RuntimeError, match="size mismatch"):
+        _learner(
+            incompatible,
+            policy_anchor_weight=1.0,
+            policy_anchor_checkpoint="unmasked-anchor.pt",
+            base_dir=tmp_path,
+        )
 
 
 def test_reward_progress_index_cannot_jump_across_folded_track() -> None:

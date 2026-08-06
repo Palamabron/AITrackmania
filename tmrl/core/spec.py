@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, PositiveInt, field_validator
+from pydantic import BaseModel, ConfigDict, Field, PositiveInt, field_validator, model_validator
 
 from tmrl.core.data import BatchRequest
 
@@ -62,6 +62,9 @@ class TrainingSpec(BaseModel):
     per_beta_final: float | None = Field(default=None, ge=0.0, le=1.0)
     per_beta_anneal_transitions: PositiveInt | None = None
     evaluate_every_episodes: PositiveInt | None = None
+    evaluation_stop_min_finish_rate: float | None = Field(default=None, ge=0.0, le=1.0)
+    evaluation_stop_median_s: float | None = Field(default=None, gt=0.0)
+    evaluation_stop_consecutive_batches: PositiveInt | None = None
     max_episode_artifacts: PositiveInt = 100
 
     @field_validator("per_beta_final")
@@ -70,6 +73,17 @@ class TrainingSpec(BaseModel):
         if value is not None and info.data.get("beta") is None:
             raise ValueError("per_beta_final requires training.beta")
         return value
+
+    @model_validator(mode="after")
+    def _evaluation_stop_is_complete(self) -> TrainingSpec:
+        values = (
+            self.evaluation_stop_min_finish_rate,
+            self.evaluation_stop_median_s,
+            self.evaluation_stop_consecutive_batches,
+        )
+        if any(value is not None for value in values) and any(value is None for value in values):
+            raise ValueError("evaluation stop requires finish rate, median time, and batch count")
+        return self
 
     def batch_request(
         self,

@@ -9,6 +9,8 @@ from typing import Any, cast
 
 import numpy as np
 
+from tmrl.trackmania.pace import ReferencePaceProfile
+
 
 @dataclass(frozen=True, slots=True)
 class RewardResult:
@@ -21,6 +23,8 @@ class RewardResult:
     projected_velocity_reward: float = 0.0
     projected_speed_reward: float = 0.0
     steering_delta_reward: float = 0.0
+    time_attack_terminal_reward: float = 0.0
+    pace_reward: float = 0.0
     terminal_reward: float = 0.0
     collision_reward: float = 0.0
     collided: bool = False
@@ -28,6 +32,8 @@ class RewardResult:
     potential_progress: float = 0.0
     projected_velocity_mps: float = 0.0
     projected_velocity_ratio: float = 0.0
+    reference_time_s: float = 0.0
+    time_debt_s: float = 0.0
 
 
 class TrajectoryReward:
@@ -58,6 +64,12 @@ class TrajectoryReward:
         projected_velocity_scale: float = 0.0,
         projected_speed_bonus_scale: float = 0.0,
         steering_delta_penalty: float = 0.0,
+        time_attack_target_s: float | None = None,
+        time_attack_bonus_scale: float = 0.0,
+        pace_profile: ReferencePaceProfile | None = None,
+        pace_reward_scale: float = 0.0,
+        pace_debt_clip_s: float = 10.0,
+        pace_step_delta_clip_s: float = 0.25,
         reward_gamma: float = 0.995,
     ) -> None:
         points = np.asarray(trajectory, dtype=np.float32)
@@ -85,9 +97,21 @@ class TrajectoryReward:
             or projected_velocity_scale < 0.0
             or projected_speed_bonus_scale < 0.0
             or steering_delta_penalty < 0.0
+            or time_attack_bonus_scale < 0.0
+            or pace_reward_scale < 0.0
+            or pace_debt_clip_s <= 0.0
+            or pace_step_delta_clip_s <= 0.0
             or not 0.0 <= reward_gamma <= 1.0
         ):
             raise ValueError("reward limits must be non-negative")
+        if time_attack_target_s is not None and time_attack_target_s <= 0.0:
+            raise ValueError("time_attack_target_s must be positive")
+        if time_attack_bonus_scale and time_attack_target_s is None:
+            raise ValueError("time_attack_bonus_scale requires time_attack_target_s")
+        if pace_reward_scale and pace_profile is None:
+            raise ValueError("pace_reward_scale requires a pace_profile")
+        if pace_profile is not None and len(pace_profile.reference_times_s) != len(self.points):
+            raise ValueError("pace profile length must match trajectory length")
         self.no_progress_steps = no_progress_steps
         self.slow_progress_window_steps = slow_progress_window_steps
         self.minimum_progress_per_window_m = minimum_progress_per_window_m
@@ -107,6 +131,12 @@ class TrajectoryReward:
         self.projected_velocity_scale = projected_velocity_scale
         self.projected_speed_bonus_scale = projected_speed_bonus_scale
         self.steering_delta_penalty = steering_delta_penalty
+        self.time_attack_target_s = time_attack_target_s
+        self.time_attack_bonus_scale = time_attack_bonus_scale
+        self.pace_profile = pace_profile
+        self.pace_reward_scale = pace_reward_scale
+        self.pace_debt_clip_s = pace_debt_clip_s
+        self.pace_step_delta_clip_s = pace_step_delta_clip_s
         self.reward_gamma = reward_gamma
         self._cumulative_distance = np.r_[
             0.0, np.cumsum(np.linalg.norm(np.diff(self.points, axis=0), axis=1))
@@ -119,6 +149,7 @@ class TrajectoryReward:
         self._previous_race_time_s: float | None = None
         self._previous_steering = 0.0
         self._last_penalized_collision_s: float | None = None
+        self._previous_time_debt_s: float | None = None
 
     @classmethod
     def from_file(cls, path: str | Path, **kwargs: Any) -> TrajectoryReward:
@@ -144,6 +175,7 @@ class TrajectoryReward:
         if position is not None:
             self._index, _ = self._nearest_point(np.asarray(position, dtype=np.float32)[:3])
             self._previous_potential = self._potential()
+        self._previous_time_debt_s = self._time_debt(race_time_ms)[1]
 
     @property
     def progress_m(self) -> float:
@@ -185,6 +217,7 @@ class TrajectoryReward:
             self._progress_history.popleft()
         race_time_s = self._race_time_s(race_time_ms)
         time_reward, elapsed_s = self._time_reward(race_time_ms)
+        pace_reward, reference_time_s, time_debt_s = self._pace_reward(race_time_ms)
         potential = self._potential()
         progress_potential = potential
         projected_velocity_mps = self._projected_velocity_mps(velocity)
@@ -201,104 +234,131 @@ class TrajectoryReward:
         if self._previous_potential is None:
             self._previous_potential = potential
         if nearest_distance > self.crash_distance:
-            return self._apply_collision(
-                self._terminal(
-                    "off_track",
-                    time_reward,
-                    progress_potential,
-                    -abs(self.terminal_failure_penalty),
-                    progress_reward,
-                    projected_velocity_reward,
-                    projected_speed_reward,
-                    steering_delta_reward,
-                    projected_velocity_mps,
-                    projected_velocity_ratio,
+            return self._with_pace(
+                self._apply_collision(
+                    self._terminal(
+                        "off_track",
+                        time_reward,
+                        progress_potential,
+                        -abs(self.terminal_failure_penalty),
+                        progress_reward,
+                        projected_velocity_reward,
+                        projected_speed_reward,
+                        steering_delta_reward,
+                        projected_velocity_mps,
+                        projected_velocity_ratio,
+                    ),
+                    collision,
+                    race_time_s,
                 ),
-                collision,
-                race_time_s,
+                pace_reward,
+                reference_time_s,
+                time_debt_s,
             )
         near_finish = self._index / (len(self.points) - 1) >= self.finish_progress
         if finish_ui_active and near_finish and self._step >= self.minimum_finish_steps:
-            return self._apply_collision(
-                self._terminal(
-                    "finished",
-                    time_reward,
-                    progress_potential,
-                    self.finish_reward,
-                    progress_reward,
-                    projected_velocity_reward,
-                    projected_speed_reward,
-                    steering_delta_reward,
-                    projected_velocity_mps,
-                    projected_velocity_ratio,
+            time_attack_reward = self._time_attack_terminal_reward(race_time_s)
+            return self._with_pace(
+                self._apply_collision(
+                    self._terminal(
+                        "finished",
+                        time_reward,
+                        progress_potential,
+                        self.finish_reward + time_attack_reward,
+                        progress_reward,
+                        projected_velocity_reward,
+                        projected_speed_reward,
+                        steering_delta_reward,
+                        projected_velocity_mps,
+                        projected_velocity_ratio,
+                        time_attack_terminal_reward=time_attack_reward,
+                    ),
+                    collision,
+                    race_time_s,
                 ),
-                collision,
-                race_time_s,
+                pace_reward,
+                reference_time_s,
+                time_debt_s,
             )
         if self._step - self._last_progress_step >= self.no_progress_steps:
-            return self._apply_collision(
-                self._terminal(
-                    "no_progress",
-                    time_reward,
-                    progress_potential,
-                    -abs(self.terminal_failure_penalty),
-                    progress_reward,
-                    projected_velocity_reward,
-                    projected_speed_reward,
-                    steering_delta_reward,
-                    projected_velocity_mps,
-                    projected_velocity_ratio,
+            return self._with_pace(
+                self._apply_collision(
+                    self._terminal(
+                        "no_progress",
+                        time_reward,
+                        progress_potential,
+                        -abs(self.terminal_failure_penalty),
+                        progress_reward,
+                        projected_velocity_reward,
+                        projected_speed_reward,
+                        steering_delta_reward,
+                        projected_velocity_mps,
+                        projected_velocity_ratio,
+                    ),
+                    collision,
+                    race_time_s,
                 ),
-                collision,
-                race_time_s,
+                pace_reward,
+                reference_time_s,
+                time_debt_s,
             )
         if (
             len(self._progress_history) >= 2
             and self._step >= self.slow_progress_window_steps
             and progress_m - self._progress_history[0][1] < self.minimum_progress_per_window_m
         ):
-            return self._apply_collision(
-                self._terminal(
-                    "slow_progress",
-                    time_reward,
-                    progress_potential,
-                    -abs(self.terminal_failure_penalty),
-                    progress_reward,
-                    projected_velocity_reward,
-                    projected_speed_reward,
-                    steering_delta_reward,
-                    projected_velocity_mps,
-                    projected_velocity_ratio,
+            return self._with_pace(
+                self._apply_collision(
+                    self._terminal(
+                        "slow_progress",
+                        time_reward,
+                        progress_potential,
+                        -abs(self.terminal_failure_penalty),
+                        progress_reward,
+                        projected_velocity_reward,
+                        projected_speed_reward,
+                        steering_delta_reward,
+                        projected_velocity_mps,
+                        projected_velocity_ratio,
+                    ),
+                    collision,
+                    race_time_s,
                 ),
-                collision,
-                race_time_s,
+                pace_reward,
+                reference_time_s,
+                time_debt_s,
             )
         pbrs_reward = self.reward_gamma * potential - self._previous_potential
         self._previous_potential = potential
-        return self._apply_collision(
-            RewardResult(
-                reward=(
-                    time_reward
-                    + pbrs_reward
-                    + progress_reward
-                    + projected_velocity_reward
-                    + projected_speed_reward
-                    + steering_delta_reward
+        return self._with_pace(
+            self._apply_collision(
+                RewardResult(
+                    reward=(
+                        time_reward
+                        + pbrs_reward
+                        + progress_reward
+                        + projected_velocity_reward
+                        + projected_speed_reward
+                        + steering_delta_reward
+                    ),
+                    terminated=False,
+                    reason=None,
+                    time_reward=time_reward,
+                    pbrs_reward=pbrs_reward,
+                    progress_reward=progress_reward,
+                    projected_velocity_reward=projected_velocity_reward,
+                    projected_speed_reward=projected_speed_reward,
+                    steering_delta_reward=steering_delta_reward,
+                    potential_progress=progress_potential,
+                    projected_velocity_mps=projected_velocity_mps,
+                    projected_velocity_ratio=projected_velocity_ratio,
                 ),
-                terminated=False,
-                reason=None,
-                time_reward=time_reward,
-                pbrs_reward=pbrs_reward,
-                progress_reward=progress_reward,
-                projected_velocity_reward=projected_velocity_reward,
-                projected_speed_reward=projected_speed_reward,
-                steering_delta_reward=steering_delta_reward,
-                potential_progress=progress_potential,
-                projected_velocity_mps=projected_velocity_mps,
-                projected_velocity_ratio=projected_velocity_ratio,
+                collision,
+                race_time_s,
             ),
-            collision,
-            race_time_s,
+            pace_reward,
+            reference_time_s,
+            time_debt_s,
         )
 
     def _apply_collision(
@@ -372,6 +432,52 @@ class TrajectoryReward:
         self._previous_steering = current
         return -self.steering_delta_penalty * delta
 
+    def _time_attack_terminal_reward(self, race_time_s: float | None) -> float:
+        if self.time_attack_target_s is None or race_time_s is None:
+            return 0.0
+        return self.time_attack_bonus_scale * max(0.0, self.time_attack_target_s - race_time_s) ** 2
+
+    def _time_debt(self, race_time_ms: float | None) -> tuple[float, float]:
+        if self.pace_profile is None or race_time_ms is None:
+            return 0.0, 0.0
+        reference_time_s = self.pace_profile.time_at_index(self._index)
+        race_time_s = self._race_time_s(race_time_ms)
+        assert race_time_s is not None
+        debt = float(
+            np.clip(race_time_s - reference_time_s, -self.pace_debt_clip_s, self.pace_debt_clip_s)
+        )
+        return reference_time_s, debt
+
+    def _pace_reward(self, race_time_ms: float | None) -> tuple[float, float, float]:
+        reference_time_s, time_debt_s = self._time_debt(race_time_ms)
+        previous = self._previous_time_debt_s
+        self._previous_time_debt_s = time_debt_s
+        if self.pace_profile is None or previous is None:
+            return 0.0, reference_time_s, time_debt_s
+        recovered_s = float(
+            np.clip(
+                previous - time_debt_s,
+                -self.pace_step_delta_clip_s,
+                self.pace_step_delta_clip_s,
+            )
+        )
+        return self.pace_reward_scale * recovered_s, reference_time_s, time_debt_s
+
+    @staticmethod
+    def _with_pace(
+        result: RewardResult,
+        pace_reward: float,
+        reference_time_s: float,
+        time_debt_s: float,
+    ) -> RewardResult:
+        return replace(
+            result,
+            reward=result.reward + pace_reward,
+            pace_reward=pace_reward,
+            reference_time_s=reference_time_s,
+            time_debt_s=time_debt_s,
+        )
+
     def _path_tangent(self) -> np.ndarray:
         if self._index == 0:
             direction = self.points[1] - self.points[0]
@@ -414,6 +520,7 @@ class TrajectoryReward:
         steering_delta_reward: float,
         projected_velocity_mps: float,
         projected_velocity_ratio: float,
+        time_attack_terminal_reward: float = 0.0,
     ) -> RewardResult:
         pbrs_reward = -float(self._previous_potential or 0.0)
         self._previous_potential = 0.0
@@ -435,6 +542,7 @@ class TrajectoryReward:
             projected_velocity_reward=projected_velocity_reward,
             projected_speed_reward=projected_speed_reward,
             steering_delta_reward=steering_delta_reward,
+            time_attack_terminal_reward=time_attack_terminal_reward,
             terminal_reward=terminal_reward,
             potential_progress=progress_potential,
             projected_velocity_mps=projected_velocity_mps,

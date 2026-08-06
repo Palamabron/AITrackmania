@@ -120,7 +120,7 @@ Read the [SDK guide](readme/sdk.md) for the component schema and a built-in
 run example, and the [TrackMania workflow](readme/trackmania.md) for the
 optional OpenPlanet/gamepad integration and release smoke checklist.
 
-For the concrete `test-3` OpenPlanet installation, telemetry ports, map
+For the concrete `tmrl-test` OpenPlanet installation, telemetry ports, map
 preparation, boundary recording and geometry commands, see the
 [agent OpenPlanet guide](my-trackmania-agent/openplanet/README.md).
 

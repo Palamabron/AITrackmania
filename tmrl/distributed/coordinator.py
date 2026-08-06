@@ -35,6 +35,7 @@ from tmrl.distributed.protocol import (
     serialize_message,
     transition_from_wire,
 )
+from tmrl.trackmania.diagnostics import aggregate_progress_bins
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +44,16 @@ _ROLLOUT_QUEUE_MAXSIZE = 64
 
 def _bucket_key(bucket: float) -> str:
     return f"sub_{bucket:g}"
+
+
+def _evaluation_rank(
+    finish_rate: float, median_time_s: float, required_finish_rate: float
+) -> tuple[float, float, float]:
+    """Rank release-qualified policies by time, otherwise by reliability."""
+
+    if finish_rate >= required_finish_rate:
+        return 1.0, -median_time_s, finish_rate
+    return 0.0, finish_rate, -median_time_s
 
 
 @dataclass(slots=True)
@@ -219,8 +230,10 @@ class Coordinator:
         self._growing_credit_windows = 0
         self._last_logging_s = 0.0
         self._last_metric_transitions = 0
-        self._best_evaluation: tuple[float, float] | None = None
+        self._best_evaluation: tuple[float, float, float] | None = None
         self._evaluation_policy_states: dict[int, Mapping[str, Any]] = {}
+        self._consecutive_evaluation_failures = 0
+        self._evaluation_stop_reason: str | None = None
         self._recovering = False
         self._checkpoint_writer = _AsyncCheckpointWriter(run.checkpoint_codec)
 
@@ -627,9 +640,16 @@ class Coordinator:
             },
             step=self.counters.updates,
         )
+        progress_bins = _progress_bin_metrics(summary)
+        if progress_bins:
+            self.run.logger.log(
+                "train/progress_bin",
+                progress_bins,
+                step=self.counters.updates,
+            )
         logger.info(
             "Actor %s episode %d: progress=%.1f%%, return=%.3f, "
-            "reward(time=%.3f, pbrs=%.3f, progress=%.3f, projected_velocity=%.3f, "
+            "reward(time=%.3f, pace=%.3f, pbrs=%.3f, progress=%.3f, projected_velocity=%.3f, "
             "projected_speed=%.3f, steering_delta=%.3f, collision=%.3f (%d/%d), "
             "terminal=%.3f), velocity_ratio(mean=%.3f, max=%.3f), steps=%d, "
             "race=%.2fs, epsilon=%.3f, policy=%d, q_margin(start=%.2f, min=%.2f), "
@@ -639,6 +659,7 @@ class Coordinator:
             float(summary["progress_pct"]),
             float(summary["return"]),
             float(summary["reward/time"]),
+            float(summary["reward/pace"]),
             float(summary["reward/pbrs"]),
             float(summary["reward/progress"]),
             float(summary["reward/projected_velocity"]),
@@ -667,7 +688,11 @@ class Coordinator:
         try:
             while not self._external_stop_requested() and (
                 not self._should_stop()
-                or (len(self.run.replay_store) >= ready and self.counters.update_credit >= 1.0)
+                or (
+                    self._evaluation_stop_reason is None
+                    and len(self.run.replay_store) >= ready
+                    and self.counters.update_credit >= 1.0
+                )
                 or not self._rollouts.empty()
             ):
                 did_update = False
@@ -676,6 +701,8 @@ class Coordinator:
                 # would otherwise train the learner on minutes-old transitions
                 # and inflate the measured actor policy lag by the queue delay.
                 self._drain_rollouts(max(1, self._rollouts.qsize()))
+                if self._evaluation_stop_reason is not None:
+                    break
                 if (
                     self._can_update()
                     and len(self.run.replay_store) >= ready
@@ -737,6 +764,9 @@ class Coordinator:
     def _finish_evaluation_batch(self, summaries: list[dict[str, Any]]) -> None:
         stats = _evaluation_batch_stats(summaries, self._time_buckets)
         self.run.logger.log("eval/summary", stats, step=self.counters.updates)
+        progress_bins = _progress_bin_metrics(stats)
+        if progress_bins:
+            self.run.logger.log("eval/progress_bin", progress_bins, step=self.counters.updates)
         logger.info(
             "Deterministic evaluation @update %d: %d/%d finished, mean=%.2fs, "
             "best=%.2fs, policy_version=%d",
@@ -749,16 +779,60 @@ class Coordinator:
         )
         self._record_best_evaluation(
             float(stats["finish_rate"]),
+            float(stats["finish_time_median_s"]),
             float(stats["finish_time_mean_s"]),
             int(stats["policy_version"]),
         )
+        self._record_evaluation_stop(stats)
+
+    def _record_evaluation_stop(self, stats: Mapping[str, float]) -> None:
+        training = self.run.spec.training
+        required_finish_rate = getattr(training, "evaluation_stop_min_finish_rate", None)
+        maximum_median_s = getattr(training, "evaluation_stop_median_s", None)
+        required_batches = getattr(training, "evaluation_stop_consecutive_batches", None)
+        if required_finish_rate is None or maximum_median_s is None or required_batches is None:
+            return
+        failed = (
+            stats["finish_rate"] < required_finish_rate
+            or stats["finish_time_median_s"] > maximum_median_s
+        )
+        self._consecutive_evaluation_failures = (
+            self._consecutive_evaluation_failures + 1 if failed else 0
+        )
+        if self._consecutive_evaluation_failures < required_batches:
+            return
+        self._evaluation_stop_reason = (
+            "evaluation gate failed "
+            f"{self._consecutive_evaluation_failures} consecutive times: "
+            f"finish_rate={stats['finish_rate']:.3f}, "
+            f"median_finish_time_s={stats['finish_time_median_s']:.3f}"
+        )
+        self.run.logger.log(
+            "train/early_stop",
+            {
+                "reason": self._evaluation_stop_reason,
+                "consecutive_failures": self._consecutive_evaluation_failures,
+                "finish_rate": stats["finish_rate"],
+                "median_finish_time_s": stats["finish_time_median_s"],
+            },
+            step=self.counters.updates,
+        )
+        logger.warning("Stopping training: %s", self._evaluation_stop_reason)
 
     def _record_best_evaluation(
-        self, finish_rate: float, mean_time_s: float, policy_version: int
+        self,
+        finish_rate: float,
+        median_time_s: float,
+        mean_time_s: float,
+        policy_version: int,
     ) -> None:
         if self._recovering:
             return
-        candidate = (finish_rate, -mean_time_s)
+        suite = getattr(self.run.spec, "evaluation", None)
+        required_finish_rate = 1.0 if suite is None else suite.min_finish_rate
+        if finish_rate < required_finish_rate:
+            return
+        candidate = _evaluation_rank(finish_rate, median_time_s, required_finish_rate)
         if self._best_evaluation is not None and candidate <= self._best_evaluation:
             return
         self._best_evaluation = candidate
@@ -778,7 +852,9 @@ class Coordinator:
             "eval/best_checkpoint",
             {
                 "finish_rate": finish_rate,
+                "finish_time_median_s": median_time_s,
                 "finish_time_mean_s": mean_time_s,
+                "release_qualified": 1.0,
                 "policy_version": policy_version,
                 "exact_policy": float(policy_state is not None),
                 "path": str(path),
@@ -896,6 +972,7 @@ class Coordinator:
     def _should_stop(self) -> bool:
         return (
             self.counters.transitions >= self.run.spec.training.total_transitions
+            or getattr(self, "_evaluation_stop_reason", None) is not None
             or self._external_stop_requested()
         )
 
@@ -923,6 +1000,7 @@ class Coordinator:
             learner_state = exact_state(policy_state)
         state = {
             "schema_version": "2.0",
+            "journal_id": self.journal.identity,
             "learner": _snapshot_value(learner_state),
             "replay_store": _state_dict(self.run.replay_store),
             "sampler": _state_dict(self.run.sampler),
@@ -964,6 +1042,11 @@ class Coordinator:
         state = self.run.checkpoint_codec.load(path)
         if state.get("schema_version") != "2.0":
             raise ValueError("async runtime only resumes distributed checkpoint schema 2.0")
+        if reset_replay and self.journal.has_rows():
+            raise RuntimeError(
+                f"cannot reset replay while {self.journal.path} contains rollout data; "
+                "choose a new run_id so stale journal rows cannot enter a later resume"
+            )
         self.run.learner.load_state_dict(state["learner"])
         if reset_replay:
             self.counters = _Counters()
@@ -974,6 +1057,9 @@ class Coordinator:
             self.counters.update_credit,
             float(self.run.spec.distributed.max_update_credit),
         )
+        checkpoint_journal_id = state.get("journal_id")
+        if checkpoint_journal_id != self.journal.identity:
+            self.counters.journal_watermark = 0
         _load_state_dict(self.run.replay_store, state["replay_store"])
         _load_state_dict(self.run.sampler, state["sampler"])
         self._recover_journal(self.counters.journal_watermark)
@@ -985,6 +1071,11 @@ class Coordinator:
                 value = self.codec.decode(payload)
                 if not isinstance(value, Mapping):
                     raise ValueError("journal chunk must decode to a mapping")
+                session_id = str(value["session_id"])
+                sequence = int(value["sequence"])
+                if sequence <= self.counters.actor_sequences.get(session_id, -1):
+                    self.counters.journal_watermark = max(self.counters.journal_watermark, row_id)
+                    continue
                 self._ingest(value, row_id)
         finally:
             self._recovering = False
@@ -1043,7 +1134,7 @@ def _evaluation_batch_stats(
         float(item.get("progress_pct", 0.0)) for item in summaries if not bool(item["finished"])
     ]
     trials = len(summaries)
-    return {
+    stats = {
         "trials": float(trials),
         "finished_trials": float(len(finished_times)),
         "finish_rate": len(finished_times) / trials,
@@ -1066,6 +1157,10 @@ def _evaluation_batch_stats(
             int(str(item.get("termination", "")) == "off_track") for item in summaries
         )
         / trials,
+        "telemetry_error_rate": sum(
+            int(str(item.get("termination", "")) == "telemetry_error") for item in summaries
+        )
+        / trials,
         "projected_velocity_ratio_mean": fmean(
             float(item.get("velocity/ratio_mean", 0.0)) for item in summaries
         ),
@@ -1073,6 +1168,29 @@ def _evaluation_batch_stats(
         "q_margin_start_mean": fmean(
             float(item.get("q_margin/start_mean", 0.0)) for item in summaries
         ),
+    }
+    stats.update(aggregate_progress_bins(_progress_bin_summary(item) for item in summaries))
+    return stats
+
+
+def _progress_bin_summary(summary: Mapping[str, Any]) -> dict[str, dict[str, float]]:
+    bins: dict[str, dict[str, float]] = {}
+    for key, value in summary.items():
+        prefix, separator, suffix = key.partition("progress_bin/")
+        if prefix or not separator:
+            continue
+        name, metric_separator, metric = suffix.partition("/")
+        if not metric_separator:
+            continue
+        bins.setdefault(name, {})[metric] = float(value)
+    return bins
+
+
+def _progress_bin_metrics(summary: Mapping[str, Any]) -> dict[str, float]:
+    return {
+        key.removeprefix("progress_bin/"): float(value)
+        for key, value in summary.items()
+        if key.startswith("progress_bin/")
     }
 
 

@@ -19,6 +19,7 @@ from tmrl.trackmania.actions import (
 )
 from tmrl.trackmania.environment import TrackmaniaEnvironmentConfig
 from tmrl.trackmania.geometry import BoundaryGeometry, file_sha256
+from tmrl.trackmania.pace import ReferencePaceProfile
 from tmrl.trackmania.reward import TrajectoryReward
 from tmrl.trackmania.telemetry import TelemetryFrame
 
@@ -95,7 +96,7 @@ def resolve_demonstration_paths(paths: Sequence[str | Path]) -> tuple[Path, ...]
     for raw in paths:
         path = Path(raw)
         if path.is_dir():
-            matches = sorted(item.resolve() for item in path.glob("*.npz") if item.is_file())
+            matches = sorted(item.resolve() for item in path.rglob("*.npz") if item.is_file())
             if not matches:
                 raise FileNotFoundError(f"demonstration directory has no .npz files: {path}")
             candidates = matches
@@ -283,9 +284,23 @@ def validate_demonstration(
         raise ValueError("demonstration telemetry schema does not match the environment")
 
 
-def _reward(config: TrackmaniaEnvironmentConfig, geometry: BoundaryGeometry) -> TrajectoryReward:
+def _reward(
+    config: TrackmaniaEnvironmentConfig,
+    geometry: BoundaryGeometry,
+    *,
+    demonstration_steps: int | None = None,
+) -> TrajectoryReward:
     reference = geometry.racing_line if config.use_racing_line else geometry.reward_center
-    return TrajectoryReward(reference, **config.reward_kwargs())
+    kwargs = config.reward_kwargs()
+    if demonstration_steps is not None:
+        kwargs["no_progress_steps"] = demonstration_steps + 1
+        kwargs["slow_progress_window_steps"] = demonstration_steps + 1
+    pace_profile = (
+        ReferencePaceProfile.from_demonstration(config.pace_reference_path, geometry, reference)
+        if config.pace_reference_path is not None
+        else None
+    )
+    return TrajectoryReward(reference, pace_profile=pace_profile, **kwargs)
 
 
 def demonstration_transitions(
@@ -296,7 +311,7 @@ def demonstration_transitions(
 ) -> list[Transition]:
     demo = load_demonstration(path)
     validate_demonstration(demo, config, geometry)
-    reward = _reward(config, geometry)
+    reward = _reward(config, geometry, demonstration_steps=len(demo.actions))
     reset_pipeline = getattr(pipeline, "reset_episode", None)
     if callable(reset_pipeline):
         reset_pipeline()
@@ -307,8 +322,15 @@ def demonstration_transitions(
     episode_id = f"demo-{file_sha256(path)[:16]}"
     transitions: list[Transition] = []
     _, table = build_brake_tap_action_table()
+    action_ids = config.compact_action_ids
+    compact_indices = (
+        None if action_ids is None else {action: index for index, action in enumerate(action_ids)}
+    )
     for step, (action, next_frame) in enumerate(zip(demo.actions, demo.frames[1:], strict=True)):
-        control = table[int(action)]
+        source_action = int(action)
+        if compact_indices is not None and source_action not in compact_indices:
+            raise ValueError(f"demonstration action {source_action} is outside compact action IDs")
+        control = table[source_action]
         result = reward.step(
             next_frame[list(config.position_indices)],
             finish_ui_active=bool(next_frame[2]),
@@ -322,7 +344,7 @@ def demonstration_transitions(
         transitions.append(
             Transition(
                 observation=prepared,
-                action=int(action),
+                action=source_action if compact_indices is None else compact_indices[source_action],
                 reward=result.reward,
                 next_observation=next_prepared,
                 terminated=result.terminated,

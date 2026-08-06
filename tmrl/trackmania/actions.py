@@ -84,6 +84,26 @@ def build_brake_tap_exploration_weights() -> np.ndarray:
     return np.asarray(weights, dtype=np.float32)
 
 
+def select_brake_tap_actions(action_ids: tuple[int, ...] | None) -> tuple[int, list[np.ndarray]]:
+    """Select a validated compact subset from the canonical brake-tap table."""
+
+    count, table = build_brake_tap_action_table()
+    if action_ids is None:
+        return count, table
+    if not action_ids or len(set(action_ids)) != len(action_ids):
+        raise ValueError("compact action IDs must be non-empty and unique")
+    if any(action < 0 or action >= count for action in action_ids):
+        raise ValueError(f"compact action IDs must be inside [0, {count})")
+    return len(action_ids), [table[action] for action in action_ids]
+
+
+def select_brake_tap_exploration_weights(action_ids: tuple[int, ...] | None) -> np.ndarray:
+    """Return exploration weights aligned with a compact action subset."""
+
+    weights = build_brake_tap_exploration_weights()
+    return weights if action_ids is None else weights[list(action_ids)]
+
+
 def is_brake_tap(control: np.ndarray) -> bool:
     """Return whether a table control requests a timed brake tap."""
     return float(control[1]) == BRAKE_TAP_SENTINEL

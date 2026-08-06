@@ -16,7 +16,7 @@ uv run tmrl track check
 ```
 
 The plugin cannot safely load an arbitrary `.Map.Gbx` itself. Put the map at
-`maps/test-3.Map.Gbx`, open it manually in TrackMania, and start/restart a run
+`maps/tmrl-test.Map.Gbx`, open it manually in TrackMania, and start/restart a run
 before recording boundaries or running the smoke test. The expected map UID in
 `run.yaml` and in the geometry asset must match the loaded map.
 
@@ -31,8 +31,8 @@ uv run poe record-right
 uv run poe build-geometry
 ```
 
-The Poe tasks write `assets/test-3-left.npy`,
-`assets/test-3-right.npy` and `assets/test-3.geometry.npz`. If a recording says
+The Poe tasks write `assets/tmrl-test-left.npy`,
+`assets/tmrl-test-right.npy` and `assets/tmrl-test.geometry.npz`. If a recording says
 that no run is active, restart the map and begin from the start line.
 
 ## Async training

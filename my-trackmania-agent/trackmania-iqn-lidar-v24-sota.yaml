@@ -38,7 +38,7 @@ components:
     kwargs:
       config:
         trajectory_path: assets/trajectory.csv
-        geometry_path: assets/test-3.geometry.npz
+        geometry_path: assets/tmrl-test.geometry.npz
         expected_map_uid: oqIJ5rQDRrNwLPTh9H2p_W4tLof
         action_repeat_frames: 4
         slow_progress_window_steps: 180
@@ -74,7 +74,7 @@ components:
   feature_pipeline:
     class_path: tmrl.trackmania.features:LidarFeaturePipeline
     kwargs:
-      geometry_path: assets/test-3.geometry.npz
+      geometry_path: assets/tmrl-test.geometry.npz
       expected_map_uid: oqIJ5rQDRrNwLPTh9H2p_W4tLof
       samples_per_side: 90
       max_distance_m: 180.0
@@ -88,12 +88,12 @@ components:
       kwargs:
         project: my-trackmania-agent
 evaluation:
-  name: test-3-sota
+  name: tmrl-test-sota
   version: "4"
   maps:
-    - id: test-3
-      map_path: maps/test-3.Map.Gbx
-      geometry_path: assets/test-3.geometry.npz
+    - id: tmrl-test
+      map_path: maps/tmrl-test.Map.Gbx
+      geometry_path: assets/tmrl-test.geometry.npz
       expected_map_uid: oqIJ5rQDRrNwLPTh9H2p_W4tLof
   trials_per_map: 10
 training:

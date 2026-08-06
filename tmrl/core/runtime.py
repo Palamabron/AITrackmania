@@ -105,7 +105,12 @@ def resolve_run(spec: RunSpec, *, base_dir: str | Path = ".") -> ResolvedRun:
         model_factory = _instantiate(spec.components.model_factory)
     store = _instantiate(spec.components.replay_store)
     sampler = _instantiate(spec.components.sampler, pipeline=pipeline, seed=spec.seed)
-    learner = _instantiate(spec.components.learner, seed=spec.seed, model_factory=model_factory)
+    learner = _instantiate(
+        spec.components.learner,
+        seed=spec.seed,
+        model_factory=model_factory,
+        base_dir=project_dir,
+    )
     logger = _instantiate(spec.components.logger, run_dir=run_dir, run_id=spec.run_id)
     if spec.components.additional_loggers:
         from tmrl.core.builtins import CompositeRunLogger
@@ -191,6 +196,7 @@ def validate_resolved_run(run: ResolvedRun) -> dict[str, float]:
     for step in range(transition_count):
         raw_observation = synthetic() if callable(synthetic) else {"speed": float(step)}
         observation = run.feature_pipeline.transform_observation(raw_observation)
+        is_demo = step < transition_count // 2
         run.replay_store.append(
             Transition(
                 observation=observation,
@@ -199,6 +205,10 @@ def validate_resolved_run(run: ResolvedRun) -> dict[str, float]:
                 next_observation=observation,
                 terminated=step == transition_count - 1,
                 truncated=False,
+                info={
+                    "is_demo": is_demo,
+                    "sampling/projected_lap_time_s": 1.0 if is_demo else float("inf"),
+                },
                 episode_id="validation",
                 step=step,
             )

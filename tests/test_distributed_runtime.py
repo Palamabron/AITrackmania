@@ -28,6 +28,7 @@ from tmrl.distributed.codec import WireCodec
 from tmrl.distributed.coordinator import (
     Coordinator,
     _Counters,
+    _evaluation_rank,
     _MetricAccumulator,
     _PendingRollout,
 )
@@ -47,6 +48,15 @@ class _Pipeline:
 
     def collate(self, transitions: list[Transition]) -> Mapping[str, Any]:
         return {"reward": np.asarray([item.reward for item in transitions])}
+
+
+def test_release_qualified_evaluations_prioritize_lap_time() -> None:
+    stable = _evaluation_rank(1.0, 38.0, 0.9)
+    fast = _evaluation_rank(0.9, 36.8, 0.9)
+    unreliable = _evaluation_rank(0.8, 36.0, 0.9)
+
+    assert fast > stable
+    assert stable > unreliable
 
 
 def test_metric_accumulator_averages_windows_and_preserves_maxima() -> None:
@@ -89,6 +99,36 @@ def test_coordinator_spends_remaining_credit_after_transition_target() -> None:
     coordinator.external_stop.set()
 
     assert not coordinator._can_update()
+
+
+def test_evaluation_stop_requires_consecutive_failed_batches() -> None:
+    events: list[tuple[str, Mapping[str, object], int]] = []
+    coordinator = object.__new__(Coordinator)
+    coordinator._consecutive_evaluation_failures = 0
+    coordinator._evaluation_stop_reason = None
+    coordinator.external_stop = None
+    coordinator.counters = _Counters(updates=12)
+    coordinator.run = SimpleNamespace(
+        spec=SimpleNamespace(
+            training=SimpleNamespace(
+                evaluation_stop_min_finish_rate=0.9,
+                evaluation_stop_median_s=39.0,
+                evaluation_stop_consecutive_batches=2,
+                total_transitions=100,
+            )
+        ),
+        logger=SimpleNamespace(
+            log=lambda event, payload, *, step: events.append((event, payload, step))
+        ),
+    )
+    failed = {"finish_rate": 0.8, "finish_time_median_s": 40.0}
+
+    coordinator._record_evaluation_stop(failed)
+    assert coordinator._evaluation_stop_reason is None
+    coordinator._record_evaluation_stop(failed)
+
+    assert coordinator._should_stop()
+    assert events[0][0] == "train/early_stop"
 
 
 class _Policy:
@@ -253,6 +293,7 @@ def test_rollout_journal_is_idempotent_and_recovers_rows(tmp_path: Path) -> None
         assert duplicate_id == first_id
         assert list(reopened.rows_after(first_id)) == [(second_id, b"second")]
         assert reopened.actor_profile("PC-1", 4) == profile
+        assert reopened.identity == journal.identity
     finally:
         reopened.close()
 
@@ -545,6 +586,39 @@ def test_actor_evaluation_is_greedy_and_never_spooled_as_training_data() -> None
     assert spooled[0][3][0]["reward/terminal"] == 10.0
 
 
+def test_actor_resolves_learner_paths_relative_to_its_config(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    captured: dict[str, dict[str, object]] = {}
+
+    class Learner:
+        def setup(self, context: Mapping[str, object]) -> None:
+            captured["context"] = dict(context)
+
+    def instantiate(component: str, **kwargs: object) -> object:
+        captured[component] = kwargs
+        return Learner() if component == "learner" else object()
+
+    actor = object.__new__(ActorRuntime)
+    actor.spec = SimpleNamespace(
+        artifacts_dir=Path("artifacts"),
+        run_id="test",
+        components=SimpleNamespace(
+            feature_pipeline="pipeline",
+            environment="environment",
+            model_factory="model_factory",
+            learner="learner",
+        ),
+    )
+    actor.base_dir = tmp_path
+    actor._actor_seed = lambda: 7
+    monkeypatch.setattr("tmrl.distributed.actor._instantiate", instantiate)
+
+    actor._components()
+
+    assert captured["learner"]["base_dir"] == tmp_path
+
+
 def test_actor_evaluation_runs_the_configured_trial_count() -> None:
     spooled: list[tuple[list[Any], list[Any], int, list[dict[str, Any]]]] = []
 
@@ -581,6 +655,38 @@ def test_actor_evaluation_runs_the_configured_trial_count() -> None:
     actor._evaluate(Environment(), _Pipeline())
 
     assert len(spooled[0][3]) == 3
+    assert actor._evaluation_index == 3
+
+
+def test_actor_evaluation_spools_telemetry_failures_without_crashing() -> None:
+    spooled: list[list[dict[str, Any]]] = []
+
+    class Policy:
+        def act(self, observation: Any, *, deterministic: bool = False) -> int:
+            del observation, deterministic
+            return 0
+
+    actor = object.__new__(ActorRuntime)
+    actor.spec = SimpleNamespace(
+        training=SimpleNamespace(max_episode_steps=2),
+        evaluation=SimpleNamespace(trials_per_map=3),
+    )
+    actor.stop = threading.Event()
+    actor._evaluation_index = 0
+    actor._actor_seed = lambda: 7
+    actor._policy = lambda: (Policy(), 0.0, 9)
+    actor._reset_environment = lambda environment, episode, **kwargs: None
+    actor._spool = (
+        lambda transitions, episodes, version, *, evaluations=None, evaluation_snapshot=None: (
+            spooled.append(evaluations or [])
+        )
+    )
+
+    actor._evaluate(object(), _Pipeline())
+
+    assert len(spooled[0]) == 3
+    assert [item["termination"] for item in spooled[0]] == ["telemetry_error"] * 3
+    assert [item["telemetry/error"] for item in spooled[0]] == [1.0] * 3
     assert actor._evaluation_index == 3
 
 
@@ -828,6 +934,12 @@ def test_ingest_aggregates_evaluation_batches_and_checkpoints_best(tmp_path: Pat
             "finish_time_s": finish_time_s,
             "policy_version": 41,
             "q_margin/start_mean": 0.5,
+            "progress_bin/90_100/action_count": 2.0,
+            "progress_bin/90_100/action_entropy": 0.5,
+            "progress_bin/90_100/action_coverage": 0.25,
+            "progress_bin/90_100/q_margin_mean": 1.5,
+            "progress_bin/90_100/q_margin_min": 0.75,
+            "progress_bin/90_100/q_max_mean": 3.0,
         }
 
     def ingest(evaluations: list[dict[str, Any]]) -> None:
@@ -856,9 +968,14 @@ def test_ingest_aggregates_evaluation_batches_and_checkpoints_best(tmp_path: Pat
     assert summaries[2]["finish_time_median_s"] == pytest.approx(48.0)
     assert summaries[2]["finish_time_best_s"] == pytest.approx(46.0)
     assert summaries[2]["sub_40_rate"] == 0.0
-    assert len(checkpoints) == 2
+    assert summaries[0]["progress_bin/90_100/action_count"] == 4.0
+    assert summaries[0]["progress_bin/90_100/q_margin_mean"] == 1.5
+    progress_events = [payload for event, payload in events if event == "eval/progress_bin"]
+    assert progress_events[0]["90_100/q_max_mean"] == 3.0
+    assert len(checkpoints) == 1
     best_events = [payload for event, payload in events if event == "eval/best_checkpoint"]
-    assert [item["finish_rate"] for item in best_events] == [0.5, 1.0]
+    assert [item["finish_rate"] for item in best_events] == [1.0]
+    assert best_events[0]["finish_time_median_s"] == pytest.approx(48.0)
 
 
 def test_distributed_ingest_normalizes_source_demo_marker() -> None:
@@ -1071,6 +1188,38 @@ def test_coordinator_reset_replay_restores_only_learner_state(tmp_path: Path) ->
     assert coordinator.counters == _Counters()
 
 
+def test_coordinator_reset_replay_rejects_stale_journal_rows(tmp_path: Path) -> None:
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = int(probe.getsockname()[1])
+    checkpoint = {
+        "schema_version": "2.0",
+        "learner": {"value": 7},
+    }
+    run = SimpleNamespace(
+        spec=SimpleNamespace(distributed=SimpleNamespace(max_message_bytes=1024 * 1024)),
+        run_dir=tmp_path / "stale-reset",
+        learner=_SlowLearner(),
+        replay_store=_RestoreSpy(),
+        sampler=_RestoreSpy(),
+        checkpoint_codec=SimpleNamespace(load=lambda _: checkpoint),
+    )
+    coordinator = Coordinator(
+        run,
+        bind=f"127.0.0.1:{port}",
+        token="secret",
+        fingerprint="fingerprint",
+    )
+    coordinator.journal.append("old-session", 0, b"old")
+
+    try:
+        with pytest.raises(RuntimeError, match="choose a new run_id"):
+            coordinator.restore_checkpoint(tmp_path / "checkpoint.pt", reset_replay=True)
+    finally:
+        coordinator._checkpoint_writer.close()
+        coordinator.journal.close()
+
+
 def _resolved_run(tmp_path: Path, run_id: str, training: dict[str, Any]) -> ResolvedRun:
     spec = RunSpec.model_validate(
         {
@@ -1159,6 +1308,50 @@ def test_coordinator_prunes_the_journal_after_a_checkpoint_write(tmp_path: Path)
     finally:
         coordinator._checkpoint_writer.close()
         coordinator.journal.close()
+
+
+def test_cross_run_checkpoint_recovers_a_new_journal_from_its_first_row(
+    tmp_path: Path,
+) -> None:
+    training = {"total_transitions": 10, "batch_size": 1, "warmup_transitions": 10}
+    source = Coordinator(
+        _resolved_run(tmp_path, "journal-source", training),
+        bind=f"127.0.0.1:{_ephemeral_port()}",
+        token="secret",
+        fingerprint="fingerprint",
+    )
+    target = Coordinator(
+        _resolved_run(tmp_path, "journal-target", training),
+        bind=f"127.0.0.1:{_ephemeral_port()}",
+        token="secret",
+        fingerprint="fingerprint",
+    )
+    try:
+        source.counters.journal_watermark = 100
+        checkpoint = source._checkpoint()
+        source._checkpoint_writer.wait()
+        payload = target.codec.encode(
+            {
+                "actor_id": "actor",
+                "session_id": "target-session",
+                "sequence": 0,
+                "policy_version": 0,
+                "transitions": [transition_to_wire(_transition("actor", 0, 1.0, terminal=True))],
+                "episodes": [],
+            }
+        )
+        target.journal.append("target-session", 0, payload)
+
+        target.restore_checkpoint(checkpoint)
+
+        assert target.counters.transitions == 1
+        assert target.counters.journal_watermark == 1
+        assert len(target.run.replay_store) == 1
+    finally:
+        source._checkpoint_writer.close()
+        source.journal.close()
+        target._checkpoint_writer.close()
+        target.journal.close()
 
 
 def test_submit_applies_backpressure_without_journaling_the_chunk(tmp_path: Path) -> None:

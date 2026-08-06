@@ -902,6 +902,8 @@ class PrioritizedSampler:
         priority_epsilon: float = 1e-6,
         elite_time_s: float | None = None,
         elite_priority_boost: float = 1.0,
+        expert_demo_time_s: float | None = None,
+        expert_fraction: float = 0.0,
         uniform_mix: float = 0.0,
         seed: int = 0,
     ) -> None:
@@ -911,6 +913,9 @@ class PrioritizedSampler:
             or priority_epsilon <= 0.0
             or (elite_time_s is not None and elite_time_s <= 0.0)
             or elite_priority_boost < 1.0
+            or (expert_demo_time_s is not None and expert_demo_time_s <= 0.0)
+            or not 0.0 <= expert_fraction <= 1.0
+            or (expert_fraction > 0.0 and expert_demo_time_s is None)
             or not 0.0 <= uniform_mix <= 1.0
         ):
             raise ValueError("invalid prioritized replay parameters")
@@ -920,16 +925,24 @@ class PrioritizedSampler:
         self.priority_epsilon = priority_epsilon
         self.elite_time_s = elite_time_s
         self.elite_priority_boost = elite_priority_boost
+        self.expert_demo_time_s = expert_demo_time_s
+        self.expert_fraction = expert_fraction
         self.uniform_mix = uniform_mix
         self._fallback_priorities: dict[int, float] = {}
         self._priorities = np.empty(0, dtype=np.float32)
         self._slot_ids = np.empty(0, dtype=np.int64)
         self._elite_slots = np.empty(0, dtype=np.bool_)
+        self._expert_slots = np.empty(0, dtype=np.bool_)
         self._rng = random.Random(seed)
         self._active_count = 0
         self._elite_active_count = 0
+        self._expert_active_count = 0
         self._tree: _FenwickTree | None = None
         self._uniform_tree: _FenwickTree | None = None
+        self._expert_tree: _FenwickTree | None = None
+        self._expert_uniform_tree: _FenwickTree | None = None
+        self._non_expert_tree: _FenwickTree | None = None
+        self._non_expert_uniform_tree: _FenwickTree | None = None
         self._replay_revision: int | None = None
         self._n_step: int | None = None
         self._sequence_length: int | None = None
@@ -941,19 +954,38 @@ class PrioritizedSampler:
             return self._sample_incrementally(store, request)
         if request.sequence_length != 1:
             raise ValueError("sequence PER requires InMemoryReplayStore")
-        chosen, normalized, beta = self._sample_fallback(store, request)
+        chosen, normalized, beta, sampling, demo_flags, expert_flags = self._sample_fallback(
+            store, request
+        )
         return _make_batch(
             store,
             self.pipeline,
             chosen,
             request,
             importance_weights=normalized,
-            metadata={"sampling": "prioritized", "beta": beta},
+            metadata={
+                "sampling": "prioritized",
+                "beta": beta,
+                "demo_flags": demo_flags,
+                **(
+                    {"expert_demo_flags": expert_flags}
+                    if self.expert_demo_time_s is not None
+                    else {}
+                ),
+                **sampling,
+            },
         )
 
     def _sample_fallback(
         self, store: ReplayStore, request: BatchRequest
-    ) -> tuple[list[TransitionId], tuple[float, ...], float]:
+    ) -> tuple[
+        list[TransitionId],
+        tuple[float, ...],
+        float,
+        dict[str, float],
+        tuple[bool, ...],
+        tuple[bool, ...],
+    ]:
         with self._lock:
             transition_ids = _eligible_n_step_ids(store, request)
             if len(transition_ids) < request.batch_size:
@@ -977,14 +1009,98 @@ class PrioritizedSampler:
                     (1.0 - self.uniform_mix) * probability + self.uniform_mix * uniform
                     for probability in probabilities
                 ]
-            chosen = self._rng.choices(transition_ids, weights=probabilities, k=request.batch_size)
-            by_id = dict(zip(transition_ids, probabilities, strict=True))
+            transitions = store.get(transition_ids)
+            demo_by_id = {
+                transition_id: _is_demo(transition.info)
+                for transition_id, transition in zip(transition_ids, transitions, strict=True)
+            }
+            expert_by_id = {
+                transition_id: (
+                    demo_by_id[transition_id]
+                    and self.expert_demo_time_s is not None
+                    and float(transition.info.get("sampling/projected_lap_time_s", float("inf")))
+                    <= self.expert_demo_time_s
+                )
+                for transition_id, transition in zip(transition_ids, transitions, strict=True)
+            }
+            chosen, chosen_probabilities = self._stratified_fallback_choices(
+                transition_ids,
+                probabilities,
+                expert_by_id,
+                request.batch_size,
+            )
             beta = self.beta if request.beta is None else request.beta
             weights = [
-                (len(transition_ids) * by_id[transition_id]) ** (-beta) for transition_id in chosen
+                (len(transition_ids) * probability) ** (-beta)
+                for probability in chosen_probabilities
             ]
             maximum = max(weights)
-            return chosen, tuple(weight / maximum for weight in weights), beta
+            demo_flags = tuple(demo_by_id[transition_id] for transition_id in chosen)
+            expert_flags = tuple(expert_by_id[transition_id] for transition_id in chosen)
+            metadata = {
+                "replay/demo_sample_fraction": sum(demo_flags) / len(chosen),
+                "replay/expert_demo_sample_fraction": sum(expert_flags) / len(chosen),
+            }
+            return (
+                chosen,
+                tuple(weight / maximum for weight in weights),
+                beta,
+                metadata,
+                demo_flags,
+                expert_flags,
+            )
+
+    def _stratified_fallback_choices(
+        self,
+        transition_ids: list[TransitionId],
+        probabilities: list[float],
+        expert_by_id: Mapping[TransitionId, bool],
+        batch_size: int,
+    ) -> tuple[list[TransitionId], list[float]]:
+        if self.expert_fraction == 0.0:
+            chosen = self._rng.choices(transition_ids, weights=probabilities, k=batch_size)
+            by_id = dict(zip(transition_ids, probabilities, strict=True))
+            return chosen, [by_id[transition_id] for transition_id in chosen]
+        expert_count = round(self.expert_fraction * batch_size)
+        return self._fallback_group_choices(
+            transition_ids,
+            probabilities,
+            expert_by_id,
+            expert_count,
+            batch_size - expert_count,
+        )
+
+    def _fallback_group_choices(
+        self,
+        transition_ids: list[TransitionId],
+        probabilities: list[float],
+        expert_by_id: Mapping[TransitionId, bool],
+        expert_count: int,
+        non_expert_count: int,
+    ) -> tuple[list[TransitionId], list[float]]:
+        grouped: list[tuple[TransitionId, float]] = []
+        for expert, count in ((True, expert_count), (False, non_expert_count)):
+            if count == 0:
+                continue
+            candidates = [
+                (transition_id, probability)
+                for transition_id, probability in zip(transition_ids, probabilities, strict=True)
+                if expert_by_id[transition_id] is expert
+            ]
+            if not candidates:
+                label = "expert demonstration" if expert else "non-expert"
+                raise RuntimeError(f"Prioritized replay has no {label} transitions")
+            ids, weights = zip(*candidates, strict=True)
+            total = sum(weights)
+            conditional = [weight / total for weight in weights]
+            group_fraction = count / (expert_count + non_expert_count)
+            selected = self._rng.choices(ids, weights=conditional, k=count)
+            by_id = dict(zip(ids, conditional, strict=True))
+            grouped.extend(
+                (transition_id, group_fraction * by_id[transition_id]) for transition_id in selected
+            )
+        self._rng.shuffle(grouped)
+        return [item[0] for item in grouped], [item[1] for item in grouped]
 
     def update_priorities(self, update: PriorityUpdate) -> None:
         with self._lock:
@@ -1002,8 +1118,7 @@ class PrioritizedSampler:
                 slot = transition_id % self._tree.size
                 if self._slot_ids[slot] == transition_id and self._tree.leaves[slot] > 0.0:
                     self._priorities[slot] = value
-                    boost = self.elite_priority_boost if self._elite_slots[slot] else 1.0
-                    self._tree.set(slot, value**self.alpha * boost)
+                    self._set_slot_weight(slot)
 
     def _synchronize_fallback(self, transition_ids: list[TransitionId]) -> None:
         active = set(transition_ids)
@@ -1042,8 +1157,13 @@ class PrioritizedSampler:
             self._slot_ids = np.empty(0, dtype=np.int64)
         self._active_count = 0
         self._elite_active_count = 0
+        self._expert_active_count = 0
         self._tree = None
         self._uniform_tree = None
+        self._expert_tree = None
+        self._expert_uniform_tree = None
+        self._non_expert_tree = None
+        self._non_expert_uniform_tree = None
         self._replay_revision = None
         self._n_step = None
         self._sequence_length = None
@@ -1060,6 +1180,11 @@ class PrioritizedSampler:
     ) -> TrainingBatch:
         transition_ids, normalized, beta, sampling = self._sample_incremental_ids(store, request)
         demo_flags = tuple(store.demo_flags(transition_ids))
+        assert self._tree is not None
+        expert_flags = tuple(
+            bool(self._expert_slots[transition_id % self._tree.size])
+            for transition_id in transition_ids
+        )
         if request.sequence_length > 1:
             histories = [
                 store.history_ids(transition_id, request.sequence_length)
@@ -1092,6 +1217,11 @@ class PrioritizedSampler:
                     "gamma": request.gamma,
                     "priority_transition_ids": tuple(transition_ids),
                     "demo_flags": demo_flags,
+                    **(
+                        {"expert_demo_flags": expert_flags}
+                        if self.expert_demo_time_s is not None
+                        else {}
+                    ),
                     **sampling,
                 },
                 bootstrap_stride=request.sequence_length,
@@ -1121,6 +1251,11 @@ class PrioritizedSampler:
                 "sampling": "prioritized",
                 "beta": beta,
                 "demo_flags": demo_flags,
+                **(
+                    {"expert_demo_flags": expert_flags}
+                    if self.expert_demo_time_s is not None
+                    else {}
+                ),
                 **sampling,
             },
         )
@@ -1140,37 +1275,7 @@ class PrioritizedSampler:
                 )
             assert self._tree is not None
             assert self._uniform_tree is not None
-            total = self._tree.total
-            if total <= 0.0:
-                raise RuntimeError("Prioritized replay has no positive sampling mass")
-            transition_ids: list[TransitionId] = []
-            probabilities: list[float] = []
-            while len(transition_ids) < request.batch_size:
-                if self.uniform_mix and self._rng.random() < self.uniform_mix:
-                    slot = self._uniform_tree.find(self._rng.random() * self._uniform_tree.total)
-                else:
-                    slot = self._tree.find(self._rng.random() * total)
-                transition_id = int(self._slot_ids[slot])
-                if transition_id < 0:
-                    raise RuntimeError(
-                        "Prioritized replay tree is out of sync with active transitions"
-                    )
-                if (
-                    request.sequence_length > 1
-                    and len(store.history_ids(transition_id, request.sequence_length))
-                    != request.sequence_length
-                ):
-                    self._deactivate(transition_id)
-                    total = self._tree.total
-                    if total <= 0.0:
-                        raise RuntimeError("prioritized replay has no complete sequences")
-                    continue
-                transition_ids.append(transition_id)
-                proportional = float(self._tree.leaves[slot]) / total
-                uniform = 1.0 / self._active_count
-                probabilities.append(
-                    (1.0 - self.uniform_mix) * proportional + self.uniform_mix * uniform
-                )
+            transition_ids, probabilities = self._incremental_choices(request.batch_size)
             beta = self.beta if request.beta is None else request.beta
             weights = [
                 (self._active_count * probability) ** (-beta) for probability in probabilities
@@ -1180,10 +1285,19 @@ class PrioritizedSampler:
                 int(self._elite_slots[transition_id % self._tree.size])
                 for transition_id in transition_ids
             )
+            demo_samples = sum(store.demo_flags(transition_ids))
+            expert_samples = sum(
+                int(self._expert_slots[transition_id % self._tree.size])
+                for transition_id in transition_ids
+            )
             metadata = {
                 "replay/active_count": float(self._active_count),
                 "replay/elite_active_fraction": self._elite_active_count / self._active_count,
                 "replay/elite_sample_fraction": elite_samples / len(transition_ids),
+                "replay/demo_sample_fraction": demo_samples / len(transition_ids),
+                "replay/expert_demo_active_fraction": self._expert_active_count
+                / self._active_count,
+                "replay/expert_demo_sample_fraction": expert_samples / len(transition_ids),
                 "replay/sampling_probability_mean": fmean(probabilities),
                 "replay/sampling_probability_min": min(probabilities),
                 "replay/sampling_probability_max": max(probabilities),
@@ -1194,6 +1308,76 @@ class PrioritizedSampler:
                 beta,
                 metadata,
             )
+
+    def _incremental_choices(self, batch_size: int) -> tuple[list[TransitionId], list[float]]:
+        assert self._tree is not None
+        assert self._uniform_tree is not None
+        if self.expert_fraction == 0.0:
+            return self._draw_incremental_group(
+                self._tree,
+                self._uniform_tree,
+                self._active_count,
+                batch_size,
+                1.0,
+            )
+        assert self._expert_tree is not None
+        assert self._expert_uniform_tree is not None
+        assert self._non_expert_tree is not None
+        assert self._non_expert_uniform_tree is not None
+        expert_count = round(self.expert_fraction * batch_size)
+        grouped: list[tuple[TransitionId, float]] = []
+        for trees, active_count, count in (
+            (
+                (self._expert_tree, self._expert_uniform_tree),
+                self._expert_active_count,
+                expert_count,
+            ),
+            (
+                (self._non_expert_tree, self._non_expert_uniform_tree),
+                self._active_count - self._expert_active_count,
+                batch_size - expert_count,
+            ),
+        ):
+            if count == 0:
+                continue
+            ids, probabilities = self._draw_incremental_group(
+                *trees,
+                active_count,
+                count,
+                count / batch_size,
+            )
+            grouped.extend(zip(ids, probabilities, strict=True))
+        self._rng.shuffle(grouped)
+        return [item[0] for item in grouped], [item[1] for item in grouped]
+
+    def _draw_incremental_group(
+        self,
+        tree: _FenwickTree,
+        uniform_tree: _FenwickTree,
+        active_count: int,
+        count: int,
+        group_fraction: float,
+    ) -> tuple[list[TransitionId], list[float]]:
+        if active_count < 1 or tree.total <= 0.0 or uniform_tree.total <= 0.0:
+            raise RuntimeError("Prioritized replay cannot satisfy expert_fraction")
+        transition_ids: list[TransitionId] = []
+        probabilities: list[float] = []
+        for _ in range(count):
+            if self.uniform_mix and self._rng.random() < self.uniform_mix:
+                slot = uniform_tree.find(self._rng.random() * uniform_tree.total)
+            else:
+                slot = tree.find(self._rng.random() * tree.total)
+            transition_id = int(self._slot_ids[slot])
+            if transition_id < 0:
+                raise RuntimeError("Prioritized replay tree is out of sync")
+            proportional = float(tree.leaves[slot]) / tree.total
+            uniform = 1.0 / active_count
+            probabilities.append(
+                group_fraction
+                * ((1.0 - self.uniform_mix) * proportional + self.uniform_mix * uniform)
+            )
+            transition_ids.append(transition_id)
+        return transition_ids, probabilities
 
     def _synchronize_incremental_store(
         self,
@@ -1210,13 +1394,20 @@ class PrioritizedSampler:
         ):
             self._tree = _FenwickTree(capacity)
             self._uniform_tree = _FenwickTree(capacity)
+            self._expert_tree = _FenwickTree(capacity)
+            self._expert_uniform_tree = _FenwickTree(capacity)
+            self._non_expert_tree = _FenwickTree(capacity)
+            self._non_expert_uniform_tree = _FenwickTree(capacity)
             if self._slot_ids.shape != (capacity,):
                 self._slot_ids = np.full(capacity, -1, dtype=np.int64)
                 self._priorities = np.zeros(capacity, dtype=np.float32)
             if self._elite_slots.shape != (capacity,):
                 self._elite_slots = np.zeros(capacity, dtype=np.bool_)
+            if self._expert_slots.shape != (capacity,):
+                self._expert_slots = np.zeros(capacity, dtype=np.bool_)
             self._active_count = 0
             self._elite_active_count = 0
+            self._expert_active_count = 0
             self._replay_revision = None
             self._n_step = n_step
             self._sequence_length = sequence_length
@@ -1224,8 +1415,13 @@ class PrioritizedSampler:
         if changes is None:
             self._active_count = 0
             self._elite_active_count = 0
+            self._expert_active_count = 0
             self._tree = _FenwickTree(capacity)
             self._uniform_tree = _FenwickTree(capacity)
+            self._expert_tree = _FenwickTree(capacity)
+            self._expert_uniform_tree = _FenwickTree(capacity)
+            self._non_expert_tree = _FenwickTree(capacity)
+            self._non_expert_uniform_tree = _FenwickTree(capacity)
             for transition_id in store.eligible_transition_ids(n_step):
                 if len(store.history_ids(transition_id, sequence_length)) == sequence_length:
                     self._activate(store, transition_id)
@@ -1251,12 +1447,17 @@ class PrioritizedSampler:
     ) -> None:
         assert self._tree is not None
         assert self._uniform_tree is not None
+        assert self._expert_tree is not None
+        assert self._expert_uniform_tree is not None
+        assert self._non_expert_tree is not None
+        assert self._non_expert_uniform_tree is not None
         slot = transition_id % self._tree.size
         if self._slot_ids[slot] == transition_id and self._tree.leaves[slot] > 0.0:
             return
         if self._tree.leaves[slot] > 0.0:
             self._active_count -= 1
             self._elite_active_count -= int(self._elite_slots[slot])
+            self._expert_active_count -= int(self._expert_slots[slot])
         priority = (
             float(self._priorities[slot])
             if self._slot_ids[slot] == transition_id and self._priorities[slot] > 0.0
@@ -1266,22 +1467,50 @@ class PrioritizedSampler:
         self._slot_ids[slot] = transition_id
         pace = store.sampling_pace_s(transition_id)
         elite = self.elite_time_s is not None and pace <= self.elite_time_s
+        is_demo = store.demo_flags([transition_id])[0]
+        expert = is_demo and self.expert_demo_time_s is not None and pace <= self.expert_demo_time_s
         self._elite_slots[slot] = elite
-        boost = self.elite_priority_boost if elite else 1.0
-        self._tree.set(slot, priority**self.alpha * boost)
-        self._uniform_tree.set(slot, 1.0)
+        self._expert_slots[slot] = expert
+        self._set_slot_weight(slot)
         self._active_count += 1
         self._elite_active_count += int(elite)
+        self._expert_active_count += int(expert)
+
+    def _set_slot_weight(self, slot: int) -> None:
+        assert self._tree is not None
+        assert self._uniform_tree is not None
+        assert self._expert_tree is not None
+        assert self._expert_uniform_tree is not None
+        assert self._non_expert_tree is not None
+        assert self._non_expert_uniform_tree is not None
+        boost = self.elite_priority_boost if self._elite_slots[slot] else 1.0
+        weight = float(self._priorities[slot]) ** self.alpha * boost
+        expert = bool(self._expert_slots[slot])
+        self._tree.set(slot, weight)
+        self._uniform_tree.set(slot, 1.0)
+        self._expert_tree.set(slot, weight if expert else 0.0)
+        self._expert_uniform_tree.set(slot, 1.0 if expert else 0.0)
+        self._non_expert_tree.set(slot, 0.0 if expert else weight)
+        self._non_expert_uniform_tree.set(slot, 0.0 if expert else 1.0)
 
     def _deactivate(self, transition_id: TransitionId) -> None:
         assert self._tree is not None
         assert self._uniform_tree is not None
+        assert self._expert_tree is not None
+        assert self._expert_uniform_tree is not None
+        assert self._non_expert_tree is not None
+        assert self._non_expert_uniform_tree is not None
         slot = transition_id % self._tree.size
         if self._slot_ids[slot] == transition_id and self._tree.leaves[slot] > 0.0:
             self._active_count -= 1
             self._elite_active_count -= int(self._elite_slots[slot])
+            self._expert_active_count -= int(self._expert_slots[slot])
             self._tree.set(slot, 0.0)
             self._uniform_tree.set(slot, 0.0)
+            self._expert_tree.set(slot, 0.0)
+            self._expert_uniform_tree.set(slot, 0.0)
+            self._non_expert_tree.set(slot, 0.0)
+            self._non_expert_uniform_tree.set(slot, 0.0)
 
 
 class SequenceSampler:

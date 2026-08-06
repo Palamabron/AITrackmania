@@ -29,6 +29,6 @@ explicit = true
 fmt = [{ cmd = "ruff format ." }, { cmd = "ruff check --fix ." }]
 types = "mypy --strict src tests"
 test = "pytest"
-record-left = "tmrl track record-boundary left assets/test-3-left.npy"
-record-right = "tmrl track record-boundary right assets/test-3-right.npy"
-build-geometry = "tmrl track build-geometry assets/test-3.geometry.npz --left assets/test-3-left.npy --right assets/test-3-right.npy --map-uid oqIJ5rQDRrNwLPTh9H2p_W4tLof --map-path maps/test-3.Map.Gbx"
+record-left = "tmrl track record-boundary left assets/tmrl-test-left.npy"
+record-right = "tmrl track record-boundary right assets/tmrl-test-right.npy"
+build-geometry = "tmrl track build-geometry assets/tmrl-test.geometry.npz --left assets/tmrl-test-left.npy --right assets/tmrl-test-right.npy --map-uid oqIJ5rQDRrNwLPTh9H2p_W4tLof --map-path maps/tmrl-test.Map.Gbx"

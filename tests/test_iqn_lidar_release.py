@@ -6,6 +6,7 @@ import json
 import socket
 import threading
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -18,6 +19,7 @@ from tmrl.trackmania.actions import (
     build_brake_tap_action_table,
     build_brake_tap_exploration_weights,
 )
+from tmrl.trackmania.behavior_cloning import LidarBehaviorCloningModel
 from tmrl.trackmania.features import LidarFeaturePipeline
 from tmrl.trackmania.geometry import BoundaryGeometry, build_geometry_asset
 from tmrl.trackmania.iqn import LidarIqnModel
@@ -30,20 +32,20 @@ def _asset(tmp_path: Path, *, lookahead_points: int = 60) -> Path:
     right = left + np.asarray([0.0, 0.0, 10.0], dtype=np.float32)
     np.save(tmp_path / "left.npy", left)
     np.save(tmp_path / "right.npy", right)
-    (tmp_path / "test-3.Map.Gbx").write_bytes(b"test-3-map")
+    (tmp_path / "tmrl-test.Map.Gbx").write_bytes(b"tmrl-test-map")
     return build_geometry_asset(
-        tmp_path / "test-3.npz",
+        tmp_path / "tmrl-test.npz",
         tmp_path / "left.npy",
         tmp_path / "right.npy",
-        map_uid="test-3",
-        map_path=tmp_path / "test-3.Map.Gbx",
+        map_uid="tmrl-test",
+        map_path=tmp_path / "tmrl-test.Map.Gbx",
         lookahead_points=lookahead_points,
     )
 
 
 def test_geometry_asset_binds_uid_and_rejects_mismatch(tmp_path: Path) -> None:
     asset = _asset(tmp_path)
-    geometry = BoundaryGeometry(asset, expected_map_uid="test-3")
+    geometry = BoundaryGeometry(asset, expected_map_uid="tmrl-test")
     assert geometry.sha256
     with pytest.raises(ValueError, match="UID"):
         BoundaryGeometry(asset, expected_map_uid="other")
@@ -67,13 +69,13 @@ def test_geometry_pairs_boundaries_by_location_not_recording_progress(tmp_path: 
     right = np.asarray([[5, 0, 5], [10, 0, 5], [0, 0, 5]], dtype=np.float32)
     np.save(tmp_path / "left-offset.npy", left)
     np.save(tmp_path / "right-offset.npy", right)
-    (tmp_path / "test-3.Map.Gbx").write_bytes(b"test-3-map")
+    (tmp_path / "tmrl-test.Map.Gbx").write_bytes(b"tmrl-test-map")
     asset = build_geometry_asset(
         tmp_path / "offset.npz",
         tmp_path / "left-offset.npy",
         tmp_path / "right-offset.npy",
-        map_uid="test-3",
-        map_path=tmp_path / "test-3.Map.Gbx",
+        map_uid="tmrl-test",
+        map_path=tmp_path / "tmrl-test.Map.Gbx",
         spacing_m=5.0,
         lookahead_points=0,
     )
@@ -90,13 +92,13 @@ def test_geometry_pairing_stays_on_track_across_parallel_sections(tmp_path: Path
     right = np.concatenate([true_right, filler, decoy], axis=0)
     np.save(tmp_path / "left-parallel.npy", left)
     np.save(tmp_path / "right-parallel.npy", right)
-    (tmp_path / "test-3.Map.Gbx").write_bytes(b"test-3-map")
+    (tmp_path / "tmrl-test.Map.Gbx").write_bytes(b"tmrl-test-map")
     asset = build_geometry_asset(
         tmp_path / "parallel.npz",
         tmp_path / "left-parallel.npy",
         tmp_path / "right-parallel.npy",
-        map_uid="test-3",
-        map_path=tmp_path / "test-3.Map.Gbx",
+        map_uid="tmrl-test",
+        map_path=tmp_path / "tmrl-test.Map.Gbx",
         spacing_m=1.0,
         lookahead_points=0,
     )
@@ -119,13 +121,13 @@ def test_geometry_centerline_spacing_is_uniform_on_bends(tmp_path: Path) -> None
     )
     np.save(tmp_path / "left-bend.npy", left)
     np.save(tmp_path / "right-bend.npy", right)
-    (tmp_path / "test-3.Map.Gbx").write_bytes(b"test-3-map")
+    (tmp_path / "tmrl-test.Map.Gbx").write_bytes(b"tmrl-test-map")
     asset = build_geometry_asset(
         tmp_path / "bend.npz",
         tmp_path / "left-bend.npy",
         tmp_path / "right-bend.npy",
-        map_uid="test-3",
-        map_path=tmp_path / "test-3.Map.Gbx",
+        map_uid="tmrl-test",
+        map_path=tmp_path / "tmrl-test.Map.Gbx",
         spacing_m=2.0,
         lookahead_points=0,
     )
@@ -146,13 +148,13 @@ def test_racing_line_stays_inside_boundaries_and_cuts_a_corner(tmp_path: Path) -
     )
     np.save(tmp_path / "left-racing.npy", left)
     np.save(tmp_path / "right-racing.npy", right)
-    (tmp_path / "test-3.Map.Gbx").write_bytes(b"test-3-map")
+    (tmp_path / "tmrl-test.Map.Gbx").write_bytes(b"tmrl-test-map")
     asset = build_geometry_asset(
         tmp_path / "racing.npz",
         tmp_path / "left-racing.npy",
         tmp_path / "right-racing.npy",
-        map_uid="test-3",
-        map_path=tmp_path / "test-3.Map.Gbx",
+        map_uid="tmrl-test",
+        map_path=tmp_path / "tmrl-test.Map.Gbx",
         spacing_m=1.0,
         lookahead_points=0,
     )
@@ -171,13 +173,13 @@ def test_geometry_smoothing_reduces_boundary_jitter(tmp_path: Path) -> None:
     right = left + np.asarray([0.0, 0.0, 10.0], dtype=np.float32)
     np.save(tmp_path / "left-jitter.npy", left)
     np.save(tmp_path / "right-jitter.npy", right)
-    (tmp_path / "test-3.Map.Gbx").write_bytes(b"test-3-map")
+    (tmp_path / "tmrl-test.Map.Gbx").write_bytes(b"tmrl-test-map")
     raw = build_geometry_asset(
         tmp_path / "raw.npz",
         tmp_path / "left-jitter.npy",
         tmp_path / "right-jitter.npy",
-        map_uid="test-3",
-        map_path=tmp_path / "test-3.Map.Gbx",
+        map_uid="tmrl-test",
+        map_path=tmp_path / "tmrl-test.Map.Gbx",
         spacing_m=1.0,
         smooth_window=1,
         lookahead_points=0,
@@ -186,8 +188,8 @@ def test_geometry_smoothing_reduces_boundary_jitter(tmp_path: Path) -> None:
         tmp_path / "soft.npz",
         tmp_path / "left-jitter.npy",
         tmp_path / "right-jitter.npy",
-        map_uid="test-3",
-        map_path=tmp_path / "test-3.Map.Gbx",
+        map_uid="tmrl-test",
+        map_path=tmp_path / "tmrl-test.Map.Gbx",
         spacing_m=1.0,
         smooth_window=5,
         lookahead_points=0,
@@ -218,13 +220,13 @@ def test_closed_lap_does_not_extend_finish(tmp_path: Path) -> None:
     ).astype(np.float32)
     np.save(tmp_path / "left-loop.npy", left)
     np.save(tmp_path / "right-loop.npy", right)
-    (tmp_path / "test-3.Map.Gbx").write_bytes(b"test-3-map")
+    (tmp_path / "tmrl-test.Map.Gbx").write_bytes(b"tmrl-test-map")
     asset = build_geometry_asset(
         tmp_path / "loop.npz",
         tmp_path / "left-loop.npy",
         tmp_path / "right-loop.npy",
-        map_uid="test-3",
-        map_path=tmp_path / "test-3.Map.Gbx",
+        map_uid="tmrl-test",
+        map_path=tmp_path / "tmrl-test.Map.Gbx",
         spacing_m=2.0,
         lookahead_points=60,
     )
@@ -237,7 +239,7 @@ def test_closed_lap_does_not_extend_finish(tmp_path: Path) -> None:
 def test_lidar_pipeline_validates_schema_and_builds_masked_local_observation(
     tmp_path: Path,
 ) -> None:
-    pipeline = LidarFeaturePipeline(_asset(tmp_path), expected_map_uid="test-3")
+    pipeline = LidarFeaturePipeline(_asset(tmp_path), expected_map_uid="tmrl-test")
     observation = np.zeros(33, dtype=np.float32)
     observation[4:7] = [0, 0, 0]
     observation[10:13] = [1, 0, 0]
@@ -258,10 +260,40 @@ def test_lidar_pipeline_validates_schema_and_builds_masked_local_observation(
         pipeline.transform_observation(np.full(33, np.nan, dtype=np.float32))
 
 
+def test_lidar_pipeline_can_exclude_control_inputs_for_behavior_cloning(tmp_path: Path) -> None:
+    pipeline = LidarFeaturePipeline(
+        _asset(tmp_path),
+        expected_map_uid="tmrl-test",
+        include_track_relative=True,
+        include_control_inputs=False,
+    )
+    observation = np.zeros(33, dtype=np.float32)
+    observation[10] = 1.0
+    observation[30:33] = [-1.0, 1.0, 1.0]
+
+    output = pipeline.transform_observation(observation)
+
+    assert output["telemetry"].shape == (23,)
+    assert not torch.any(output["telemetry"] == -1.0)
+
+
+def test_lidar_pipeline_can_encode_velocity_in_the_local_car_frame(tmp_path: Path) -> None:
+    pipeline = LidarFeaturePipeline(
+        _asset(tmp_path), expected_map_uid="tmrl-test", local_velocity_features=True
+    )
+    observation = np.zeros(33, dtype=np.float32)
+    observation[7:10] = [10_000.0, 2_000.0, 5_000.0]
+    observation[10] = 1.0
+
+    prepared = pipeline.transform_observation(observation)
+
+    assert prepared["telemetry"][4:7].tolist() == pytest.approx([0.125, 0.025, -0.0625])
+
+
 def test_lidar_near_finish_keeps_fresh_lookahead_on_open_track(tmp_path: Path) -> None:
     asset = _asset(tmp_path, lookahead_points=60)
     geometry = BoundaryGeometry(asset)
-    pipeline = LidarFeaturePipeline(asset, expected_map_uid="test-3")
+    pipeline = LidarFeaturePipeline(asset, expected_map_uid="tmrl-test")
     observation = np.zeros(33, dtype=np.float32)
     observation[4:7] = geometry.reward_center[-1]
     observation[10:13] = [1, 0, 0]
@@ -270,9 +302,105 @@ def test_lidar_near_finish_keeps_fresh_lookahead_on_open_track(tmp_path: Path) -
     assert not torch.allclose(output["lidar"][:, 0], output["lidar"][:, 14])
 
 
+def test_lidar_exposes_racing_line_pace_dynamics_and_finish_gate(tmp_path: Path) -> None:
+    asset = _asset(tmp_path, lookahead_points=60)
+    geometry = BoundaryGeometry(asset)
+    frames = np.zeros((geometry.recorded_count, 33), dtype=np.float32)
+    frames[:, 3] = np.linspace(0.0, 5_000.0, geometry.recorded_count)
+    frames[:, 4:7] = geometry.racing_line
+    frames[:, 16] = np.linspace(20.0, 40.0, geometry.recorded_count)
+    pace = tmp_path / "pace.npz"
+    np.savez_compressed(
+        pace,
+        map_uid=np.asarray(geometry.map_uid),
+        geometry_sha256=np.asarray(geometry.sha256),
+        frames=frames,
+        finish_time_s=np.asarray(5.0),
+    )
+    pipeline = LidarFeaturePipeline(
+        asset,
+        expected_map_uid="tmrl-test",
+        include_track_relative=True,
+        use_racing_line=True,
+        pace_reference_path=pace,
+        include_racing_line_channels=True,
+        include_finish_channels=True,
+        include_dynamics=True,
+        include_goal_features=True,
+    )
+    observation = frames[-1].copy()
+    observation[10] = 1.0
+    prepared = pipeline.transform_observation(observation)
+
+    assert prepared["lidar"].shape == (8, 60)
+    assert prepared["telemetry"].shape == (49,)
+    assert prepared["lidar"][6].max() > 0.8
+    assert prepared["lidar"][7].max() == pytest.approx(1.0)
+    assert prepared["telemetry"][27:31].tolist() == pytest.approx([0.5] * 4, abs=0.03)
+    assert prepared["telemetry"][-1] == pytest.approx(1.0)
+
+    model = LidarIqnModel(
+        cosine_count=8,
+        telemetry_dim=49,
+        lidar_channels=8,
+        telemetry_group_dims=(26, 5, 4, 14),
+        spatial_bins=2,
+    )
+    batched = {key: value.unsqueeze(0) for key, value in prepared.items()}
+    assert model.q_values(batched, quantile_count=8).shape == (1, 78)
+
+
+def test_lidar_keeps_pace_profile_when_evaluating_its_configured_geometry(tmp_path: Path) -> None:
+    asset = _asset(tmp_path, lookahead_points=60)
+    geometry = BoundaryGeometry(asset)
+    frames = np.zeros((geometry.recorded_count, 33), dtype=np.float32)
+    frames[:, 3] = np.linspace(0.0, 5_000.0, geometry.recorded_count)
+    frames[:, 4:7] = geometry.racing_line
+    pace = tmp_path / "pace.npz"
+    np.savez_compressed(
+        pace,
+        map_uid=np.asarray(geometry.map_uid),
+        geometry_sha256=np.asarray(geometry.sha256),
+        frames=frames,
+        finish_time_s=np.asarray(5.0),
+    )
+    pipeline = LidarFeaturePipeline(
+        asset,
+        expected_map_uid="tmrl-test",
+        pace_reference_path=pace,
+    )
+
+    pipeline.set_evaluation_map(SimpleNamespace(geometry_path=asset, expected_map_uid="tmrl-test"))
+
+    assert pipeline.pace_profile is not None
+
+
+def test_lidar_progress_is_bounded_by_reachable_arc_length(tmp_path: Path) -> None:
+    asset = _asset(tmp_path, lookahead_points=0)
+    pipeline = LidarFeaturePipeline(
+        asset,
+        expected_map_uid="tmrl-test",
+        max_speed_mps=1.0,
+        max_time_delta_s=1.0,
+        limit_progress_by_kinematics=True,
+    )
+    geometry = BoundaryGeometry(asset)
+    first = np.zeros(33, dtype=np.float32)
+    first[4:7] = geometry.center[0]
+    first[10] = 1.0
+    pipeline.transform_observation(first)
+    jumped = first.copy()
+    jumped[3] = 100.0
+    jumped[4:7] = geometry.center[-1]
+
+    pipeline.transform_observation(jumped)
+
+    assert pipeline._progress_index == 0
+
+
 def test_lidar_pipeline_preserves_legacy_right_then_forward_car_frame(tmp_path: Path) -> None:
     pipeline = LidarFeaturePipeline(
-        _asset(tmp_path, lookahead_points=0), expected_map_uid="test-3", max_distance_m=10.0
+        _asset(tmp_path, lookahead_points=0), expected_map_uid="tmrl-test", max_distance_m=10.0
     )
     observation = np.zeros(33, dtype=np.float32)
     observation[10] = 1.0  # Car points along +X.
@@ -287,7 +415,7 @@ def test_lidar_pipeline_preserves_legacy_right_then_forward_car_frame(tmp_path: 
 def test_lidar_pipeline_stacks_track_relative_history(tmp_path: Path) -> None:
     pipeline = LidarFeaturePipeline(
         _asset(tmp_path),
-        expected_map_uid="test-3",
+        expected_map_uid="tmrl-test",
         history_length=2,
         include_track_relative=True,
         max_speed_mps=10.0,
@@ -298,6 +426,7 @@ def test_lidar_pipeline_stacks_track_relative_history(tmp_path: Path) -> None:
     first[7] = 5.0
     initial = pipeline.transform_observation(first)
     second = first.copy()
+    second[3] = 1_000.0
     second[4] = 4.0
     stacked = pipeline.transform_observation(second)
 
@@ -318,7 +447,7 @@ def test_track_relative_velocity_uses_the_same_native_unit_scale_as_telemetry(
 ) -> None:
     pipeline = LidarFeaturePipeline(
         _asset(tmp_path),
-        expected_map_uid="test-3",
+        expected_map_uid="tmrl-test",
         include_track_relative=True,
         max_speed_mps=20.0,
     )
@@ -333,7 +462,7 @@ def test_track_relative_velocity_uses_the_same_native_unit_scale_as_telemetry(
 
 
 def test_iqn_lidar_updates_and_handles_single_structured_observation(tmp_path: Path) -> None:
-    pipeline = LidarFeaturePipeline(_asset(tmp_path), expected_map_uid="test-3")
+    pipeline = LidarFeaturePipeline(_asset(tmp_path), expected_map_uid="tmrl-test")
     raw = np.zeros(33, dtype=np.float32)
     raw[10] = 1.0
     single = pipeline.transform_observation(raw)
@@ -373,7 +502,7 @@ def test_iqn_lidar_updates_and_handles_single_structured_observation(tmp_path: P
 def test_temporal_iqn_handles_explicit_history(tmp_path: Path) -> None:
     pipeline = LidarFeaturePipeline(
         _asset(tmp_path),
-        expected_map_uid="test-3",
+        expected_map_uid="tmrl-test",
         history_length=1,
         include_track_relative=True,
     )
@@ -421,6 +550,90 @@ def test_temporal_iqn_handles_explicit_history(tmp_path: Path) -> None:
 
     assert torch.isfinite(torch.tensor(list(metrics.values()))).all()
     assert priorities.transition_ids == [2, 4]
+
+
+def test_iqn_warm_starts_compatible_tensors_into_expanded_observation_model(
+    tmp_path: Path,
+) -> None:
+    source = ImplicitQuantileQLearning(
+        LidarIqnModel(
+            cosine_count=8,
+            telemetry_dim=26,
+            history_length=2,
+            burn_in=1,
+            spatial_bins=2,
+        ),
+        execution={"device": "cpu", "precision": "float32"},
+    )
+    source.setup({"seed": 0})
+    checkpoint = tmp_path / "source.pt"
+    torch.save({"learner": source.state_dict()}, checkpoint)
+    target = ImplicitQuantileQLearning(
+        LidarIqnModel(
+            cosine_count=8,
+            telemetry_dim=49,
+            lidar_channels=8,
+            telemetry_group_dims=(26, 5, 4, 14),
+            history_length=2,
+            burn_in=1,
+            spatial_bins=2,
+        ),
+        model_initialization_checkpoint=checkpoint.name,
+        base_dir=tmp_path,
+        execution={"device": "cpu", "precision": "float32"},
+    )
+    target.setup({"seed": 1})
+    assert target.model is not None
+    source_state = source.model.state_dict()
+    target_state = target.model.state_dict()
+    conv_name = "encoder.encoder.frame.track.0.weight"
+
+    assert target.initialized_exact_tensors > 10
+    assert target.initialized_expanded_tensors == 2
+    assert torch.equal(target_state[conv_name][:, :4], source_state[conv_name])
+    assert torch.count_nonzero(target_state[conv_name][:, 4:]) == 0
+    assert torch.equal(target_state["head.weight"], source_state["head.weight"])
+
+
+def test_iqn_warm_starts_the_frame_encoder_from_behavior_cloning(tmp_path: Path) -> None:
+    source = LidarBehaviorCloningModel(
+        action_ids=(0, 1, 3, 39, 72, 73, 75),
+        telemetry_dim=49,
+        lidar_channels=8,
+        telemetry_group_dims=(26, 5, 4, 14),
+        spatial_bins=2,
+    )
+    checkpoint = tmp_path / "behavior-cloning.pt"
+    torch.save({"learner": {"model": source.state_dict()}}, checkpoint)
+    target = ImplicitQuantileQLearning(
+        LidarIqnModel(
+            cosine_count=8,
+            telemetry_dim=49,
+            lidar_channels=8,
+            telemetry_group_dims=(26, 5, 4, 14),
+            history_length=2,
+            burn_in=1,
+            spatial_bins=2,
+        ),
+        model_initialization_checkpoint=checkpoint.name,
+        base_dir=tmp_path,
+        execution={"device": "cpu", "precision": "float32"},
+    )
+
+    target.setup({"seed": 0})
+
+    assert target.model is not None
+    source_state = source.state_dict()
+    target_state = target.model.state_dict()
+    assert target.initialized_exact_tensors > 10
+    assert torch.equal(
+        target_state["encoder.encoder.frame.track.0.weight"],
+        source_state["encoder.encoder.track.0.weight"],
+    )
+    assert torch.equal(
+        target_state["encoder.encoder.frame.projection.0.weight"],
+        source_state["encoder.encoder.projection.0.weight"],
+    )
 
 
 def test_iqn_resume_uses_configured_learning_rate(tmp_path: Path) -> None:
@@ -531,7 +744,7 @@ def test_session_protocol_verifies_preloaded_map_and_ready_state() -> None:
                 response = {
                     "status": "ok",
                     "protocol_version": PLUGIN_PROTOCOL_VERSION,
-                    "map_uid": "test-3",
+                    "map_uid": "tmrl-test",
                     "ready": "true",
                 }
                 connection.sendall(json.dumps(response).encode("utf-8") + b"\n")
@@ -540,7 +753,7 @@ def test_session_protocol_verifies_preloaded_map_and_ready_state() -> None:
     thread = threading.Thread(target=serve)
     thread.start()
     client = OpenPlanetSessionClient(host, port, timeout_s=1)
-    assert client.verify_loaded_map("test-3").map_uid == "test-3"
-    assert client.confirm_ready("test-3").map_uid == "test-3"
+    assert client.verify_loaded_map("tmrl-test").map_uid == "tmrl-test"
+    assert client.confirm_ready("tmrl-test").map_uid == "tmrl-test"
     thread.join(timeout=1)
     assert commands == ["verify_loaded_map", "confirm_ready"]

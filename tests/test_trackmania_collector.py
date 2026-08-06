@@ -29,6 +29,14 @@ class FakeTrackmania:
         )
 
 
+class ResettableZeroPolicy(ZeroPolicy):
+    def __init__(self) -> None:
+        self.reset_count = 0
+
+    def reset_episode(self) -> None:
+        self.reset_count += 1
+
+
 def test_collector_stores_transitions_and_keeps_only_observation_refs() -> None:
     store = InMemoryReplayStore()
     collector = TrackmaniaCollector(store, IdentityFeaturePipeline(), ZeroPolicy())
@@ -36,3 +44,18 @@ def test_collector_stores_transitions_and_keeps_only_observation_refs() -> None:
     assert result.transitions == 2
     assert len(store) == 2
     assert result.artifact.observation_refs == ["frame-1", "frame-2"]
+
+
+def test_collector_resets_policy_and_truncates_at_the_step_limit() -> None:
+    store = InMemoryReplayStore()
+    policy = ResettableZeroPolicy()
+    collector = TrackmaniaCollector(store, IdentityFeaturePipeline(), policy)
+
+    result = collector.collect(FakeTrackmania(), "episode", max_steps=1)
+    transition = store.get(store.available_ids())[0]
+
+    assert result.transitions == 1
+    assert policy.reset_count == 1
+    assert transition.truncated
+    assert transition.info["termination_reason"] == "max_steps"
+    assert result.artifact.metadata["termination"] == "max_steps"

@@ -22,6 +22,11 @@ from tmrl.experiments.orchestration import GridStrategy, StudyLedger, StudyRunne
 from tmrl.observability.trackers import WandbTracker, _wandb_metric_name
 from tmrl.project.scaffold import create_project
 from tmrl.trackmania.assets import record_boundary, record_trajectory
+from tmrl.trackmania.diagnostics import (
+    ExpertActionDiagnostics,
+    ProgressBinDiagnostics,
+    aggregate_expert_bins,
+)
 from tmrl.trackmania.environment import OpenPlanetEnvironment, OpenPlanetEnvironmentFactory
 from tmrl.trackmania.evaluation import TrackmaniaEvaluator
 from tmrl.trackmania.reward import TrajectoryReward
@@ -31,6 +36,47 @@ from tmrl.trackmania.telemetry import (
     OpenPlanetClient,
     TelemetryFrame,
 )
+
+
+def test_progress_bin_diagnostics_cover_empty_bins_and_q_metrics() -> None:
+    class Policy:
+        last_q_margin = 2.0
+        last_q_max = 5.0
+
+    diagnostics = ProgressBinDiagnostics(action_count=4)
+    diagnostics.record(0.0, 0, Policy())
+    diagnostics.record(9.9, 1, Policy())
+    summary = diagnostics.summary()
+
+    assert summary["00_010"]["action_count"] == 2.0
+    assert summary["00_010"]["action_coverage"] == 0.5
+    assert summary["00_010"]["q_margin_mean"] == 2.0
+    assert summary["10_020"] == {
+        "action_count": 0.0,
+        "action_entropy": 0.0,
+        "action_coverage": 0.0,
+        "q_margin_mean": 0.0,
+        "q_margin_min": 0.0,
+        "q_max_mean": 0.0,
+    }
+    assert diagnostics.flat_summary()["progress_bin/00_010/q_max_mean"] == 5.0
+
+
+def test_expert_diagnostics_aggregate_unmasked_rankings() -> None:
+    first = ExpertActionDiagnostics()
+    first.record(15.0, 2.0, 5.0, 3)
+    second = ExpertActionDiagnostics()
+    second.record(15.0, 4.0, 6.0, 1)
+
+    summary = aggregate_expert_bins([first.summary(), second.summary()])
+
+    assert summary["10_020"] == {
+        "count": 2.0,
+        "expert_q_mean": 3.0,
+        "raw_greedy_q_mean": 5.5,
+        "advantage_gap_mean": 2.5,
+        "expert_action_rank_mean": 2.0,
+    }
 
 
 def test_jsonl_events_have_release_envelope(tmp_path: Path) -> None:
@@ -86,6 +132,44 @@ def test_torch_checkpoints_are_zstd_streamed_and_round_trip(tmp_path: Path) -> N
     assert path.stat().st_size < state["tensor"].numel() * state["tensor"].element_size()
     assert torch.equal(restored["tensor"], state["tensor"])
     assert restored["counter"] == 3
+
+
+def test_torch_checkpoint_concurrent_loads_use_distinct_temporary_files(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import tmrl.core.builtins as builtins
+
+    path = tmp_path / "checkpoint.pt"
+    codec = TorchCheckpointCodec()
+    state = {"tensor": torch.ones(1_000_000, dtype=torch.float32)}
+    codec.save(state, path)
+    original = builtins._load_torch_checkpoint
+    barrier = threading.Barrier(2)
+    temporary_paths: list[Path] = []
+    failures: list[Exception] = []
+
+    def delayed_load(temporary: Path) -> dict[str, object]:
+        temporary_paths.append(temporary)
+        barrier.wait(timeout=10)
+        return dict(original(temporary))
+
+    def load() -> None:
+        try:
+            restored = codec.load(path)
+            assert torch.equal(restored["tensor"], state["tensor"])
+        except Exception as exc:
+            failures.append(exc)
+
+    monkeypatch.setattr(builtins, "_load_torch_checkpoint", delayed_load)
+    threads = [threading.Thread(target=load) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+
+    assert not failures
+    assert not any(thread.is_alive() for thread in threads)
+    assert len(set(temporary_paths)) == 2
 
 
 def test_torch_checkpoint_round_trips_numpy_replay_state_with_weights_only(
@@ -200,9 +284,12 @@ def test_environment_step_reports_applied_control_and_race_time_delta() -> None:
     from tmrl.trackmania.control import RecordingController
 
     class Client:
+        def __init__(self) -> None:
+            self.race_times_ms = iter((105.0, 112.0, 121.0))
+
         def read(self) -> TelemetryFrame:
             values = np.zeros(33, dtype=np.float32)
-            values[3] = 166.0
+            values[3] = next(self.race_times_ms)
             return TelemetryFrame(values)
 
     def reward_step(position: np.ndarray, **kwargs: object) -> SimpleNamespace:
@@ -224,11 +311,15 @@ def test_environment_step_reports_applied_control_and_race_time_delta() -> None:
             potential_progress=0.0,
             projected_velocity_mps=0.0,
             projected_velocity_ratio=0.0,
+            pace_reward=0.0,
+            reference_time_s=0.0,
+            time_debt_s=0.0,
         )
 
     environment = object.__new__(OpenPlanetEnvironment)
     environment.config = SimpleNamespace(
         action_repeat_frames=2,
+        decision_interval_ms=20.0,
         position_indices=(4, 5, 6),
         velocity_indices=(7, 8, 9),
     )
@@ -244,9 +335,10 @@ def test_environment_step_reports_applied_control_and_race_time_delta() -> None:
     assert info["control_gas"] == 1.0
     assert info["control_brake"] == 0.0
     assert info["control_steer"] == -1.0
-    assert info["step_race_time_ms"] == pytest.approx(66.0)
-    assert info["race_time_ms"] == pytest.approx(166.0)
-    assert environment._last_race_time_ms == pytest.approx(166.0)
+    assert info["step_race_time_ms"] == pytest.approx(21.0)
+    assert info["decision_interval_error_ms"] == pytest.approx(1.0)
+    assert info["race_time_ms"] == pytest.approx(121.0)
+    assert environment._last_race_time_ms == pytest.approx(121.0)
 
 
 def test_environment_waits_for_race_timer_restart() -> None:
@@ -269,41 +361,48 @@ def test_environment_waits_for_race_timer_restart() -> None:
 
 
 def test_environment_retries_an_unconfirmed_restart() -> None:
+    events: list[str] = []
+
     class Controller:
         def __init__(self) -> None:
             self.resets = 0
 
+        def confirm_finish(self) -> None:
+            events.append("confirm")
+
         def reset(self) -> None:
             self.resets += 1
+            events.append("reset")
 
     class Client:
-        def __init__(self) -> None:
-            self._race_times_ms = iter((1_000.0, 2_000.0))
-
         def read(self) -> TelemetryFrame:
-            return TelemetryFrame(
-                np.asarray([0.0, 0.0, 0.0, next(self._race_times_ms)], dtype=np.float32)
-            )
+            events.append("read")
+            return TelemetryFrame(np.asarray([0.0, 0.0, 0.0, 50.0], dtype=np.float32))
 
     environment = object.__new__(OpenPlanetEnvironment)
     environment.client = Client()
     environment.controller = Controller()
     environment.evaluation_map = None
+    environment._finish_confirmation_pending = True
+    environment._last_race_time_ms = 500.0
     attempts = 0
-    frame = TelemetryFrame(np.asarray([0.0, 0.0, 0.0, 50.0], dtype=np.float32))
 
     def wait_for_active_run(previous_race_time_ms: float) -> TelemetryFrame:
         nonlocal attempts
         attempts += 1
-        assert previous_race_time_ms in {1_000.0, 2_000.0}
+        assert previous_race_time_ms == 500.0
         if attempts == 1:
             raise TimeoutError
-        return frame
+        return environment.client.read()
 
     environment._wait_for_active_run = wait_for_active_run
 
-    assert environment._restart_race() is frame
+    frame = environment._restart_race()
+
+    assert float(frame.values[3]) == 50.0
     assert environment.controller.resets == 2
+    assert events == ["confirm", "reset", "confirm", "reset", "read"]
+    assert not environment._finish_confirmation_pending
 
 
 def test_openplanet_client_validates_a_complete_packet() -> None:
@@ -445,6 +544,52 @@ def test_trajectory_reward_reports_progress_finish_and_off_track() -> None:
         ).reason
         == "off_track"
     )
+
+
+@pytest.mark.parametrize(
+    ("finish_time_s", "expected_bonus"),
+    [(38.0, 0.0), (37.0, 10.0), (36.0, 40.0)],
+)
+def test_time_attack_terminal_reward_applies_only_to_finishes(
+    finish_time_s: float, expected_bonus: float
+) -> None:
+    points = np.asarray([[0, 0, 0], [1, 0, 0]], dtype=np.float32)
+    reward = TrajectoryReward(
+        points,
+        minimum_finish_steps=1,
+        time_attack_target_s=38.0,
+        time_attack_bonus_scale=10.0,
+    )
+    reward.reset(points[0], race_time_ms=0.0)
+
+    result = reward.step(
+        points[-1],
+        finish_ui_active=True,
+        race_time_ms=finish_time_s * 1_000.0,
+    )
+
+    assert result.reason == "finished"
+    assert result.time_attack_terminal_reward == expected_bonus
+
+
+def test_time_attack_terminal_reward_is_not_applied_to_failures() -> None:
+    points = np.asarray([[0, 0, 0], [1, 0, 0]], dtype=np.float32)
+    reward = TrajectoryReward(
+        points,
+        minimum_finish_steps=1,
+        time_attack_target_s=38.0,
+        time_attack_bonus_scale=10.0,
+    )
+    reward.reset(points[0], race_time_ms=0.0)
+
+    result = reward.step(
+        np.asarray([100, 0, 0], dtype=np.float32),
+        finish_ui_active=False,
+        race_time_ms=36_000.0,
+    )
+
+    assert result.reason == "off_track"
+    assert result.time_attack_terminal_reward == 0.0
 
 
 def test_trajectory_reward_has_dense_progress_signal_and_stall_termination() -> None:
@@ -1174,6 +1319,57 @@ def test_trackmania_evaluator_records_telemetry_errors_and_continues() -> None:
     metrics = TrackmaniaEvaluator(suite, EnvironmentFactory(), Pipeline()).evaluate(Policy())
 
     assert metrics["eval/finish_rate"] == 0.5
+
+
+def test_trackmania_evaluator_serializes_progress_bin_artifacts(tmp_path: Path) -> None:
+    class Environment:
+        def reset(self, *, seed: int | None = None) -> tuple[float, dict[str, object]]:
+            del seed
+            return 0.0, {}
+
+        def step(self, action: object) -> tuple[float, float, bool, bool, dict[str, object]]:
+            del action
+            return (
+                1.0,
+                1.0,
+                True,
+                False,
+                {
+                    "termination_reason": "finished",
+                    "race_time_ms": 12_345.0,
+                    "progress_pct": 95.0,
+                },
+            )
+
+        def close(self) -> None:
+            return None
+
+    class EnvironmentFactory:
+        def create(self, *, seed: int) -> Environment:
+            del seed
+            return Environment()
+
+    class Pipeline:
+        def transform_observation(self, observation: object) -> object:
+            return observation
+
+    class Policy:
+        last_q_margin = 1.0
+        last_q_max = 2.0
+
+        def act(self, observation: object, *, deterministic: bool = False) -> int:
+            del observation
+            assert deterministic
+            return 0
+
+    suite = SimpleNamespace(name="unit", version="1", seeds=(0,), episodes_per_seed=1)
+    metrics = TrackmaniaEvaluator(
+        suite, EnvironmentFactory(), Pipeline(), run_dir=tmp_path
+    ).evaluate(Policy())
+    artifact = json.loads((tmp_path / "evaluation.json").read_text(encoding="utf-8"))
+
+    assert metrics["progress_bin/90_100/q_margin_mean"] == 1.0
+    assert artifact["trials"][0]["progress_bins"]["90_100"]["action_count"] == 1.0
 
 
 def test_trackmania_evaluator_reuses_environment_for_map_trials(

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import ctypes
+import sys
 from collections.abc import Callable
 from threading import RLock, Timer
 from time import sleep
@@ -19,6 +21,19 @@ def _vgamepad_callback[Callback: Callable[..., object]](callback: Callback) -> C
     return callback
 
 
+def _confirm_trackmania_finish() -> None:
+    if sys.platform != "win32":
+        return
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    window = user32.FindWindowW(None, "Trackmania")
+    if window:
+        user32.SetForegroundWindow(window)
+        sleep(0.1)
+    user32.keybd_event(0x0D, 0, 0, 0)
+    sleep(0.1)
+    user32.keybd_event(0x0D, 0, 0x0002, 0)
+
+
 @runtime_checkable
 class Controller(Protocol):
     def apply(self, action: np.ndarray) -> None: ...
@@ -26,6 +41,8 @@ class Controller(Protocol):
     def consume_collision(self) -> bool: ...
 
     def reset(self) -> None: ...
+
+    def confirm_finish(self) -> None: ...
 
     def close(self) -> None: ...
 
@@ -134,6 +151,11 @@ class GamepadController:
             self._gamepad.update()
         self.consume_collision()
 
+    def confirm_finish(self) -> None:
+        """Confirm TrackMania's personal-record screen with Enter."""
+
+        _confirm_trackmania_finish()
+
     def close(self) -> None:
         with self._tap_lock:
             self._cancel_tap_unlocked()
@@ -158,6 +180,9 @@ class RecordingController:
 
     def reset(self) -> None:
         self.actions.clear()
+
+    def confirm_finish(self) -> None:
+        return None
 
     def close(self) -> None:
         return None

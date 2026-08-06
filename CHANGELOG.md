@@ -7,7 +7,7 @@
 - Progress rewards bound per-step index advance to a physically reachable arc length, preventing hairpin cuts through folded reference lines.
 - Lidar features keep the last valid horizontal heading through vertical moments instead of aborting the actor.
 - Distributed run safety: journal pruning after checkpoints, refusal to silently re-ingest stale journals on fresh starts, bounded coordinator rollout queue with backpressure, actor threads that stop the process on unexpected failure, telemetry stalls that truncate episodes instead of killing the run, spool-cap pause instead of crash, thread-safe JSONL logging, safer checkpoint loading (`weights_only`), and resume-friendly manifests.
-- `tmrl benchmark` is config-driven via `evaluation.target_median_s` / `min_finish_rate` instead of a hardcoded `test-3` release gate.
+- `tmrl benchmark` is config-driven via `evaluation.target_median_s` / `min_finish_rate` instead of a hardcoded `tmrl-test` release gate.
 - Packaging: `setuptools>=77` for SPDX licenses, OS classifiers, stricter mypy import overrides, Windows CI, and broader `.gitignore` coverage for sqlite/event leftovers.
 
 - `tmrl track record-demo` now records a whole session: `--count` laps in one go, discards outliers slower than the best finish by more than `--max-gap` seconds (default 1s), saves the rest into the output directory at the end, and mid-lap restarts discard only the partial lap instead of failing the recording.

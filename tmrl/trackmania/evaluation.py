@@ -12,6 +12,7 @@ from typing import Any, cast
 from tmrl.core.contracts import EnvironmentFactory, FeaturePipeline, Policy
 from tmrl.core.spec import EvaluationSuiteSpec
 from tmrl.experiments.evaluation import EvaluationResult, aggregate_results
+from tmrl.trackmania.diagnostics import ProgressBinDiagnostics, aggregate_progress_bins
 from tmrl.trackmania.geometry import BoundaryGeometry
 from tmrl.trackmania.session import PLUGIN_PROTOCOL_VERSION
 
@@ -84,6 +85,11 @@ class TrackmaniaEvaluator:
                     results.append(self._evaluate_episode(policy, None, trial_index, seed=seed))
         metrics = dict(aggregate_results(results))
         metrics["eval/median_finish_time_s"] = self._median_finished(results)
+        metrics.update(
+            aggregate_progress_bins(
+                result.progress_bins for result in results if result.progress_bins is not None
+            )
+        )
         if self.run_dir is not None:
             self._write_artifact(results, metrics)
         return metrics
@@ -116,6 +122,7 @@ class TrackmaniaEvaluator:
         finish_time_s: float | None = None
         progress_pct = 0.0
         telemetry_error: str | None = None
+        diagnostics = ProgressBinDiagnostics(_policy_action_count(policy))
         started = perf_counter()
         try:
             observation, _ = environment.reset(seed=seed)
@@ -131,6 +138,9 @@ class TrackmaniaEvaluator:
                 action = policy.act(prepared, deterministic=True)
                 action_latency_ms += (perf_counter() - action_started) * 1_000.0
                 observation, reward, terminated, truncated, info = environment.step(action)
+                diagnostics.record(
+                    float(info.get("progress_pct", progress_pct)), int(action), policy
+                )
                 prepared = self.feature_pipeline.transform_observation(observation)
                 reward_sum += float(reward)
                 steps += 1
@@ -166,6 +176,7 @@ class TrackmaniaEvaluator:
             map_uid="" if map_spec is None else map_spec.expected_map_uid,
             trial_index=trial_index,
             telemetry_error=telemetry_error,
+            progress_bins=diagnostics.summary(),
         )
 
     def _create_environment(self, map_spec: Any | None, *, seed: int) -> Any:
@@ -202,6 +213,7 @@ class TrackmaniaEvaluator:
                     "progress_pct": result.progress_pct,
                     "telemetry_error": result.telemetry_error,
                     "controller_error": result.controller_error,
+                    "progress_bins": result.progress_bins,
                 }
                 for result in results
             ],
@@ -210,3 +222,11 @@ class TrackmaniaEvaluator:
         temporary = target.with_suffix(".json.tmp")
         temporary.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
         os.replace(temporary, target)
+
+
+def _policy_action_count(policy: Policy) -> int:
+    model = getattr(policy, "model", None)
+    count = getattr(model, "action_count", 78)
+    if not isinstance(count, int) or count < 2:
+        raise ValueError("TrackMania policy must expose at least two actions")
+    return count
