@@ -86,7 +86,25 @@ keyboard:
 So finer steering bins, a continuous action head, or a larger table would buy
 nothing against this reference. Do not spend a run on it.
 
-## Measurement 4: the track is shorter than assumed
+## Measurement 4: every lap starts with half a second of standing still
+
+`OpenPlanetEnvironment.reset` waits for the race to be live - `_wait_for_active_run`
+returns only once the race clock is above zero - and then sleeps
+`reset_settle_s` with the gamepad at neutral before the first action is taken.
+The default is 0.5 s and no config from v33 to v37 overrides it.
+
+The demonstration recorder has no such pause: measured, the human's first frame
+is at race clock 10-20 ms and he is already doing 7.9 m/s half a second later.
+The lap time both are judged by is the game's own clock, counting from zero.
+
+So every agent lap, in training and in evaluation, spends its first 0.5 s
+parked while the clock runs, and then drives the whole track shifted 0.5 s
+later. That is **a quarter of the entire 2 s gap to the human, and it is
+free**. v38 sets `reset_settle_s: 0.05`, keeping a small guard against a torn
+first frame after the restart binding; 0.0 is defensible and recovers the last
+50 ms.
+
+## Measurement 5: the track is shorter than assumed
 
 The geometry asset gives a racing line of **1982.6 m** (reward centre line
 2158.5 m). Every earlier note used 2278.5 m. Corrected targets: 36 s is 55.1

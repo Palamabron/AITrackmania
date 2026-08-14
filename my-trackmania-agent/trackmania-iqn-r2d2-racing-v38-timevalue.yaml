@@ -47,6 +47,7 @@ components:
         geometry_path: assets/test-3.geometry.npz
         use_racing_line: true
         expected_map_uid: oqIJ5rQDRrNwLPTh9H2p_W4tLof
+        reset_settle_s: 0.05
         action_repeat_frames: 2
         nearest_forward_points: 100
         nearest_backward_points: 10
