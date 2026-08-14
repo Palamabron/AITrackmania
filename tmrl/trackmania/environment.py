@@ -68,6 +68,8 @@ class TrackmaniaEnvironmentConfig(BaseModel):
     projected_velocity_scale: float = Field(default=0.0, ge=0.0)
     projected_speed_bonus_scale: float = Field(default=0.0, ge=0.0)
     steering_delta_penalty: float = Field(default=0.0, ge=0.0)
+    finish_time_bonus_per_second: float = Field(default=0.0, ge=0.0)
+    finish_reference_time_s: float = Field(default=0.0, ge=0.0)
     reward_gamma: float = Field(default=0.995, ge=0.0, le=1.0)
 
     @model_validator(mode="after")
@@ -93,6 +95,8 @@ class TrackmaniaEnvironmentConfig(BaseModel):
             self.projected_velocity_scale,
             self.projected_speed_bonus_scale,
             self.steering_delta_penalty,
+            self.finish_time_bonus_per_second,
+            self.finish_reference_time_s,
             self.collision_cooldown_s,
             self.reward_gamma,
         )
@@ -122,6 +126,8 @@ class TrackmaniaEnvironmentConfig(BaseModel):
             "projected_velocity_scale",
             "projected_speed_bonus_scale",
             "steering_delta_penalty",
+            "finish_time_bonus_per_second",
+            "finish_reference_time_s",
             "reward_gamma",
         )
         return {name: getattr(self, name) for name in names}
@@ -178,9 +184,6 @@ class OpenPlanetEnvironment:
             self.geometry.validate_map(self.evaluation_map.map_path)
             self._session.verify_loaded_map(self.evaluation_map.expected_map_uid)
         frame = self._restart_race()
-        if self.config.reset_settle_s:
-            sleep(self.config.reset_settle_s)
-            frame = self.client.read()
         self.reward.reset(
             frame.values[list(self.config.position_indices)],
             velocity=frame.values[list(self.config.velocity_indices)],
@@ -197,12 +200,30 @@ class OpenPlanetEnvironment:
             if self.evaluation_map is not None:
                 assert self._session is not None
                 self._session.confirm_ready(self.evaluation_map.expected_map_uid)
+            self._settle_before_start(previous_race_time_ms)
             try:
                 return self._wait_for_active_run(previous_race_time_ms)
             except TimeoutError:
                 if attempt:
                     raise
         raise AssertionError("unreachable")
+
+    def _settle_before_start(self, previous_race_time_ms: float) -> None:
+        """Absorb the restart transient while the race clock is still stopped.
+
+        Settling after the clock starts parks the car at neutral controls for
+        those seconds of a scored lap. The reward cannot charge for them either:
+        ``reward.reset`` would receive the post-settle frame and the time penalty
+        is a telescoping delta, so the agent is scored on a lap it never drove.
+        """
+
+        deadline = monotonic() + self.config.reset_settle_s
+        restart_observed = previous_race_time_ms <= 0.0
+        while monotonic() < deadline:
+            race_time_ms = float(self.client.read().values[3])
+            restart_observed = restart_observed or race_time_ms < previous_race_time_ms
+            if restart_observed and race_time_ms > 0.0:
+                return
 
     def _wait_for_active_run(self, previous_race_time_ms: float) -> TelemetryFrame:
         deadline = monotonic() + self.config.start_timeout_s

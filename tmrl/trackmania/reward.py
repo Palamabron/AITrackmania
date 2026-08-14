@@ -58,6 +58,8 @@ class TrajectoryReward:
         projected_velocity_scale: float = 0.0,
         projected_speed_bonus_scale: float = 0.0,
         steering_delta_penalty: float = 0.0,
+        finish_time_bonus_per_second: float = 0.0,
+        finish_reference_time_s: float = 0.0,
         reward_gamma: float = 0.995,
     ) -> None:
         points = np.asarray(trajectory, dtype=np.float32)
@@ -85,6 +87,8 @@ class TrajectoryReward:
             or projected_velocity_scale < 0.0
             or projected_speed_bonus_scale < 0.0
             or steering_delta_penalty < 0.0
+            or finish_time_bonus_per_second < 0.0
+            or finish_reference_time_s < 0.0
             or not 0.0 <= reward_gamma <= 1.0
         ):
             raise ValueError("reward limits must be non-negative")
@@ -107,6 +111,8 @@ class TrajectoryReward:
         self.projected_velocity_scale = projected_velocity_scale
         self.projected_speed_bonus_scale = projected_speed_bonus_scale
         self.steering_delta_penalty = steering_delta_penalty
+        self.finish_time_bonus_per_second = finish_time_bonus_per_second
+        self.finish_reference_time_s = finish_reference_time_s
         self.reward_gamma = reward_gamma
         self._cumulative_distance = np.r_[
             0.0, np.cumsum(np.linalg.norm(np.diff(self.points, axis=0), axis=1))
@@ -224,7 +230,7 @@ class TrajectoryReward:
                     "finished",
                     time_reward,
                     progress_potential,
-                    self.finish_reward,
+                    self._finish_value(race_time_s),
                     progress_reward,
                     projected_velocity_reward,
                     projected_speed_reward,
@@ -383,6 +389,21 @@ class TrajectoryReward:
         if norm <= 0.0:
             raise ValueError("trajectory must not contain a zero-length local tangent")
         return cast(np.ndarray, direction / norm)
+
+    def _finish_value(self, race_time_s: float | None) -> float:
+        """Pay the finish bonus on a sliding scale so a faster lap is worth strictly more.
+
+        Every dense term of this reward is proportional to distance travelled
+        (progress, and velocity terms of the form ``v * dt``), so a completed lap
+        collects the same shaped return whatever its duration. Without a
+        time-dependent terminal payout, the constant per-second penalty is the
+        only signal separating a fast lap from a slow one.
+        """
+
+        if race_time_s is None or self.finish_time_bonus_per_second <= 0.0:
+            return self.finish_reward
+        margin_s = max(0.0, self.finish_reference_time_s - race_time_s)
+        return self.finish_reward + self.finish_time_bonus_per_second * margin_s
 
     def _time_reward(self, race_time_ms: float | None) -> tuple[float, float]:
         race_time_s = self._race_time_s(race_time_ms)

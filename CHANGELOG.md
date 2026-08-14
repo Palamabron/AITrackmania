@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- `TrajectoryReward` pays the finish on a sliding scale via `finish_time_bonus_per_second` and `finish_reference_time_s`. Every dense term of the reward is proportional to distance (`v * dt` integrates to path length), so a completed lap previously collected the same shaped return whatever its duration: measured on ten committed human laps, saving one second was worth 0.74 reward out of 93.5, all of it from the constant time penalty. See `docs/v38-time-value.md`.
+- Added `trackmania-iqn-r2d2-racing-v38-timevalue.yaml`: the sliding finish bonus, a discount set from the decision rate (`gamma` 0.9994 is a 22.5 s horizon at 74 decisions/s, where 0.99 was 1.35 s and hid the finish reward behind a factor of 1e-12), value rescaling for the larger returns, and the demonstration margin restored.
+
 - Recurrent IQN training now updates every post-burn-in timestep in a sequence (R2D2-style) instead of only the final step, and sequence priorities use a mixed max/mean TD error.
 - Added optional R2D2 value rescaling and a DQfD-style demonstration margin loss to `ImplicitQuantileQLearning`; demonstration transitions are protected from FIFO eviction.
 - Progress rewards bound per-step index advance to a physically reachable arc length, preventing hairpin cuts through folded reference lines.

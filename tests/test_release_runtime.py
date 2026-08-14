@@ -268,6 +268,45 @@ def test_environment_waits_for_race_timer_restart() -> None:
     assert float(frame.values[3]) == 50.0
 
 
+def test_settling_stops_as_soon_as_the_race_clock_starts() -> None:
+    class Client:
+        def __init__(self) -> None:
+            self.reads = 0
+            self._race_times_ms = iter((0.0, 0.0, 10.0, 20.0, 30.0))
+
+        def read(self) -> TelemetryFrame:
+            self.reads += 1
+            return TelemetryFrame(
+                np.asarray([0.0, 0.0, 0.0, next(self._race_times_ms)], dtype=np.float32)
+            )
+
+    environment = object.__new__(OpenPlanetEnvironment)
+    environment.client = Client()
+    environment.config = SimpleNamespace(reset_settle_s=30.0)
+
+    environment._settle_before_start(previous_race_time_ms=36_000.0)
+
+    assert environment.client.reads == 3
+
+
+def test_settling_absorbs_the_restart_transient_while_the_clock_is_stopped() -> None:
+    class Client:
+        def __init__(self) -> None:
+            self.reads = 0
+
+        def read(self) -> TelemetryFrame:
+            self.reads += 1
+            return TelemetryFrame(np.zeros(4, dtype=np.float32))
+
+    environment = object.__new__(OpenPlanetEnvironment)
+    environment.client = Client()
+    environment.config = SimpleNamespace(reset_settle_s=0.05)
+
+    environment._settle_before_start(previous_race_time_ms=0.0)
+
+    assert environment.client.reads > 0
+
+
 def test_environment_retries_an_unconfirmed_restart() -> None:
     class Controller:
         def __init__(self) -> None:
@@ -288,6 +327,7 @@ def test_environment_retries_an_unconfirmed_restart() -> None:
     environment = object.__new__(OpenPlanetEnvironment)
     environment.client = Client()
     environment.controller = Controller()
+    environment.config = SimpleNamespace(reset_settle_s=0.0)
     environment.evaluation_map = None
     attempts = 0
     frame = TelemetryFrame(np.asarray([0.0, 0.0, 0.0, 50.0], dtype=np.float32))
@@ -445,6 +485,45 @@ def test_trajectory_reward_reports_progress_finish_and_off_track() -> None:
         ).reason
         == "off_track"
     )
+
+
+def _finish_at(race_time_ms: float, **kwargs: float) -> float:
+    reward = TrajectoryReward(
+        np.array([[0, 0, 0], [1, 0, 0], [2, 0, 0]], dtype=np.float32),
+        minimum_finish_steps=1,
+        finish_reward=25.0,
+        **kwargs,
+    )
+    reward.reset(np.array([0, 0, 0]), velocity=np.zeros(3), race_time_ms=0.0)
+    reward.step(
+        np.array([1, 0, 0]), finish_ui_active=False, velocity=np.zeros(3), race_time_ms=10.0
+    )
+    finish = reward.step(
+        np.array([2, 0, 0]),
+        finish_ui_active=True,
+        velocity=np.zeros(3),
+        race_time_ms=race_time_ms,
+    )
+    assert finish.reason == "finished"
+    return finish.terminal_reward
+
+
+def test_finish_bonus_pays_a_faster_lap_strictly_more() -> None:
+    scale = {"finish_time_bonus_per_second": 5.0, "finish_reference_time_s": 45.0}
+
+    assert _finish_at(36_000.0) == pytest.approx(25.0)
+    assert _finish_at(36_000.0, **scale) == pytest.approx(25.0 + 5.0 * 9.0)
+    assert _finish_at(38_000.0, **scale) == pytest.approx(25.0 + 5.0 * 7.0)
+    assert _finish_at(36_000.0, **scale) - _finish_at(38_000.0, **scale) == pytest.approx(10.0)
+    assert _finish_at(50_000.0, **scale) == pytest.approx(25.0)
+
+
+def test_finish_bonus_rejects_negative_settings() -> None:
+    with pytest.raises(ValueError, match="non-negative"):
+        TrajectoryReward(
+            np.array([[0, 0, 0], [1, 0, 0]], dtype=np.float32),
+            finish_time_bonus_per_second=-1.0,
+        )
 
 
 def test_trajectory_reward_has_dense_progress_signal_and_stall_termination() -> None:

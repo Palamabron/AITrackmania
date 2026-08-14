@@ -126,3 +126,40 @@ def test_report_renders_highlights_and_stability_warning() -> None:
     assert any("learner/loss/value rose" in alert for alert in experiment["alerts"])
     assert "## z67iytmc" in markdown
     assert "`episode/return`" in markdown
+
+
+SENSITIVITY = _load_script("reward_time_sensitivity")
+
+
+def test_lap_sensitivity_measures_what_a_saved_second_is_worth() -> None:
+    laps = [
+        SENSITIVITY.LapReturn(finish_time_s=36.0, total=100.0, discounted=10.0),
+        SENSITIVITY.LapReturn(finish_time_s=37.0, total=95.0, discounted=8.0),
+        SENSITIVITY.LapReturn(finish_time_s=38.0, total=90.0, discounted=6.0),
+    ]
+
+    sensitivity = SENSITIVITY.lap_sensitivity(laps, failure_cost=50.0)
+
+    assert sensitivity.reward_per_second == pytest.approx(5.0)
+    assert sensitivity.discounted_per_second == pytest.approx(2.0)
+    assert sensitivity.break_even_crash_probability == pytest.approx(0.1)
+
+
+def test_lap_sensitivity_reports_an_objective_that_ignores_lap_time() -> None:
+    laps = [
+        SENSITIVITY.LapReturn(finish_time_s=36.0, total=93.6, discounted=1.0),
+        SENSITIVITY.LapReturn(finish_time_s=38.0, total=93.6, discounted=1.0),
+    ]
+
+    sensitivity = SENSITIVITY.lap_sensitivity(laps, failure_cost=78.0)
+
+    assert sensitivity.reward_per_second == pytest.approx(0.0)
+    assert sensitivity.break_even_crash_probability == pytest.approx(0.0)
+
+
+def test_lap_sensitivity_rejects_degenerate_input() -> None:
+    lap = SENSITIVITY.LapReturn(finish_time_s=36.0, total=1.0, discounted=1.0)
+    with pytest.raises(ValueError, match="at least two laps"):
+        SENSITIVITY.lap_sensitivity([lap], failure_cost=1.0)
+    with pytest.raises(ValueError, match="differ in finish time"):
+        SENSITIVITY.lap_sensitivity([lap, lap], failure_cost=1.0)
