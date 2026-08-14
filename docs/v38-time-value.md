@@ -99,10 +99,19 @@ The lap time both are judged by is the game's own clock, counting from zero.
 
 So every agent lap, in training and in evaluation, spends its first 0.5 s
 parked while the clock runs, and then drives the whole track shifted 0.5 s
-later. That is **a quarter of the entire 2 s gap to the human, and it is
-free**. v38 sets `reset_settle_s: 0.05`, keeping a small guard against a torn
-first frame after the restart binding; 0.0 is defensible and recovers the last
-50 ms.
+later. That is **a quarter of the entire gap to the human, and it is free**.
+
+Worse, the reward cannot even see it. `reward.reset()` receives the
+*post-settle* frame and `_time_reward` is a telescoping delta, so the dense
+time penalty never charges those 0.5 s: the agent is **scored** on a 38.0 s lap
+while **optimising** a 37.5 s one. No gradient can remove a cost that is
+absent from the objective.
+
+The fix keeps the settle and moves it to where it is free. `_settle_before_start`
+now runs immediately after the restart binding and returns the moment the race
+clock starts, so the transient is absorbed during the countdown while
+`race_time_ms` is still zero. Every config benefits, not just v38, and
+`reset_settle_s` keeps its protective meaning.
 
 ## Measurement 5: the track is shorter than assumed
 
@@ -169,6 +178,16 @@ describe a different control problem than the one the agent lives in (the same
 action held for a different duration), and its control is coarser than the
 human's by that ratio. That would be a hard ceiling worth its own fix, and it
 costs one glance at W&B to rule in or out.
+
+## Also in v38: the speed feature no longer saturates below the top speed
+
+`max_speed_mps` (features) and `max_projected_speed_mps` (reward) were both
+80.0 while the human peaks at 84.8-87.2 m/s and spends 4.53% of every lap above
+80. In that band the normalised speed channel pins at exactly 1.0 and the
+quadratic speed bonus has zero derivative: no observation resolution and no
+incentive on precisely the sections that decide a lap. Both move to 100.0.
+This is the one v38 change that alters observation scaling, so expect the
+encoder to need a little time to readjust after the resume.
 
 ## Held in reserve, one lever per experiment
 

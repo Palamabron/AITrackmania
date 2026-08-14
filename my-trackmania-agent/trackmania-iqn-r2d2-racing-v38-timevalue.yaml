@@ -47,7 +47,6 @@ components:
         geometry_path: assets/test-3.geometry.npz
         use_racing_line: true
         expected_map_uid: oqIJ5rQDRrNwLPTh9H2p_W4tLof
-        reset_settle_s: 0.05
         action_repeat_frames: 2
         nearest_forward_points: 100
         nearest_backward_points: 10
@@ -64,7 +63,7 @@ components:
         progress_reward_full_lap: 75.0
         finish_reward: 25.0
         potential_progress_weight: 0.0
-        max_projected_speed_mps: 80.0
+        max_projected_speed_mps: 100.0
         velocity_to_mps_scale: 1.0
         projected_velocity_scale: 0.008
         projected_speed_bonus_scale: 0.30
@@ -98,7 +97,7 @@ components:
       history_length: 1
       include_track_relative: true
       use_racing_line: true
-      max_speed_mps: 80.0
+      max_speed_mps: 100.0
       velocity_to_mps_scale: 1.0
       nearest_forward_points: 100
       nearest_backward_points: 10

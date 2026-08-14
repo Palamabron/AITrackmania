@@ -268,6 +268,45 @@ def test_environment_waits_for_race_timer_restart() -> None:
     assert float(frame.values[3]) == 50.0
 
 
+def test_settling_stops_as_soon_as_the_race_clock_starts() -> None:
+    class Client:
+        def __init__(self) -> None:
+            self.reads = 0
+            self._race_times_ms = iter((0.0, 0.0, 10.0, 20.0, 30.0))
+
+        def read(self) -> TelemetryFrame:
+            self.reads += 1
+            return TelemetryFrame(
+                np.asarray([0.0, 0.0, 0.0, next(self._race_times_ms)], dtype=np.float32)
+            )
+
+    environment = object.__new__(OpenPlanetEnvironment)
+    environment.client = Client()
+    environment.config = SimpleNamespace(reset_settle_s=30.0)
+
+    environment._settle_before_start(previous_race_time_ms=36_000.0)
+
+    assert environment.client.reads == 3
+
+
+def test_settling_absorbs_the_restart_transient_while_the_clock_is_stopped() -> None:
+    class Client:
+        def __init__(self) -> None:
+            self.reads = 0
+
+        def read(self) -> TelemetryFrame:
+            self.reads += 1
+            return TelemetryFrame(np.zeros(4, dtype=np.float32))
+
+    environment = object.__new__(OpenPlanetEnvironment)
+    environment.client = Client()
+    environment.config = SimpleNamespace(reset_settle_s=0.05)
+
+    environment._settle_before_start(previous_race_time_ms=0.0)
+
+    assert environment.client.reads > 0
+
+
 def test_environment_retries_an_unconfirmed_restart() -> None:
     class Controller:
         def __init__(self) -> None:
@@ -288,6 +327,7 @@ def test_environment_retries_an_unconfirmed_restart() -> None:
     environment = object.__new__(OpenPlanetEnvironment)
     environment.client = Client()
     environment.controller = Controller()
+    environment.config = SimpleNamespace(reset_settle_s=0.0)
     environment.evaluation_map = None
     attempts = 0
     frame = TelemetryFrame(np.asarray([0.0, 0.0, 0.0, 50.0], dtype=np.float32))
