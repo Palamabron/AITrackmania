@@ -68,6 +68,8 @@ class TrackmaniaEnvironmentConfig(BaseModel):
     projected_velocity_scale: float = Field(default=0.0, ge=0.0)
     projected_speed_bonus_scale: float = Field(default=0.0, ge=0.0)
     steering_delta_penalty: float = Field(default=0.0, ge=0.0)
+    finish_time_bonus_per_second: float = Field(default=0.0, ge=0.0)
+    finish_reference_time_s: float = Field(default=0.0, ge=0.0)
     reward_gamma: float = Field(default=0.995, ge=0.0, le=1.0)
 
     @model_validator(mode="after")
@@ -93,6 +95,8 @@ class TrackmaniaEnvironmentConfig(BaseModel):
             self.projected_velocity_scale,
             self.projected_speed_bonus_scale,
             self.steering_delta_penalty,
+            self.finish_time_bonus_per_second,
+            self.finish_reference_time_s,
             self.collision_cooldown_s,
             self.reward_gamma,
         )
@@ -122,6 +126,8 @@ class TrackmaniaEnvironmentConfig(BaseModel):
             "projected_velocity_scale",
             "projected_speed_bonus_scale",
             "steering_delta_penalty",
+            "finish_time_bonus_per_second",
+            "finish_reference_time_s",
             "reward_gamma",
         )
         return {name: getattr(self, name) for name in names}
