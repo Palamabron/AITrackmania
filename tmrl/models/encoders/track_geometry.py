@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Protocol, cast, runtime_checkable
 
 import torch
@@ -15,6 +16,21 @@ class ObservationEncoder(Protocol):
     output_dim: int
 
     def __call__(self, observation: torch.Tensor) -> torch.Tensor: ...
+
+
+def require_mamba_layer() -> type[nn.Module]:
+    """Load ``mamba_ssm.Mamba``; GPU-only optional dependency."""
+
+    try:
+        from mamba_ssm import Mamba
+    except ImportError as exc:
+        raise RuntimeError(
+            "Mamba temporal encoder requires tmrl[mamba] (mamba-ssm). "
+            "Install with: uv sync --extra mamba"
+        ) from exc
+    if not torch.cuda.is_available():
+        raise RuntimeError("Mamba temporal encoder requires a CUDA device")
+    return cast(type[nn.Module], Mamba)
 
 
 class TrackGeometryEncoder(nn.Module):
@@ -196,6 +212,109 @@ class TemporalTrackGeometryEncoder(nn.Module):
             if mask is not None
             else None
         )
+        return cast(
+            torch.Tensor,
+            self.frame(flat_track, flat_telemetry, flat_mask).reshape(
+                batch, history, self.output_dim
+            ),
+        )
+
+
+class TemporalMambaTrackGeometryEncoder(nn.Module):
+    """Encode an explicit frame history with a causal Mamba backbone (CUDA)."""
+
+    def __init__(
+        self,
+        channels: int,
+        telemetry_dim: int,
+        *,
+        history_length: int,
+        hidden_dim: int = 192,
+        output_dim: int = 256,
+        spatial_bins: int = 0,
+        burn_in: int = 0,
+        d_state: int = 16,
+        d_conv: int = 4,
+        expand: int = 2,
+        mamba_cls: Callable[..., nn.Module] | None = None,
+    ) -> None:
+        super().__init__()
+        if history_length < 2 or not 0 <= burn_in < history_length:
+            raise ValueError("temporal encoder requires history_length >= 2")
+        if d_state < 1 or d_conv < 1 or expand < 1:
+            raise ValueError("d_state, d_conv, and expand must be positive")
+        self.channels = channels
+        self.telemetry_dim = telemetry_dim
+        self.history_length = history_length
+        self.output_dim = output_dim
+        self.burn_in = burn_in
+        self.frame = TrackGeometryEncoder(
+            channels,
+            telemetry_dim,
+            hidden_dim=hidden_dim,
+            output_dim=output_dim,
+            spatial_bins=spatial_bins,
+        )
+        layer_cls = mamba_cls if mamba_cls is not None else require_mamba_layer()
+        self.temporal = layer_cls(
+            d_model=output_dim,
+            d_state=d_state,
+            d_conv=d_conv,
+            expand=expand,
+        )
+        self.normalization = nn.LayerNorm(output_dim)
+
+    def forward(
+        self,
+        track: torch.Tensor,
+        telemetry: torch.Tensor | None = None,
+        mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        return self.encode_steps(track, telemetry, mask)[:, -1]
+
+    def encode_steps(
+        self,
+        track: torch.Tensor,
+        telemetry: torch.Tensor | None = None,
+        mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """Return normalized Mamba features for every post-burn-in step."""
+
+        if track.ndim != 4 or track.shape[1:3] != (
+            self.history_length,
+            self.channels,
+        ):
+            raise ValueError(
+                "temporal track must have shape "
+                f"(batch, {self.history_length}, {self.channels}, points)"
+            )
+        batch, history, _, points = track.shape
+        if self.telemetry_dim and (
+            telemetry is None or telemetry.shape != (batch, history, self.telemetry_dim)
+        ):
+            raise ValueError(
+                f"temporal telemetry must have shape (batch, {history}, {self.telemetry_dim})"
+            )
+        if mask is not None and mask.shape != (batch, history, points):
+            raise ValueError("temporal mask must have shape (batch, history, points)")
+        encoded = self._encode_frames(track, telemetry, mask)
+        temporal = cast(torch.Tensor, self.temporal(encoded))
+        return cast(torch.Tensor, self.normalization(temporal[:, self.burn_in :, :]))
+
+    def _encode_frames(
+        self,
+        track: torch.Tensor,
+        telemetry: torch.Tensor | None,
+        mask: torch.Tensor | None,
+    ) -> torch.Tensor:
+        batch, history = track.shape[:2]
+        flat_track = track.reshape(batch * history, *track.shape[2:])
+        flat_telemetry = (
+            telemetry.reshape(batch * history, self.telemetry_dim)
+            if telemetry is not None and self.telemetry_dim
+            else None
+        )
+        flat_mask = mask.reshape(batch * history, mask.shape[-1]) if mask is not None else None
         return cast(
             torch.Tensor,
             self.frame(flat_track, flat_telemetry, flat_mask).reshape(

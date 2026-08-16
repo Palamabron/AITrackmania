@@ -8,10 +8,12 @@ from tmrl.trackmania.environment import OpenPlanetEnvironmentFactory, Trackmania
 from tmrl.trackmania.evaluation import TrackmaniaEvaluator
 from tmrl.trackmania.features import LidarFeaturePipeline, TelemetryFeaturePipeline
 from tmrl.trackmania.iqn import LidarIqnModelFactory
+from tmrl.trackmania.iqn_mamba import LidarIqnMambaModelFactory
 
 __all__ = [
     "CollectionResult",
     "LidarFeaturePipeline",
+    "LidarIqnMambaModelFactory",
     "LidarIqnModelFactory",
     "OpenPlanetEnvironmentFactory",
     "TelemetryFeaturePipeline",

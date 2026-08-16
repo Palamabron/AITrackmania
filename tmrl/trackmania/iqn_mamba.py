@@ -1,4 +1,4 @@
-"""First-party 78-action IQN model over lidar and telemetry observations."""
+"""IQN model with a CUDA Mamba temporal backbone over lidar observations."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from torch import nn
 
 from tmrl.models.critics import DiscreteQuantileNetwork
 from tmrl.models.encoders.track_geometry import (
-    TemporalTrackGeometryEncoder,
+    TemporalMambaTrackGeometryEncoder,
     TrackGeometryEncoder,
 )
 from tmrl.trackmania.actions import (
@@ -19,17 +19,9 @@ from tmrl.trackmania.actions import (
     build_brake_tap_exploration_weights,
 )
 from tmrl.trackmania.features import LidarFeaturePipeline
-from tmrl.trackmania.iqn_mamba import LidarIqnMambaModel, LidarIqnMambaModelFactory
-
-__all__ = [
-    "LidarIqnMambaModel",
-    "LidarIqnMambaModelFactory",
-    "LidarIqnModel",
-    "LidarIqnModelFactory",
-]
 
 
-class _LidarObservationEncoder(nn.Module):
+class _LidarMambaObservationEncoder(nn.Module):
     output_dim = 256
 
     def __init__(
@@ -39,6 +31,10 @@ class _LidarObservationEncoder(nn.Module):
         history_length: int,
         spatial_bins: int,
         burn_in: int,
+        d_state: int,
+        d_conv: int,
+        expand: int,
+        mamba_cls: type[nn.Module] | None,
     ) -> None:
         super().__init__()
         encoder: nn.Module
@@ -50,13 +46,17 @@ class _LidarObservationEncoder(nn.Module):
                 spatial_bins=spatial_bins,
             )
         else:
-            encoder = TemporalTrackGeometryEncoder(
+            encoder = TemporalMambaTrackGeometryEncoder(
                 4,
                 telemetry_dim,
                 history_length=history_length,
                 output_dim=self.output_dim,
                 spatial_bins=spatial_bins,
                 burn_in=burn_in,
+                d_state=d_state,
+                d_conv=d_conv,
+                expand=expand,
+                mamba_cls=mamba_cls,
             )
         self.encoder = encoder
 
@@ -81,8 +81,8 @@ class _LidarObservationEncoder(nn.Module):
         return observation["lidar"], observation["telemetry"], observation["lidar_mask"]
 
 
-class LidarIqnModel(DiscreteQuantileNetwork):
-    """Dueling IQN network for the fixed 13 x 2 x 3 TrackMania action table."""
+class LidarIqnMambaModel(DiscreteQuantileNetwork):
+    """Dueling IQN network with optional Mamba temporal encoding."""
 
     def __init__(
         self,
@@ -92,17 +92,25 @@ class LidarIqnModel(DiscreteQuantileNetwork):
         history_length: int = 1,
         spatial_bins: int = 0,
         burn_in: int = 0,
+        d_state: int = 16,
+        d_conv: int = 4,
+        expand: int = 2,
+        mamba_cls: type[nn.Module] | None = None,
     ) -> None:
         action_count, _ = build_brake_tap_action_table()
         if telemetry_dim < 1 or history_length < 1:
             raise ValueError("telemetry_dim and history_length must be positive")
         self.history_length = history_length
         self.sequence_burn_in = burn_in if history_length > 1 else 0
-        encoder = _LidarObservationEncoder(
+        encoder = _LidarMambaObservationEncoder(
             telemetry_dim=telemetry_dim,
             history_length=history_length,
             spatial_bins=spatial_bins,
             burn_in=burn_in,
+            d_state=d_state,
+            d_conv=d_conv,
+            expand=expand,
+            mamba_cls=mamba_cls,
         )
         super().__init__(encoder, encoder.output_dim, action_count, cosine_count, dueling=True)
         self.register_buffer(
@@ -134,7 +142,7 @@ class LidarIqnModel(DiscreteQuantileNetwork):
         self._policy_history.clear()
 
 
-class LidarIqnModelFactory:
+class LidarIqnMambaModelFactory:
     def __init__(
         self,
         cosine_count: int = 64,
@@ -142,18 +150,27 @@ class LidarIqnModelFactory:
         history_length: int = 1,
         spatial_bins: int = 0,
         burn_in: int = 0,
+        d_state: int = 16,
+        d_conv: int = 4,
+        expand: int = 2,
     ) -> None:
         self.cosine_count = cosine_count
         self.telemetry_dim = telemetry_dim
         self.history_length = history_length
         self.spatial_bins = spatial_bins
         self.burn_in = burn_in
+        self.d_state = d_state
+        self.d_conv = d_conv
+        self.expand = expand
 
-    def build(self) -> LidarIqnModel:
-        return LidarIqnModel(
+    def build(self) -> LidarIqnMambaModel:
+        return LidarIqnMambaModel(
             cosine_count=self.cosine_count,
             telemetry_dim=self.telemetry_dim,
             history_length=self.history_length,
             spatial_bins=self.spatial_bins,
             burn_in=self.burn_in,
+            d_state=self.d_state,
+            d_conv=self.d_conv,
+            expand=self.expand,
         )

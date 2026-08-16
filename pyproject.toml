@@ -79,9 +79,19 @@ explain = [
 vision = [
     "torchvision>=0.15",
 ]
+mamba = [
+    "causal-conv1d>=1.4",
+    "mamba-ssm>=2.2",
+]
 
 [tool.uv]
 default-groups = ["dev"]
+# mamba-ssm / causal-conv1d need the runtime CUDA torch at build time.
+no-build-isolation-package = ["causal-conv1d", "mamba-ssm"]
+
+[tool.uv.extra-build-dependencies]
+causal-conv1d = ["torch", "setuptools", "wheel", "packaging", "ninja"]
+mamba-ssm = ["torch", "setuptools", "wheel", "packaging", "ninja"]
 
 [tool.uv.sources]
 # TrackMania hosts on Windows and Linux use the tested CUDA wheels. Other
@@ -212,6 +222,10 @@ module = [
     "optuna.*",
     "tensordict",
     "tensordict.*",
+    "causal_conv1d",
+    "causal_conv1d.*",
+    "mamba_ssm",
+    "mamba_ssm.*",
     "vgamepad",
     "vgamepad.*",
     "wandb",
