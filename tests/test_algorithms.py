@@ -1,23 +1,23 @@
-"""CPU contract checks for the five first-class TMRL 1.0 learners."""
+"""CPU contract checks for the five first-class TrackmaniaRL 1.0 learners."""
 
 from __future__ import annotations
 
 import torch
 from torch import nn
 
-from tmrl.algorithms import (
+from trackmaniarl.algorithms import (
     ImplicitQuantileQLearning,
     RandomizedEnsembleSAC,
     SoftActorCritic,
     StableDiscreteSoftActorCritic,
     TruncatedQuantileCritic,
 )
-from tmrl.algorithms._torch import polyak_update, weighted_mean
-from tmrl.algorithms.execution import TorchExecutionConfig
-from tmrl.algorithms.implicit_quantile_q_learning import implicit_quantile_huber_loss
-from tmrl.core.data import TrainingBatch
-from tmrl.models.actors import CategoricalActor, GaussianActor
-from tmrl.models.critics import ContinuousQCritic, DiscreteQuantileNetwork, QuantileCritic
+from trackmaniarl.algorithms._torch import polyak_update, weighted_mean
+from trackmaniarl.algorithms.execution import TorchExecutionConfig
+from trackmaniarl.algorithms.implicit_quantile_q_learning import implicit_quantile_huber_loss
+from trackmaniarl.core.data import TrainingBatch
+from trackmaniarl.models.actors import CategoricalActor, GaussianActor
+from trackmaniarl.models.critics import ContinuousQCritic, DiscreteQuantileNetwork, QuantileCritic
 
 
 class Encoder(nn.Module):

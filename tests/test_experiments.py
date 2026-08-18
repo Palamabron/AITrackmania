@@ -5,8 +5,17 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-from tmrl.experiments.evaluation import STANDARD_METRICS, EvaluationResult, aggregate_results
-from tmrl.experiments.orchestration import FallbackStrategy, GridStrategy, Proposal, StudySpec
+from trackmaniarl.experiments.evaluation import (
+    STANDARD_METRICS,
+    EvaluationResult,
+    aggregate_results,
+)
+from trackmaniarl.experiments.orchestration import (
+    FallbackStrategy,
+    GridStrategy,
+    Proposal,
+    StudySpec,
+)
 
 
 class FailingStrategy:

@@ -20,7 +20,7 @@ distributed:
   epsilon_decay_transitions: 200000
 components:
   learner:
-    class_path: tmrl.algorithms.implicit_quantile_q_learning:ImplicitQuantileQLearning
+    class_path: trackmaniarl.algorithms.implicit_quantile_q_learning:ImplicitQuantileQLearning
     kwargs:
       learning_rate: 1.0e-4
       gradient_clip_norm: 10.0
@@ -34,11 +34,11 @@ components:
         compile: false
         compile_mode: default
   environment:
-    class_path: tmrl.trackmania.environment:OpenPlanetEnvironmentFactory
+    class_path: trackmaniarl.trackmania.environment:OpenPlanetEnvironmentFactory
     kwargs:
       config:
         trajectory_path: assets/trajectory.csv
-        geometry_path: assets/tmrl-test.geometry.npz
+        geometry_path: assets/trackmaniarl-test.geometry.npz
         expected_map_uid: oqIJ5rQDRrNwLPTh9H2p_W4tLof
         action_repeat_frames: 4
         slow_progress_window_steps: 180
@@ -59,22 +59,22 @@ components:
         steering_delta_penalty: 0.02
         reward_gamma: 0.99
   model_factory:
-    class_path: tmrl.trackmania.iqn:LidarIqnModelFactory
+    class_path: trackmaniarl.trackmania.iqn:LidarIqnModelFactory
     kwargs:
       telemetry_dim: 26
       history_length: 8
   replay_store:
-    class_path: tmrl.core.replay:InMemoryReplayStore
+    class_path: trackmaniarl.core.replay:InMemoryReplayStore
     kwargs:
       capacity: 100000
   sampler:
-    class_path: tmrl.core.replay:PrioritizedSampler
+    class_path: trackmaniarl.core.replay:PrioritizedSampler
     kwargs:
       alpha: 0.4
   feature_pipeline:
-    class_path: tmrl.trackmania.features:LidarFeaturePipeline
+    class_path: trackmaniarl.trackmania.features:LidarFeaturePipeline
     kwargs:
-      geometry_path: assets/tmrl-test.geometry.npz
+      geometry_path: assets/trackmaniarl-test.geometry.npz
       expected_map_uid: oqIJ5rQDRrNwLPTh9H2p_W4tLof
       samples_per_side: 90
       max_distance_m: 180.0
@@ -82,18 +82,18 @@ components:
       include_track_relative: true
       max_speed_mps: 80.0
   evaluator:
-    class_path: tmrl.trackmania.evaluation:TrackmaniaEvaluator
+    class_path: trackmaniarl.trackmania.evaluation:TrackmaniaEvaluator
   additional_loggers:
-    - class_path: tmrl.observability.trackers:WandbTracker
+    - class_path: trackmaniarl.observability.trackers:WandbTracker
       kwargs:
         project: my-trackmania-agent
 evaluation:
-  name: tmrl-test-sota
+  name: trackmaniarl-test-sota
   version: "5"
   maps:
-    - id: tmrl-test
-      map_path: maps/tmrl-test.Map.Gbx
-      geometry_path: assets/tmrl-test.geometry.npz
+    - id: trackmaniarl-test
+      map_path: maps/trackmaniarl-test.Map.Gbx
+      geometry_path: assets/trackmaniarl-test.geometry.npz
       expected_map_uid: oqIJ5rQDRrNwLPTh9H2p_W4tLof
   trials_per_map: 10
 training:

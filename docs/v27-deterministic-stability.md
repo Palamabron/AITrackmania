@@ -97,15 +97,15 @@ uv run poe fmt; uv run poe types; uv run poe test
 cd my-trackmania-agent
 Copy-Item trackmania-iqn-lidar-v26.yaml trackmania-iqn-lidar-v27.yaml
 # apply the key delta above, then:
-uv run tmrl validate trackmania-iqn-lidar-v27.yaml
+uv run trackmaniarl validate trackmania-iqn-lidar-v27.yaml
 $ckpt = Get-ChildItem artifacts\trackmania-iqn-lidar-v26\checkpoints\distributed-update-*.pt |
     Sort-Object Name | Select-Object -Last 1
-uv run tmrl resume trackmania-iqn-lidar-v27.yaml $ckpt.FullName
+uv run trackmaniarl resume trackmania-iqn-lidar-v27.yaml $ckpt.FullName
 ```
 
 Fallback: if the resumed policy does not reach >= 6/10 deterministic finishes
 within ~15k further updates, start v27 from scratch (same YAML,
-`uv run tmrl train trackmania-iqn-lidar-v27.yaml`) and accept the slower ramp.
+`uv run trackmaniarl train trackmania-iqn-lidar-v27.yaml`) and accept the slower ramp.
 
 ## What to watch
 
@@ -118,7 +118,7 @@ within ~15k further updates, start v27 from scratch (same YAML,
 - `eval/summary` finish rate is the primary metric; `eval/best_checkpoint`
   marks the artifact to keep. Gate 1: >= 9/10 on two consecutive evaluations.
   Gate 2: deterministic mean < 45 s. Gate 3: sub-40 rate, then the 20-trial
-  release benchmark in `docs/benchmark-tmrl-test.md`.
+  release benchmark in `docs/benchmark-trackmaniarl-test.md`.
 - If greedy evaluation still degrades while q_margin stays healthy and the
   queue metrics are clean, the next isolated candidates for v28 are: an EMA
   weight copy used only for evaluation/deployment, and a learning-rate decay

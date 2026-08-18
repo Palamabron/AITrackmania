@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-check_status.py - snapshot of running TMRL trainer/worker experiments.
+check_status.py - snapshot of running TrackmaniaRL trainer/worker experiments.
 
 Usage:
     python check_status.py [--config] [--wandb] [--all]
 
 Flags:
-    --config   Print fully merged active config (runs `python -m tmrl --print-config`)
-    --wandb    Query WandB API for recent runs in the tmrl project
+    --config   Print fully merged active config (runs `python -m trackmaniarl --print-config`)
+    --wandb    Query WandB API for recent runs in the trackmaniarl project
     --all      Enable all optional sections
 """
 
@@ -97,7 +97,7 @@ ROLES = {
 }
 
 
-def find_tmrl_procs() -> dict[str, list[dict]]:
+def find_trackmaniarl_procs() -> dict[str, list[dict]]:
     """Return {role: [{"pid": ..., "cmd": ...}, ...]}"""
     found: dict[str, list[dict]] = {r: [] for r in ROLES}
     try:
@@ -105,7 +105,7 @@ def find_tmrl_procs() -> dict[str, list[dict]]:
     except Exception:
         return found
     for line in out.splitlines():
-        if "python" not in line and "tmrl" not in line:
+        if "python" not in line and "trackmaniarl" not in line:
             continue
         if "check_status" in line:
             continue
@@ -133,7 +133,7 @@ def port_open(host: str = "127.0.0.1", port: int = SERVER_PORT) -> bool:
 
 # TmrlData artifacts
 
-TMRL_DATA = Path.home() / "TmrlData"
+TrackmaniaRL_DATA = Path.home() / "TmrlData"
 
 
 def show_artifacts() -> None:
@@ -154,14 +154,14 @@ def show_artifacts() -> None:
         if len(files) > 5:
             info(f"- and {len(files) - 5} more")
 
-    section("Checkpoints", TMRL_DATA / "checkpoints", "*.tcpt")
-    section("Weights    ", TMRL_DATA / "weights", "*.tmod")
-    section("Dataset    ", TMRL_DATA / "dataset", "*")
-    section("Reward pkl ", TMRL_DATA / "reward", "*.pkl")
-    section("Track pkl  ", TMRL_DATA / "track", "*.pkl")
+    section("Checkpoints", TrackmaniaRL_DATA / "checkpoints", "*.tcpt")
+    section("Weights    ", TrackmaniaRL_DATA / "weights", "*.tmod")
+    section("Dataset    ", TrackmaniaRL_DATA / "dataset", "*")
+    section("Reward pkl ", TrackmaniaRL_DATA / "reward", "*.pkl")
+    section("Track pkl  ", TrackmaniaRL_DATA / "track", "*.pkl")
 
     # Repro artifacts (written alongside first checkpoint)
-    repro_dir = TMRL_DATA / "checkpoints"
+    repro_dir = TrackmaniaRL_DATA / "checkpoints"
     for fname in ["repro_merged_config.yaml", "repro_provenance.json"]:
         fpath = repro_dir / fname
         if fpath.exists():
@@ -180,13 +180,17 @@ def show_env_summary() -> None:
     else:
         warn("WANDB_API_KEY  not set")
 
-    tmrl_pw = ENV.get("TMRL_PASSWORD", "")
-    if tmrl_pw:
-        ok(f"TMRL_PASSWORD  {DIM}{'*' * min(len(tmrl_pw), 8)}{RESET}")
+    trackmaniarl_pw = ENV.get("TrackmaniaRL_PASSWORD", "")
+    if trackmaniarl_pw:
+        ok(f"TrackmaniaRL_PASSWORD  {DIM}{'*' * min(len(trackmaniarl_pw), 8)}{RESET}")
     else:
-        warn("TMRL_PASSWORD  (empty - open/no-auth server)")
+        warn("TrackmaniaRL_PASSWORD  (empty - open/no-auth server)")
 
-    for extra in ("TMRL_HYDRA_OVERRIDES", "TMRL_CONFIG_OVERRIDES", "TMRL_OUTPUT_FILES"):
+    for extra in (
+        "TrackmaniaRL_HYDRA_OVERRIDES",
+        "TrackmaniaRL_CONFIG_OVERRIDES",
+        "TrackmaniaRL_OUTPUT_FILES",
+    ):
         val = os.environ.get(extra, "")
         if val:
             ok(f"{extra}  {DIM}{val[:60]}{RESET}")
@@ -196,8 +200,8 @@ def show_env_summary() -> None:
 
 
 def show_processes() -> None:
-    h("Running TMRL processes")
-    procs = find_tmrl_procs()
+    h("Running TrackmaniaRL processes")
+    procs = find_trackmaniarl_procs()
     any_running = False
     for role, entries in procs.items():
         if entries:
@@ -220,12 +224,12 @@ def show_processes() -> None:
 
 
 def show_config() -> None:
-    h("Active config  (python -m tmrl --print-config)")
+    h("Active config  (python -m trackmaniarl --print-config)")
     venv_python = Path(__file__).parent / ".venv" / "bin" / "python"
     python = str(venv_python) if venv_python.exists() else sys.executable
     try:
         result = subprocess.run(
-            [python, "-m", "tmrl", "--print-config"],
+            [python, "-m", "trackmaniarl", "--print-config"],
             capture_output=True,
             text=True,
             timeout=30,
@@ -247,7 +251,9 @@ def show_config() -> None:
 # WandB runs
 
 
-def show_wandb_runs(project: str = "tmrl", entity: str = "tmrl", limit: int = 5) -> None:
+def show_wandb_runs(
+    project: str = "trackmaniarl", entity: str = "trackmaniarl", limit: int = 5
+) -> None:
     h(f"WandB runs  ({entity}/{project}, last {limit})")
     api_key = os.environ.get("WANDB_API_KEY", "")
     if not api_key:
@@ -291,9 +297,8 @@ def main() -> None:
     parser.add_argument("--all", action="store_true", help="Enable all optional sections")
     args = parser.parse_args()
 
-    print(
-        f"\n{BOLD}TMRL experiment status  -  {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}{RESET}"
-    )
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    print(f"\n{BOLD}TrackmaniaRL experiment status  -  {timestamp}{RESET}")
 
     show_env_summary()
     show_processes()

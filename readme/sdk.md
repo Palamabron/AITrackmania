@@ -1,35 +1,35 @@
-# TMRL SDK Guide
+# TrackmaniaRL SDK Guide
 
-TMRL has one runtime: an explicit `run.yaml` is parsed into `RunSpec`, its
+TrackmaniaRL has one runtime: an explicit `run.yaml` is parsed into `RunSpec`, its
 components are imported, then `Trainer` performs TrackMania collection and
 off-policy updates. The same commands work in PowerShell, bash, WSL and CI.
 
 ```bash
 uv sync --group dev --extra algorithms
-uv run tmrl init my-trackmania-agent
+uv run trackmaniarl init my-trackmania-agent
 cd my-trackmania-agent
 uv sync
-uv run tmrl validate run.yaml
-uv run tmrl train run.yaml
+uv run trackmaniarl validate run.yaml
+uv run trackmaniarl train run.yaml
 ```
 
 ## Start with bundled components
 
-`tmrl.builtins` is the public catalogue. Learners are selected directly by
+`trackmaniarl.builtins` is the public catalogue. Learners are selected directly by
 their stable descriptive class paths:
 
 ```yaml
 components:
   learner:
-    class_path: tmrl.algorithms.implicit_quantile_q_learning:ImplicitQuantileQLearning
+    class_path: trackmaniarl.algorithms.implicit_quantile_q_learning:ImplicitQuantileQLearning
   model_factory:
     class_path: my_agent.models:MyIqnModelFactory
   feature_pipeline:
-    class_path: tmrl.builtins.features:TransitionFeaturePipeline
+    class_path: trackmaniarl.builtins.features:TransitionFeaturePipeline
   replay_store:
-    class_path: tmrl.core.replay:InMemoryReplayStore
+    class_path: trackmaniarl.core.replay:InMemoryReplayStore
   sampler:
-    class_path: tmrl.core.replay:PrioritizedSampler
+    class_path: trackmaniarl.core.replay:PrioritizedSampler
 ```
 
 Each learner consumes a `TrainingBatch` with explicit n-step bootstrap discounts,
@@ -51,7 +51,7 @@ mixing enforces explicit min/max fractions.
 An extension project may supply any of these protocols: `Learner`, `Policy`,
 `ModelFactory`, `ReplayStore`, `Sampler`, `FeaturePipeline`, `Evaluator`,
 `RunLogger`, `CheckpointCodec`, and an environment factory with `create(seed=)`.
-Use `module:Symbol` paths in `run.yaml`; do not modify the TMRL package for an
+Use `module:Symbol` paths in `run.yaml`; do not modify the TrackmaniaRL package for an
 experiment.
 
 `validate` does not start TrackMania. It resolves components, writes the
@@ -64,12 +64,12 @@ runs an optional evaluator.
 
 | Namespace | Responsibility |
 | --- | --- |
-| `tmrl.core` | contracts, run spec, trainer, data and reference replay |
-| `tmrl.builtins` | supported algorithms, models, buffers and feature components |
-| `tmrl.trackmania` | TrackMania environment collection adapter |
-| `tmrl.observability` | manifest, JSONL events, artifacts and optional adapters |
-| `tmrl.experiments` | evaluation suites and study strategies |
-| `tmrl.project` | generated local extension project |
+| `trackmaniarl.core` | contracts, run spec, trainer, data and reference replay |
+| `trackmaniarl.builtins` | supported algorithms, models, buffers and feature components |
+| `trackmaniarl.trackmania` | TrackMania environment collection adapter |
+| `trackmaniarl.observability` | manifest, JSONL events, artifacts and optional adapters |
+| `trackmaniarl.experiments` | evaluation suites and study strategies |
+| `trackmaniarl.project` | generated local extension project |
 
 Older module locations are internal migration details, not documented runtime
 API or compatibility targets.

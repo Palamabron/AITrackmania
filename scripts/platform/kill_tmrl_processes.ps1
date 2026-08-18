@@ -1,4 +1,4 @@
-# Stop TMRL / AITrackmania Python trees and free distributed ports (55555-55558).
+# Stop TrackmaniaRL / AITrackmania Python trees and free distributed ports (55555-55558).
 # Broader than Makefile's old taskkill /IM python.exe (misses python3.12.exe, uv children, wandb).
 
 param(
@@ -16,7 +16,7 @@ function Stop-ProcessTree {
     $null = & taskkill /T /F /PID $ProcessId 2>&1
 }
 
-Write-Host "=== kill_tmrl_processes ==="
+Write-Host "=== kill_trackmaniarl_processes ==="
 Write-Host "Repo: $repoRoot"
 
 # 1) Free relay ports (server + tlspyo local ports).
@@ -26,15 +26,15 @@ for ($port = $ServerPort; $port -lt ($ServerPort + 4); $port++) {
     }
 }
 
-# 2) Kill processes whose command line references this repo or tmrl.
+# 2) Kill processes whose command line references this repo or trackmaniarl.
 $repoLeaf = Split-Path -Leaf $repoRoot
 $patterns = @(
     [regex]::Escape($repoRoot),
     [regex]::Escape($repoLeaf),
-    '-m tmrl',
-    'tmrl\.tools',
-    'tmrl\\',
-    'tmrl/'
+    '-m trackmaniarl',
+    'trackmaniarl\.tools',
+    'trackmaniarl\\',
+    'trackmaniarl/'
 )
 
 $matched = @()
@@ -87,16 +87,16 @@ try {
             $_.Name -match '^(python|pythonw|uv)' -and
             $_.CommandLine -and (
                 $_.CommandLine -match [regex]::Escape($repoRoot) -or
-                $_.CommandLine -match 'tmrl'
+                $_.CommandLine -match 'trackmaniarl'
             )
         }
 } catch { }
 
 if ($remaining.Count -gt 0) {
-    Write-Warning "Still running ($($remaining.Count) TMRL-related process(es)). Retry as Administrator or close TrackMania terminals, then:"
-    Write-Warning "  powershell -File scripts/platform/kill_tmrl_processes.ps1 -AllPython"
+    Write-Warning "Still running ($($remaining.Count) TrackmaniaRL-related process(es)). Retry as Administrator or close TrackMania terminals, then:"
+    Write-Warning "  powershell -File scripts/platform/kill_trackmaniarl_processes.ps1 -AllPython"
     exit 1
 }
 
-Write-Host "Done. No TMRL-related Python processes detected."
+Write-Host "Done. No TrackmaniaRL-related Python processes detected."
 exit 0

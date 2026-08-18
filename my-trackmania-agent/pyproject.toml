@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "my-trackmania-agent"
 version = "0.1.0"
 requires-python = ">=3.12"
-dependencies = ["tmrl[trackmania,algorithms,wandb,distributed]", "torch>=2.4"]
+dependencies = ["trackmaniarl[trackmania,algorithms,wandb,distributed]", "torch>=2.4"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
@@ -15,9 +15,9 @@ where = ["src"]
 dev = ["mypy>=1.8", "poethepoet>=0.36", "pytest>=7.0", "ruff>=0.4"]
 
 [tool.uv.sources]
-tmrl = { path = "..", editable = true }
+trackmaniarl = { path = "..", editable = true }
 torch = [
-  { index = "pytorch-cuda", marker = "sys_platform == 'win32' or sys_platform == 'linux'" },
+  { index = "pytorch-cuda", marker = "sys_platform == 'win32'" },
 ]
 
 [[tool.uv.index]]
@@ -29,6 +29,6 @@ explicit = true
 fmt = [{ cmd = "ruff format ." }, { cmd = "ruff check --fix ." }]
 types = "mypy --strict src tests"
 test = "pytest"
-record-left = "tmrl track record-boundary left assets/tmrl-test-left.npy"
-record-right = "tmrl track record-boundary right assets/tmrl-test-right.npy"
-build-geometry = "tmrl track build-geometry assets/tmrl-test.geometry.npz --left assets/tmrl-test-left.npy --right assets/tmrl-test-right.npy --map-uid oqIJ5rQDRrNwLPTh9H2p_W4tLof --map-path maps/tmrl-test.Map.Gbx"
+record-left = "trackmaniarl track record-boundary left assets/trackmaniarl-test-left.npy"
+record-right = "trackmaniarl track record-boundary right assets/trackmaniarl-test-right.npy"
+build-geometry = "trackmaniarl track build-geometry assets/trackmaniarl-test.geometry.npz --left assets/trackmaniarl-test-left.npy --right assets/trackmaniarl-test-right.npy --map-uid oqIJ5rQDRrNwLPTh9H2p_W4tLof --map-path maps/trackmaniarl-test.Map.Gbx"

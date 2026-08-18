@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from tmrl.core.builtins import IdentityFeaturePipeline, ZeroPolicy
-from tmrl.core.replay import InMemoryReplayStore
-from tmrl.trackmania.collector import TrackmaniaCollector
+from trackmaniarl.core.builtins import IdentityFeaturePipeline, ZeroPolicy
+from trackmaniarl.core.replay import InMemoryReplayStore
+from trackmaniarl.trackmania.collector import TrackmaniaCollector
 
 
 class FakeTrackmania:

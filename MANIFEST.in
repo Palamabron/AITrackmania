@@ -1,5 +1,7 @@
 include README.md
 include CHANGELOG.md
 include LICENSE
-recursive-include tmrl/project/openplanet *.as
-recursive-include tmrl/project/openplanet *.toml
+include NOTICE
+include SECURITY.md
+recursive-include readme *.md
+recursive-include trackmaniarl/project/openplanet *.as *.toml

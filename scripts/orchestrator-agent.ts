@@ -1,5 +1,5 @@
 /**
- * Cursor SDK agent for the TMRL experiment orchestrator.
+ * Cursor SDK agent for the TrackmaniaRL experiment orchestrator.
  *
  * Modes:
  *   decide <context.json>  -- Should the current experiment continue or stop?
@@ -7,7 +7,7 @@
  *
  * Output: JSON on stdout with the agent's decision.
  *
- * Usage (called by tmrl/tools/orchestrator.py):
+ * Usage (called by trackmaniarl/tools/orchestrator.py):
  *   npx tsx scripts/orchestrator-agent.ts decide experiments/_agent_context.json
  *   npx tsx scripts/orchestrator-agent.ts propose experiments/_agent_context.json
  */
@@ -83,7 +83,7 @@ RULES:
 - Provide a clear hypothesis explaining WHY this change should help reach ${target}s.
 - Reference specific metrics from prior experiments as evidence.
 - Use the experiment_manager CLI to register: run the shell command:
-  python -m tmrl.tools.experiment_manager register --parent <PARENT_ID> --hypothesis "<WHY>" --overrides '<JSON>'
+  python -m trackmaniarl.tools.experiment_manager register --parent <PARENT_ID> --hypothesis "<WHY>" --overrides '<JSON>'
 
 After running the register command, append your reasoning to experiments/decisions.md (local, gitignored).
 

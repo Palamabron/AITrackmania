@@ -9,16 +9,16 @@ import pytest
 import torch
 from torch import nn
 
-from tmrl.algorithms.implicit_quantile_q_learning import (
+from trackmaniarl.algorithms.implicit_quantile_q_learning import (
     ImplicitQuantileQLearning,
     inverse_rescale_value,
     rescale_value,
 )
-from tmrl.core.builtins import IdentityFeaturePipeline
-from tmrl.core.data import BatchRequest, TrainingBatch, Transition
-from tmrl.core.replay import InMemoryReplayStore, PrioritizedSampler
-from tmrl.models.critics import DiscreteQuantileNetwork
-from tmrl.trackmania.reward import TrajectoryReward
+from trackmaniarl.core.builtins import IdentityFeaturePipeline
+from trackmaniarl.core.data import BatchRequest, TrainingBatch, Transition
+from trackmaniarl.core.replay import InMemoryReplayStore, PrioritizedSampler
+from trackmaniarl.models.critics import DiscreteQuantileNetwork
+from trackmaniarl.trackmania.reward import TrajectoryReward
 
 
 def _transition(step: int, *, episode: str, terminal: bool, demo: bool = False) -> Transition:
@@ -345,6 +345,77 @@ def test_margin_loss_ignores_non_expert_recovery_demonstrations() -> None:
     assert metrics["loss/demonstration_margin"] == 0.0
 
 
+def test_demonstration_td_weight_excludes_demo_td_loss_and_priority() -> None:
+    learner = _learner(
+        _constant_model(0.25),
+        demonstration_margin_weight=1.0,
+        demonstration_td_weight=0.0,
+    )
+    batch = _sequence_batch(demo=False)
+    batch.metadata["demo_flags"] = (True, False)
+    batch.metadata["expert_demo_flags"] = (True, False)
+
+    metrics, priorities = learner.update(batch)
+
+    assert metrics["debug/demonstration_td_weight"] == 0.0
+    assert priorities.priorities[0] == 0.0
+    assert priorities.priorities[1] > 0.0
+    assert metrics["loss/demonstration_margin"] > 0.0
+
+
+def test_demonstration_td_weight_scales_an_all_demo_batch() -> None:
+    full = _learner(_constant_model(0.25), demonstration_td_weight=1.0)
+    quarter = _learner(_constant_model(0.25), demonstration_td_weight=0.25)
+    batch = _sequence_batch(demo=True)
+
+    torch.manual_seed(17)
+    full_metrics, full_priorities = full.update(batch)
+    torch.manual_seed(17)
+    quarter_metrics, quarter_priorities = quarter.update(batch)
+
+    assert quarter_metrics["loss/iqn"] == pytest.approx(0.25 * full_metrics["loss/iqn"], rel=1e-5)
+    assert quarter_priorities.priorities == pytest.approx(
+        [0.25 * priority for priority in full_priorities.priorities], rel=1e-5
+    )
+
+
+def test_demonstration_cross_entropy_supervises_expert_actions_without_td_loss() -> None:
+    learner = _learner(
+        _constant_model(0.0),
+        demonstration_cross_entropy_weight=1.0,
+        demonstration_td_weight=0.0,
+    )
+    batch = _sequence_batch(demo=True, expert=True)
+
+    metrics, priorities = learner.update(batch)
+
+    assert metrics["loss/iqn"] == 0.0
+    assert metrics["loss/demonstration_cross_entropy"] == pytest.approx(
+        torch.log(torch.tensor(3.0)).item(), rel=1e-4
+    )
+    assert 0.0 <= metrics["debug/demonstration_action_accuracy"] <= 1.0
+    assert metrics["loss/total"] == pytest.approx(
+        metrics["loss/demonstration_cross_entropy"], rel=1e-4
+    )
+    assert all(priority == 0.0 for priority in priorities.priorities)
+
+
+def test_demonstration_cross_entropy_uses_all_completed_demonstrations() -> None:
+    learner = _learner(
+        _constant_model(0.0),
+        demonstration_cross_entropy_weight=1.0,
+    )
+
+    metrics, _ = learner.update(_sequence_batch(demo=True, expert=False))
+
+    assert metrics["loss/demonstration_cross_entropy"] > 0.0
+
+
+def test_demonstration_td_weight_must_be_a_fraction() -> None:
+    with pytest.raises(ValueError, match="auxiliary loss parameters"):
+        _learner(_constant_model(0.25), demonstration_td_weight=1.1)
+
+
 def test_policy_action_mask_controls_greedy_exploration_and_bootstrap() -> None:
     model = _constant_model(0.0)
     with torch.no_grad():
@@ -409,6 +480,36 @@ def test_policy_anchor_uses_and_persists_the_loaded_checkpoint() -> None:
     assert resumed.policy_anchor_model is not None
     for name, value in original_anchor.items():
         assert torch.equal(resumed.policy_anchor_model.state_dict()[name], value)
+
+
+def test_policy_anchor_is_disabled_during_offline_pretraining() -> None:
+    learner = _learner(_constant_model(0.0), policy_anchor_weight=1.0)
+    with torch.no_grad():
+        learner.model.head.bias.add_(torch.tensor([0.5, 0.0, -0.5]))
+
+    learner.begin_offline_pretraining()
+    metrics, _ = learner.update(_sequence_batch())
+    learner.end_offline_pretraining()
+
+    assert metrics["loss/policy_anchor"] > 0.0
+    assert metrics["loss/policy_anchor_weighted"] == 0.0
+
+
+def test_policy_anchor_can_remain_active_during_offline_pretraining() -> None:
+    learner = _learner(
+        _constant_model(0.0),
+        policy_anchor_weight=1.0,
+        policy_anchor_during_offline_pretraining=True,
+    )
+    with torch.no_grad():
+        learner.model.head.bias.add_(torch.tensor([0.5, 0.0, -0.5]))
+
+    learner.begin_offline_pretraining()
+    metrics, _ = learner.update(_sequence_batch())
+    learner.end_offline_pretraining()
+
+    assert metrics["loss/policy_anchor"] > 0.0
+    assert metrics["loss/policy_anchor_weighted"] > 0.0
 
 
 def test_external_policy_anchor_overrides_resumed_anchor(tmp_path: Path) -> None:

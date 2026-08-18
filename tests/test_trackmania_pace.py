@@ -3,8 +3,8 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from tmrl.trackmania.pace import ReferencePaceProfile
-from tmrl.trackmania.reward import TrajectoryReward
+from trackmaniarl.trackmania.pace import ReferencePaceProfile
+from trackmaniarl.trackmania.reward import TrajectoryReward
 
 
 def test_reference_pace_interpolates_monotonic_demo_progress() -> None:

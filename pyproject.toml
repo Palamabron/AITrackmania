@@ -3,17 +3,13 @@ requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "tmrl"
-version = "1.0.0"
-description = "Modular reinforcement-learning SDK for TrackMania"
+name = "TrackmaniaRL"
+version = "0.1.0"
+description = "Reinforcement-learning library for training agents in Trackmania 2020"
 readme = "README.md"
 license = "MIT"
-license-files = ["LICENSE"]
-authors = [
-  { name = "Yann Bouteiller" },
-  { name = "Edouard Geze" },
-  { name = "Jakub Szulc"},
-]
+license-files = ["LICENSE", "NOTICE"]
+authors = [{ name = "Jakub Szulc" }]
 keywords = [
     "reinforcement learning",
     "robot learning",
@@ -58,7 +54,7 @@ algorithms = [
 ]
 trackmania = [
     "gymnasium>=0.29",
-    "vgamepad>=0.1.0; sys_platform == 'win32' or sys_platform == 'linux'",
+    "vgamepad>=0.1.0; sys_platform == 'win32'",
 ]
 wandb = [
     "wandb>=0.15.8",
@@ -68,8 +64,7 @@ distributed = [
     "protobuf>=5.27",
     "safetensors>=0.4.5",
     "zstandard>=0.23",
-    "vgamepad>=0.1.0; sys_platform == 'win32' or sys_platform == 'linux'",
-    "wandb>=0.15.8",
+    "vgamepad>=0.1.0; sys_platform == 'win32'",
 ]
 explain = [
     "captum>=0.7",
@@ -82,11 +77,11 @@ vision = [
 default-groups = ["dev"]
 
 [tool.uv.sources]
-# TrackMania hosts on Windows and Linux use the tested CUDA wheels. Other
+# TrackMania hosts on Windows use the tested CUDA wheels. Other
 # platforms use the CPU index and can override it for ROCm or another backend.
 torch = [
-    { index = "pytorch-cuda", marker = "sys_platform == 'win32' or sys_platform == 'linux'" },
-    { index = "pytorch-cpu", marker = "sys_platform != 'win32' and sys_platform != 'linux'" },
+    { index = "pytorch-cuda", marker = "sys_platform == 'win32'" },
+    { index = "pytorch-cpu", marker = "sys_platform != 'win32'" },
 ]
 
 [[tool.uv.index]]
@@ -116,34 +111,36 @@ dev = [
     "protobuf>=5.27",
     "safetensors>=0.4.5",
     "zstandard>=0.23",
-    "vgamepad>=0.1.0; sys_platform == 'win32' or sys_platform == 'linux'",
+    "vgamepad>=0.1.0; sys_platform == 'win32'",
     "wandb>=0.15.8",
 ]
 
 [project.scripts]
-tmrl = "tmrl.__main__:entrypoint"
+trackmaniarl = "trackmaniarl.__main__:entrypoint"
 
 [project.urls]
-Upstream = "https://github.com/trackmania-rl/tmrl"
+Homepage = "https://github.com/Palamabron/AITrackmania"
+Repository = "https://github.com/Palamabron/AITrackmania"
+Changelog = "https://github.com/Palamabron/AITrackmania/blob/main/CHANGELOG.md"
 
 [tool.setuptools.packages.find]
 where = ["."]
 include = [
-    "tmrl",
-    "tmrl.algorithms*",
-    "tmrl.builtins*",
-    "tmrl.core*",
-    "tmrl.distributed*",
-    "tmrl.experiments*",
-    "tmrl.models*",
-    "tmrl.observability*",
-    "tmrl.project*",
-    "tmrl.trackmania*",
+    "trackmaniarl",
+    "trackmaniarl.algorithms*",
+    "trackmaniarl.builtins*",
+    "trackmaniarl.core*",
+    "trackmaniarl.distributed*",
+    "trackmaniarl.experiments*",
+    "trackmaniarl.models*",
+    "trackmaniarl.observability*",
+    "trackmaniarl.project*",
+    "trackmaniarl.trackmania*",
 ]
 exclude = ["tests*"]
 
 [tool.setuptools.package-data]
-tmrl = ["py.typed", "project/openplanet/*.as", "project/openplanet/*.toml"]
+trackmaniarl = ["py.typed", "project/openplanet/*.as", "project/openplanet/*.toml"]
 
 [tool.ruff]
 target-version = "py312"
@@ -166,7 +163,7 @@ select = [
     "PT",   # flake8-pytest-style (test files)
 ]
 ignore = [
-    "N999",  # allow PascalCase module names (e.g. tmrl/custom/models/Sophy.py)
+    "N999",  # allow PascalCase module names (e.g. trackmaniarl/custom/models/Sophy.py)
     "N812",  # allow F for torch.nn.functional (PyTorch convention)
 ]
 # RUF022 (__all__ sort) defaults to "unsafe"; allow it under `ruff check --fix` / `uv run poe fmt`.
@@ -177,6 +174,7 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
+addopts = "--basetemp=.pytest-tmp"
 
 [tool.poe.tasks]
 fmt = [
@@ -184,7 +182,7 @@ fmt = [
     { cmd = "ruff check --fix ." },
 ]
 lint = "ruff check ."
-types = "mypy tmrl"
+types = "mypy trackmaniarl"
 test = "pytest"
 check = ["lint", "types"]
 

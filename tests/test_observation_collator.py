@@ -5,8 +5,8 @@ import pytest
 import torch
 from gymnasium import spaces
 
-from tmrl.builtins import GymnasiumObservationCollator
-from tmrl.core.data import Transition
+from trackmaniarl.builtins import GymnasiumObservationCollator
+from trackmaniarl.core.data import Transition
 
 
 def _space() -> spaces.Dict:

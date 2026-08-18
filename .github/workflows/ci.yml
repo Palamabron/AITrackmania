@@ -27,7 +27,10 @@ jobs:
       - name: Install dev dependencies
         env:
           UV_INDEX_PYTORCH_CUDA: https://download.pytorch.org/whl/cpu
-        run: uv sync --group dev --upgrade-package torch
+        run: uv sync --locked --group dev
+
+      - name: Verify lockfile
+        run: uv lock --check
 
       - name: Check formatting (ruff format)
         run: uv run ruff format --check .
@@ -36,7 +39,7 @@ jobs:
         run: uv run ruff check .
 
       - name: Type-check (mypy)
-        run: uv run mypy tmrl/
+        run: uv run mypy trackmaniarl/
 
   test:
     name: Tests (${{ matrix.os }}, Python ${{ matrix.python-version }})
@@ -63,11 +66,11 @@ jobs:
       - name: Install dev dependencies
         env:
           UV_INDEX_PYTORCH_CUDA: https://download.pytorch.org/whl/cpu
-        run: uv sync --group dev --upgrade-package torch
+        run: uv sync --locked --group dev
 
       - name: Run tests
         env:
-          TMRL_DISABLE_GAME: "1"
+          TRACKMANIARL_DISABLE_GAME: "1"
         run: uv run pytest tests/ -v --tb=short
 
   package:
@@ -85,10 +88,19 @@ jobs:
       - name: Install build dependencies
         env:
           UV_INDEX_PYTORCH_CUDA: https://download.pytorch.org/whl/cpu
-        run: uv sync --group dev --upgrade-package torch
+        run: uv sync --locked --group dev
 
       - name: Build source distribution and wheel
         run: uv build
 
       - name: Verify license contents
         run: uv run python scripts/check_distribution.py
+
+      - name: Verify wheel import and CLI
+        run: uv run --isolated --no-project --with ./dist/*.whl trackmaniarl --help
+
+      - name: Verify generated project resolves the released wheel
+        run: |
+          agent_dir="$(mktemp -d)/agent"
+          uv run --isolated --no-project --with ./dist/*.whl trackmaniarl init "$agent_dir"
+          uv lock --directory "$agent_dir" --find-links "$GITHUB_WORKSPACE/dist"

@@ -12,18 +12,18 @@ import numpy as np
 import pytest
 import torch
 
-from tmrl.algorithms import ImplicitQuantileQLearning
-from tmrl.core.data import TrainingBatch
-from tmrl.models.encoders import TrackGeometryEncoder
-from tmrl.trackmania.actions import (
+from trackmaniarl.algorithms import ImplicitQuantileQLearning
+from trackmaniarl.core.data import TrainingBatch
+from trackmaniarl.models.encoders import TrackGeometryEncoder
+from trackmaniarl.trackmania.actions import (
     build_brake_tap_action_table,
     build_brake_tap_exploration_weights,
 )
-from tmrl.trackmania.behavior_cloning import LidarBehaviorCloningModel
-from tmrl.trackmania.features import LidarFeaturePipeline
-from tmrl.trackmania.geometry import BoundaryGeometry, build_geometry_asset
-from tmrl.trackmania.iqn import LidarIqnModel
-from tmrl.trackmania.session import PLUGIN_PROTOCOL_VERSION, OpenPlanetSessionClient
+from trackmaniarl.trackmania.behavior_cloning import LidarBehaviorCloningModel
+from trackmaniarl.trackmania.features import LidarFeaturePipeline
+from trackmaniarl.trackmania.geometry import BoundaryGeometry, build_geometry_asset
+from trackmaniarl.trackmania.iqn import LidarIqnModel, LidarIqnModelFactory
+from trackmaniarl.trackmania.session import PLUGIN_PROTOCOL_VERSION, OpenPlanetSessionClient
 
 
 def _asset(tmp_path: Path, *, lookahead_points: int = 60) -> Path:
@@ -32,20 +32,20 @@ def _asset(tmp_path: Path, *, lookahead_points: int = 60) -> Path:
     right = left + np.asarray([0.0, 0.0, 10.0], dtype=np.float32)
     np.save(tmp_path / "left.npy", left)
     np.save(tmp_path / "right.npy", right)
-    (tmp_path / "tmrl-test.Map.Gbx").write_bytes(b"tmrl-test-map")
+    (tmp_path / "trackmaniarl-test.Map.Gbx").write_bytes(b"trackmaniarl-test-map")
     return build_geometry_asset(
-        tmp_path / "tmrl-test.npz",
+        tmp_path / "trackmaniarl-test.npz",
         tmp_path / "left.npy",
         tmp_path / "right.npy",
-        map_uid="tmrl-test",
-        map_path=tmp_path / "tmrl-test.Map.Gbx",
+        map_uid="trackmaniarl-test",
+        map_path=tmp_path / "trackmaniarl-test.Map.Gbx",
         lookahead_points=lookahead_points,
     )
 
 
 def test_geometry_asset_binds_uid_and_rejects_mismatch(tmp_path: Path) -> None:
     asset = _asset(tmp_path)
-    geometry = BoundaryGeometry(asset, expected_map_uid="tmrl-test")
+    geometry = BoundaryGeometry(asset, expected_map_uid="trackmaniarl-test")
     assert geometry.sha256
     with pytest.raises(ValueError, match="UID"):
         BoundaryGeometry(asset, expected_map_uid="other")
@@ -69,13 +69,13 @@ def test_geometry_pairs_boundaries_by_location_not_recording_progress(tmp_path: 
     right = np.asarray([[5, 0, 5], [10, 0, 5], [0, 0, 5]], dtype=np.float32)
     np.save(tmp_path / "left-offset.npy", left)
     np.save(tmp_path / "right-offset.npy", right)
-    (tmp_path / "tmrl-test.Map.Gbx").write_bytes(b"tmrl-test-map")
+    (tmp_path / "trackmaniarl-test.Map.Gbx").write_bytes(b"trackmaniarl-test-map")
     asset = build_geometry_asset(
         tmp_path / "offset.npz",
         tmp_path / "left-offset.npy",
         tmp_path / "right-offset.npy",
-        map_uid="tmrl-test",
-        map_path=tmp_path / "tmrl-test.Map.Gbx",
+        map_uid="trackmaniarl-test",
+        map_path=tmp_path / "trackmaniarl-test.Map.Gbx",
         spacing_m=5.0,
         lookahead_points=0,
     )
@@ -92,13 +92,13 @@ def test_geometry_pairing_stays_on_track_across_parallel_sections(tmp_path: Path
     right = np.concatenate([true_right, filler, decoy], axis=0)
     np.save(tmp_path / "left-parallel.npy", left)
     np.save(tmp_path / "right-parallel.npy", right)
-    (tmp_path / "tmrl-test.Map.Gbx").write_bytes(b"tmrl-test-map")
+    (tmp_path / "trackmaniarl-test.Map.Gbx").write_bytes(b"trackmaniarl-test-map")
     asset = build_geometry_asset(
         tmp_path / "parallel.npz",
         tmp_path / "left-parallel.npy",
         tmp_path / "right-parallel.npy",
-        map_uid="tmrl-test",
-        map_path=tmp_path / "tmrl-test.Map.Gbx",
+        map_uid="trackmaniarl-test",
+        map_path=tmp_path / "trackmaniarl-test.Map.Gbx",
         spacing_m=1.0,
         lookahead_points=0,
     )
@@ -121,13 +121,13 @@ def test_geometry_centerline_spacing_is_uniform_on_bends(tmp_path: Path) -> None
     )
     np.save(tmp_path / "left-bend.npy", left)
     np.save(tmp_path / "right-bend.npy", right)
-    (tmp_path / "tmrl-test.Map.Gbx").write_bytes(b"tmrl-test-map")
+    (tmp_path / "trackmaniarl-test.Map.Gbx").write_bytes(b"trackmaniarl-test-map")
     asset = build_geometry_asset(
         tmp_path / "bend.npz",
         tmp_path / "left-bend.npy",
         tmp_path / "right-bend.npy",
-        map_uid="tmrl-test",
-        map_path=tmp_path / "tmrl-test.Map.Gbx",
+        map_uid="trackmaniarl-test",
+        map_path=tmp_path / "trackmaniarl-test.Map.Gbx",
         spacing_m=2.0,
         lookahead_points=0,
     )
@@ -148,13 +148,13 @@ def test_racing_line_stays_inside_boundaries_and_cuts_a_corner(tmp_path: Path) -
     )
     np.save(tmp_path / "left-racing.npy", left)
     np.save(tmp_path / "right-racing.npy", right)
-    (tmp_path / "tmrl-test.Map.Gbx").write_bytes(b"tmrl-test-map")
+    (tmp_path / "trackmaniarl-test.Map.Gbx").write_bytes(b"trackmaniarl-test-map")
     asset = build_geometry_asset(
         tmp_path / "racing.npz",
         tmp_path / "left-racing.npy",
         tmp_path / "right-racing.npy",
-        map_uid="tmrl-test",
-        map_path=tmp_path / "tmrl-test.Map.Gbx",
+        map_uid="trackmaniarl-test",
+        map_path=tmp_path / "trackmaniarl-test.Map.Gbx",
         spacing_m=1.0,
         lookahead_points=0,
     )
@@ -173,13 +173,13 @@ def test_geometry_smoothing_reduces_boundary_jitter(tmp_path: Path) -> None:
     right = left + np.asarray([0.0, 0.0, 10.0], dtype=np.float32)
     np.save(tmp_path / "left-jitter.npy", left)
     np.save(tmp_path / "right-jitter.npy", right)
-    (tmp_path / "tmrl-test.Map.Gbx").write_bytes(b"tmrl-test-map")
+    (tmp_path / "trackmaniarl-test.Map.Gbx").write_bytes(b"trackmaniarl-test-map")
     raw = build_geometry_asset(
         tmp_path / "raw.npz",
         tmp_path / "left-jitter.npy",
         tmp_path / "right-jitter.npy",
-        map_uid="tmrl-test",
-        map_path=tmp_path / "tmrl-test.Map.Gbx",
+        map_uid="trackmaniarl-test",
+        map_path=tmp_path / "trackmaniarl-test.Map.Gbx",
         spacing_m=1.0,
         smooth_window=1,
         lookahead_points=0,
@@ -188,8 +188,8 @@ def test_geometry_smoothing_reduces_boundary_jitter(tmp_path: Path) -> None:
         tmp_path / "soft.npz",
         tmp_path / "left-jitter.npy",
         tmp_path / "right-jitter.npy",
-        map_uid="tmrl-test",
-        map_path=tmp_path / "tmrl-test.Map.Gbx",
+        map_uid="trackmaniarl-test",
+        map_path=tmp_path / "trackmaniarl-test.Map.Gbx",
         spacing_m=1.0,
         smooth_window=5,
         lookahead_points=0,
@@ -220,13 +220,13 @@ def test_closed_lap_does_not_extend_finish(tmp_path: Path) -> None:
     ).astype(np.float32)
     np.save(tmp_path / "left-loop.npy", left)
     np.save(tmp_path / "right-loop.npy", right)
-    (tmp_path / "tmrl-test.Map.Gbx").write_bytes(b"tmrl-test-map")
+    (tmp_path / "trackmaniarl-test.Map.Gbx").write_bytes(b"trackmaniarl-test-map")
     asset = build_geometry_asset(
         tmp_path / "loop.npz",
         tmp_path / "left-loop.npy",
         tmp_path / "right-loop.npy",
-        map_uid="tmrl-test",
-        map_path=tmp_path / "tmrl-test.Map.Gbx",
+        map_uid="trackmaniarl-test",
+        map_path=tmp_path / "trackmaniarl-test.Map.Gbx",
         spacing_m=2.0,
         lookahead_points=60,
     )
@@ -239,7 +239,7 @@ def test_closed_lap_does_not_extend_finish(tmp_path: Path) -> None:
 def test_lidar_pipeline_validates_schema_and_builds_masked_local_observation(
     tmp_path: Path,
 ) -> None:
-    pipeline = LidarFeaturePipeline(_asset(tmp_path), expected_map_uid="tmrl-test")
+    pipeline = LidarFeaturePipeline(_asset(tmp_path), expected_map_uid="trackmaniarl-test")
     observation = np.zeros(33, dtype=np.float32)
     observation[4:7] = [0, 0, 0]
     observation[10:13] = [1, 0, 0]
@@ -263,7 +263,7 @@ def test_lidar_pipeline_validates_schema_and_builds_masked_local_observation(
 def test_lidar_pipeline_can_exclude_control_inputs_for_behavior_cloning(tmp_path: Path) -> None:
     pipeline = LidarFeaturePipeline(
         _asset(tmp_path),
-        expected_map_uid="tmrl-test",
+        expected_map_uid="trackmaniarl-test",
         include_track_relative=True,
         include_control_inputs=False,
     )
@@ -279,7 +279,7 @@ def test_lidar_pipeline_can_exclude_control_inputs_for_behavior_cloning(tmp_path
 
 def test_lidar_pipeline_can_encode_velocity_in_the_local_car_frame(tmp_path: Path) -> None:
     pipeline = LidarFeaturePipeline(
-        _asset(tmp_path), expected_map_uid="tmrl-test", local_velocity_features=True
+        _asset(tmp_path), expected_map_uid="trackmaniarl-test", local_velocity_features=True
     )
     observation = np.zeros(33, dtype=np.float32)
     observation[7:10] = [10_000.0, 2_000.0, 5_000.0]
@@ -293,7 +293,7 @@ def test_lidar_pipeline_can_encode_velocity_in_the_local_car_frame(tmp_path: Pat
 def test_lidar_near_finish_keeps_fresh_lookahead_on_open_track(tmp_path: Path) -> None:
     asset = _asset(tmp_path, lookahead_points=60)
     geometry = BoundaryGeometry(asset)
-    pipeline = LidarFeaturePipeline(asset, expected_map_uid="tmrl-test")
+    pipeline = LidarFeaturePipeline(asset, expected_map_uid="trackmaniarl-test")
     observation = np.zeros(33, dtype=np.float32)
     observation[4:7] = geometry.reward_center[-1]
     observation[10:13] = [1, 0, 0]
@@ -319,7 +319,7 @@ def test_lidar_exposes_racing_line_pace_dynamics_and_finish_gate(tmp_path: Path)
     )
     pipeline = LidarFeaturePipeline(
         asset,
-        expected_map_uid="tmrl-test",
+        expected_map_uid="trackmaniarl-test",
         include_track_relative=True,
         use_racing_line=True,
         pace_reference_path=pace,
@@ -366,11 +366,13 @@ def test_lidar_keeps_pace_profile_when_evaluating_its_configured_geometry(tmp_pa
     )
     pipeline = LidarFeaturePipeline(
         asset,
-        expected_map_uid="tmrl-test",
+        expected_map_uid="trackmaniarl-test",
         pace_reference_path=pace,
     )
 
-    pipeline.set_evaluation_map(SimpleNamespace(geometry_path=asset, expected_map_uid="tmrl-test"))
+    pipeline.set_evaluation_map(
+        SimpleNamespace(geometry_path=asset, expected_map_uid="trackmaniarl-test")
+    )
 
     assert pipeline.pace_profile is not None
 
@@ -379,7 +381,7 @@ def test_lidar_progress_is_bounded_by_reachable_arc_length(tmp_path: Path) -> No
     asset = _asset(tmp_path, lookahead_points=0)
     pipeline = LidarFeaturePipeline(
         asset,
-        expected_map_uid="tmrl-test",
+        expected_map_uid="trackmaniarl-test",
         max_speed_mps=1.0,
         max_time_delta_s=1.0,
         limit_progress_by_kinematics=True,
@@ -400,7 +402,9 @@ def test_lidar_progress_is_bounded_by_reachable_arc_length(tmp_path: Path) -> No
 
 def test_lidar_pipeline_preserves_legacy_right_then_forward_car_frame(tmp_path: Path) -> None:
     pipeline = LidarFeaturePipeline(
-        _asset(tmp_path, lookahead_points=0), expected_map_uid="tmrl-test", max_distance_m=10.0
+        _asset(tmp_path, lookahead_points=0),
+        expected_map_uid="trackmaniarl-test",
+        max_distance_m=10.0,
     )
     observation = np.zeros(33, dtype=np.float32)
     observation[10] = 1.0  # Car points along +X.
@@ -415,7 +419,7 @@ def test_lidar_pipeline_preserves_legacy_right_then_forward_car_frame(tmp_path: 
 def test_lidar_pipeline_stacks_track_relative_history(tmp_path: Path) -> None:
     pipeline = LidarFeaturePipeline(
         _asset(tmp_path),
-        expected_map_uid="tmrl-test",
+        expected_map_uid="trackmaniarl-test",
         history_length=2,
         include_track_relative=True,
         max_speed_mps=10.0,
@@ -447,7 +451,7 @@ def test_track_relative_velocity_uses_the_same_native_unit_scale_as_telemetry(
 ) -> None:
     pipeline = LidarFeaturePipeline(
         _asset(tmp_path),
-        expected_map_uid="tmrl-test",
+        expected_map_uid="trackmaniarl-test",
         include_track_relative=True,
         max_speed_mps=20.0,
     )
@@ -462,7 +466,7 @@ def test_track_relative_velocity_uses_the_same_native_unit_scale_as_telemetry(
 
 
 def test_iqn_lidar_updates_and_handles_single_structured_observation(tmp_path: Path) -> None:
-    pipeline = LidarFeaturePipeline(_asset(tmp_path), expected_map_uid="tmrl-test")
+    pipeline = LidarFeaturePipeline(_asset(tmp_path), expected_map_uid="trackmaniarl-test")
     raw = np.zeros(33, dtype=np.float32)
     raw[10] = 1.0
     single = pipeline.transform_observation(raw)
@@ -502,7 +506,7 @@ def test_iqn_lidar_updates_and_handles_single_structured_observation(tmp_path: P
 def test_temporal_iqn_handles_explicit_history(tmp_path: Path) -> None:
     pipeline = LidarFeaturePipeline(
         _asset(tmp_path),
-        expected_map_uid="tmrl-test",
+        expected_map_uid="trackmaniarl-test",
         history_length=1,
         include_track_relative=True,
     )
@@ -595,6 +599,328 @@ def test_iqn_warm_starts_compatible_tensors_into_expanded_observation_model(
     assert torch.equal(target_state["head.weight"], source_state["head.weight"])
 
 
+def test_iqn_goal_residual_preserves_legacy_policy_and_anchor(tmp_path: Path) -> None:
+    source = ImplicitQuantileQLearning(
+        LidarIqnModel(
+            cosine_count=8,
+            telemetry_dim=26,
+            history_length=2,
+            burn_in=1,
+            spatial_bins=2,
+        ),
+        execution={"device": "cpu", "precision": "float32"},
+    )
+    source.setup({"seed": 0})
+    checkpoint = tmp_path / "legacy-policy.pt"
+    torch.save({"learner": source.state_dict()}, checkpoint)
+    target = ImplicitQuantileQLearning(
+        LidarIqnModel(
+            cosine_count=8,
+            telemetry_dim=49,
+            base_telemetry_dim=26,
+            auxiliary_remaining_distance_index=47,
+            history_length=2,
+            burn_in=1,
+            spatial_bins=2,
+        ),
+        model_initialization_checkpoint=checkpoint.name,
+        policy_anchor_checkpoint=checkpoint.name,
+        policy_anchor_weight=1.0,
+        base_dir=tmp_path,
+        execution={"device": "cpu", "precision": "float32"},
+    )
+    target.setup({"seed": 1})
+    assert source.model is not None
+    assert target.model is not None
+    assert target.policy_anchor_model is not None
+    lidar = torch.randn(2, 2, 4, 90)
+    mask = torch.ones(2, 2, 90)
+    telemetry = torch.randn(2, 2, 26)
+    auxiliary = torch.randn(2, 2, 23)
+    observations = {"lidar": lidar, "lidar_mask": mask, "telemetry": telemetry}
+    expanded = {
+        "lidar": lidar,
+        "lidar_mask": mask,
+        "telemetry": torch.cat((telemetry, auxiliary), dim=-1),
+    }
+    quantiles = torch.linspace(0.1, 0.9, 8).repeat(2, 1)
+
+    expected = source.model(observations, quantiles)
+
+    assert torch.equal(target.model(expanded, quantiles), expected)
+    assert torch.equal(target.policy_anchor_model(expanded, quantiles), expected)
+
+
+def test_iqn_goal_residual_is_distance_gated_and_only_branch_trains_offline() -> None:
+    model = LidarIqnModel(
+        cosine_count=8,
+        telemetry_dim=49,
+        base_telemetry_dim=26,
+        auxiliary_remaining_distance_index=47,
+        history_length=2,
+        burn_in=1,
+        spatial_bins=2,
+    )
+    assert model.encoder.auxiliary is not None
+    with torch.no_grad():
+        model.encoder.auxiliary[-1].weight.zero_()
+        model.encoder.auxiliary[-1].bias.fill_(1.0)
+    lidar = torch.randn(2, 2, 4, 90)
+    mask = torch.ones(2, 2, 90)
+    telemetry = torch.randn(2, 2, 49)
+    telemetry[:, :, 47] = 1.0
+    observations = {"lidar": lidar, "lidar_mask": mask, "telemetry": telemetry}
+    baseline = model.encoder.encoder(lidar, telemetry[..., :26], mask)
+
+    assert torch.equal(model.encoder(observations), baseline)
+    telemetry[:, :, 47] = 0.0
+    assert torch.equal(model.encoder(observations), baseline + 1.0)
+
+    model.set_offline_pretraining(True)
+    trainable = {name for name, value in model.named_parameters() if value.requires_grad}
+    assert trainable
+    assert all(name.startswith("encoder.auxiliary.") for name in trainable)
+    model.set_offline_pretraining(False)
+    assert all(value.requires_grad for value in model.parameters())
+
+    legacy_model = LidarIqnModel(cosine_count=8)
+    legacy_model.set_offline_pretraining(True)
+    assert all(value.requires_grad for value in legacy_model.parameters())
+
+
+def test_iqn_auxiliary_residual_can_start_at_a_measured_progress_segment() -> None:
+    model = LidarIqnModel(
+        cosine_count=8,
+        telemetry_dim=27,
+        base_telemetry_dim=26,
+        auxiliary_progress_index=20,
+        auxiliary_start_progress=0.65,
+        auxiliary_residual_scale=0.25,
+        history_length=2,
+        burn_in=1,
+        spatial_bins=2,
+    )
+    assert model.encoder.auxiliary is not None
+    with torch.no_grad():
+        model.encoder.auxiliary[-1].weight.zero_()
+        model.encoder.auxiliary[-1].bias.fill_(1.0)
+    lidar = torch.randn(2, 2, 4, 90)
+    mask = torch.ones(2, 2, 90)
+    telemetry = torch.zeros(2, 2, 27)
+    observations = {"lidar": lidar, "lidar_mask": mask, "telemetry": telemetry}
+
+    telemetry[:, :, 20] = 0.65
+    baseline = model.encoder.encoder(lidar, telemetry[..., :26], mask)
+    assert torch.equal(model.encoder(observations), baseline)
+    telemetry[:, :, 20] = 1.0
+    baseline = model.encoder.encoder(lidar, telemetry[..., :26], mask)
+    assert torch.equal(model.encoder(observations), baseline + torch.tanh(torch.ones(1)) * 0.25)
+
+
+def test_iqn_auxiliary_only_training_remains_frozen_after_offline_phase() -> None:
+    model = LidarIqnModel(
+        cosine_count=8,
+        telemetry_dim=49,
+        base_telemetry_dim=26,
+        auxiliary_remaining_distance_index=47,
+        train_auxiliary_only=True,
+        history_length=2,
+        burn_in=1,
+        spatial_bins=2,
+    )
+
+    model.set_offline_pretraining(True)
+    model.set_offline_pretraining(False)
+
+    trainable = {name for name, value in model.named_parameters() if value.requires_grad}
+    assert trainable
+    assert all(name.startswith("encoder.auxiliary.") for name in trainable)
+
+
+def test_iqn_demonstration_loss_is_weighted_toward_the_finish() -> None:
+    model = LidarIqnModel(
+        cosine_count=8,
+        telemetry_dim=49,
+        base_telemetry_dim=26,
+        auxiliary_remaining_distance_index=47,
+        history_length=4,
+        burn_in=1,
+        spatial_bins=2,
+    )
+    telemetry = torch.zeros(2, 4, 49)
+    telemetry[:, :, 47] = torch.tensor([1.0, 0.75, 0.25, 0.0])
+    observation = {
+        "lidar": torch.zeros(2, 4, 4, 90),
+        "lidar_mask": torch.ones(2, 4, 90),
+        "telemetry": telemetry,
+    }
+
+    weights = model.demonstration_loss_weights(observation, [1, 3])
+
+    assert weights is not None
+    assert torch.equal(weights, torch.tensor([[0.25, 1.0], [0.25, 1.0]]))
+
+
+def test_iqn_auxiliary_only_update_changes_no_legacy_parameters() -> None:
+    model = LidarIqnModel(
+        cosine_count=8,
+        telemetry_dim=49,
+        base_telemetry_dim=26,
+        auxiliary_remaining_distance_index=47,
+        train_auxiliary_only=True,
+        history_length=3,
+        burn_in=1,
+        spatial_bins=2,
+    )
+    learner = ImplicitQuantileQLearning(
+        model,
+        train_quantile_count=8,
+        target_quantile_count=8,
+        evaluation_quantile_count=8,
+        demonstration_cross_entropy_weight=1.0,
+        demonstration_td_weight=0.0,
+        execution={"device": "cpu", "precision": "float32"},
+    )
+    learner.setup({"seed": 0})
+    telemetry = torch.randn(2, 3, 49)
+    telemetry[:, :, 47] = 0.0
+    observations = {
+        "lidar": torch.randn(2, 3, 4, 90),
+        "lidar_mask": torch.ones(2, 3, 90),
+        "telemetry": telemetry,
+    }
+    batch = TrainingBatch(
+        data=observations,
+        observations=observations,
+        actions=torch.tensor([[0, 1, 2], [3, 4, 5]]),
+        rewards=torch.zeros(2, 3),
+        next_observations=observations,
+        terminated=torch.zeros(2, 3, dtype=torch.bool),
+        truncated=torch.zeros(2, 3, dtype=torch.bool),
+        bootstrap_discounts=torch.full((2, 3), 0.999),
+        transition_ids=list(range(6)),
+        importance_weights=torch.ones(2),
+        masks=torch.ones(2, 3, dtype=torch.bool),
+        metadata={
+            "gamma": 0.999,
+            "n_step": 1,
+            "priority_transition_ids": (2, 5),
+            "demo_flags": (True, True),
+        },
+    )
+    before = {name: value.clone() for name, value in model.state_dict().items()}
+
+    metrics, _ = learner.update(batch)
+
+    changed = {
+        name for name, value in model.state_dict().items() if not torch.equal(value, before[name])
+    }
+    assert metrics["loss/demonstration_cross_entropy"] > 0.0
+    assert metrics["debug/gradient_norm"] > 0.0
+    assert changed
+    assert all(name.startswith("encoder.auxiliary.") for name in changed)
+
+
+def test_iqn_policy_anchor_migrates_the_legacy_telemetry_encoder(tmp_path: Path) -> None:
+    source = ImplicitQuantileQLearning(
+        LidarIqnModel(
+            cosine_count=8,
+            telemetry_dim=26,
+            history_length=2,
+            burn_in=1,
+            spatial_bins=2,
+        ),
+        execution={"device": "cpu", "precision": "float32"},
+    )
+    source.setup({"seed": 0})
+    assert source.model is not None
+    source_state = dict(source.model.state_dict())
+    for current, legacy in (
+        (
+            "encoder.encoder.frame.telemetry.0.0.weight",
+            "encoder.encoder.frame.telemetry.0.weight",
+        ),
+        (
+            "encoder.encoder.frame.telemetry.0.0.bias",
+            "encoder.encoder.frame.telemetry.0.bias",
+        ),
+        (
+            "encoder.encoder.frame.telemetry.0.1.weight",
+            "encoder.encoder.frame.telemetry.1.weight",
+        ),
+        (
+            "encoder.encoder.frame.telemetry.0.1.bias",
+            "encoder.encoder.frame.telemetry.1.bias",
+        ),
+    ):
+        source_state[legacy] = source_state.pop(current)
+    checkpoint = tmp_path / "legacy-anchor.pt"
+    torch.save({"learner": {"model": source_state}}, checkpoint)
+    anchored = ImplicitQuantileQLearning(
+        LidarIqnModel(
+            cosine_count=8,
+            telemetry_dim=26,
+            history_length=2,
+            burn_in=1,
+            spatial_bins=2,
+        ),
+        policy_anchor_weight=1.0,
+        policy_anchor_checkpoint=checkpoint.name,
+        base_dir=tmp_path,
+        execution={"device": "cpu", "precision": "float32"},
+    )
+
+    anchored.setup({"seed": 1})
+
+    assert anchored.policy_anchor_model is not None
+    for name, value in source.model.state_dict().items():
+        assert torch.equal(anchored.policy_anchor_model.state_dict()[name], value)
+
+
+def test_iqn_policy_anchor_expands_the_legacy_telemetry_input(tmp_path: Path) -> None:
+    source = ImplicitQuantileQLearning(
+        LidarIqnModel(
+            cosine_count=8,
+            telemetry_dim=26,
+            history_length=2,
+            burn_in=1,
+            spatial_bins=2,
+            legacy_telemetry_layout=True,
+        ),
+        execution={"device": "cpu", "precision": "float32"},
+    )
+    source.setup({"seed": 0})
+    checkpoint = tmp_path / "legacy-policy.pt"
+    torch.save({"learner": source.state_dict()}, checkpoint)
+    target = ImplicitQuantileQLearning(
+        LidarIqnModel(
+            cosine_count=8,
+            telemetry_dim=27,
+            history_length=2,
+            burn_in=1,
+            spatial_bins=2,
+            legacy_telemetry_layout=True,
+        ),
+        model_initialization_checkpoint=checkpoint.name,
+        policy_anchor_checkpoint=checkpoint.name,
+        policy_anchor_weight=1.0,
+        base_dir=tmp_path,
+        execution={"device": "cpu", "precision": "float32"},
+    )
+
+    target.setup({"seed": 1})
+
+    assert target.model is not None
+    assert target.policy_anchor_model is not None
+    name = "encoder.encoder.frame.telemetry.0.weight"
+    source_weight = source.model.state_dict()[name]
+    model_weight = target.model.state_dict()[name]
+    anchor_weight = target.policy_anchor_model.state_dict()[name]
+    assert torch.equal(model_weight[:, :26], source_weight)
+    assert torch.count_nonzero(model_weight[:, 26:]) == 0
+    assert torch.equal(anchor_weight, model_weight)
+
+
 def test_iqn_warm_starts_the_frame_encoder_from_behavior_cloning(tmp_path: Path) -> None:
     source = LidarBehaviorCloningModel(
         action_ids=(0, 1, 3, 39, 72, 73, 75),
@@ -634,6 +960,152 @@ def test_iqn_warm_starts_the_frame_encoder_from_behavior_cloning(tmp_path: Path)
         target_state["encoder.encoder.frame.projection.0.weight"],
         source_state["encoder.encoder.projection.0.weight"],
     )
+
+
+def test_iqn_warm_start_preserves_behavior_cloning_greedy_policy(tmp_path: Path) -> None:
+    action_ids = (0, 1, 3, 39, 72, 73, 75)
+    source = LidarBehaviorCloningModel(
+        action_ids=action_ids,
+        telemetry_dim=26,
+        spatial_bins=2,
+        masked_telemetry_indices=(3, 23),
+    ).eval()
+    checkpoint = tmp_path / "behavior-cloning-policy.pt"
+    torch.save(
+        {"learner": {"model": source.state_dict(), "policy_action_ids": action_ids}},
+        checkpoint,
+    )
+    learner = ImplicitQuantileQLearning(
+        LidarIqnModel(
+            cosine_count=8,
+            telemetry_dim=26,
+            spatial_bins=2,
+            masked_telemetry_indices=(3, 23),
+        ),
+        policy_action_ids=action_ids,
+        model_initialization_checkpoint=checkpoint.name,
+        base_dir=tmp_path,
+        evaluation_quantile_count=8,
+        execution={"device": "cpu", "precision": "float32"},
+    )
+
+    learner.setup({"seed": 0})
+
+    assert learner.model is not None
+    observations = {
+        "lidar": torch.randn(16, 4, 90),
+        "lidar_mask": torch.ones(16, 90),
+        "telemetry": torch.randn(16, 26),
+    }
+    with torch.inference_mode():
+        compact_actions = source(observations).argmax(dim=-1)
+        q_values = learner.model.q_values(observations, quantile_count=8)
+    expected_actions = torch.tensor(action_ids)[compact_actions]
+    actual_actions = q_values.masked_fill(
+        ~torch.tensor([index in action_ids for index in range(78)]), -torch.inf
+    ).argmax(dim=-1)
+    state = learner.model.state_dict()
+    disallowed = torch.tensor([index not in action_ids for index in range(78)])
+
+    assert torch.equal(actual_actions, expected_actions)
+    assert torch.equal(state["head.weight"][list(action_ids)], source.state_dict()["head.weight"])
+    assert torch.equal(state["head.bias"][list(action_ids)], source.state_dict()["head.bias"])
+    assert torch.count_nonzero(state["head.weight"][disallowed]) == 0
+    assert torch.count_nonzero(state["head.bias"][disallowed]) == 0
+    assert torch.count_nonzero(state["quantile_embedding.0.weight"]) == 0
+    assert torch.equal(
+        learner.model.quantile_embedding(torch.randn(4, 8)),
+        torch.ones(4, learner.model.feature_dim),
+    )
+    assert torch.count_nonzero(state["value.weight"]) == 0
+    assert torch.count_nonzero(state["value.bias"]) == 0
+
+
+def test_iqn_rejects_behavior_cloning_action_contract_mismatch(tmp_path: Path) -> None:
+    source_action_ids = (0, 1, 3, 39, 72, 73, 75)
+    source = LidarBehaviorCloningModel(action_ids=source_action_ids, spatial_bins=2)
+    checkpoint = tmp_path / "behavior-cloning-policy.pt"
+    torch.save(
+        {
+            "learner": {
+                "model": source.state_dict(),
+                "policy_action_ids": source_action_ids,
+            }
+        },
+        checkpoint,
+    )
+    learner = ImplicitQuantileQLearning(
+        LidarIqnModel(cosine_count=8, spatial_bins=2),
+        policy_action_ids=(0, 1, 3, 39, 72, 73, 74),
+        model_initialization_checkpoint=checkpoint.name,
+        base_dir=tmp_path,
+        execution={"device": "cpu", "precision": "float32"},
+    )
+
+    with pytest.raises(ValueError, match="action contract"):
+        learner.setup({"seed": 0})
+
+
+def test_iqn_masks_telemetry_for_frame_sequence_and_policy() -> None:
+    frame_model = LidarIqnModel(
+        cosine_count=8,
+        telemetry_dim=26,
+        spatial_bins=2,
+        masked_telemetry_indices=(3, 23),
+    )
+    factory_model = LidarIqnModelFactory(
+        cosine_count=8,
+        telemetry_dim=26,
+        spatial_bins=2,
+        masked_telemetry_indices=(3, 23),
+    ).build()
+    base = {
+        "lidar": torch.randn(2, 4, 90),
+        "lidar_mask": torch.ones(2, 90),
+        "telemetry": torch.randn(2, 26),
+    }
+    changed = {key: value.clone() for key, value in base.items()}
+    changed["telemetry"][:, 3] += 100.0
+    changed["telemetry"][:, 23] -= 100.0
+    quantiles = torch.linspace(0.1, 0.9, 8).expand(2, -1)
+    sequence_model = LidarIqnModel(
+        cosine_count=8,
+        telemetry_dim=26,
+        history_length=2,
+        burn_in=1,
+        spatial_bins=2,
+        masked_telemetry_indices=(3, 23),
+    )
+    sequence = {
+        key: value.unsqueeze(1).expand(-1, 2, *value.shape[1:]).clone()
+        for key, value in base.items()
+    }
+    changed_sequence = {key: value.clone() for key, value in sequence.items()}
+    changed_sequence["telemetry"][:, :, 3] += 100.0
+    changed_sequence["telemetry"][:, :, 23] -= 100.0
+
+    assert frame_model.masked_telemetry_indices.tolist() == [3, 23]
+    assert factory_model.masked_telemetry_indices.tolist() == [3, 23]
+    assert torch.equal(frame_model(base, quantiles), frame_model(changed, quantiles))
+    assert torch.equal(
+        sequence_model.encode_sequence(sequence),
+        sequence_model.encode_sequence(changed_sequence),
+    )
+    learner = ImplicitQuantileQLearning(
+        frame_model,
+        execution={"device": "cpu", "precision": "float32"},
+    )
+    learner.setup({"seed": 0})
+    policy = learner.policy()
+    single = {key: value[0] for key, value in base.items()}
+    changed_single = {key: value[0] for key, value in changed.items()}
+    assert policy.act(single, deterministic=True) == policy.act(changed_single, deterministic=True)
+
+
+@pytest.mark.parametrize("indices", [(3, 3), (-1,), (26,)])
+def test_iqn_rejects_invalid_masked_telemetry_indices(indices: tuple[int, ...]) -> None:
+    with pytest.raises(ValueError, match="masked telemetry"):
+        LidarIqnModel(telemetry_dim=26, masked_telemetry_indices=indices)
 
 
 def test_iqn_resume_uses_configured_learning_rate(tmp_path: Path) -> None:
@@ -697,6 +1169,22 @@ def test_track_geometry_encoder_can_preserve_ordered_spatial_bins() -> None:
     assert encoder(track, telemetry, mask).shape == (3, 32)
 
 
+def test_iqn_can_build_the_legacy_telemetry_checkpoint_layout() -> None:
+    model = LidarIqnModel(
+        telemetry_dim=26,
+        history_length=64,
+        burn_in=32,
+        spatial_bins=12,
+        legacy_telemetry_layout=True,
+    )
+
+    state = model.state_dict()
+
+    assert "encoder.encoder.frame.telemetry.0.weight" in state
+    assert "encoder.encoder.frame.telemetry.1.weight" in state
+    assert "encoder.encoder.frame.telemetry.0.0.weight" not in state
+
+
 def test_iqn_action_table_has_all_78_indices_and_brake_taps() -> None:
     count, table = build_brake_tap_action_table()
     assert count == 78
@@ -744,7 +1232,7 @@ def test_session_protocol_verifies_preloaded_map_and_ready_state() -> None:
                 response = {
                     "status": "ok",
                     "protocol_version": PLUGIN_PROTOCOL_VERSION,
-                    "map_uid": "tmrl-test",
+                    "map_uid": "trackmaniarl-test",
                     "ready": "true",
                 }
                 connection.sendall(json.dumps(response).encode("utf-8") + b"\n")
@@ -753,7 +1241,7 @@ def test_session_protocol_verifies_preloaded_map_and_ready_state() -> None:
     thread = threading.Thread(target=serve)
     thread.start()
     client = OpenPlanetSessionClient(host, port, timeout_s=1)
-    assert client.verify_loaded_map("tmrl-test").map_uid == "tmrl-test"
-    assert client.confirm_ready("tmrl-test").map_uid == "tmrl-test"
+    assert client.verify_loaded_map("trackmaniarl-test").map_uid == "trackmaniarl-test"
+    assert client.confirm_ready("trackmaniarl-test").map_uid == "trackmaniarl-test"
     thread.join(timeout=1)
     assert commands == ["verify_loaded_map", "confirm_ready"]

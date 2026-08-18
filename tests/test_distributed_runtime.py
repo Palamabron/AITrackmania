@@ -18,22 +18,27 @@ import pytest
 import torch
 from google.protobuf.wrappers_pb2 import BytesValue
 
-from tmrl.core.builtins import TorchCheckpointCodec
-from tmrl.core.data import BatchRequest, Transition
-from tmrl.core.replay import InMemoryReplayStore, PrioritizedSampler, UniformSampler, _make_batch
-from tmrl.core.runtime import ResolvedRun
-from tmrl.core.spec import RunSpec
-from tmrl.distributed.actor import ActorRuntime, _Client, _PolicyReference
-from tmrl.distributed.codec import WireCodec
-from tmrl.distributed.coordinator import (
+from trackmaniarl.core.builtins import TorchCheckpointCodec
+from trackmaniarl.core.data import BatchRequest, Transition
+from trackmaniarl.core.replay import (
+    InMemoryReplayStore,
+    PrioritizedSampler,
+    UniformSampler,
+    _make_batch,
+)
+from trackmaniarl.core.runtime import ResolvedRun
+from trackmaniarl.core.spec import RunSpec
+from trackmaniarl.distributed.actor import ActorRuntime, _Client, _PolicyReference
+from trackmaniarl.distributed.codec import WireCodec
+from trackmaniarl.distributed.coordinator import (
     Coordinator,
     _Counters,
     _evaluation_rank,
     _MetricAccumulator,
     _PendingRollout,
 )
-from tmrl.distributed.journal import RolloutJournal
-from tmrl.distributed.protocol import (
+from trackmaniarl.distributed.journal import RolloutJournal
+from trackmaniarl.distributed.protocol import (
     PROTOCOL_VERSION,
     authenticate,
     require_loopback_bind,
@@ -99,6 +104,215 @@ def test_coordinator_spends_remaining_credit_after_transition_target() -> None:
     coordinator.external_stop.set()
 
     assert not coordinator._can_update()
+
+
+def test_offline_pretraining_updates_demonstration_replay_before_actors_start() -> None:
+    events: list[tuple[str, Mapping[str, object], int]] = []
+
+    class Training:
+        offline_pretrain_updates = 3
+        batch_size = 1
+        sequence_length = 1
+        n_step = 1
+
+        @staticmethod
+        def batch_request(*, beta: float | None = None) -> BatchRequest:
+            return BatchRequest(batch_size=1, beta=beta)
+
+        @staticmethod
+        def replay_beta(transitions: int) -> float | None:
+            assert transitions == 0
+            return None
+
+    class Store:
+        def __len__(self) -> int:
+            return 1
+
+    class Sampler:
+        def __init__(self) -> None:
+            self.samples = 0
+            self.priorities = 0
+
+        def sample(self, store: Store, request: BatchRequest) -> str:
+            assert len(store) == 1
+            assert request.batch_size == 1
+            self.samples += 1
+            return "batch"
+
+        def update_priorities(self, update: object) -> None:
+            assert update == "priorities"
+            self.priorities += 1
+
+    class Learner:
+        offline = False
+
+        @classmethod
+        def begin_offline_pretraining(cls) -> None:
+            assert not cls.offline
+            cls.offline = True
+
+        @classmethod
+        def end_offline_pretraining(cls) -> None:
+            assert cls.offline
+            cls.offline = False
+
+        @staticmethod
+        def update(batch: str) -> tuple[Mapping[str, float], str]:
+            assert batch == "batch"
+            assert Learner.offline
+            return {"loss": 2.0}, "priorities"
+
+    sampler = Sampler()
+    coordinator = object.__new__(Coordinator)
+    coordinator.run = SimpleNamespace(
+        spec=SimpleNamespace(training=Training()),
+        replay_store=Store(),
+        sampler=sampler,
+        learner=Learner(),
+        logger=SimpleNamespace(
+            log=lambda event, payload, *, step: events.append((event, payload, step))
+        ),
+    )
+    coordinator.demo_paths = (Path("elite.npz"),)
+    coordinator.counters = _Counters()
+
+    coordinator._offline_pretrain()
+
+    assert sampler.samples == 3
+    assert sampler.priorities == 3
+    assert coordinator.counters.updates == 3
+    assert not Learner.offline
+    assert events[0][0] == "train/offline_pretrain"
+    assert events[0][1]["loss"] == 2.0
+
+
+def test_offline_pretraining_run_saves_checkpoint_without_starting_server() -> None:
+    events: list[str] = []
+
+    class Resource:
+        def has_rows(self) -> bool:
+            events.append("journal_checked")
+            return False
+
+        def close(self) -> None:
+            events.append("journal_closed")
+
+    class Writer:
+        def wait(self) -> None:
+            events.append("checkpoint_waited")
+
+        def close(self) -> None:
+            events.append("writer_closed")
+
+    coordinator = object.__new__(Coordinator)
+    coordinator.run = SimpleNamespace(
+        spec=SimpleNamespace(training=SimpleNamespace(offline_pretrain_updates=7))
+    )
+    coordinator.demo_paths = (Path("elite.npz"),)
+    coordinator.counters = _Counters()
+    coordinator.journal = Resource()
+    coordinator._checkpoint_writer = Writer()
+    coordinator._prepare_training = lambda: events.append("prepared")
+    coordinator._import_demonstrations = lambda: events.append("imported")
+
+    def train() -> None:
+        coordinator.counters.updates = 7
+        events.append("trained")
+
+    coordinator._offline_pretrain = train
+    coordinator._checkpoint = lambda: Path("offline-final.pt")
+    coordinator._start_server = lambda: pytest.fail("offline pretraining started gRPC")
+
+    result = coordinator.run_offline_pretraining()
+
+    assert result.updates == 7
+    assert result.checkpoints == (Path("offline-final.pt"),)
+    assert events == [
+        "prepared",
+        "journal_checked",
+        "imported",
+        "trained",
+        "checkpoint_waited",
+        "writer_closed",
+        "journal_closed",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("resumed", "demo_paths", "expected_offline_pretraining"),
+    [
+        (False, (), True),
+        (True, (), False),
+        (True, (Path("new-demo.npz"),), True),
+    ],
+)
+def test_resumed_training_does_not_repeat_offline_pretraining_without_new_demos(
+    resumed: bool,
+    demo_paths: tuple[Path, ...],
+    expected_offline_pretraining: bool,
+) -> None:
+    events: list[str] = []
+
+    class Resource:
+        @staticmethod
+        def has_rows() -> bool:
+            return False
+
+        @staticmethod
+        def close() -> None:
+            return None
+
+    class Writer:
+        @staticmethod
+        def wait() -> None:
+            return None
+
+        @staticmethod
+        def close() -> None:
+            return None
+
+    coordinator = object.__new__(Coordinator)
+    coordinator.run = SimpleNamespace(
+        spec=SimpleNamespace(
+            run_id="resume-offline-contract",
+            training=SimpleNamespace(
+                save_final_checkpoint=False,
+                total_transitions=1,
+            ),
+        )
+    )
+    coordinator.bind = "127.0.0.1:8787"
+    coordinator.resume_checkpoint = Path("offline-pretrained.pt") if resumed else None
+    coordinator.reset_replay = False
+    coordinator.demo_paths = demo_paths
+    coordinator.counters = _Counters()
+    coordinator.journal = Resource()
+    coordinator._checkpoint_writer = Writer()
+    coordinator._checkpoints = []
+    coordinator._server = None
+    coordinator._rpc_executor = None
+    coordinator._prepare_training = lambda: None
+    coordinator.restore_checkpoint = lambda *_args, **_kwargs: None
+    coordinator._import_demonstrations = lambda: None
+    coordinator._offline_pretrain = lambda: events.append("offline_pretraining")
+    coordinator._publish_policy = lambda *, force: None
+    coordinator._start_server = lambda: None
+    coordinator._learn = lambda: None
+
+    coordinator.run_forever()
+
+    assert ("offline_pretraining" in events) is expected_offline_pretraining
+
+
+def test_fresh_offline_pretraining_still_requires_demonstrations() -> None:
+    coordinator = object.__new__(Coordinator)
+    coordinator.run = SimpleNamespace(
+        spec=SimpleNamespace(training=SimpleNamespace(offline_pretrain_updates=1))
+    )
+    coordinator.demo_paths = ()
+
+    with pytest.raises(ValueError, match="requires at least one demonstration"):
+        coordinator._offline_pretrain()
 
 
 def test_evaluation_stop_requires_consecutive_failed_batches() -> None:
@@ -324,10 +538,12 @@ def test_authentication_and_run_fingerprint_cover_geometry(tmp_path: Path) -> No
         "api_version": "1.2",
         "run_id": "run-a",
         "components": {
-            "learner": {"class_path": "tmrl.core.builtins:NullLearner"},
-            "replay_store": {"class_path": "tmrl.core.replay:InMemoryReplayStore"},
-            "sampler": {"class_path": "tmrl.core.replay:UniformSampler"},
-            "feature_pipeline": {"class_path": "tmrl.core.builtins:IdentityFeaturePipeline"},
+            "learner": {"class_path": "trackmaniarl.core.builtins:NullLearner"},
+            "replay_store": {"class_path": "trackmaniarl.core.replay:InMemoryReplayStore"},
+            "sampler": {"class_path": "trackmaniarl.core.replay:UniformSampler"},
+            "feature_pipeline": {
+                "class_path": "trackmaniarl.core.builtins:IdentityFeaturePipeline"
+            },
         },
         "evaluation": {
             "name": "map",
@@ -356,11 +572,11 @@ def test_run_fingerprint_hashes_component_geometry_and_requires_loopback(tmp_pat
         "api_version": "1.2",
         "run_id": "run-a",
         "components": {
-            "learner": {"class_path": "tmrl.core.builtins:NullLearner"},
-            "replay_store": {"class_path": "tmrl.core.replay:InMemoryReplayStore"},
-            "sampler": {"class_path": "tmrl.core.replay:UniformSampler"},
+            "learner": {"class_path": "trackmaniarl.core.builtins:NullLearner"},
+            "replay_store": {"class_path": "trackmaniarl.core.replay:InMemoryReplayStore"},
+            "sampler": {"class_path": "trackmaniarl.core.replay:UniformSampler"},
             "feature_pipeline": {
-                "class_path": "tmrl.core.builtins:IdentityFeaturePipeline",
+                "class_path": "trackmaniarl.core.builtins:IdentityFeaturePipeline",
                 "kwargs": {"geometry_path": geometry.name},
             },
         },
@@ -442,8 +658,8 @@ def test_distributed_epsilon_uses_transition_schedule_and_profile_multiplier(
             "artifacts_dir": str(tmp_path),
             "components": {
                 "learner": {"class_path": "tests.fake:SlowLearner"},
-                "replay_store": {"class_path": "tmrl.core.replay:InMemoryReplayStore"},
-                "sampler": {"class_path": "tmrl.core.replay:UniformSampler"},
+                "replay_store": {"class_path": "trackmaniarl.core.replay:InMemoryReplayStore"},
+                "sampler": {"class_path": "trackmaniarl.core.replay:UniformSampler"},
                 "feature_pipeline": {"class_path": "tests.fake:Pipeline"},
             },
             "training": {"warmup_transitions": 10},
@@ -612,7 +828,7 @@ def test_actor_resolves_learner_paths_relative_to_its_config(
     )
     actor.base_dir = tmp_path
     actor._actor_seed = lambda: 7
-    monkeypatch.setattr("tmrl.distributed.actor._instantiate", instantiate)
+    monkeypatch.setattr("trackmaniarl.distributed.actor._instantiate", instantiate)
 
     actor._components()
 
@@ -825,8 +1041,8 @@ def test_external_stop_does_not_ingest_or_train_a_queued_backlog(tmp_path: Path)
             "artifacts_dir": str(tmp_path),
             "components": {
                 "learner": {"class_path": "tests.fake:SlowLearner"},
-                "replay_store": {"class_path": "tmrl.core.replay:InMemoryReplayStore"},
-                "sampler": {"class_path": "tmrl.core.replay:UniformSampler"},
+                "replay_store": {"class_path": "trackmaniarl.core.replay:InMemoryReplayStore"},
+                "sampler": {"class_path": "trackmaniarl.core.replay:UniformSampler"},
                 "feature_pipeline": {"class_path": "tests.fake:Pipeline"},
             },
             "training": {
@@ -1129,7 +1345,7 @@ def test_windows_compatible_spawn_entrypoint() -> None:
 
 
 def test_cli_spawn_context_inherits_the_active_virtual_environment() -> None:
-    from tmrl import cli
+    from trackmaniarl import cli
 
     context = cli._spawn_context()
     queue = context.Queue()
@@ -1228,8 +1444,8 @@ def _resolved_run(tmp_path: Path, run_id: str, training: dict[str, Any]) -> Reso
             "artifacts_dir": str(tmp_path),
             "components": {
                 "learner": {"class_path": "tests.fake:SlowLearner"},
-                "replay_store": {"class_path": "tmrl.core.replay:InMemoryReplayStore"},
-                "sampler": {"class_path": "tmrl.core.replay:UniformSampler"},
+                "replay_store": {"class_path": "trackmaniarl.core.replay:InMemoryReplayStore"},
+                "sampler": {"class_path": "trackmaniarl.core.replay:UniformSampler"},
                 "feature_pipeline": {"class_path": "tests.fake:Pipeline"},
             },
             "training": training,
@@ -1512,8 +1728,8 @@ def test_two_fake_actors_feed_slow_learner_without_data_loss(tmp_path: Path) -> 
             "artifacts_dir": str(tmp_path),
             "components": {
                 "learner": {"class_path": "tests.fake:SlowLearner"},
-                "replay_store": {"class_path": "tmrl.core.replay:InMemoryReplayStore"},
-                "sampler": {"class_path": "tmrl.core.replay:UniformSampler"},
+                "replay_store": {"class_path": "trackmaniarl.core.replay:InMemoryReplayStore"},
+                "sampler": {"class_path": "trackmaniarl.core.replay:UniformSampler"},
                 "feature_pipeline": {"class_path": "tests.fake:Pipeline"},
             },
             "training": {

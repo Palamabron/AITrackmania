@@ -1,4 +1,4 @@
-"""Contract and smoke tests for the isolated TMRL SDK runtime."""
+"""Contract and smoke tests for the isolated TrackmaniaRL SDK runtime."""
 
 from __future__ import annotations
 
@@ -8,13 +8,13 @@ from pathlib import Path
 
 import pytest
 
-from tmrl.builtins.algorithms import algorithm_class
-from tmrl.builtins.features import TransitionFeaturePipeline
-from tmrl.core.data import EpisodeArtifact, Transition
-from tmrl.core.runtime import resolve_run, validate_resolved_run
-from tmrl.core.spec import RunSpec
-from tmrl.core.training import Trainer
-from tmrl.observability.artifacts import AsyncEpisodeWriter
+from trackmaniarl.builtins.algorithms import algorithm_class
+from trackmaniarl.builtins.features import TransitionFeaturePipeline
+from trackmaniarl.core.data import EpisodeArtifact, Transition
+from trackmaniarl.core.runtime import _redact_config, resolve_run, validate_resolved_run
+from trackmaniarl.core.spec import RunSpec
+from trackmaniarl.core.training import Trainer
+from trackmaniarl.observability.artifacts import AsyncEpisodeWriter
 
 
 class FakeEnvironment:
@@ -60,10 +60,12 @@ def _spec(tmp_path: Path) -> RunSpec:
             "run_id": "smoke",
             "artifacts_dir": str(tmp_path / "artifacts"),
             "components": {
-                "learner": {"class_path": "tmrl.core.builtins:SmokeLearner"},
-                "replay_store": {"class_path": "tmrl.core.replay:InMemoryReplayStore"},
-                "sampler": {"class_path": "tmrl.core.replay:UniformSampler"},
-                "feature_pipeline": {"class_path": "tmrl.core.builtins:IdentityFeaturePipeline"},
+                "learner": {"class_path": "trackmaniarl.core.builtins:SmokeLearner"},
+                "replay_store": {"class_path": "trackmaniarl.core.replay:InMemoryReplayStore"},
+                "sampler": {"class_path": "trackmaniarl.core.replay:UniformSampler"},
+                "feature_pipeline": {
+                    "class_path": "trackmaniarl.core.builtins:IdentityFeaturePipeline"
+                },
             },
         }
     )
@@ -82,10 +84,24 @@ def test_resolved_run_writes_manifest_and_smoke_checkpoint(tmp_path: Path) -> No
     assert (run.run_dir / "checkpoints" / "validation.json").is_file()
 
 
+def test_remote_tracker_config_redacts_nested_secrets() -> None:
+    config = {
+        "token": "private",
+        "metadata": {"api_key": "private", "label": "safe"},
+        "items": [{"password": "private"}],
+    }
+
+    assert _redact_config(config) == {
+        "token": "<redacted>",
+        "metadata": {"api_key": "<redacted>", "label": "safe"},
+        "items": [{"password": "<redacted>"}],
+    }
+
+
 def test_manifest_allows_resume_when_only_environment_fields_change(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from tmrl.observability import artifacts
+    from trackmaniarl.observability import artifacts
 
     run = resolve_run(_spec(tmp_path))
     try:
@@ -167,6 +183,52 @@ def test_trainer_collects_updates_and_checkpoints(tmp_path: Path) -> None:
     assert resumed_result.updates == result.updates
 
 
+def test_trainer_without_periodic_checkpoints_keeps_only_the_final_state(tmp_path: Path) -> None:
+    payload = _spec(tmp_path).model_dump(mode="json")
+    payload["components"]["environment"] = {
+        "class_path": "tests.test_core_runtime:FakeEnvironmentFactory"
+    }
+    payload["training"] = {
+        "total_transitions": 8,
+        "max_episode_steps": 2,
+        "batch_size": 4,
+        "warmup_transitions": 4,
+        "updates_per_transition": 1.0,
+        "checkpoint_interval_updates": None,
+    }
+    run = resolve_run(RunSpec.model_validate(payload))
+    try:
+        result = Trainer(run).train()
+    finally:
+        run.logger.close()
+
+    assert result.updates == 4
+    assert len(result.checkpoints) == 1
+
+
+def test_training_spec_can_disable_the_final_checkpoint() -> None:
+    spec = RunSpec.model_validate(
+        {
+            "run_id": "best-only",
+            "components": {
+                "learner": {"class_path": "trackmaniarl.core.builtins:SmokeLearner"},
+                "replay_store": {"class_path": "trackmaniarl.core.replay:InMemoryReplayStore"},
+                "sampler": {"class_path": "trackmaniarl.core.replay:UniformSampler"},
+                "feature_pipeline": {
+                    "class_path": "trackmaniarl.core.builtins:IdentityFeaturePipeline"
+                },
+            },
+            "training": {
+                "checkpoint_interval_updates": None,
+                "save_final_checkpoint": False,
+            },
+        }
+    )
+
+    assert spec.training.checkpoint_interval_updates is None
+    assert not spec.training.save_final_checkpoint
+
+
 def test_trainer_evaluation_artifact_is_bound_to_the_current_checkpoint(tmp_path: Path) -> None:
     payload = _spec(tmp_path).model_dump(mode="json")
     payload["components"]["environment"] = {
@@ -199,10 +261,12 @@ def test_training_spec_controls_the_replay_request() -> None:
         {
             "run_id": "request-options",
             "components": {
-                "learner": {"class_path": "tmrl.core.builtins:SmokeLearner"},
-                "replay_store": {"class_path": "tmrl.core.replay:InMemoryReplayStore"},
-                "sampler": {"class_path": "tmrl.core.replay:UniformSampler"},
-                "feature_pipeline": {"class_path": "tmrl.core.builtins:IdentityFeaturePipeline"},
+                "learner": {"class_path": "trackmaniarl.core.builtins:SmokeLearner"},
+                "replay_store": {"class_path": "trackmaniarl.core.replay:InMemoryReplayStore"},
+                "sampler": {"class_path": "trackmaniarl.core.replay:UniformSampler"},
+                "feature_pipeline": {
+                    "class_path": "trackmaniarl.core.builtins:IdentityFeaturePipeline"
+                },
             },
             "training": {"batch_size": 3, "n_step": 2, "gamma": 0.8, "beta": 0.5},
         }
@@ -216,10 +280,12 @@ def test_training_spec_anneals_prioritized_replay_beta() -> None:
         {
             "run_id": "beta-schedule",
             "components": {
-                "learner": {"class_path": "tmrl.core.builtins:SmokeLearner"},
-                "replay_store": {"class_path": "tmrl.core.replay:InMemoryReplayStore"},
-                "sampler": {"class_path": "tmrl.core.replay:UniformSampler"},
-                "feature_pipeline": {"class_path": "tmrl.core.builtins:IdentityFeaturePipeline"},
+                "learner": {"class_path": "trackmaniarl.core.builtins:SmokeLearner"},
+                "replay_store": {"class_path": "trackmaniarl.core.replay:InMemoryReplayStore"},
+                "sampler": {"class_path": "trackmaniarl.core.replay:UniformSampler"},
+                "feature_pipeline": {
+                    "class_path": "trackmaniarl.core.builtins:IdentityFeaturePipeline"
+                },
             },
             "training": {
                 "total_transitions": 100,

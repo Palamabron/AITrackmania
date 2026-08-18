@@ -15,22 +15,23 @@ import numpy as np
 import pytest
 import torch
 
-from tmrl.core.builtins import JsonlRunLogger, TorchCheckpointCodec
-from tmrl.core.spec import RunSpec
-from tmrl.distributed.actor import ActorRuntime
-from tmrl.experiments.orchestration import GridStrategy, StudyLedger, StudyRunner, StudySpec
-from tmrl.observability.trackers import WandbTracker, _wandb_metric_name
-from tmrl.project.scaffold import create_project
-from tmrl.trackmania.assets import record_boundary, record_trajectory
-from tmrl.trackmania.diagnostics import (
+from trackmaniarl.core.builtins import JsonlRunLogger, TorchCheckpointCodec
+from trackmaniarl.core.spec import RunSpec
+from trackmaniarl.distributed.actor import ActorRuntime
+from trackmaniarl.experiments.orchestration import GridStrategy, StudyLedger, StudyRunner, StudySpec
+from trackmaniarl.observability.trackers import WandbTracker, _wandb_metric_name
+from trackmaniarl.project.scaffold import create_project
+from trackmaniarl.trackmania.assets import record_boundary, record_trajectory
+from trackmaniarl.trackmania.diagnostics import (
     ExpertActionDiagnostics,
     ProgressBinDiagnostics,
+    _diagnostic_action_index,
     aggregate_expert_bins,
 )
-from tmrl.trackmania.environment import OpenPlanetEnvironment, OpenPlanetEnvironmentFactory
-from tmrl.trackmania.evaluation import TrackmaniaEvaluator
-from tmrl.trackmania.reward import TrajectoryReward
-from tmrl.trackmania.telemetry import (
+from trackmaniarl.trackmania.environment import OpenPlanetEnvironment, OpenPlanetEnvironmentFactory
+from trackmaniarl.trackmania.evaluation import TrackmaniaEvaluator
+from trackmaniarl.trackmania.reward import TrajectoryReward
+from trackmaniarl.trackmania.telemetry import (
     DEFAULT_POSITION_INDICES,
     DEFAULT_TELEMETRY_FIELD_COUNT,
     OpenPlanetClient,
@@ -60,6 +61,46 @@ def test_progress_bin_diagnostics_cover_empty_bins_and_q_metrics() -> None:
         "q_max_mean": 0.0,
     }
     assert diagnostics.flat_summary()["progress_bin/00_010/q_max_mean"] == 5.0
+
+
+def test_progress_bin_diagnostics_quantize_continuous_canonical_controls() -> None:
+    diagnostics = ProgressBinDiagnostics(action_count=78)
+
+    diagnostics.record(10.0, np.array([1.0, 0.0, -1.0], dtype=np.float32), object())
+
+    assert _diagnostic_action_index(np.array([1.0, 0.0, -1.0], dtype=np.float32), 78) == 3
+    assert diagnostics.summary()["10_020"]["action_count"] == 1.0
+
+
+def test_progress_bin_diagnostics_record_segment_time_debt_and_timing() -> None:
+    diagnostics = ProgressBinDiagnostics(action_count=78)
+    first = {
+        "race_time_ms": 12_000.0,
+        "reference_time_s": 11.5,
+        "time_debt_s": 0.5,
+        "projected_velocity_mps": 55.0,
+        "step_race_time_ms": 20.0,
+        "decision_interval_error_ms": 0.0,
+        "control_steer": 0.0,
+    }
+    second = {
+        **first,
+        "race_time_ms": 12_020.0,
+        "projected_velocity_mps": 57.0,
+        "decision_interval_error_ms": 2.0,
+        "control_steer": 1.0,
+    }
+
+    diagnostics.record(35.0, 39, object(), first)
+    diagnostics.record(36.0, 75, object(), second)
+    summary = diagnostics.summary()["30_040"]
+
+    assert summary["entry_time_s"] == 12.0
+    assert summary["time_debt_s"] == 0.5
+    assert summary["projected_velocity_mps_mean"] == 56.0
+    assert summary["decision_interval_abs_error_ms_mean"] == 1.0
+    assert summary["action_switch_rate"] == 0.5
+    assert summary["steer_switch_rate"] == 0.5
 
 
 def test_expert_diagnostics_aggregate_unmasked_rankings() -> None:
@@ -92,7 +133,7 @@ def test_jsonl_events_have_release_envelope(tmp_path: Path) -> None:
 
 
 def test_spawn_context_uses_the_active_virtual_environment(monkeypatch: pytest.MonkeyPatch) -> None:
-    from tmrl import cli
+    from trackmaniarl import cli
 
     executable: list[str] = []
     expected_context = object()
@@ -108,7 +149,7 @@ def test_spawn_context_uses_the_active_virtual_environment(monkeypatch: pytest.M
 def test_spawn_executable_prefers_the_active_virtual_environment(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from tmrl import cli
+    from trackmaniarl import cli
 
     directory = "Scripts" if cli.os.name == "nt" else "bin"
     filename = "python.exe" if cli.os.name == "nt" else "python"
@@ -137,7 +178,7 @@ def test_torch_checkpoints_are_zstd_streamed_and_round_trip(tmp_path: Path) -> N
 def test_torch_checkpoint_concurrent_loads_use_distinct_temporary_files(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    import tmrl.core.builtins as builtins
+    import trackmaniarl.core.builtins as builtins
 
     path = tmp_path / "checkpoint.pt"
     codec = TorchCheckpointCodec()
@@ -280,8 +321,8 @@ def test_actor_episode_summary_reports_finish_time() -> None:
 
 
 def test_environment_step_reports_applied_control_and_race_time_delta() -> None:
-    from tmrl.trackmania.actions import build_brake_tap_action_table
-    from tmrl.trackmania.control import RecordingController
+    from trackmaniarl.trackmania.actions import build_brake_tap_action_table
+    from trackmaniarl.trackmania.control import RecordingController
 
     class Client:
         def __init__(self) -> None:
@@ -453,6 +494,33 @@ def test_openplanet_client_discards_queued_stale_frames() -> None:
         thread.join(timeout=1)
 
 
+def test_openplanet_client_can_preserve_queued_frames_for_recording() -> None:
+    server = socket.socket()
+    server.bind(("127.0.0.1", 0))
+    server.listen(1)
+    host, port = server.getsockname()
+
+    def serve() -> None:
+        connection, _ = server.accept()
+        with connection:
+            connection.sendall(
+                struct.pack("<fff", 1.0, 2.0, 3.0) + struct.pack("<fff", 4.0, 5.0, 6.0)
+            )
+        server.close()
+
+    thread = threading.Thread(target=serve)
+    thread.start()
+    client = OpenPlanetClient(host, port, field_count=3, timeout_s=1)
+    try:
+        first = client.read_next().values
+        second = client.read_next().values
+        assert np.array_equal(first, np.array([1.0, 2.0, 3.0], dtype=np.float32))
+        assert np.array_equal(second, np.array([4.0, 5.0, 6.0], dtype=np.float32))
+    finally:
+        client.close()
+        thread.join(timeout=1)
+
+
 def test_openplanet_client_reconnects_after_the_producer_closes() -> None:
     server = socket.socket()
     server.bind(("127.0.0.1", 0))
@@ -570,6 +638,24 @@ def test_time_attack_terminal_reward_applies_only_to_finishes(
 
     assert result.reason == "finished"
     assert result.time_attack_terminal_reward == expected_bonus
+
+
+def test_time_attack_linear_reward_ranks_all_finished_laps_by_time() -> None:
+    points = np.asarray([[0, 0, 0], [1, 0, 0]], dtype=np.float32)
+    reward = TrajectoryReward(
+        points,
+        minimum_finish_steps=1,
+        time_attack_target_s=36.0,
+        time_attack_linear_scale=8.0,
+    )
+    reward.reset(points[0], race_time_ms=0.0)
+    slow = reward.step(points[1], finish_ui_active=True, race_time_ms=38_000.0)
+    reward.reset(points[0], race_time_ms=0.0)
+    fast = reward.step(points[1], finish_ui_active=True, race_time_ms=37_000.0)
+
+    assert slow.time_attack_terminal_reward == -16.0
+    assert fast.time_attack_terminal_reward == -8.0
+    assert fast.time_attack_terminal_reward > slow.time_attack_terminal_reward
 
 
 def test_time_attack_terminal_reward_is_not_applied_to_failures() -> None:
@@ -1108,7 +1194,7 @@ def test_gamepad_reset_uses_the_trackmania_respawn_button(monkeypatch: pytest.Mo
         def update(self) -> None:
             self.events.append("update")
 
-    from tmrl.trackmania import control
+    from trackmaniarl.trackmania import control
 
     monkeypatch.setitem(sys.modules, "vgamepad", SimpleNamespace(VX360Gamepad=FakeGamepad))
     monkeypatch.setattr(control, "sleep", lambda _: None)
@@ -1146,7 +1232,7 @@ def test_gamepad_ignores_a_brake_tap_callback_cancelled_by_a_newer_action(
         def update(self) -> None:
             self.events.append("update")
 
-    from tmrl.trackmania import control
+    from trackmaniarl.trackmania import control
 
     monkeypatch.setitem(sys.modules, "vgamepad", SimpleNamespace(VX360Gamepad=FakeGamepad))
     gamepad = control.GamepadController()
@@ -1164,7 +1250,7 @@ def test_gamepad_consumes_haptic_collision_events(monkeypatch: pytest.MonkeyPatc
         def register_notification(self, *, callback_function: object) -> None:
             self.callback = callback_function
 
-    from tmrl.trackmania import control
+    from trackmaniarl.trackmania import control
 
     monkeypatch.setitem(sys.modules, "vgamepad", SimpleNamespace(VX360Gamepad=FakeGamepad))
     gamepad = control.GamepadController()
@@ -1195,7 +1281,7 @@ def test_gamepad_allows_platforms_without_haptic_notifications(
     class FakeGamepad:
         pass
 
-    from tmrl.trackmania import control
+    from trackmaniarl.trackmania import control
 
     monkeypatch.setitem(sys.modules, "vgamepad", SimpleNamespace(VX360Gamepad=FakeGamepad))
     gamepad = control.GamepadController()
@@ -1206,23 +1292,27 @@ def test_gamepad_allows_platforms_without_haptic_notifications(
 def test_trackmania_template_contains_first_party_components(tmp_path: Path) -> None:
     target = create_project(tmp_path / "agent", "agent", template="trackmania")
     config = (target / "run.yaml").read_text(encoding="utf-8")
+    pyproject = tomllib.loads((target / "pyproject.toml").read_text(encoding="utf-8"))
     assert "OpenPlanetEnvironmentFactory" in config
     assert "TrackmaniaEvaluator" in config
+    assert "WandbTracker" not in config
     assert (target / "assets" / "trajectory.csv").is_file()
     assert (target / "maps").is_dir()
-    plugin = target / "openplanet" / "TMRL_GrabData_IQN.as"
+    plugin = target / "openplanet" / "TrackmaniaRL_GrabData_IQN.as"
     assert plugin.is_file()
     assert 'const string PROTOCOL_VERSION = "2"' in plugin.read_text(encoding="utf-8")
     assert RunSpec.from_yaml(target / "run.yaml").evaluation is not None
+    assert pyproject["tool"]["poe"]["tasks"]["record-left"]
+    assert pyproject["tool"]["uv"]["sources"]["torch"]
 
 
 def test_generated_project_uses_the_current_checkout_before_first_publish(tmp_path: Path) -> None:
     target = create_project(tmp_path / "agent", "agent")
     pyproject = tomllib.loads((target / "pyproject.toml").read_text(encoding="utf-8"))
     requirement = pyproject["project"]["dependencies"][0]
-    assert requirement == "tmrl[distributed]"
-    assert requirement.count("tmrl") == 1
-    assert pyproject["tool"]["uv"]["sources"]["tmrl"]["editable"] is True
+    assert requirement == "trackmaniarl[distributed]"
+    assert requirement.count("trackmaniarl") == 1
+    assert pyproject["tool"]["uv"]["sources"]["trackmaniarl"]["editable"] is True
     assert "pytest>=7.0" in pyproject["dependency-groups"]["dev"]
 
 
@@ -1368,8 +1458,8 @@ def test_trackmania_evaluator_serializes_progress_bin_artifacts(tmp_path: Path) 
     ).evaluate(Policy())
     artifact = json.loads((tmp_path / "evaluation.json").read_text(encoding="utf-8"))
 
-    assert metrics["progress_bin/90_100/q_margin_mean"] == 1.0
-    assert artifact["trials"][0]["progress_bins"]["90_100"]["action_count"] == 1.0
+    assert metrics["progress_bin/95_100/q_margin_mean"] == 1.0
+    assert artifact["trials"][0]["progress_bins"]["95_100"]["action_count"] == 1.0
 
 
 def test_trackmania_evaluator_reuses_environment_for_map_trials(
@@ -1425,7 +1515,7 @@ def test_trackmania_evaluator_reuses_environment_for_map_trials(
             assert deterministic
             return 0.0
 
-    monkeypatch.setattr("tmrl.trackmania.evaluation.BoundaryGeometry", Geometry)
+    monkeypatch.setattr("trackmaniarl.trackmania.evaluation.BoundaryGeometry", Geometry)
     factory = EnvironmentFactory()
     map_spec = SimpleNamespace(
         id="test", map_path="map", geometry_path="geometry", expected_map_uid="uid"

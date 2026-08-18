@@ -7,9 +7,9 @@ import threading
 import pytest
 import torch
 
-from tmrl.core.builtins import IdentityFeaturePipeline
-from tmrl.core.data import BatchRequest, PriorityUpdate, Transition
-from tmrl.core.replay import (
+from trackmaniarl.core.builtins import IdentityFeaturePipeline
+from trackmaniarl.core.data import BatchRequest, PriorityUpdate, Transition
+from trackmaniarl.core.replay import (
     DemoMixSampler,
     InMemoryReplayStore,
     PrioritizedSampler,
@@ -285,6 +285,87 @@ def test_prioritized_sequence_sampler_enforces_exact_expert_demo_fraction() -> N
             history = batch.transition_ids[row * 3 : (row + 1) * 3]
             assert all(store.demo_flags(list(history)))
             assert store.sampling_pace_s(priority_ids[row]) <= 37.5
+
+
+def test_prioritized_sampler_bootstraps_from_an_expert_only_replay() -> None:
+    store = InMemoryReplayStore(capacity=64)
+    for episode in range(2):
+        for step in range(6):
+            store.append(
+                Transition(
+                    observation=float(step),
+                    action=0.0,
+                    reward=1.0,
+                    next_observation=float(step + 1),
+                    terminated=step == 5,
+                    truncated=False,
+                    episode_id=f"expert-{episode}",
+                    step=step,
+                    info={
+                        "is_demo": True,
+                        "sampling/projected_lap_time_s": 36.5,
+                    },
+                )
+            )
+    sampler = PrioritizedSampler(
+        IdentityFeaturePipeline(),
+        expert_demo_time_s=37.5,
+        expert_fraction=0.5,
+        seed=7,
+    )
+    request = BatchRequest(batch_size=8, sequence_length=3, n_step=1)
+
+    bootstrap = sampler.sample(store, request)
+
+    assert all(bootstrap.metadata["expert_demo_flags"])
+    assert bootstrap.metadata["replay/expert_demo_sample_fraction"] == 1.0
+    for step in range(6):
+        store.append(
+            Transition(
+                observation=float(step),
+                action=0.0,
+                reward=1.0,
+                next_observation=float(step + 1),
+                terminated=step == 5,
+                truncated=False,
+                episode_id="online",
+                step=step,
+                info={"sampling/projected_lap_time_s": 40.0},
+            )
+        )
+
+    mixed = sampler.sample(store, request)
+
+    assert sum(mixed.metadata["expert_demo_flags"]) == 4
+    assert mixed.metadata["replay/expert_demo_sample_fraction"] == 0.5
+
+
+def test_prioritized_expert_bootstrap_still_rejects_an_undersized_replay() -> None:
+    store = InMemoryReplayStore(capacity=8)
+    store.append(
+        Transition(
+            observation=0.0,
+            action=0.0,
+            reward=1.0,
+            next_observation=1.0,
+            terminated=True,
+            truncated=False,
+            episode_id="expert",
+            step=0,
+            info={
+                "is_demo": True,
+                "sampling/projected_lap_time_s": 36.5,
+            },
+        )
+    )
+    sampler = PrioritizedSampler(
+        IdentityFeaturePipeline(),
+        expert_demo_time_s=37.5,
+        expert_fraction=0.5,
+    )
+
+    with pytest.raises(RuntimeError, match="Need 2 transitions"):
+        sampler.sample(store, BatchRequest(batch_size=2))
 
 
 def test_prioritized_sampler_full_rebuild_resets_expert_count() -> None:

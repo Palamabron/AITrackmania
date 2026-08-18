@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fetch normalized TMRL experiment analyses from Weights & Biases.
+"""Fetch normalized TrackmaniaRL experiment analyses from Weights & Biases.
 
 Usage:
     uv run python scripts/fetch_analysis.py --run dsc-pjatk-warsaw/my-trackmania-agent/z67iytmc

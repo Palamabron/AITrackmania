@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from tmrl.core.spec import RunSpec
+from trackmaniarl.core.spec import RunSpec
 
 
 def test_run_spec_is_frozen_and_round_trips_through_yaml(tmp_path) -> None:
@@ -10,10 +10,12 @@ def test_run_spec_is_frozen_and_round_trips_through_yaml(tmp_path) -> None:
         {
             "run_id": "round-trip",
             "components": {
-                "learner": {"class_path": "tmrl.core.builtins:SmokeLearner"},
-                "replay_store": {"class_path": "tmrl.core.replay:InMemoryReplayStore"},
-                "sampler": {"class_path": "tmrl.core.replay:UniformSampler"},
-                "feature_pipeline": {"class_path": "tmrl.core.builtins:IdentityFeaturePipeline"},
+                "learner": {"class_path": "trackmaniarl.core.builtins:SmokeLearner"},
+                "replay_store": {"class_path": "trackmaniarl.core.replay:InMemoryReplayStore"},
+                "sampler": {"class_path": "trackmaniarl.core.replay:UniformSampler"},
+                "feature_pipeline": {
+                    "class_path": "trackmaniarl.core.builtins:IdentityFeaturePipeline"
+                },
             },
         }
     )

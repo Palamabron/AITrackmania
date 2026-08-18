@@ -4,15 +4,15 @@ import pytest
 import torch
 from torch import nn
 
-from tmrl.algorithms import ImplicitQuantileQLearning
-from tmrl.algorithms.execution import (
+from trackmaniarl.algorithms import ImplicitQuantileQLearning
+from trackmaniarl.algorithms.execution import (
     TorchExecutionConfig,
     TorchExecutionError,
     _supported_precisions,
     resolve_torch_execution,
 )
-from tmrl.core.data import TrainingBatch
-from tmrl.models.critics import DiscreteQuantileNetwork
+from trackmaniarl.core.data import TrainingBatch
+from trackmaniarl.models.critics import DiscreteQuantileNetwork
 
 
 class _Encoder(nn.Module):
@@ -42,7 +42,7 @@ def test_auto_execution_resolves_cpu_when_no_accelerator_is_visible(monkeypatch)
     monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
     monkeypatch.setattr(torch.backends.mps, "is_built", lambda: False)
     monkeypatch.setattr(
-        "tmrl.algorithms.execution.visible_accelerators",
+        "trackmaniarl.algorithms.execution.visible_accelerators",
         lambda: set(),
     )
 
@@ -57,7 +57,7 @@ def test_auto_execution_rejects_accelerator_build_mismatch(monkeypatch) -> None:
     monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
     monkeypatch.setattr(torch.backends.mps, "is_built", lambda: False)
     monkeypatch.setattr(
-        "tmrl.algorithms.execution.visible_accelerators",
+        "trackmaniarl.algorithms.execution.visible_accelerators",
         lambda: {"cuda"},
     )
 
@@ -75,7 +75,9 @@ def test_explicit_unavailable_accelerator_fails_without_cpu_fallback(monkeypatch
 def test_modern_cuda_prefers_bfloat16(monkeypatch) -> None:
     monkeypatch.setattr(torch.cuda, "get_device_capability", lambda device: (8, 9))
     monkeypatch.setattr(torch.cuda, "is_bf16_supported", lambda: True)
-    monkeypatch.setattr("tmrl.algorithms.execution._precision_probe", lambda device, dtype: True)
+    monkeypatch.setattr(
+        "trackmaniarl.algorithms.execution._precision_probe", lambda device, dtype: True
+    )
 
     supported = _supported_precisions("cuda", torch.device("cuda"))
 
@@ -85,7 +87,9 @@ def test_modern_cuda_prefers_bfloat16(monkeypatch) -> None:
 def test_legacy_cuda_uses_float16(monkeypatch) -> None:
     monkeypatch.setattr(torch.cuda, "get_device_capability", lambda device: (7, 5))
     monkeypatch.setattr(torch.cuda, "is_bf16_supported", lambda: False)
-    monkeypatch.setattr("tmrl.algorithms.execution._precision_probe", lambda device, dtype: True)
+    monkeypatch.setattr(
+        "trackmaniarl.algorithms.execution._precision_probe", lambda device, dtype: True
+    )
 
     supported = _supported_precisions("cuda", torch.device("cuda"))
 
@@ -94,7 +98,9 @@ def test_legacy_cuda_uses_float16(monkeypatch) -> None:
 
 def test_rocm_supports_native_bfloat16_and_float16(monkeypatch) -> None:
     monkeypatch.setattr(torch.cuda, "is_bf16_supported", lambda: True)
-    monkeypatch.setattr("tmrl.algorithms.execution._precision_probe", lambda device, dtype: True)
+    monkeypatch.setattr(
+        "trackmaniarl.algorithms.execution._precision_probe", lambda device, dtype: True
+    )
 
     supported = _supported_precisions("rocm", torch.device("cuda"))
 
@@ -102,7 +108,9 @@ def test_rocm_supports_native_bfloat16_and_float16(monkeypatch) -> None:
 
 
 def test_failed_mps_probe_falls_back_to_float32(monkeypatch) -> None:
-    monkeypatch.setattr("tmrl.algorithms.execution._precision_probe", lambda device, dtype: False)
+    monkeypatch.setattr(
+        "trackmaniarl.algorithms.execution._precision_probe", lambda device, dtype: False
+    )
 
     supported = _supported_precisions("mps", torch.device("mps"))
 

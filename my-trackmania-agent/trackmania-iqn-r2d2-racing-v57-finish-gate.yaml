@@ -20,7 +20,7 @@ distributed:
   epsilon_decay_transitions: 450000
 components:
   learner:
-    class_path: tmrl.algorithms.implicit_quantile_q_learning:ImplicitQuantileQLearning
+    class_path: trackmaniarl.algorithms.implicit_quantile_q_learning:ImplicitQuantileQLearning
     kwargs:
       learning_rate: 1.0e-5
       train_quantile_count: 64
@@ -46,10 +46,10 @@ components:
         compile: false
         compile_mode: default
   environment:
-    class_path: tmrl.trackmania.environment:OpenPlanetEnvironmentFactory
+    class_path: trackmaniarl.trackmania.environment:OpenPlanetEnvironmentFactory
     kwargs:
       config:
-        geometry_path: assets/tmrl-test.geometry.npz
+        geometry_path: assets/trackmaniarl-test.geometry.npz
         use_racing_line: true
         expected_map_uid: oqIJ5rQDRrNwLPTh9H2p_W4tLof
         reset_settle_s: 0.0
@@ -81,7 +81,7 @@ components:
         pace_step_delta_clip_s: 0.25
         reward_gamma: 0.99
   model_factory:
-    class_path: tmrl.trackmania.iqn:LidarIqnModelFactory
+    class_path: trackmaniarl.trackmania.iqn:LidarIqnModelFactory
     kwargs:
       telemetry_dim: 49
       history_length: 64
@@ -93,11 +93,11 @@ components:
       encoder_hidden_dim: 192
       encoder_output_dim: 256
   replay_store:
-    class_path: tmrl.core.replay:InMemoryReplayStore
+    class_path: trackmaniarl.core.replay:InMemoryReplayStore
     kwargs:
       capacity: 400000
   sampler:
-    class_path: tmrl.core.replay:PrioritizedSampler
+    class_path: trackmaniarl.core.replay:PrioritizedSampler
     kwargs:
       alpha: 0.4
       elite_time_s: 37.5
@@ -106,9 +106,9 @@ components:
       expert_fraction: 0.15
       uniform_mix: 0.2
   feature_pipeline:
-    class_path: tmrl.trackmania.features:LidarFeaturePipeline
+    class_path: trackmaniarl.trackmania.features:LidarFeaturePipeline
     kwargs:
-      geometry_path: assets/tmrl-test.geometry.npz
+      geometry_path: assets/trackmaniarl-test.geometry.npz
       expected_map_uid: oqIJ5rQDRrNwLPTh9H2p_W4tLof
       samples_per_side: 90
       max_distance_m: 180.0
@@ -129,18 +129,18 @@ components:
       include_dynamics: true
       include_goal_features: true
   evaluator:
-    class_path: tmrl.trackmania.evaluation:TrackmaniaEvaluator
+    class_path: trackmaniarl.trackmania.evaluation:TrackmaniaEvaluator
   additional_loggers:
-    - class_path: tmrl.observability.trackers:WandbTracker
+    - class_path: trackmaniarl.observability.trackers:WandbTracker
       kwargs:
         project: my-trackmania-agent
 evaluation:
-  name: tmrl-test-r2d2-finish-gate-v57
+  name: trackmaniarl-test-r2d2-finish-gate-v57
   version: "29"
   maps:
-    - id: tmrl-test
-      map_path: maps/tmrl-test.Map.Gbx
-      geometry_path: assets/tmrl-test.geometry.npz
+    - id: trackmaniarl-test
+      map_path: maps/trackmaniarl-test.Map.Gbx
+      geometry_path: assets/trackmaniarl-test.geometry.npz
       expected_map_uid: oqIJ5rQDRrNwLPTh9H2p_W4tLof
   trials_per_map: 10
   target_median_s: 36.0

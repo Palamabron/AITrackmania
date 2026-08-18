@@ -82,7 +82,7 @@ def test_explicit_run_does_not_read_the_experiment_registry(
     assert FETCH._requests_from_args(args) == [FETCH.RunRequest("entity/project/run", "run")]
 
 
-def test_analyze_run_normalizes_tmrl_history() -> None:
+def test_analyze_run_normalizes_trackmaniarl_history() -> None:
     analysis = FETCH.analyze_run(FakeRun(), "entity/project/z67iytmc", "z67iytmc")
 
     assert analysis["schema_version"] == "2.0"

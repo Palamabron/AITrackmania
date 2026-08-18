@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from tmrl.trackmania.actions import (
+from trackmaniarl.trackmania.actions import (
     build_brake_tap_action_table,
     continuous_control_to_discrete_indices_batch,
     discrete_indices_to_control_batch,

@@ -1,4 +1,4 @@
-"""Editable components. Run `tmrl validate run.yaml` after each change."""
+"""Editable components. Run `trackmaniarl validate run.yaml` after each change."""
 
 from collections.abc import Mapping
 from pathlib import Path
@@ -7,7 +7,7 @@ from typing import Any, cast
 import torch
 from torch import nn
 
-from tmrl.core.data import SampleBatch, Transition
+from trackmaniarl.core.data import SampleBatch, Transition
 
 
 class StarterFeaturePipeline:

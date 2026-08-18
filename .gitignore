@@ -62,7 +62,11 @@ coverage.xml
 *.cover
 .hypothesis/
 .pytest_cache/
+.pytest-tmp/
 .pytest-tmp-*/
+.test-temp/
+.tmptest-*/
+*.pytest-tmp*/
 
 # Translations
 *.mo
@@ -147,8 +151,11 @@ plotRewardPoints.py
 # Generated output
 output_files/
 artifacts/
+.trackmaniarl-*.yaml
 .tmrl-*.yaml
+TrackmaniaRL_GrabData_IQN.zip
 TMRL_GrabData_IQN.zip
+trackmaniarl.zip
 
 # Local experiment reports (plots, exports)
 reports/
@@ -159,6 +166,7 @@ reports/
 
 # Experiment tracking artifacts (wandb)
 wandb/
+trackmaniarl/wandb/
 tmrl/wandb/
 **/wandb/
 
@@ -174,3 +182,6 @@ experiments/validation_report.json
 experiments/decisions.md
 
 config.json
+
+# Local TrackMania recordings and captured demonstrations
+my-trackmania-agent/demos-v*/
