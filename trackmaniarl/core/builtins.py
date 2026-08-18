@@ -122,15 +122,15 @@ class CompositeRunLogger:
             raise errors[0]
 
 
-def _numpy_safe_globals() -> list[Any]:
-    """Non-executable numpy pickle entry points required by replay snapshots."""
+def _checkpoint_safe_globals() -> list[Any]:
+    """Non-executable values required by checkpoint payloads."""
 
     import numpy
     import numpy.dtypes
 
     reconstruct = cast(Any, numpy)._core.multiarray._reconstruct
     dtype_classes = [value for value in vars(numpy.dtypes).values() if isinstance(value, type)]
-    return [reconstruct, numpy.ndarray, numpy.dtype, *dtype_classes]
+    return [bytes, reconstruct, numpy.ndarray, numpy.dtype, *dtype_classes]
 
 
 def _load_torch_checkpoint(path: Path) -> Mapping[str, Any]:
@@ -138,7 +138,7 @@ def _load_torch_checkpoint(path: Path) -> Mapping[str, Any]:
 
     import torch
 
-    with torch.serialization.safe_globals(_numpy_safe_globals()):
+    with torch.serialization.safe_globals(_checkpoint_safe_globals()):
         return cast(
             Mapping[str, Any],
             torch.load(path, map_location="cpu", weights_only=True),

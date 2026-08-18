@@ -223,6 +223,7 @@ def test_torch_checkpoint_round_trips_numpy_replay_state_with_weights_only(
     state = {
         "array": np.arange(4, dtype=np.float32),
         "flags": np.zeros(2, dtype=np.bool_),
+        "payload": b"checkpoint",
         "rng": random.Random(0).getstate(),
         "info": {3: {"progress_pct": 1.0}},
     }
@@ -232,6 +233,7 @@ def test_torch_checkpoint_round_trips_numpy_replay_state_with_weights_only(
 
     np.testing.assert_array_equal(restored["array"], state["array"])
     np.testing.assert_array_equal(restored["flags"], state["flags"])
+    assert restored["payload"] == state["payload"]
     assert restored["rng"] == state["rng"]
     assert restored["info"] == state["info"]
 
