@@ -16,7 +16,7 @@ def _trackmaniarl_requirement(extras: str) -> str:
     try:
         installed_version = version("trackmaniarl")
     except PackageNotFoundError:
-        installed_version = "1.0.0"
+        installed_version = "1.0.1"
     release = installed_version.split(".", maxsplit=2)
     major = int(release[0])
     minor = int(release[1])

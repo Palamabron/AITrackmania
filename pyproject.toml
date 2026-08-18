@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "TrackmaniaRL"
-version = "1.0.0"
+version = "1.0.1"
 description = "Reinforcement-learning library for training agents in Trackmania 2020"
 readme = "README.md"
 license = "MIT"
@@ -54,7 +54,7 @@ algorithms = [
 ]
 trackmania = [
     "gymnasium>=0.29",
-    "vgamepad>=0.1.0; sys_platform == 'win32'",
+    "vgamepad @ git+https://github.com/yannbouteiller/vgamepad.git@90f95e3b0781ea7b9b8e24867c5dfbfda0deecea ; sys_platform == 'win32'",
 ]
 wandb = [
     "wandb>=0.15.8",
@@ -64,7 +64,7 @@ distributed = [
     "protobuf>=5.27",
     "safetensors>=0.4.5",
     "zstandard>=0.23",
-    "vgamepad>=0.1.0; sys_platform == 'win32'",
+    "vgamepad @ git+https://github.com/yannbouteiller/vgamepad.git@90f95e3b0781ea7b9b8e24867c5dfbfda0deecea ; sys_platform == 'win32'",
 ]
 explain = [
     "captum>=0.7",
@@ -83,7 +83,6 @@ torch = [
     { index = "pytorch-cuda", marker = "sys_platform == 'win32'" },
     { index = "pytorch-cpu", marker = "sys_platform != 'win32'" },
 ]
-vgamepad = { git = "https://github.com/yannbouteiller/vgamepad", rev = "90f95e3b0781ea7b9b8e24867c5dfbfda0deecea" }
 
 [[tool.uv.index]]
 name = "pytorch-cpu"
@@ -112,7 +111,7 @@ dev = [
     "protobuf>=5.27",
     "safetensors>=0.4.5",
     "zstandard>=0.23",
-    "vgamepad>=0.1.0; sys_platform == 'win32'",
+    "vgamepad @ git+https://github.com/yannbouteiller/vgamepad.git@90f95e3b0781ea7b9b8e24867c5dfbfda0deecea ; sys_platform == 'win32'",
     "wandb>=0.15.8",
 ]
 
