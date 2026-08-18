@@ -1,9 +1,0 @@
-# @package _global_
-# Same stack as `tqc` interface; only `name` differs (Sophy network / eval path).
-defaults:
-  - default
-  - tm20_car_state_rl
-  - _self_
-
-interface:
-  name: sophy

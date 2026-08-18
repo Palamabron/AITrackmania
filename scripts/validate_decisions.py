@@ -95,7 +95,7 @@ def _get(d: dict, *keys: str, default: Any = None) -> Any:
     return d
 
 
-# ── Validation checks ───────────────────────────────────────────────
+# Validation checks
 
 
 def check_finish_claims(section: dict, analysis: dict) -> list[Finding]:
@@ -456,9 +456,9 @@ def main() -> None:
     print(f"Info:     {len(infos)}")
 
     if errors:
-        print(f"\n{'─' * 40}")
+        print(f"\n{'-' * 40}")
         print("ERRORS (factually incorrect)")
-        print(f"{'─' * 40}")
+        print(f"{'-' * 40}")
         for f in errors:
             print(f"\n  [{f.severity}] {f.exp_id} / {f.category}")
             print(f"    Claim:   {f.claim}")
@@ -467,9 +467,9 @@ def main() -> None:
                 print(f"    Fix:     {f.suggestion}")
 
     if warnings:
-        print(f"\n{'─' * 40}")
+        print(f"\n{'-' * 40}")
         print("WARNINGS (misleading or stale)")
-        print(f"{'─' * 40}")
+        print(f"{'-' * 40}")
         for f in warnings:
             print(f"\n  [{f.severity}] {f.exp_id} / {f.category}")
             print(f"    Claim:   {f.claim}")
@@ -478,9 +478,9 @@ def main() -> None:
                 print(f"    Fix:     {f.suggestion}")
 
     if infos:
-        print(f"\n{'─' * 40}")
+        print(f"\n{'-' * 40}")
         print("INFO (notes)")
-        print(f"{'─' * 40}")
+        print(f"{'-' * 40}")
         for f in infos:
             print(f"\n  [{f.severity}] {f.exp_id} / {f.category}")
             print(f"    {f.claim}: {f.ground_truth}")
@@ -490,11 +490,11 @@ def main() -> None:
         [(eid, d.get("best_finish_time_s", 0) or 0) for eid, d in analyses.items()],
         key=lambda x: x[1] if x[1] > 0 else float("inf"),
     )
-    print(f"\n{'─' * 40}")
+    print(f"\n{'-' * 40}")
     print("CORRECTED LEADERBOARD")
-    print(f"{'─' * 40}")
+    print(f"{'-' * 40}")
     print(f"  {'#':<4} {'Experiment':<45} {'Best':>8} {'Worker%':>8} {'Loss Med':>9}")
-    print(f"  {'─' * 4} {'─' * 45} {'─' * 8} {'─' * 8} {'─' * 9}")
+    print(f"  {'-' * 4} {'-' * 45} {'-' * 8} {'-' * 8} {'-' * 9}")
     rank = 1
     for eid, ft in ranked:
         data = analyses[eid]

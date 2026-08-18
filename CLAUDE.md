@@ -1,112 +1,117 @@
-# CLAUDE.md
-
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+# TMRL development guide
 
 ## Commands
 
-All commands use `uv`. The Makefile auto-detects OS and selects the right venv (`.venv-linux`, `.venv-windows`, or `.venv`).
-
 ```bash
-make install-dev          # uv sync --group dev
-make fmt                  # ruff format + ruff check --fix
-make lint                 # ruff check
-make types                # mypy tmrl/
-make check                # lint + types
-make test                 # pytest
-make tests                # pytest tests/ -v
-uv run pytest tests/test_buffer.py   # single test file
-uv run pytest tests/test_buffer.py::test_name  # single test
+uv sync --group dev
+uv run poe fmt
+uv run poe types
+uv run poe test
+uv run tmrl init my-trackmania-agent
+uv run tmrl validate run.yaml
+uv run tmrl track check
+uv run tmrl smoke run.yaml --transitions 100
+uv run tmrl train run.yaml
 ```
 
-**After making major changes, always run `make fmt` then `make types` and fix any errors before committing.**
-
-**Distributed training** (three terminals):
-```bash
-make server               # relay server (kills port first)
-make trainer              # prints active config, then trains
-make worker               # prints active config, then collects rollouts
-```
-
-**Config verification:**
-```bash
-uv run python -m tmrl --print-config          # full merged config
-make explain-config                            # which model.* keys are active for current algorithm/interface
-```
-
-**Experiment orchestrator:**
-```bash
-make orchestrator                              # autonomous tuning loop
-uv run python -m tmrl.tools.experiment_manager status
-uv run python -m tmrl.tools.experiment_manager briefing
-```
+These commands deliberately use `uv` without platform-specific virtualenv or shell branches. They must work unchanged on Windows, Linux, WSL and CI.
 
 ## Architecture
 
-### Distributed training pipeline
+The public flow is `RunSpec 1.2 -> coordinator/learner + actor -> WAL -> replay -> updates`. `tmrl.core` contains contracts, data, replay, runtime and built-ins. `tmrl.distributed` contains the authenticated gRPC actor/learner protocol, codec, coordinator and actor spool. `tmrl.trackmania` contains the game adapter only. `tmrl.observability` owns manifests, W&B/local events and artifacts; `tmrl.experiments` owns suites and study strategies; `tmrl.project` owns the generated extension project.
 
-Three separate processes communicate via `tlspyo` (TCP or TLS):
+`tmrl train` uses Windows-safe multiprocessing `spawn` and starts one local
+actor by default. Remote deployments use `tmrl learner --bind` and
+`tmrl actor --connect`; all participants must use the same run fingerprint,
+map UID, geometry hash, feature/action contract and `TMRL_DISTRIBUTED_TOKEN`.
+Rollouts are flushed every 128 transitions or 2 seconds, policy snapshots are
+published at most every 5 seconds, and actor policy state is transferred with
+safetensors rather than pickle. Actor exploration profiles are assigned by
+stable actor ID; epsilon is never overwritten globally on the learner.
 
-- **Server** (`tmrl/networking/server.py`): central relay. Collects experience from workers, buffers it, forwards to trainer. Broadcasts updated model weights back to workers.
-- **RolloutWorker** (`tmrl/networking/worker.py`): runs the current policy in the game environment, sends buffered transitions to server, periodically receives new weights.
-- **TrainingOffline** (`tmrl/training_offline/training.py`): pulls samples from server into a replay memory, trains the agent, broadcasts weights back.
+User components are loaded by explicit `module:attribute` paths from an installable local project. Configuration is Pydantic at the CLI/runtime boundary. Transitions and batches are slot dataclasses and PyTrees in hot paths. Do not add global configuration, import-time side effects, feature flags or a mandatory external tracker.
 
-### Config system (Hydra + Pydantic, 6-layer precedence)
+All built-ins and generated user components need deterministic contract tests. TrackMania is exercised in the bounded live smoke test; unit tests use fake actors and a slow learner to verify asynchronous behavior without the game.
 
-```
-defaults/config.yaml  →  TMRL_HYDRA_OVERRIDES  →  ~/TmrlData/config/local.yaml
-  →  env secrets  →  TMRL_CONFIG_OVERRIDES (JSON)  →  Pydantic MainConfig
-```
+## Python Code Rules
 
-| Layer | File | Purpose |
-|---|---|---|
-| Composition | `tmrl/config/defaults/` | YAML group defaults (algorithm, model, environment, …) |
-| Merge | `tmrl/config/loader.py` | Applies override precedence; produces merged dict |
-| Validation | `tmrl/config/schema/` | `MainConfig` Pydantic model; fails fast on bad combos |
-| Flat constants | `tmrl/config/constants.py` | Convenience flags (`USE_LIDAR`, `BATCH_SIZE`, …) derived from `MAIN_CONFIG` |
-| Runtime objects | `tmrl/config/config_objects.py` | Wires flags → concrete interface/memory/model/trainer classes via side-effect `@register` imports |
-| Paths | `tmrl/config/paths.py` | All filesystem paths (`CHECKPOINTS_FOLDER`, `REWARD_PATH`, …) |
+### Tooling
 
-`config_objects.py` triggers all `@register` decorators by importing the implementation modules at module load time. Any new algorithm/memory/model must be imported there.
+- Package manager: `uv` only. Never `pip`, `poetry`, or `conda`. Use `uv add`, `uv sync`, `uv run <tool>`.
+- Format and lint: `ruff` only. Use `uv run ruff format` and `uv run ruff check --fix`. Do not use `black`, `flake8`, `isort`, or `pylint`.
+- Type checker: `pyright` or `mypy` in strict mode.
+- Test runner: `pytest` via `uv run pytest`.
 
-**How to consume config in code:**
-- Flat scalars: `import tmrl.config as cfg; cfg.BATCH_SIZE`
-- Typed tree: `from tmrl.config import MAIN_CONFIG`
-- Runtime objects (trainer, memory, agent): `import tmrl.config.config_objects as cfg_obj`
+### Style
 
-### Component registry
+- Add type annotations to all function signatures. Do not leave bare `def foo(x)`.
+- Prefer `str | None` over `Optional[str]`. Use modern Python syntax such as `match`, `tomllib`, and `Self` where appropriate.
+- Prefer dataclasses or Pydantic models over plain dicts for structured data.
+- Never use mutable default arguments.
+- Use absolute imports only. Group imports as stdlib, third-party, then local.
 
-`tmrl/registry.py` provides `Registry[T]` — a string-keyed decorator registry. Four global instances: `ALGORITHMS`, `INTERFACES`, `MEMORIES`, `MODELS`. Registrations live in `tmrl/custom/custom_algorithms/`, `tmrl/custom/interfaces/`, `tmrl/custom/memories/`, `tmrl/custom/models/`.
+### Functions and structure
 
-### Memory / replay buffer
+- Keep functions small, ideally under 20 lines, with one job and one level of abstraction.
+- Prefer 0 to 2 arguments. Three is the maximum. Avoid flag arguments and hidden side effects.
+- Use intention-revealing names. Classes should be nouns, methods verbs.
+- Do not return `None` when an empty collection or an exception is better.
 
-Abstract base: `tmrl/memory/base.py::Memory`. Concrete implementations under `tmrl/custom/memories/`. Key contract: subclasses implement `append_buffer()` and `__len__()`; the base class handles n-step return windowing, CRC debug, and dataset preloading.
+### Errors
 
-### Algorithms and models
+- Raise specific exceptions with context, not error codes or flags.
+- Never swallow exceptions silently.
 
-Algorithms in `tmrl/custom/custom_algorithms/`: SAC, REDQSAC, TQC, IQN, SDSAC.
+### Quality
 
-Models in `tmrl/custom/models/` organized by input modality:
-- `vector_input/` — MLP and residual MLP actors/critics (boundary LIDAR)
-- `image_input/` — vanilla CNN, EfficientNet, IMPALA (vision)
-- `hybrid_input/` — Sophy and GNN+EffNet+Sophy (track + telemetry + optional image)
-- `discrete_actions/` — IQN Q-network and DQN actor
+- Follow `DRY`, `YAGNI`, and `KISS`. Delete dead code instead of commenting it out.
+- Prefer self-documenting code. Comments should explain why, not what.
+- Write fast, independent tests with one concept per test and an Arrange-Act-Assert shape.
 
-IQN uses discrete actions (`DQNActor` on workers, `IQNQNetwork` in trainer). All other algorithms use continuous actions. Algorithm–model pairings are validated by Pydantic at startup; invalid combos raise `ValueError` immediately.
+### Security
 
-### Actor interface
+- Never hardcode secrets. Use environment variables or a gitignored `.env`.
+- Never log secrets, tokens, or PII.
+- Before invoking an external integration, inspect `.env` variable names only; this workspace may
+  provide `GEMINI_API_KEY`, `TMRL_PASSWORD`, and `WANDB_API_KEY`. Never read, print, or record
+  their values in code, rules, logs, or chat.
 
-`tmrl/actor.py::ActorModule` — implement this for RolloutWorker to use your policy. Must accept `observation_space` and `action_space` in `__init__`, implement `act()`, and optionally `save()`/`load()`.
+### Do Not Do
 
-### Experiment orchestration
+#### Comments and docstrings
 
-`tmrl/tools/orchestrator.py` runs an autonomous loop: launch experiment → monitor via W&B → stop/continue decision → propose next experiment. State lives in `experiments/registry.jsonl` (gitignored). Configs are versioned YAML overrides under `experiments/configs/`. Manage experiments with `tmrl.tools.experiment_manager`.
+- Do not add comments that restate the code.
+- Do not add docstrings that repeat the function name or signature.
+- Do not add `Parameters` or `Args` sections that only restate annotated types.
+- Do not put implementation details in docstrings.
+- Do not add banner or divider comments.
+- Use one-line docstrings for trivial methods, or none.
+- Do not add `TODO`, `FIXME`, or placeholder comments unless explicitly asked.
 
-Do not open `experiments/analysis/` JSON or `registry.jsonl` unless the user explicitly asks for metrics from those files.
+#### Over-engineering
 
-### Key data paths (at runtime)
+- Do not add abstractions for a single use case.
+- Do not add config options, parameters, or hooks nobody asked for.
+- Do not reimplement stdlib features.
+- Do not add backwards-compat shims, deprecation wrappers, or version checks unless requested.
 
-All runtime data lands under `~/TmrlData/`:
-- `~/TmrlData/config/local.yaml` — user overrides (not tracked by git)
-- `~/TmrlData/checkpoints/` — saved model weights
-- `~/TmrlData/reward/` — recorded reward trajectories (`.pkl`)
-- `~/TmrlData/track/` — recorded boundary files (`{map}_left.pkl`, `{map}_right.pkl`)
+#### Error handling
+
+- Do not use bare `except:` or `except Exception: pass`.
+- Do not swallow errors and return `None`, `{}`, or `-1` to hide bugs.
+- Do not wrap contract violations in defensive `.get()` or `try/except` blocks that mask the real issue.
+
+#### Noise and filler
+
+- Do not add `if __name__ == "__main__"` demo blocks, example usage, or print debugging.
+- Do not use emojis in code, comments, or log messages.
+- Do not create extra files unless asked.
+- Do not add self-congratulatory or hedging comments.
+- Do not restate the task at the top of the file.
+
+#### General
+
+- Match the existing style of the file and codebase.
+- Change only what is asked. Avoid opportunistic refactors.
+- Do not use `# type: ignore` or `# noqa` to silence checkers.
+- Prefer deleting code over adding it.

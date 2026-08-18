@@ -1,9 +1,0 @@
-# @package _global_
-debugger:
-  debug_mode: false
-  profile_trainer: false
-  pytorch_profiler: false
-  crc_debug: false
-  crc_debug_samples: 0
-  wandb_debug: true
-  observation_bounds_check: false

@@ -1,7 +1,0 @@
-# @package _global_
-# Memory/replay buffer configuration.
-# memory_type: "auto" selects based on the interface, or set explicitly:
-#   lidar_images, full, best,
-#   r2d2, r2d2_wo_images, r2d2_sophy, generic
-memory:
-  memory_type: auto

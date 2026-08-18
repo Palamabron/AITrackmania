@@ -1,9 +1,0 @@
-training:
-  batch_size: 512
-algorithm:
-  iqn_lr: 3.0e-05
-  iqn_grad_clip: 1.0
-  iqn_epsilon_decay_steps: 3000000
-environment:
-  reward:
-    speed_reward_weight: 2.0

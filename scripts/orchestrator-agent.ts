@@ -1,5 +1,5 @@
 /**
- * Cursor SDK agent for the TMRL experiment orchestrator.
+ * Cursor SDK agent for the TrackmaniaRL experiment orchestrator.
  *
  * Modes:
  *   decide <context.json>  -- Should the current experiment continue or stop?
@@ -7,7 +7,7 @@
  *
  * Output: JSON on stdout with the agent's decision.
  *
- * Usage (called by tmrl/tools/orchestrator.py):
+ * Usage (called by trackmaniarl/tools/orchestrator.py):
  *   npx tsx scripts/orchestrator-agent.ts decide experiments/_agent_context.json
  *   npx tsx scripts/orchestrator-agent.ts propose experiments/_agent_context.json
  */
@@ -47,13 +47,13 @@ INSTRUCTIONS:
 Signs to STOP:
 - Loss last > 100 or NaN, or Q-values exploded (max_q > 200).
 - No positive best_finish_time_s AND worker_finish_count == 0 after 2+ hours.
-- Gradient pre-clip >> 5× grad_clip with no finish progress.
+ - Gradient pre-clip >> 5x grad_clip with no finish progress.
 - Worker episodes show only "no_progress_timeout" terminations.
 
 Signs to CONTINUE:
-- best_finish_time_s > 0 (even far above target) — do NOT claim "never finished."
+- best_finish_time_s > 0 (even far above target) - do NOT claim "never finished."
 - worker_finish_count > 0 or worker_best_finish_time_s present.
-- IQN loss in 30–90 with stable Q (max_q ~15–50) is normal here — not automatic divergence.
+- IQN loss in 30-90 with stable Q (max_q ~15-50) is normal here - not automatic divergence.
 - Eval finish times improving or worker finish count increasing.
 
 OUTPUT FORMAT (JSON only, no markdown):
@@ -74,7 +74,7 @@ ${JSON.stringify(registry ?? [], null, 2)}
 INSTRUCTIONS:
 1. Use EXPERIMENT HISTORY in this prompt; optional local experiments/decisions.md or experiments/analysis/<exp_id>.json if present (gitignored).
 2. Read experiments/search_space.yaml for tunable parameters and their ranges.
-3. Do not load all of experiments/analysis/ into context — prefer per-exp JSON for the parent run only.
+3. Do not load all of experiments/analysis/ into context - prefer per-exp JSON for the parent run only.
 4. Analyze what has worked and what hasn't across all experiments.
 5. Propose the NEXT experiment to run.
 
@@ -83,7 +83,7 @@ RULES:
 - Provide a clear hypothesis explaining WHY this change should help reach ${target}s.
 - Reference specific metrics from prior experiments as evidence.
 - Use the experiment_manager CLI to register: run the shell command:
-  python -m tmrl.tools.experiment_manager register --parent <PARENT_ID> --hypothesis "<WHY>" --overrides '<JSON>'
+  python -m trackmaniarl.tools.experiment_manager register --parent <PARENT_ID> --hypothesis "<WHY>" --overrides '<JSON>'
 
 After running the register command, append your reasoning to experiments/decisions.md (local, gitignored).
 

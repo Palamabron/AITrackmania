@@ -1,8 +1,0 @@
-# @package _global_
-# Color-image variant; same hparams as `vanilla_cnn_actor_critic`, different `model.type`.
-defaults:
-  - vanilla_cnn_actor_critic
-  - _self_
-
-model:
-  type: vanilla_color_cnn_actor_critic
