@@ -15,13 +15,14 @@ from trackmaniarl.cli import (
     _print_benchmark_report,
     _resumed_attempt_spec,
     _signal_shutdown,
+    _smoke_training,
     _trajectory_optimize,
     _validate,
     _with_environment_decision_interval,
     _with_model_initialization_checkpoint,
     entrypoint,
 )
-from trackmaniarl.core.spec import RunSpec
+from trackmaniarl.core.spec import RunSpec, TrainingSpec
 from trackmaniarl.trackmania.environment import TrackmaniaEnvironmentConfig
 
 
@@ -82,6 +83,14 @@ def test_track_check_reports_a_disconnected_openplanet_without_a_traceback(
         entrypoint(["track", "check"])
 
     assert "OpenPlanet telemetry check failed: telemetry unavailable" in capsys.readouterr().err
+
+
+def test_smoke_training_reserves_transitions_for_a_learner_update() -> None:
+    training = _smoke_training(TrainingSpec(batch_size=256, n_step=3), 100)
+
+    assert training.batch_size == 49
+    assert training.warmup_transitions == 51
+    assert training.total_transitions > training.warmup_transitions
 
 
 def test_benchmark_report_prints_trials_and_summary(capsys: pytest.CaptureFixture[str]) -> None:

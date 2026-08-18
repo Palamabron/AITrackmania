@@ -24,7 +24,7 @@ import torch
 from trackmaniarl.core.contracts import Policy
 from trackmaniarl.core.pytree import sanitize_finite, tree_map, tree_to_device
 from trackmaniarl.core.runtime import prepare_run, resolve_run, validate_resolved_run
-from trackmaniarl.core.spec import RunSpec
+from trackmaniarl.core.spec import RunSpec, TrainingSpec
 from trackmaniarl.project.scaffold import create_project
 from trackmaniarl.trackmania.actions import (
     continuous_control_to_discrete_index,
@@ -451,28 +451,7 @@ def _smoke(args: argparse.Namespace) -> None:
 
     spec = RunSpec.from_yaml(args.config)
     transitions = args.transitions
-    if transitions < 8:
-        raise ValueError("smoke testing requires at least 8 transitions")
-    n_step = min(spec.training.n_step, transitions)
-    batch_size = min(
-        spec.training.batch_size,
-        (transitions - n_step + 1) // spec.training.sequence_length,
-    )
-    if batch_size < 1:
-        minimum = spec.training.sequence_length + n_step - 1
-        raise ValueError(f"transitions must be at least {minimum} for one complete replay batch")
-    ready = batch_size * spec.training.sequence_length + n_step - 1
-    training = spec.training.model_copy(
-        update={
-            "total_transitions": transitions,
-            "max_episode_steps": min(spec.training.max_episode_steps, transitions),
-            "batch_size": batch_size,
-            "n_step": n_step,
-            "warmup_transitions": ready,
-            "updates_per_transition": 1.0,
-            "checkpoint_interval_updates": 25,
-        }
-    )
+    training = _smoke_training(spec.training, transitions)
     # A release smoke test proves that live collection, replay, an update, and
     # checkpoint restore work.  It must not launch the configured 20-trial
     # benchmark: a freshly initialized exploratory policy is intentionally not
@@ -513,6 +492,32 @@ def _smoke(args: argparse.Namespace) -> None:
     if not refreshed:
         raise RuntimeError("async smoke completed without refreshing the actor policy")
     print("Async TrackMania smoke passed with a live policy-refresh interval of 0.25s.")
+
+
+def _smoke_training(spec: TrainingSpec, transitions: int) -> TrainingSpec:
+    """Derive a bounded training schedule that guarantees one learner update."""
+
+    if transitions < 8:
+        raise ValueError("smoke testing requires at least 8 transitions")
+    n_step = min(spec.n_step, transitions)
+    available = transitions - n_step + 1
+    batch_capacity = available // spec.sequence_length
+    if batch_capacity < 2:
+        minimum = spec.sequence_length + n_step
+        raise ValueError(f"transitions must be at least {minimum} for a smoke learner update")
+    batch_size = min(spec.batch_size, max(1, batch_capacity // 2))
+    ready = batch_size * spec.sequence_length + n_step - 1
+    return spec.model_copy(
+        update={
+            "total_transitions": transitions,
+            "max_episode_steps": min(spec.max_episode_steps, transitions),
+            "batch_size": batch_size,
+            "n_step": n_step,
+            "warmup_transitions": ready,
+            "updates_per_transition": 1.0,
+            "checkpoint_interval_updates": 25,
+        }
+    )
 
 
 def _restore_smoke_checkpoint(config: Path, spec: RunSpec) -> None:
