@@ -86,6 +86,19 @@ class TrackGeometryEncoder(nn.Module):
     ) -> torch.Tensor:
         """Encode ``(batch, channels, points)`` geometry and optional telemetry."""
 
+        if track.device.type == "cpu" and torch.is_autocast_enabled("cpu"):
+            with torch.autocast(device_type="cpu", enabled=False):
+                return self._encode(track, telemetry, mask)
+        return self._encode(track, telemetry, mask)
+
+    def _encode(
+        self,
+        track: torch.Tensor,
+        telemetry: torch.Tensor | None,
+        mask: torch.Tensor | None,
+    ) -> torch.Tensor:
+        """Encode geometry outside unsupported CPU reduced-precision kernels."""
+
         if track.ndim != 3 or track.shape[1] != self.channels:
             raise ValueError(
                 f"track must have shape (batch, {self.channels}, points), got {tuple(track.shape)}"
