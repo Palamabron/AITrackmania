@@ -6,6 +6,7 @@ import torch
 from torch import nn
 
 from trackmaniarl.algorithms import (
+    AdaptiveGradientClipper,
     ImplicitQuantileQLearning,
     RandomizedEnsembleSAC,
     SoftActorCritic,
@@ -16,6 +17,11 @@ from trackmaniarl.algorithms._torch import polyak_update, weighted_mean
 from trackmaniarl.algorithms.execution import TorchExecutionConfig
 from trackmaniarl.algorithms.implicit_quantile_q_learning import implicit_quantile_huber_loss
 from trackmaniarl.core.data import TrainingBatch
+from trackmaniarl.models import (
+    HypersphericalLinear,
+    SimbaV2Backbone,
+    project_hyperspherical_weights,
+)
 from trackmaniarl.models.actors import CategoricalActor, GaussianActor
 from trackmaniarl.models.critics import ContinuousQCritic, DiscreteQuantileNetwork, QuantileCritic
 
@@ -246,3 +252,48 @@ def test_polyak_update_copies_batch_norm_buffers() -> None:
     polyak_update(source, target, 0.5)
     assert torch.equal(target.running_mean, source.running_mean)
     assert torch.equal(target.running_var, source.running_var)
+
+
+def test_simbav2_backbone_preserves_shape_and_unit_feature_norm() -> None:
+    backbone = SimbaV2Backbone(input_dim=6, hidden_dim=16, block_count=2)
+
+    output = backbone(torch.randn(8, 6))
+
+    assert output.shape == (8, 16)
+    assert torch.allclose(output.norm(dim=-1), torch.ones(8), atol=1e-5)
+
+
+def test_hyperspherical_weights_can_be_projected_after_an_optimizer_step() -> None:
+    backbone = SimbaV2Backbone(input_dim=4, hidden_dim=8, block_count=1)
+    optimizer = torch.optim.Adam(backbone.parameters(), lr=0.1)
+    backbone(torch.randn(4, 4)).square().sum().backward()
+    optimizer.step()
+
+    project_hyperspherical_weights(backbone)
+
+    layers = [module for module in backbone.modules() if isinstance(module, HypersphericalLinear)]
+    assert layers
+    for layer in layers:
+        assert torch.allclose(
+            layer.weight.norm(dim=1),
+            torch.ones(layer.weight.shape[0]),
+            atol=1e-5,
+        )
+
+
+def test_adaptive_gradient_clipper_limits_spikes_and_restores_state() -> None:
+    parameter = nn.Parameter(torch.ones(2))
+    clipper = AdaptiveGradientClipper(decay=0.5, warmup_steps=0, clip_factor=1.0)
+    parameter.grad = torch.ones_like(parameter)
+    baseline = clipper([parameter])
+    parameter.grad = torch.full_like(parameter, 100.0)
+
+    spike = clipper([parameter])
+
+    assert baseline.coefficient == 1.0
+    assert spike.clipped
+    assert parameter.grad.norm() == torch.tensor(spike.ema_norm)
+    restored = AdaptiveGradientClipper()
+    restored.load_state_dict(clipper.state_dict())
+    assert restored.step_count == clipper.step_count
+    assert restored.ema_norm == clipper.ema_norm
