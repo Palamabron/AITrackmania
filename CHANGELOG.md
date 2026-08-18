@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.1.0 - 2026-08-18
+## 1.0.0 - 2026-08-18
 
 - Renamed the distribution, Python package and CLI to TrackmaniaRL / `trackmaniarl`.
 - Added attribution, trademark disclaimer and a security reporting policy.
