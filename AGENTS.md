@@ -33,6 +33,15 @@ User components are loaded by explicit `module:attribute` paths from an installa
 
 All built-ins and generated user components need deterministic contract tests. TrackMania is exercised in the bounded live smoke test; unit tests use fake actors and a slow learner to verify asynchronous behavior without the game.
 
+## Experimental Modules
+
+Keep experimental model and optimization components opt-in. Add them as reusable, importable blocks first; wire them into a RunSpec only for a named experiment after its baseline is recorded.
+
+- `trackmaniarl.models.SimbaV2Backbone` is an experimental encoder. After each optimizer step, call `project_hyperspherical_weights(model)` and compare it against the identical baseline model with the same seed, replay, update budget, and evaluation suite.
+- `trackmaniarl.algorithms.AdaptiveGradientClipper` runs after AMP gradient unscaling and before `optimizer.step()`. Persist its `state_dict()` in the learner checkpoint so resume behavior preserves its EMA and warmup state.
+- Change one experimental variable at a time. Record the exact component arguments, seed, training budget, return, finish rate, pace, gradient metrics, and failure modes in the experiment artifacts.
+- Promote an experimental component to a built-in default only after deterministic unit coverage and at least one bounded live smoke comparison show a measurable benefit without a regression in resume or distributed behavior.
+
 ## Python Code Rules
 
 ### Tooling
