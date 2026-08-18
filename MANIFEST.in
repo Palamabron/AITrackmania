@@ -1,2 +1,7 @@
-include readme/pypi.md
-exclude tmrl/wandb/*
+include README.md
+include CHANGELOG.md
+include LICENSE
+include NOTICE
+include SECURITY.md
+recursive-include readme *.md
+recursive-include trackmaniarl/project/openplanet *.as *.toml

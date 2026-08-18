@@ -1,0 +1,517 @@
+"""Compact behavior-cloning components preserve the TrackMania action contract."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import numpy as np
+import pytest
+import torch
+
+from trackmaniarl.trackmania.behavior_cloning import (
+    INTERVENTION_KEY,
+    SAMPLE_WEIGHT_KEY,
+    STATE_ERROR_KEY,
+    STUDENT_ACTION_KEY,
+    BehaviorCloningLap,
+    BehaviorCloningLearner,
+    BehaviorCloningPolicy,
+    LidarBehaviorCloningModel,
+    augment_behavior_cloning_laps,
+    class_weights,
+    flatten_behavior_cloning_laps,
+    load_behavior_cloning_laps,
+    load_behavior_cloning_recovery,
+    save_behavior_cloning_recovery,
+    split_behavior_cloning_laps,
+)
+from trackmaniarl.trackmania.demonstrations import Demonstration, save_demonstration
+
+
+class _RecoveryPipeline:
+    def reset_episode(self) -> None:
+        return None
+
+    def transform_observation(self, observation: object) -> dict[str, torch.Tensor]:
+        values = torch.as_tensor(observation, dtype=torch.float32)
+        return {
+            "lidar": torch.zeros((4, 8)),
+            "lidar_mask": torch.ones(8, dtype=torch.bool),
+            "telemetry": values[:26],
+        }
+
+
+def test_behavior_cloning_rejects_explicit_decision_interval_mismatch(
+    tmp_path: Path,
+) -> None:
+    frames = np.zeros((2, 33), dtype=np.float32)
+    frames[:, 3] = [20.0, 40.0]
+    frames[-1, 2] = 1.0
+    demonstration = Demonstration(
+        map_uid="test-map",
+        geometry_sha256="a" * 64,
+        action_repeat_frames=1,
+        decision_interval_ms=20.0,
+        frames=frames,
+        actions=np.asarray([39], dtype=np.int64),
+        controls=np.asarray([[1.0, 0.0, 0.0]], dtype=np.float32),
+        finish_time_s=0.04,
+    )
+    paths = [save_demonstration(tmp_path / f"demo-{index}", demonstration) for index in range(3)]
+
+    with pytest.raises(ValueError, match="decision interval 20ms"):
+        load_behavior_cloning_laps(
+            paths,
+            _RecoveryPipeline(),
+            (0, 1, 3, 39, 72, 73, 75),
+            expected_action_repeat_frames=1,
+            expected_decision_interval_ms=10.0,
+        )
+
+
+def _observation(value: float) -> dict[str, torch.Tensor]:
+    return {
+        "lidar": torch.full((4, 8), value),
+        "lidar_mask": torch.ones(8, dtype=torch.bool),
+        "telemetry": torch.full((26,), value),
+    }
+
+
+def _lap(label: int) -> BehaviorCloningLap:
+    return BehaviorCloningLap((_observation(float(label)),), torch.tensor([label]))
+
+
+def test_behavior_cloning_split_keeps_the_elite_lap_in_training() -> None:
+    laps = [
+        BehaviorCloningLap(
+            (_observation(float(index)),),
+            torch.tensor([index]),
+            quality_weight=1.0 if index == 0 else 0.2,
+        )
+        for index in range(13)
+    ]
+
+    training, validation = split_behavior_cloning_laps(laps, seed=17)
+
+    assert any(lap is laps[0] for lap in training)
+    assert not any(lap is laps[0] for lap in validation)
+
+
+def test_three_elite_laps_are_all_used_for_training() -> None:
+    laps = [_lap(index) for index in range(3)]
+
+    training, validation = split_behavior_cloning_laps(laps, seed=17)
+
+    assert training == laps
+    assert len(validation) == 1
+
+
+def test_steering_auxiliary_loss_penalizes_wrong_direction() -> None:
+    learner = BehaviorCloningLearner(
+        LidarBehaviorCloningModel(action_ids=(3, 39, 75), spatial_bins=4),
+        steering_auxiliary_loss_weight=1.0,
+        execution={"device": "cpu"},
+    )
+    learner.setup({})
+    correct = learner._steering_loss(torch.tensor([[3.0, 0.0, -3.0]]), torch.tensor([0]))
+    wrong = learner._steering_loss(torch.tensor([[-3.0, 0.0, 3.0]]), torch.tensor([0]))
+
+    assert correct < wrong
+
+
+def test_behavior_cloning_model_emits_one_logit_per_compact_action() -> None:
+    model = LidarBehaviorCloningModel(action_ids=(0, 1, 3, 39, 72, 73, 75), spatial_bins=4)
+    observation = {
+        "lidar": torch.zeros((2, 4, 8)),
+        "lidar_mask": torch.ones((2, 8), dtype=torch.bool),
+        "telemetry": torch.zeros((2, 26)),
+    }
+
+    logits = model(observation)
+
+    assert logits.shape == (2, 7)
+    assert model.action_count == 7
+
+
+def test_behavior_cloning_recovery_round_trip_keeps_episode_boundaries(
+    tmp_path: Path,
+) -> None:
+    frames = np.arange(4 * 33, dtype=np.float32).reshape(4, 33)
+    action_ids = (0, 1, 3, 39, 72, 73, 75)
+    path = save_behavior_cloning_recovery(
+        tmp_path / "recovery",
+        frames,
+        np.asarray([0, 3, 6, 1], dtype=np.int64),
+        np.asarray([True, False, True, False]),
+        action_ids,
+    )
+
+    laps = load_behavior_cloning_recovery([path], _RecoveryPipeline(), action_ids)
+
+    assert [lap.labels.tolist() for lap in laps] == [[0, 3], [6, 1]]
+    assert torch.equal(laps[1].observations[0]["telemetry"], torch.from_numpy(frames[2, :26]))
+    assert [int(observation["expert_previous_action"]) for observation in laps[0].observations] == [
+        7,
+        0,
+    ]
+    assert all(float(observation[SAMPLE_WEIGHT_KEY]) == 1.0 for observation in laps[0].observations)
+
+
+def test_weighted_recovery_round_trip_preserves_dagger_metadata(tmp_path: Path) -> None:
+    frames = np.arange(3 * 33, dtype=np.float32).reshape(3, 33)
+    action_ids = (0, 1, 3, 39, 72, 73, 75)
+    path = save_behavior_cloning_recovery(
+        tmp_path / "weighted-recovery",
+        frames,
+        np.asarray([0, 3, 6], dtype=np.int64),
+        np.asarray([True, False, False]),
+        action_ids,
+        sample_weights=np.asarray([0.25, 3.0, 6.0], dtype=np.float32),
+        student_actions=np.asarray([0, 2, 4], dtype=np.int64),
+        interventions=np.asarray([False, True, True]),
+        state_errors=np.asarray([0.1, 0.8, 1.4], dtype=np.float32),
+    )
+
+    observations = load_behavior_cloning_recovery([path], _RecoveryPipeline(), action_ids)[
+        0
+    ].observations
+
+    assert [float(item[SAMPLE_WEIGHT_KEY]) for item in observations] == [0.25, 3.0, 6.0]
+    assert [int(item[STUDENT_ACTION_KEY]) for item in observations] == [0, 2, 4]
+    assert [bool(item[INTERVENTION_KEY]) for item in observations] == [False, True, True]
+    assert [float(item[STATE_ERROR_KEY]) for item in observations] == pytest.approx([0.1, 0.8, 1.4])
+
+
+def test_behavior_cloning_rejects_invalid_recovery_sample_weights(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="sample weights"):
+        save_behavior_cloning_recovery(
+            tmp_path / "invalid-recovery",
+            np.zeros((2, 33), dtype=np.float32),
+            np.asarray([0, 1], dtype=np.int64),
+            np.asarray([True, False]),
+            (0, 1),
+            sample_weights=np.asarray([1.0, 0.0], dtype=np.float32),
+        )
+
+
+def test_transition_metrics_do_not_require_previous_action_conditioning() -> None:
+    learner = BehaviorCloningLearner(
+        LidarBehaviorCloningModel(
+            action_ids=(0, 1, 3, 39, 72, 73, 75),
+            spatial_bins=4,
+            previous_action_conditioning=False,
+        ),
+        execution={"device": "cpu"},
+    )
+    learner.setup({})
+    observations = {
+        "lidar": torch.zeros((2, 4, 8)),
+        "lidar_mask": torch.ones((2, 8), dtype=torch.bool),
+        "telemetry": torch.zeros((2, 26)),
+        "expert_previous_action": torch.tensor([7, 0]),
+    }
+
+    result = learner.evaluate_batch(observations, torch.tensor([0, 1]), torch.ones(7))
+
+    assert result.transition_count == 1
+
+
+def test_behavior_cloning_validation_reports_recovery_control_metrics() -> None:
+    learner = BehaviorCloningLearner(
+        LidarBehaviorCloningModel(action_ids=(0, 1), spatial_bins=4),
+        execution={"device": "cpu"},
+    )
+    learner.setup({})
+    assert learner.model is not None
+    with torch.no_grad():
+        for parameter in learner.model.parameters():
+            parameter.zero_()
+    observations = {
+        "lidar": torch.zeros((3, 4, 8)),
+        "lidar_mask": torch.ones((3, 8), dtype=torch.bool),
+        "telemetry": torch.zeros((3, 26)),
+        "expert_previous_action": torch.tensor([2, 2, 2]),
+        SAMPLE_WEIGHT_KEY: torch.tensor([2.0, 3.0, 5.0]),
+        INTERVENTION_KEY: torch.tensor([False, True, True]),
+        STUDENT_ACTION_KEY: torch.tensor([2, 0, 1]),
+    }
+
+    result = learner.evaluate_batch(
+        observations,
+        torch.tensor([0, 1, 0]),
+        torch.ones(2),
+    )
+
+    assert result.weighted_correct == 7.0
+    assert result.sample_weight_total == 10.0
+    assert result.intervention_correct == 1
+    assert result.intervention_count == 2
+    assert result.student_disagreement_correct == 1
+    assert result.student_disagreement_count == 2
+
+
+def test_behavior_cloning_loss_prioritizes_weighted_recovery_states() -> None:
+    learner = BehaviorCloningLearner(
+        LidarBehaviorCloningModel(action_ids=(0, 1), spatial_bins=4),
+        label_smoothing=0.0,
+        execution={"device": "cpu"},
+    )
+    learner.setup({})
+    logits = torch.tensor([[-3.0, 3.0], [3.0, -3.0]])
+    targets = torch.tensor([0, 0])
+    observations = {
+        "expert_previous_action": torch.tensor([2, 2]),
+        SAMPLE_WEIGHT_KEY: torch.tensor([8.0, 1.0]),
+    }
+
+    weighted = learner._classification_loss(logits, targets, torch.ones(2), observations)
+    unweighted = learner._classification_loss(
+        logits,
+        targets,
+        torch.ones(2),
+        {"expert_previous_action": torch.tensor([2, 2])},
+    )
+
+    assert weighted > unweighted
+
+
+def test_behavior_cloning_reports_intervention_and_student_disagreement_accuracy() -> None:
+    learner = BehaviorCloningLearner(
+        LidarBehaviorCloningModel(action_ids=(0, 1, 3, 39, 72, 73, 75), spatial_bins=4),
+        execution={"device": "cpu"},
+    )
+    learner.setup({})
+    metrics = learner._subset_metrics(
+        torch.tensor([0, 1, 1]),
+        torch.tensor([0, 0, 1]),
+        {
+            INTERVENTION_KEY: torch.tensor([False, True, True]),
+            STUDENT_ACTION_KEY: torch.tensor([7, 4, 0]),
+        },
+    )
+
+    assert metrics["intervention_count"] == 2
+    assert metrics["intervention_accuracy"] == 0.5
+    assert metrics["student_disagreement_count"] == 2
+    assert metrics["student_disagreement_accuracy"] == 0.5
+
+
+def test_behavior_cloning_model_encodes_a_temporal_history() -> None:
+    model = LidarBehaviorCloningModel(
+        action_ids=(0, 1, 3, 39, 72, 73, 75),
+        telemetry_dim=23,
+        history_length=8,
+        spatial_bins=4,
+    )
+    observation = {
+        "lidar": torch.zeros((2, 8, 4, 8)),
+        "lidar_mask": torch.ones((2, 8, 8), dtype=torch.bool),
+        "telemetry": torch.zeros((2, 8, 23)),
+    }
+
+    logits = model(observation)
+
+    assert logits.shape == (2, 7)
+
+
+def test_behavior_cloning_model_conditions_on_the_previous_action() -> None:
+    model = LidarBehaviorCloningModel(
+        action_ids=(0, 1, 3, 39, 72, 73, 75),
+        spatial_bins=4,
+        previous_action_conditioning=True,
+    )
+    observation = {
+        "lidar": torch.zeros((2, 4, 8)),
+        "lidar_mask": torch.ones((2, 8), dtype=torch.bool),
+        "telemetry": torch.zeros((2, 26)),
+        "previous_action": torch.tensor([7, 3]),
+    }
+
+    logits = model(observation)
+
+    assert logits.shape == (2, 7)
+
+
+def test_behavior_cloning_model_masks_race_clock_features() -> None:
+    torch.manual_seed(7)
+    model = LidarBehaviorCloningModel(
+        action_ids=(0, 1, 3, 39, 72, 73, 75),
+        telemetry_dim=6,
+        spatial_bins=4,
+        telemetry_group_dims=(6,),
+        masked_telemetry_indices=(3, 5),
+    ).eval()
+    baseline = {
+        "lidar": torch.zeros((2, 4, 8)),
+        "lidar_mask": torch.ones((2, 8), dtype=torch.bool),
+        "telemetry": torch.randn((2, 6)),
+    }
+    shifted = {key: value.clone() for key, value in baseline.items()}
+    shifted["telemetry"][..., 3] = 0.75
+    shifted["telemetry"][..., 5] = -0.9
+
+    with torch.inference_mode():
+        baseline_logits = model(baseline)
+        shifted_logits = model(shifted)
+
+    assert torch.equal(baseline_logits, shifted_logits)
+
+
+def test_behavior_cloning_model_rejects_invalid_telemetry_masks() -> None:
+    with pytest.raises(ValueError, match="masked telemetry indices"):
+        LidarBehaviorCloningModel(
+            action_ids=(0, 1, 3, 39, 72, 73, 75),
+            telemetry_dim=6,
+            masked_telemetry_indices=(3, 6),
+        )
+
+
+def test_behavior_cloning_policy_rejects_low_margin_action_flicker() -> None:
+    model = LidarBehaviorCloningModel(
+        action_ids=(0, 1, 3, 39, 72, 73, 75),
+        spatial_bins=4,
+        previous_action_conditioning=True,
+        minimum_action_hold_steps=2,
+        switch_logit_margin=0.25,
+    )
+    with torch.no_grad():
+        for parameter in model.parameters():
+            parameter.zero_()
+        model.head.bias[0] = 0.1
+    policy = BehaviorCloningPolicy(model, torch.device("cpu"))
+    observation = {
+        "lidar": torch.zeros((4, 8)),
+        "lidar_mask": torch.ones(8, dtype=torch.bool),
+        "telemetry": torch.zeros(26),
+    }
+
+    assert policy.act(observation) == 0
+    with torch.no_grad():
+        model.head.bias[1] = 0.2
+    assert policy.act(observation) == 0
+    with torch.no_grad():
+        model.head.bias[1] = 1.0
+    assert policy.act(observation) == 1
+
+
+def test_lap_split_is_disjoint_and_retains_entire_laps() -> None:
+    laps = [_lap(index % 2) for index in range(10)]
+
+    training, validation = split_behavior_cloning_laps(laps, seed=7)
+    observations, labels = flatten_behavior_cloning_laps(training)
+
+    assert len(training) == 8
+    assert len(validation) == 2
+    assert {id(lap) for lap in training}.isdisjoint({id(lap) for lap in validation})
+    assert len(observations) == len(labels) == 8
+
+
+def test_class_weights_are_bounded_inverse_square_root_frequencies() -> None:
+    weights = class_weights(torch.tensor([0, 0, 0, 0, 1]), action_count=2)
+
+    assert torch.all(weights >= 0.5)
+    assert torch.all(weights <= 3.0)
+    assert weights[1] > weights[0]
+
+
+def test_class_weight_power_can_disable_frequency_weighting() -> None:
+    weights = class_weights(torch.tensor([0, 0, 0, 0, 1]), action_count=2, power=0.0)
+
+    assert torch.equal(weights, torch.ones(2))
+
+
+def test_behavior_cloning_reduces_learning_rate_on_validation_plateau() -> None:
+    learner = BehaviorCloningLearner(
+        LidarBehaviorCloningModel(action_ids=(0, 1, 3, 39, 72, 73, 75)),
+        learning_rate=1e-3,
+        lr_scheduler_factor=0.5,
+        lr_scheduler_patience=1,
+        execution={"device": "cpu"},
+    )
+    learner.setup({})
+
+    learner.step_scheduler(1.0)
+    learner.step_scheduler(1.0)
+    reduced = learner.step_scheduler(1.0)
+    state = learner.state_dict()
+    restored = BehaviorCloningLearner(
+        LidarBehaviorCloningModel(action_ids=(0, 1, 3, 39, 72, 73, 75)),
+        execution={"device": "cpu"},
+    )
+    restored.setup({})
+    restored.load_state_dict(state)
+
+    assert reduced == 5e-4
+    assert restored.current_learning_rate() == reduced
+    assert state["policy_action_ids"] == (0, 1, 3, 39, 72, 73, 75)
+
+
+def test_behavior_cloning_clips_gradients_and_reports_the_unclipped_norm() -> None:
+    learner = BehaviorCloningLearner(
+        LidarBehaviorCloningModel(
+            action_ids=(0, 1, 3, 39, 72, 73, 75),
+            spatial_bins=4,
+        ),
+        gradient_clip_norm=0.05,
+        execution={"device": "cpu"},
+    )
+    learner.setup({})
+    observations = {
+        "lidar": torch.randn((8, 4, 8)),
+        "lidar_mask": torch.ones((8, 8), dtype=torch.bool),
+        "telemetry": torch.randn((8, 26)),
+    }
+
+    metrics = learner.train_batch(
+        observations,
+        torch.arange(8) % 7,
+        torch.ones(7),
+    )
+    gradient_norm = torch.linalg.vector_norm(
+        torch.stack(
+            [
+                parameter.grad.detach().norm()
+                for parameter in learner.model.parameters()
+                if parameter.grad is not None
+            ]
+        )
+    )
+
+    assert metrics["gradient_norm"] > 0.0
+    assert gradient_norm <= 0.05001
+
+
+def test_behavior_cloning_horizontal_flip_reflects_actions_and_local_features() -> None:
+    observation = {
+        "lidar": torch.arange(128, dtype=torch.float32).reshape(2, 8, 8),
+        "lidar_mask": torch.ones((2, 8), dtype=torch.bool),
+        "telemetry": torch.arange(92, dtype=torch.float32).reshape(2, 46),
+    }
+    lap = BehaviorCloningLap((observation,) * 7, torch.arange(7, dtype=torch.long))
+
+    augmented = augment_behavior_cloning_laps([lap], (0, 1, 3, 39, 72, 73, 75))
+    reflected = augmented[1].observations[0]
+
+    assert len(augmented) == 2
+    assert augmented[1].labels.tolist() == [4, 5, 6, 3, 0, 1, 2]
+    assert torch.equal(reflected["lidar"][..., 0, :], -observation["lidar"][..., 2, :])
+    assert torch.equal(reflected["lidar"][..., 1, :], observation["lidar"][..., 3, :])
+    assert torch.equal(reflected["telemetry"][..., 6], -observation["telemetry"][..., 6])
+    assert torch.equal(reflected["telemetry"][..., 10], observation["telemetry"][..., 11])
+    assert torch.equal(reflected["telemetry"][..., 34], -observation["telemetry"][..., 36])
+
+
+def test_horizontal_flip_reflects_the_previous_action_condition() -> None:
+    observation = {
+        "lidar": torch.zeros((8, 8)),
+        "lidar_mask": torch.ones(8, dtype=torch.bool),
+        "telemetry": torch.zeros(46),
+        "previous_action": torch.tensor(0),
+    }
+    start = {**observation, "previous_action": torch.tensor(7)}
+    lap = BehaviorCloningLap((observation, start), torch.tensor([0, 0]))
+
+    reflected = augment_behavior_cloning_laps([lap], (0, 1, 3, 39, 72, 73, 75))[1]
+
+    assert int(reflected.observations[0]["previous_action"]) == 4
+    assert int(reflected.observations[1]["previous_action"]) == 7

@@ -1,0 +1,106 @@
+api_version: "1.2"
+run_id: trackmania-iqn-r2d2-racing-v38a
+seed: 0
+artifacts_dir: artifacts
+distributed:
+  epsilon_profiles: [1.0]
+  epsilon_start: 0.0
+  epsilon_final: 0.0
+  epsilon_decay_transitions: 1
+components:
+  learner:
+    class_path: trackmaniarl.trackmania.behavior_cloning:BehaviorCloningLearner
+    kwargs:
+      learning_rate: 3.0e-4
+      weight_decay: 1.0e-4
+      label_smoothing: 0.01
+      max_steps: 20000
+      validation_interval: 100
+      early_stopping_patience: 30
+      execution:
+        device: cuda
+  environment:
+    class_path: trackmaniarl.trackmania.environment:OpenPlanetEnvironmentFactory
+    kwargs:
+      config:
+        geometry_path: assets/trackmaniarl-test.geometry.npz
+        use_racing_line: true
+        expected_map_uid: oqIJ5rQDRrNwLPTh9H2p_W4tLof
+        reset_settle_s: 0.0
+        action_repeat_frames: 2
+        compact_action_ids: [0, 1, 3, 39, 72, 73, 75]
+        nearest_forward_points: 100
+        nearest_backward_points: 10
+        slow_progress_window_steps: 180
+        no_progress_steps: 120
+        minimum_progress_per_window_m: 5.0
+        terminal_failure_penalty: 5.0
+        collision_penalty: 1.5
+        collision_cooldown_s: 2.0
+        time_penalty_per_second: 0.5
+        max_time_delta_s: 1.0
+        progress_reward_full_lap: 75.0
+        finish_reward: 25.0
+        potential_progress_weight: 0.0
+        max_projected_speed_mps: 80.0
+        velocity_to_mps_scale: 1.0
+        projected_velocity_scale: 0.008
+        projected_speed_bonus_scale: 0.2
+        steering_delta_penalty: 0.02
+        reward_gamma: 0.99
+  model_factory:
+    class_path: trackmaniarl.trackmania.behavior_cloning:LidarBehaviorCloningModelFactory
+    kwargs:
+      action_ids: [0, 1, 3, 39, 72, 73, 75]
+      telemetry_dim: 23
+      spatial_bins: 12
+  replay_store:
+    class_path: trackmaniarl.core.replay:InMemoryReplayStore
+    kwargs:
+      capacity: 1
+  sampler:
+    class_path: trackmaniarl.core.replay:UniformSampler
+  feature_pipeline:
+    class_path: trackmaniarl.trackmania.features:LidarFeaturePipeline
+    kwargs:
+      geometry_path: assets/trackmaniarl-test.geometry.npz
+      expected_map_uid: oqIJ5rQDRrNwLPTh9H2p_W4tLof
+      samples_per_side: 90
+      max_distance_m: 180.0
+      history_length: 1
+      include_track_relative: true
+      include_control_inputs: false
+      use_racing_line: true
+      max_speed_mps: 80.0
+      velocity_to_mps_scale: 1.0
+      nearest_forward_points: 100
+      nearest_backward_points: 10
+  evaluator:
+    class_path: trackmaniarl.trackmania.evaluation:TrackmaniaEvaluator
+  additional_loggers:
+    - class_path: trackmaniarl.observability.trackers:WandbTracker
+      kwargs:
+        project: my-trackmania-agent
+evaluation:
+  name: trackmaniarl-test-bc-compact-actions
+  version: "1"
+  maps:
+    - id: trackmaniarl-test
+      map_path: maps/trackmaniarl-test.Map.Gbx
+      geometry_path: assets/trackmaniarl-test.geometry.npz
+      expected_map_uid: oqIJ5rQDRrNwLPTh9H2p_W4tLof
+  trials_per_map: 30
+  target_median_s: 37.0
+  min_finish_rate: 0.9
+  time_buckets_s: [40.0, 38.0, 37.0, 36.0]
+training:
+  total_transitions: 20000
+  max_episode_steps: 5000
+  batch_size: 512
+  sequence_length: 1
+  n_step: 1
+  gamma: 0.99
+  warmup_transitions: 0
+  updates_per_transition: 1.0
+  checkpoint_interval_updates: 100
+  metrics_interval_updates: 100

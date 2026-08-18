@@ -18,7 +18,7 @@ uint pipeDebounce = 5000;
 CSmPlayer@ LocalPlayer;
 
 int notContactCheck(CSceneVehicleVisState@ visState, EPlugSurfaceMaterialId surface) {
-        return 
+        return
             (visState.FLGroundContactMaterial != surface ? 1 : 0) +
             (visState.FRGroundContactMaterial != surface ? 1 : 0) +
             (visState.RLGroundContactMaterial != surface ? 1 : 0) +
@@ -37,7 +37,7 @@ bool step(float jerk, bool isBraking) {
 	}
 	bool isBonk = false;
 
-  	if (vis.RaceStartTime == 0xFFFFFFFF || vis.FrontSpeed == 0) { // in pre-race mode
+	if (vis.RaceStartTime == 0xFFFFFFFF || vis.FrontSpeed == 0) { // in pre-race mode
 		prev_speed = 0;
 		return false;
 	}
@@ -48,19 +48,19 @@ bool step(float jerk, bool isBraking) {
 		prev_speed = 0;
 		return false;
 	}
-	
+
 	float speed = getSpeed(vis);
 	float curr_acc;
 
 	try {
 		curr_acc = Math::Max(0, (prev_speed - speed) * 1000);
 		//print("curr_acc = " + curr_acc);
-	} 
+	}
 	catch {
 		curr_acc = 0;
 	}
 	prev_speed = speed;
-	
+
 	if (speed < 0) {
 		speed *= -1.f;
 		curr_acc *= -1.f;
@@ -68,7 +68,7 @@ bool step(float jerk, bool isBraking) {
 	bonkTargetThresh = (bonkThresh + prev_speed * 1.5f);
 
 	isBonk = curr_acc > bonkTargetThresh;
-	
+
 	if (jerk > -1.45f || isBraking) {
 		isBonk = false;
 	}
@@ -101,7 +101,7 @@ class BonkStateManager{
 
     int pipeCountDown = -1;
 
-    /* To be called once per frame. */ 
+    /* To be called once per frame. */
     void handleBonkCall(CSceneVehicleVisState@ visState, bool mainBonkDetect) {
         vec3 v = visState.WorldVel;
         float vLen = v.Length();
@@ -114,14 +114,14 @@ class BonkStateManager{
                 pipeCountDown -= 1;
             } else {
                 pipeCountDown = -1;
-            } 
+            }
         } else if (pipeCountDown == 0) {
             pipeCountDown = -1;
             lastPipeTime = Time::Now;
             return;
         }
-        
-        vec3 vdt = v - prevVel; 
+
+        vec3 vdt = v - prevVel;
         float vdtUp = Math::Dot(vdt, visState.Up);
         vdt = vdt - visState.Up * vdtUp;
         if (Math::Dot(vdt, visState.Dir) > 0) {
@@ -131,23 +131,23 @@ class BonkStateManager{
         vec3 vdtdt = vdt - prevVdt;
 
         // Case: roofhit
-        // Is the force opposite in direction to the up vector? 
+        // Is the force opposite in direction to the up vector?
         // Also we only want to roofhit when we are pointing down - otherwise it will be overdone and not funny
         // We also check to make sure we were falling for at least 10 frames beforehand, plus we start this countdown
-        // to ensure that we don't touch the ground with any wheel for 3 frames after. 
+        // to ensure that we don't touch the ground with any wheel for 3 frames after.
         if (
-            	(lastPipeTime < Time::Now - pipeDebounce) && 
-            	(prevVelLength > 10) &&
-            	(vLen > 3) && 
-            	Math::Abs(vdtUp) > (vLen * 0.1) && 
-            	pipeCountDown == -1 && 
-            	(Math::Dot(visState.Up, vec3(0, -1, 0)) > 0.9) &&
-            	sumWheelContactCountArr() == 0 && 
-            	mainBonkDetect
+	(lastPipeTime < Time::Now - pipeDebounce) &&
+	(prevVelLength > 10) &&
+	(vLen > 3) &&
+	Math::Abs(vdtUp) > (vLen * 0.1) &&
+	pipeCountDown == -1 &&
+	(Math::Dot(visState.Up, vec3(0, -1, 0)) > 0.9) &&
+	sumWheelContactCountArr() == 0 &&
+	mainBonkDetect
            ) {
                 pipeCountDown = 3;
             }
-        
+
         prevVelLength = vLen;
         prevVel = v;
         prevWheelContactCount = wheelContactCount;
@@ -257,7 +257,7 @@ void Main()
 		}
 		print(Time::Now + ": Server socket ready");
 
-		// Same pattern as working TMRL plugin: yield before Accept(), retry if null
+		// Same pattern as working TrackmaniaRL plugin: yield before Accept(), retry if null
 		while(true)
 		{
 			yield();
@@ -331,9 +331,9 @@ void Main()
 			auto race_state = playground.GameTerminals[0].UISequence_Current;
 
 			speed = api.Speed;
-      		acceleration = speed - prev_speed;
+		acceleration = speed - prev_speed;
 			jerk = acceleration - prev_acceleration;
-      		prev_speed = speed;
+		prev_speed = speed;
 			prev_acceleration = acceleration;
 			isBraking = api.InputIsBraking;
 
@@ -346,13 +346,13 @@ void Main()
 				isFinished = false;
 			}
 
-			if(PlayerState::GetRaceData().PlayerState == PlayerState::EPlayerState::EPlayerState_Driving) 
+			if(PlayerState::GetRaceData().PlayerState == PlayerState::EPlayerState::EPlayerState_Driving)
 			{
 				auto info = PlayerState::GetRaceData().dPlayerInfo;
 				_curCP = info.NumberOfCheckpointsPassed;
 				_curLap = info.CurrentLapNumber;
-			} 
-			else 
+			}
+			else
 			{
 				_curCP = 0;
 				_curLap = 0;
@@ -361,11 +361,11 @@ void Main()
 			buf.Seek(0, 0);
 			// Sending data
             append_float(buf, _curCP); // 0
-            append_float(buf, _curLap);	
+            append_float(buf, _curLap);
 
 			append_float(buf, speed); // 2
 
-			append_float(buf, api.Position.x); 
+			append_float(buf, api.Position.x);
 			append_float(buf, api.Position.y); // 4
 			append_float(buf, api.Position.z);
 			append_float(buf, api.InputSteer); // 6
@@ -376,24 +376,24 @@ void Main()
 
 			append_float(buf, acceleration); // 10
 			append_float(buf, jerk);
-			
-      		append_float(buf, api.AimYaw); // 12
+
+		append_float(buf, api.AimYaw); // 12
 			append_float(buf, api.AimPitch);
 
 			append_float(buf, vehicle.FLSteerAngle);
 			append_float(buf, vehicle.FRSteerAngle); // 15
 
-            append_float(buf, vehicle.FLSlipCoef); 
-			append_float(buf, vehicle.FRSlipCoef); // 17	
-			
+            append_float(buf, vehicle.FLSlipCoef);
+			append_float(buf, vehicle.FRSlipCoef); // 17
+
 			append_bool(buf, step(jerk, isBraking)); // isCrashed
-			
+
 			append_float(buf, api.EngineCurGear); // 19 int
 
 
 			buf.Seek(0, 0);
 			// 20 danych
-	    	cc = send_memory_buffer(sock, buf);
+		cc = send_memory_buffer(sock, buf);
 			frameCount += 1;
 			if (Time::Now - lastSendLog > 5000) {
 				print("TQC plugin: sent " + frameCount + " frames so far.");

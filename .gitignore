@@ -62,6 +62,11 @@ coverage.xml
 *.cover
 .hypothesis/
 .pytest_cache/
+.pytest-tmp/
+.pytest-tmp-*/
+.test-temp/
+.tmptest-*/
+*.pytest-tmp*/
 
 # Translations
 *.mo
@@ -84,6 +89,7 @@ docs/source/_build/
 
 # Reports and analysis files (not part of Sphinx docs)
 docs/reports/
+docs/superpowers/
 
 # PyBuilder
 target/
@@ -131,10 +137,28 @@ venv.bak/
 .dmypy.json
 dmypy.json
 
+# ruff
+.ruff_cache/
+
+# Local SQLite / event leftovers from distributed training
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+events.jsonl
+
 plotRewardPoints.py
 
 # Generated output
 output_files/
+artifacts/
+.trackmaniarl-*.yaml
+.tmrl-*.yaml
+TrackmaniaRL_GrabData_IQN.zip
+TMRL_GrabData_IQN.zip
+trackmaniarl.zip
+
+# Local experiment reports (plots, exports)
+reports/
 
 # Cursor workspace artifacts
 .cursor/
@@ -142,7 +166,22 @@ output_files/
 
 # Experiment tracking artifacts (wandb)
 wandb/
+trackmaniarl/wandb/
 tmrl/wandb/
 **/wandb/
 
+# Autonomous tuning: generated run data (configs + scripts stay in repo)
+experiments/analysis/*
+!experiments/analysis/.gitkeep
+experiments/logs/*
+!experiments/logs/.gitkeep
+experiments/registry.jsonl
+experiments/ground_truth.json
+experiments/audit_report.json
+experiments/validation_report.json
+experiments/decisions.md
+
 config.json
+
+# Local TrackMania recordings and captured demonstrations
+my-trackmania-agent/demos-v*/

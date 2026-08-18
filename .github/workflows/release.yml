@@ -1,0 +1,46 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v4
+        with:
+          python-version: "3.12"
+
+      - name: Install build dependencies
+        env:
+          UV_INDEX_PYTORCH_CUDA: https://download.pytorch.org/whl/cpu
+        run: uv sync --locked --group dev
+
+      - name: Build distributables
+        run: uv build
+
+      - name: Verify distribution contents
+        run: uv run python scripts/check_distribution.py
+
+      - name: Verify wheel CLI
+        run: uv run --isolated --no-project --with ./dist/*.whl trackmaniarl --help
+
+      - name: Verify generated project resolves the released wheel
+        run: |
+          agent_dir="$(mktemp -d)/agent"
+          uv run --isolated --no-project --with ./dist/*.whl trackmaniarl init "$agent_dir"
+          uv lock --directory "$agent_dir" --find-links "$GITHUB_WORKSPACE/dist"
+
+      - name: Publish to PyPI
+        run: uv publish
