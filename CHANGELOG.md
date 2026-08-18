@@ -3,7 +3,7 @@
 ## 1.0.1 - 2026-08-18
 
 - Fixed Linux CI type checking for Windows input APIs and made checkpoint-path tests portable.
-- Pin the Windows `vgamepad` integration to commit `90f95e3` from upstream PR #47.
+- Pin the Windows `vgamepad` integration in uv environments to commit `90f95e3` from upstream PR #47.
 - Skip ViGEmBus driver installation on GitHub Actions runners; normal Windows installs retain it.
 
 ## 1.0.0 - 2026-08-18

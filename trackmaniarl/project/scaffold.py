@@ -64,6 +64,10 @@ def _uv_options(*, accelerator: bool) -> str:
         if (source_root / "pyproject.toml").is_file()
         else ""
     )
+    vgamepad_source = (
+        'vgamepad = { git = "https://github.com/yannbouteiller/vgamepad", '
+        'rev = "90f95e3b0781ea7b9b8e24867c5dfbfda0deecea" }\n'
+    )
     torch_source = (
         'torch = [{ index = "pytorch-cuda", marker = "sys_platform == \'win32\'" }]\n'
         if accelerator
@@ -77,7 +81,7 @@ def _uv_options(*, accelerator: bool) -> str:
         if accelerator
         else ""
     )
-    return f"\n[tool.uv.sources]\n{trackmaniarl_source}{torch_source}{index}"
+    return f"\n[tool.uv.sources]\n{trackmaniarl_source}{vgamepad_source}{torch_source}{index}"
 
 
 def _config(package: str) -> str:
