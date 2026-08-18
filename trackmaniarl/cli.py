@@ -664,6 +664,9 @@ def _check_track_connection(args: argparse.Namespace) -> None:
     )
     try:
         frame = client.read()
+    except ConnectionError as error:
+        print(f"OpenPlanet telemetry check failed: {error}", file=sys.stderr)
+        raise SystemExit(1) from error
     finally:
         client.close()
     position = frame.values[4:7].tolist() if args.field_count >= 7 else None

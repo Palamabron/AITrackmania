@@ -63,6 +63,27 @@ components:
     assert captured["spec"].components.additional_loggers == ()
 
 
+def test_track_check_reports_a_disconnected_openplanet_without_a_traceback(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    class DisconnectedClient:
+        def __init__(self, *_: object, **__: object) -> None:
+            return None
+
+        def close(self) -> None:
+            return None
+
+        def read(self) -> object:
+            raise ConnectionError("telemetry unavailable")
+
+    monkeypatch.setattr("trackmaniarl.cli.OpenPlanetClient", DisconnectedClient)
+
+    with pytest.raises(SystemExit, match="1"):
+        entrypoint(["track", "check"])
+
+    assert "OpenPlanet telemetry check failed: telemetry unavailable" in capsys.readouterr().err
+
+
 def test_benchmark_report_prints_trials_and_summary(capsys: pytest.CaptureFixture[str]) -> None:
     trials = [
         {
