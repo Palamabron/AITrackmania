@@ -66,6 +66,7 @@ jobs:
       - name: Install dev dependencies
         env:
           UV_INDEX_PYTORCH_CUDA: https://download.pytorch.org/whl/cpu
+          VGAMEPAD_SKIP_VIGEMBUS_INSTALL: "true"
         run: uv sync --locked --group dev
 
       - name: Run tests
