@@ -227,8 +227,8 @@ def test_model_initialization_override_updates_only_the_learner() -> None:
 
     updated = _with_model_initialization_checkpoint(spec, Path("C:/models/bc.pt"))
 
-    assert updated.components.learner.kwargs["model_initialization_checkpoint"] == (
-        "C:\\models\\bc.pt"
+    assert updated.components.learner.kwargs["model_initialization_checkpoint"] == str(
+        Path("C:/models/bc.pt")
     )
     assert "model_initialization_checkpoint" not in spec.components.learner.kwargs
 

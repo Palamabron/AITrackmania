@@ -2132,8 +2132,8 @@ requires-dist = [
     { name = "torch", marker = "sys_platform == 'win32'", specifier = ">=2.4", index = "https://download.pytorch.org/whl/cu128" },
     { name = "torchrl", marker = "extra == 'algorithms'", specifier = ">=0.11" },
     { name = "torchvision", marker = "extra == 'vision'", specifier = ">=0.15" },
-    { name = "vgamepad", marker = "sys_platform == 'win32' and extra == 'distributed'", specifier = ">=0.1.0" },
-    { name = "vgamepad", marker = "sys_platform == 'win32' and extra == 'trackmania'", specifier = ">=0.1.0" },
+    { name = "vgamepad", marker = "sys_platform == 'win32' and extra == 'distributed'", git = "https://github.com/yannbouteiller/vgamepad?rev=90f95e3b0781ea7b9b8e24867c5dfbfda0deecea" },
+    { name = "vgamepad", marker = "sys_platform == 'win32' and extra == 'trackmania'", git = "https://github.com/yannbouteiller/vgamepad?rev=90f95e3b0781ea7b9b8e24867c5dfbfda0deecea" },
     { name = "wandb", marker = "extra == 'wandb'", specifier = ">=0.15.8" },
     { name = "zstandard", marker = "extra == 'distributed'", specifier = ">=0.23" },
 ]
@@ -2155,7 +2155,7 @@ dev = [
     { name = "safetensors", specifier = ">=0.4.5" },
     { name = "torchrl", specifier = ">=0.11" },
     { name = "types-pyyaml" },
-    { name = "vgamepad", marker = "sys_platform == 'win32'", specifier = ">=0.1.0" },
+    { name = "vgamepad", marker = "sys_platform == 'win32'", git = "https://github.com/yannbouteiller/vgamepad?rev=90f95e3b0781ea7b9b8e24867c5dfbfda0deecea" },
     { name = "wandb", specifier = ">=0.15.8" },
     { name = "zstandard", specifier = ">=0.23" },
 ]
@@ -2210,9 +2210,8 @@ wheels = [
 
 [[package]]
 name = "vgamepad"
-version = "0.1.0"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/8a/54/0eaddc33f84247963af078f364b37153d09fcd6cdc398f243ec3e8842c56/vgamepad-0.1.0.tar.gz", hash = "sha256:57f6bd01aec0c172947517fb782d150ef9b285f7f4d524c317374fa5c24a89de", size = 1174896, upload-time = "2023-10-14T20:29:06.154Z" }
+version = "0.1.4"
+source = { git = "https://github.com/yannbouteiller/vgamepad?rev=90f95e3b0781ea7b9b8e24867c5dfbfda0deecea#90f95e3b0781ea7b9b8e24867c5dfbfda0deecea" }
 
 [[package]]
 name = "wandb"

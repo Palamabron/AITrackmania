@@ -53,6 +53,29 @@ class _Input(ctypes.Structure):
     _fields_ = (("kind", wintypes.DWORD), ("value", _InputValue))
 
 
+def _windows_dll(name: str) -> object:
+    if sys.platform != "win32":
+        raise RuntimeError(f"{name} is only available on Windows")
+    loader = getattr(ctypes, "WinDLL", None)
+    if loader is None:
+        raise RuntimeError("Windows ctypes support is unavailable")
+    return loader(name, use_last_error=True)
+
+
+def _windows_call(library: object, name: str, *args: object) -> object:
+    function = getattr(library, name)
+    if not callable(function):
+        raise RuntimeError(f"Windows API function is unavailable: {name}")
+    return function(*args)
+
+
+def _windows_int_call(library: object, name: str, *args: object) -> int:
+    result = _windows_call(library, name, *args)
+    if not isinstance(result, int):
+        raise RuntimeError(f"Windows API function returned a non-integer result: {name}")
+    return result
+
+
 def _vgamepad_callback[Callback: Callable[..., object]](callback: Callback) -> Callback:
     """Match vgamepad's unannotated callback contract at runtime."""
 
@@ -63,10 +86,10 @@ def _vgamepad_callback[Callback: Callable[..., object]](callback: Callback) -> C
 def _focus_trackmania() -> bool:
     if sys.platform != "win32":
         return False
-    user32 = ctypes.WinDLL("user32", use_last_error=True)
-    window = user32.FindWindowW(None, "Trackmania")
+    user32 = _windows_dll("user32")
+    window = _windows_call(user32, "FindWindowW", None, "Trackmania")
     if window:
-        user32.SetForegroundWindow(window)
+        _windows_call(user32, "SetForegroundWindow", window)
         sleep(0.1)
         return True
     return False
@@ -75,10 +98,10 @@ def _focus_trackmania() -> bool:
 def _confirm_trackmania_finish() -> None:
     if not _focus_trackmania():
         return
-    user32 = ctypes.WinDLL("user32", use_last_error=True)
-    user32.keybd_event(0x0D, 0, 0, 0)
+    user32 = _windows_dll("user32")
+    _windows_call(user32, "keybd_event", 0x0D, 0, 0, 0)
     sleep(0.1)
-    user32.keybd_event(0x0D, 0, 0x0002, 0)
+    _windows_call(user32, "keybd_event", 0x0D, 0, 0x0002, 0)
 
 
 @runtime_checkable
@@ -234,8 +257,8 @@ class KeyboardController:
 
     @classmethod
     def _windows_key_event(cls, key: int, pressed: bool) -> None:
-        user32 = ctypes.WinDLL("user32", use_last_error=True)
-        scan_code = int(user32.MapVirtualKeyW(key, 0))
+        user32 = _windows_dll("user32")
+        scan_code = _windows_int_call(user32, "MapVirtualKeyW", key, 0)
         flags = cls._KEY_SCAN_CODE
         if key in cls._EXTENDED_KEYS:
             flags |= cls._KEY_EXTENDED
@@ -251,8 +274,12 @@ class KeyboardController:
                 extra_info=0,
             ),
         )
-        if user32.SendInput(1, ctypes.byref(event), ctypes.sizeof(_Input)) != 1:
-            raise ctypes.WinError(ctypes.get_last_error())
+        if (
+            _windows_int_call(user32, "SendInput", 1, ctypes.byref(event), ctypes.sizeof(_Input))
+            != 1
+        ):
+            error_code = _windows_int_call(_windows_dll("kernel32"), "GetLastError")
+            raise OSError(error_code, "SendInput failed")
 
     def apply(self, action: np.ndarray) -> None:
         control = np.asarray(action, dtype=np.float32).reshape(-1)
