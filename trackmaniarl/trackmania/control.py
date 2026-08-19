@@ -245,6 +245,7 @@ class KeyboardController:
     _KEY_EXTENDED = 0x0001
     _KEY_UP = 0x0002
     _KEY_SCAN_CODE = 0x0008
+    _STEERING_DEADZONE = 0.25
 
     def __init__(self, key_event: Callable[[int, bool], None] | None = None) -> None:
         if key_event is None and sys.platform != "win32":
@@ -282,12 +283,10 @@ class KeyboardController:
             raise OSError(error_code, "SendInput failed")
 
     def apply(self, action: np.ndarray) -> None:
-        control = np.asarray(action, dtype=np.float32).reshape(-1)
+        control = self._digital_control(action)
         if control.shape != (3,):
             raise ValueError("keyboard control must be [gas, brake, steer]")
         gas, brake, steer = (float(value) for value in control)
-        if not self._binary(gas) or not self._binary(brake) or steer not in {-1.0, 0.0, 1.0}:
-            raise ValueError("keyboard control only supports binary gas, brake, and steering")
         target = set()
         if gas > 0.5:
             target.add(self._GAS)
@@ -308,6 +307,7 @@ class KeyboardController:
         if float(control[1]) != BRAKE_TAP_SENTINEL:
             self.apply(control)
             return
+        control = self._digital_control(control, preserve_brake_tap=True)
         control[1] = 1.0
         with self._lock:
             self._cancel_tap_unlocked()
@@ -347,9 +347,23 @@ class KeyboardController:
             self._key_event(key, True)
         self._pressed = target
 
-    @staticmethod
-    def _binary(value: float) -> bool:
-        return value in {0.0, 1.0}
+    @classmethod
+    def _digital_control(
+        cls, action: np.ndarray, *, preserve_brake_tap: bool = False
+    ) -> np.ndarray:
+        control = np.nan_to_num(np.asarray(action, dtype=np.float32).reshape(-1))
+        if control.shape != (3,):
+            raise ValueError("keyboard control must be [gas, brake, steer]")
+        gas, brake, steer = (float(value) for value in control)
+        digital_brake = (
+            BRAKE_TAP_SENTINEL
+            if preserve_brake_tap and brake == BRAKE_TAP_SENTINEL
+            else float(brake > 0.5)
+        )
+        digital_steer = 0.0
+        if abs(steer) >= cls._STEERING_DEADZONE:
+            digital_steer = float(np.sign(steer))
+        return np.asarray([float(gas > 0.5), digital_brake, digital_steer], dtype=np.float32)
 
     def consume_collision(self) -> bool:
         return False

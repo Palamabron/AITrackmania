@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from torch import nn
 
+from trackmaniarl.core.contracts import ModelContract
 from trackmaniarl.models.actors import GaussianActor
-from trackmaniarl.models.critics import QuantileCritic
+from trackmaniarl.models.critics import ContinuousValueCritic, QuantileCritic
 from trackmaniarl.trackmania.telemetry import DEFAULT_TELEMETRY_FIELD_COUNT
 
 
@@ -37,6 +38,8 @@ class TelemetryTqcModel(nn.Module):
 
 
 class TelemetryTqcModelFactory:
+    model_contract = ModelContract.CONTINUOUS_QUANTILE_ACTOR_CRITIC
+
     def __init__(
         self,
         input_dim: int = DEFAULT_TELEMETRY_FIELD_COUNT,
@@ -52,3 +55,37 @@ class TelemetryTqcModelFactory:
         return TelemetryTqcModel(
             self.input_dim, self.action_dim, self.hidden_dim, self.quantiles, self.critics
         )
+
+
+class TelemetryPpoModel(nn.Module):
+    """PPO actor-value bundle with native Trackmania control bounds."""
+
+    def __init__(
+        self,
+        input_dim: int = DEFAULT_TELEMETRY_FIELD_COUNT,
+        hidden_dim: int = 256,
+    ) -> None:
+        super().__init__()
+        self.actor = GaussianActor(
+            _encoder(input_dim, hidden_dim),
+            hidden_dim,
+            3,
+            action_low=(0.0, 0.0, -1.0),
+            action_high=(1.0, 1.0, 1.0),
+        )
+        self.value = ContinuousValueCritic(_encoder(input_dim, hidden_dim), hidden_dim)
+
+
+class TelemetryPpoModelFactory:
+    model_contract = ModelContract.CONTINUOUS_ACTOR_VALUE
+
+    def __init__(
+        self,
+        input_dim: int = DEFAULT_TELEMETRY_FIELD_COUNT,
+        hidden_dim: int = 256,
+    ) -> None:
+        self.input_dim = input_dim
+        self.hidden_dim = hidden_dim
+
+    def build(self) -> TelemetryPpoModel:
+        return TelemetryPpoModel(self.input_dim, self.hidden_dim)

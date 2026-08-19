@@ -49,6 +49,8 @@ Normal local training starts the learner and actor in separate Windows
 `spawn` processes:
 
 ```powershell
+# Put this command's output in the ignored .env as TRACKMANIARL_DISTRIBUTED_TOKEN.
+python -c "import secrets; print(secrets.token_urlsafe(32))"
 uv run trackmaniarl train run.yaml
 ```
 

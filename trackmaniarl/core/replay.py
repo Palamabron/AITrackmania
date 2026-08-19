@@ -1580,6 +1580,20 @@ class SequenceSampler:
                 batch.bootstrap_discounts, request.batch_size, length
             ),
             masks=torch.ones((request.batch_size, length), dtype=torch.bool),
+            metadata={
+                **batch.metadata,
+                **{
+                    key: value.reshape(request.batch_size, length, *value.shape[1:])
+                    for key, value in batch.metadata.items()
+                    if key
+                    in {
+                        "behavior_log_probabilities",
+                        "behavior_values",
+                        "behavior_latent_actions",
+                    }
+                    and isinstance(value, torch.Tensor)
+                },
+            },
         )
 
     def update_priorities(self, update: PriorityUpdate) -> None:
@@ -1590,6 +1604,82 @@ class SequenceSampler:
 
     def load_state_dict(self, state: Mapping[str, Any]) -> None:
         self._rng.setstate(state["rng"])
+
+
+class OnPolicySequenceSampler:
+    """Collate the latest complete episode for one on-policy update."""
+
+    on_policy_rollouts = True
+
+    def __init__(self, pipeline: Any, seed: int = 0) -> None:
+        self.pipeline = pipeline
+        self.seed = seed
+
+    def sample(self, store: ReplayStore, request: BatchRequest) -> TrainingBatch:
+        if request.batch_size != 1 or request.n_step != 1:
+            raise ValueError("OnPolicySequenceSampler requires batch_size=1 and n_step=1")
+        ordered = store.available_ids()
+        if not ordered:
+            raise RuntimeError("On-policy replay is empty")
+        transitions = store.get(ordered)
+        episode_id = transitions[-1].episode_id
+        episode = [
+            (transition_id, transition)
+            for transition_id, transition in zip(ordered, transitions, strict=True)
+            if transition.episode_id == episode_id
+        ]
+        if len(episode) < request.sequence_length:
+            raise RuntimeError(
+                f"Latest episode has {len(episode)} transitions, need {request.sequence_length}"
+            )
+        selected = episode[-request.sequence_length :]
+        transition_ids = [item[0] for item in selected]
+        values = [item[1] for item in selected]
+        if not _is_contiguous_episode(transition_ids, values):
+            raise RuntimeError("Latest on-policy rollout is not contiguous")
+        batch = _make_batch(
+            store,
+            self.pipeline,
+            transition_ids,
+            request,
+            metadata={"sampling": "on_policy", "sequence_length": request.sequence_length},
+        )
+        length = request.sequence_length
+        return replace(
+            batch,
+            data=_reshape_sequence_batch(batch.data, 1, length),
+            observations=_reshape_sequence_batch(batch.observations, 1, length),
+            actions=_reshape_sequence_batch(batch.actions, 1, length),
+            rewards=_reshape_sequence_batch(batch.rewards, 1, length),
+            next_observations=_reshape_sequence_batch(batch.next_observations, 1, length),
+            terminated=_reshape_sequence_batch(batch.terminated, 1, length),
+            truncated=_reshape_sequence_batch(batch.truncated, 1, length),
+            bootstrap_discounts=_reshape_sequence_batch(batch.bootstrap_discounts, 1, length),
+            masks=torch.ones((1, length), dtype=torch.bool),
+            metadata={
+                **batch.metadata,
+                **{
+                    key: value.reshape(1, length, *value.shape[1:])
+                    for key, value in batch.metadata.items()
+                    if key
+                    in {
+                        "behavior_log_probabilities",
+                        "behavior_values",
+                        "behavior_latent_actions",
+                    }
+                    and isinstance(value, torch.Tensor)
+                },
+            },
+        )
+
+    def update_priorities(self, update: PriorityUpdate) -> None:
+        del update
+
+    def state_dict(self) -> dict[str, int]:
+        return {"seed": self.seed}
+
+    def load_state_dict(self, state: Mapping[str, Any]) -> None:
+        self.seed = int(state["seed"])
 
 
 class DemoMixSampler:
@@ -1810,6 +1900,7 @@ def _make_batch(
     ]
     transitions = [item[0] for item in n_step]
     discounts = [item[1] for item in n_step]
+    behavior = _behavior_metadata(transitions)
     data = pipeline.collate(transitions)
     standard = (
         data
@@ -1869,8 +1960,24 @@ def _make_batch(
         if importance_weights is not None
         else None,
         masks=masks,
-        metadata=dict(metadata or {}),
+        metadata={**dict(metadata or {}), **behavior},
     )
+
+
+def _behavior_metadata(transitions: list[Transition]) -> dict[str, torch.Tensor]:
+    keys = {
+        "behavior_log_probabilities": "_trackmaniarl_behavior_log_probability",
+        "behavior_values": "_trackmaniarl_behavior_value",
+        "behavior_latent_actions": "_trackmaniarl_behavior_latent_action",
+    }
+    result: dict[str, torch.Tensor] = {}
+    for output_key, info_key in keys.items():
+        values = [transition.info.get(info_key) for transition in transitions]
+        if all(value is not None for value in values):
+            result[output_key] = torch.stack(
+                [torch.as_tensor(value, dtype=torch.float32) for value in values]
+            )
+    return result
 
 
 def _n_step_transition(

@@ -1,10 +1,42 @@
 # Security policy
 
-Do not publish suspected vulnerabilities, credentials, checkpoint files, or
-telemetry captures in public issues. Report them privately to the repository
-maintainer with the affected version, a minimal reproduction, and the expected
-impact.
+## Reporting a vulnerability
 
-Only load checkpoints produced by TrackmaniaRL or supplied by a trusted source.
-The default checkpoint loader uses PyTorch's `weights_only=True` mode and
-rejects checkpoints that require executable pickle payloads.
+Do not publish suspected vulnerabilities, credentials, checkpoints, telemetry
+captures or unredacted manifests in a public issue. Use a private
+[GitHub security advisory](https://github.com/Palamabron/AITrackmania/security/advisories/new)
+and include:
+
+- the affected TrackmaniaRL version and platform;
+- the smallest safe reproduction or malformed input;
+- the expected impact and required attacker access;
+- whether the issue affects local, distributed or Trackmania operation.
+
+Do not access other users' systems or data while investigating. The maintainer
+will acknowledge a complete report, assess severity and coordinate a fix and
+disclosure. Security fixes target the current `1.x` release line.
+
+## Trust boundaries
+
+- `run.yaml` is trusted executable configuration. Component paths import and
+  instantiate Python objects; `validate`, `train`, `learner` and `actor` must
+  only receive configurations and extension packages from trusted sources.
+- Checkpoints are data, but should still come from a trusted run. The default
+  codec uses PyTorch `weights_only=True`; it rejects payloads requiring
+  executable pickle globals. A custom `CheckpointCodec` defines its own trust
+  boundary.
+- Demonstrations and geometry use NumPy loading with `allow_pickle=False`.
+  Their size and semantic correctness must still be suitable for the run.
+- Distributed gRPC uses a bearer token and loopback-only learner binding. The
+  token authenticates but does not encrypt. Remote actors require an
+  authenticated encrypted tunnel and a random token of at least 32 characters.
+- OpenPlanet telemetry and session ports are localhost-only and are not an
+  internet-facing API.
+
+Never commit `.env`, API keys, distributed tokens, raw telemetry containing
+personal data, or private checkpoints. Run manifests redact keys whose names
+contain `key`, `token`, `secret` or `password`, but custom component payloads
+must avoid placing secrets under misleading names.
+
+The latest repository-level review is recorded in
+[docs/security-audit.md](docs/security-audit.md).

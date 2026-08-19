@@ -31,6 +31,17 @@ TrackmaniaRL has no global runtime configuration and no mandatory external
 tracker. A run is described by `run.yaml` and explicit `module:attribute`
 component paths.
 
+## Documentation
+
+| If you want to... | Start here |
+| --- | --- |
+| install the released library and create an agent | [Quick start](#install-and-create-an-agent) |
+| run this repository from source | [Development setup](https://github.com/Palamabron/AITrackmania/blob/main/readme/development.md#repository-setup) |
+| understand processes, data flow, security boundaries and package ownership | [Architecture and editable diagrams](https://github.com/Palamabron/AITrackmania/blob/main/readme/architecture.md) |
+| replace a learner, model, replay strategy or game adapter | [SDK and extension guide](https://github.com/Palamabron/AITrackmania/blob/main/readme/sdk.md) |
+| prepare Trackmania and OpenPlanet | [Trackmania workflow](https://github.com/Palamabron/AITrackmania/blob/main/readme/trackmania.md) |
+| report or assess a security issue | [Security policy](https://github.com/Palamabron/AITrackmania/blob/main/SECURITY.md) and [audit](https://github.com/Palamabron/AITrackmania/blob/main/docs/security-audit.md) |
+
 ## Install and create an agent
 
 Install the published CLI with [uv](https://docs.astral.sh/uv/):
@@ -49,6 +60,12 @@ the Trackmania, algorithm, distributed and W&B extras declared for you. Omit
 `trackmaniarl validate` checks imports, contracts and a synthetic learner update
 without starting the game or contacting an external tracker.
 
+The generated directory is the application layer of your project. Keep custom
+models, rewards and adapters there and treat the installed `trackmaniarl`
+package as the reusable library. `run.yaml` is executable configuration because
+its `class_path` entries import Python objects; only run configurations and
+extension packages you trust.
+
 To add the SDK to an existing Python project instead, choose only the extras you
 need:
 
@@ -60,12 +77,13 @@ uv add "trackmaniarl[algorithms,distributed]"
 | Extra | Adds |
 | --- | --- |
 | `algorithms` | TorchRL-based algorithm dependencies |
-| `trackmania` | Trackmania environment and Windows virtual-gamepad support |
+| `trackmania` | Trackmania environment and Windows/Linux virtual-gamepad support |
 | `distributed` | authenticated gRPC rollouts, safetensors and compression |
 | `wandb` | Weights & Biases logging |
 | `explain` | Captum attribution helpers |
 | `orchestrator` | Gemini and Optuna experiment strategies |
 | `vision` | torchvision support |
+| `mamba` | experimental Mamba sequence layers for a Linux CUDA learner |
 
 ## Run Trackmania
 
@@ -103,17 +121,26 @@ Torch build.
 
 ## Runtime model
 
-```text
-run.yaml -> coordinator/learner -> SQLite WAL -> replay -> update -> checkpoint
-              ^       |
-              |       +---- safetensors policy snapshot
-              |
-              +---- local or remote actors -> durable rollout spool
-```
+<p align="center">
+  <img src="docs/diagrams/runtime-architecture-preview.svg" alt="TrackmaniaRL runtime architecture: configuration creates actors and learner; actors send durable rollouts to replay, and learner updates publish policy snapshots" width="900">
+</p>
+
+The [architecture guide](https://github.com/Palamabron/AITrackmania/blob/main/readme/architecture.md)
+contains the full explanation and editable Excalidraw sources for the runtime,
+extension workflow and distributed security model.
 
 `trackmaniarl train` starts a coordinator/learner and one local actor as
 independent, Windows-safe `spawn` processes. Collection continues while the
 learner updates replay and periodically publishes policy snapshots.
+
+Read the diagram from top to bottom: `run.yaml` selects and validates
+components, the actor collects game transitions and spools them durably, and
+the learner ingests, samples, updates and checkpoints. The feedback arrow is
+an immutable policy snapshot, so an actor never receives a pickled learner
+object. Mamba belongs inside the selected model as an opt-in temporal encoder;
+it does not change the actor/learner boundary or the rollout protocol.
+
+### Distributed security and durability
 
 For multiple machines, set the same `TRACKMANIARL_DISTRIBUTED_TOKEN` on every
 participant and expose the learner through an encrypted tunnel. The learner
@@ -121,6 +148,9 @@ binds to loopback so its bearer token and rollout data are not sent over the
 network in clear text:
 
 ```bash
+# Generate once, then put the value in an ignored .env on both machines.
+python -c "import secrets; print(secrets.token_urlsafe(32))"
+
 # training machine
 uv run trackmaniarl learner run.yaml --bind 127.0.0.1:8787
 
@@ -134,6 +164,21 @@ and feature/action contracts. Rollouts use Protobuf/gRPC with Zstandard
 compression, and policy state is transferred with safetensors rather than
 pickle.
 
+The token authenticates participants but does not encrypt traffic. Never expose
+the gRPC port directly; keep the listener on loopback and use SSH, WireGuard or
+another authenticated encrypted tunnel.
+
+<p align="center">
+  <img src="docs/diagrams/distributed-security-preview.svg" alt="Distributed security and durability: an actor spools rollouts, an encrypted tunnel reaches loopback gRPC, then token and contract checks precede WAL ingestion" width="900">
+</p>
+
+Read this diagram from left to right. An actor persists a rollout before it is
+sent, the encrypted tunnel terminates at the learner's loopback listener, and
+the learner checks identity, run compatibility and payload limits before WAL
+ingestion. The lower control path carries refreshed policy state back to the
+actor. The [editable source](https://github.com/Palamabron/AITrackmania/blob/main/docs/diagrams/distributed-security.excalidraw)
+is available for architecture reviews.
+
 ## Components and extension API
 
 `trackmaniarl.builtins` is the supported catalogue of bundled algorithms,
@@ -145,6 +190,24 @@ components:
   learner:
     class_path: trackmaniarl.algorithms.implicit_quantile_q_learning:ImplicitQuantileQLearning
 ```
+
+### Extension workflow
+
+<p align="center">
+  <img src="docs/diagrams/extension-workflow-preview.svg" alt="TrackmaniaRL extension workflow: decide ownership, implement a public contract, configure explicitly and complete verification gates" width="900">
+</p>
+
+Start a new component in the generated extension project. Keep it there when
+it is project-specific; move it to the owning library package only when it is
+reusable and has passed deterministic contract, configuration and, where
+applicable, live Trackmania checks. The [editable workflow diagram](https://github.com/Palamabron/AITrackmania/blob/main/docs/diagrams/extension-workflow.excalidraw)
+shows the required gates before training and release.
+
+Read the workflow from left to right: first decide whether the component stays
+project-owned or has a reusable library owner, then implement one public core
+contract and expose it through an installable `module:attribute`, and finally
+run deterministic state, formatting, type, test and configuration gates. The
+Trackmania check and bounded smoke test apply only to game-facing components.
 
 The stable contracts in `trackmaniarl.core` include `Learner`, `Policy`,
 `ModelFactory`, `ReplayStore`, `Sampler`, `FeaturePipeline`, `Evaluator`,
@@ -178,6 +241,10 @@ The commands are intentionally identical on Windows, Linux, WSL and CI. See
 [CONTRIBUTING.md](https://github.com/Palamabron/AITrackmania/blob/main/CONTRIBUTING.md)
 and [SECURITY.md](https://github.com/Palamabron/AITrackmania/blob/main/SECURITY.md)
 before opening a contribution or reporting a vulnerability.
+
+For the repository layout, change workflow, test levels and rules for adding a
+public component, read the
+[development guide](https://github.com/Palamabron/AITrackmania/blob/main/readme/development.md).
 
 ## Project status and attribution
 

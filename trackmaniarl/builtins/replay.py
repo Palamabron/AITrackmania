@@ -7,6 +7,7 @@ from typing import Any, cast
 
 _REPLAY = {
     "InMemoryReplayStore": "trackmaniarl.core.replay:InMemoryReplayStore",
+    "OnPolicySequenceSampler": "trackmaniarl.core.replay:OnPolicySequenceSampler",
     "UniformSampler": "trackmaniarl.core.replay:UniformSampler",
     "PrioritizedSampler": "trackmaniarl.core.replay:PrioritizedSampler",
     "SequenceSampler": "trackmaniarl.core.replay:SequenceSampler",

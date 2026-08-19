@@ -3,12 +3,14 @@
 from typing import Any
 
 from trackmaniarl.core.contracts import (
+    BehaviorPolicy,
     CheckpointCodec,
     EnvironmentFactory,
     Evaluator,
     ExploratoryPolicy,
     FeaturePipeline,
     Learner,
+    ModelContract,
     ModelFactory,
     Policy,
     ReplayStore,
@@ -29,6 +31,7 @@ from trackmaniarl.core.data import (
 from trackmaniarl.core.replay import (
     DemoMixSampler,
     InMemoryReplayStore,
+    OnPolicySequenceSampler,
     PrioritizedSampler,
     SequenceSampler,
     UniformSampler,
@@ -37,6 +40,7 @@ from trackmaniarl.core.spec import EvaluationMapSpec, EvaluationSuiteSpec, RunSp
 
 __all__ = [
     "BatchRequest",
+    "BehaviorPolicy",
     "CheckpointCodec",
     "DemoMixSampler",
     "EnvironmentFactory",
@@ -48,7 +52,9 @@ __all__ = [
     "FeaturePipeline",
     "InMemoryReplayStore",
     "Learner",
+    "ModelContract",
     "ModelFactory",
+    "OnPolicySequenceSampler",
     "Policy",
     "PrioritizedSampler",
     "PriorityUpdate",

@@ -195,6 +195,11 @@ class Coordinator:
         external_stop: Any | None = None,
         demo_paths: tuple[Path, ...] = (),
     ) -> None:
+        if getattr(run.learner, "on_policy", False):
+            raise ValueError(
+                "Distributed training does not support on-policy learners; "
+                "use trackmaniarl train for PPO"
+            )
         self.run = run
         self.bind = require_loopback_bind(bind)
         self.token = token

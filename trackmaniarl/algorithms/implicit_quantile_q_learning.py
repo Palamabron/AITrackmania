@@ -16,7 +16,7 @@ from torch.nn import functional as F
 from trackmaniarl.algorithms._torch import TorchLearnerBase, backward, polyak_update, weighted_mean
 from trackmaniarl.algorithms.execution import TorchExecutionConfig
 from trackmaniarl.core.builtins import TorchCheckpointCodec
-from trackmaniarl.core.contracts import Policy
+from trackmaniarl.core.contracts import ModelContract, Policy
 from trackmaniarl.core.data import PriorityUpdate, TrainingBatch
 from trackmaniarl.core.pytree import sanitize_finite, tree_map, tree_to_device
 
@@ -233,6 +233,8 @@ class _IQNPolicy:
 
 class ImplicitQuantileQLearning(TorchLearnerBase):
     """Distributional Double-DQN with IQN fractions and hard/soft target updates."""
+
+    accepted_model_contracts = frozenset({ModelContract.DISCRETE_QUANTILE})
 
     def __init__(
         self,

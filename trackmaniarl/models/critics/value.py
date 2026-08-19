@@ -26,6 +26,19 @@ class ContinuousQCritic(nn.Module):
         )
 
 
+class ContinuousValueCritic(nn.Module):
+    """Scalar state-value critic with a replaceable observation encoder."""
+
+    def __init__(self, encoder: nn.Module, feature_dim: int) -> None:
+        super().__init__()
+        self.encoder = encoder
+        self.value = nn.Linear(feature_dim, 1)
+
+    def forward(self, observation: Any) -> torch.Tensor:
+        features = self.encoder(observation)
+        return cast(torch.Tensor, self.value(features).squeeze(-1))
+
+
 class QuantileCritic(nn.Module):
     """Continuous-action critic producing fixed quantile locations."""
 

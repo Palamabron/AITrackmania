@@ -15,12 +15,13 @@ from trackmaniarl.core.contracts import (
     Evaluator,
     FeaturePipeline,
     Learner,
+    ModelContract,
     ModelFactory,
     ReplayStore,
     RunLogger,
     Sampler,
 )
-from trackmaniarl.core.data import Transition
+from trackmaniarl.core.data import BatchRequest, Transition
 from trackmaniarl.core.spec import ComponentSpec, RunSpec
 
 
@@ -56,6 +57,26 @@ def _instantiate(spec: ComponentSpec, **injected: Any) -> Any:
 def _require(name: str, value: Any, contract: type[Any]) -> None:
     if not isinstance(value, contract):
         raise TypeError(f"{name} ({type(value).__name__}) does not implement {contract.__name__}")
+
+
+def _validate_model_contract(learner: object, model_factory: object | None) -> None:
+    if model_factory is None:
+        return
+    provided = getattr(model_factory, "model_contract", None)
+    accepted = getattr(learner, "accepted_model_contracts", None)
+    if provided is None or accepted is None:
+        return
+    try:
+        provided_contract = ModelContract(provided)
+        accepted_contracts = frozenset(ModelContract(item) for item in accepted)
+    except ValueError as exc:
+        raise ValueError(f"Unknown model contract: {exc}") from exc
+    if provided_contract not in accepted_contracts:
+        expected = ", ".join(sorted(item.value for item in accepted_contracts))
+        raise ValueError(
+            f"{type(learner).__name__} cannot train {type(model_factory).__name__}: "
+            f"model contract is {provided_contract.value!r}, expected one of {expected}"
+        )
 
 
 def _redact_config(value: Any) -> Any:
@@ -161,6 +182,7 @@ def resolve_run(spec: RunSpec, *, base_dir: str | Path = ".") -> ResolvedRun:
     _require("learner", learner, Learner)
     if model_factory is not None:
         _require("model_factory", model_factory, ModelFactory)
+    _validate_model_contract(learner, model_factory)
     _require("logger", logger, RunLogger)
     _require("checkpoint_codec", codec, CheckpointCodec)
     if evaluator is not None:
@@ -205,13 +227,25 @@ def validate_resolved_run(run: ResolvedRun) -> dict[str, float]:
     )
     prepare_run(run)
     request = run.spec.training.batch_request()
+    if getattr(run.learner, "on_policy", False):
+        request = BatchRequest(
+            batch_size=1,
+            sequence_length=max(2, request.sequence_length),
+            gamma=request.gamma,
+        )
     transition_count = max(8, request.batch_size + request.sequence_length - 1)
     synthetic = getattr(run.feature_pipeline, "synthetic_observation", None)
+    policy = run.learner.policy()
     for step in range(transition_count):
         raw_observation = synthetic() if callable(synthetic) else {"speed": float(step)}
         observation = run.feature_pipeline.transform_observation(raw_observation)
         is_demo = step < transition_count // 2
-        action = run.learner.policy().act(observation, deterministic=True)
+        sample = getattr(policy, "act_with_info", None)
+        if callable(sample):
+            action, policy_info = sample(observation, deterministic=True)
+        else:
+            action = policy.act(observation, deterministic=True)
+            policy_info = {}
         run.replay_store.append(
             Transition(
                 observation=observation,
@@ -223,6 +257,7 @@ def validate_resolved_run(run: ResolvedRun) -> dict[str, float]:
                 info={
                     "is_demo": is_demo,
                     "sampling/projected_lap_time_s": 1.0 if is_demo else float("inf"),
+                    **policy_info,
                 },
                 episode_id="validation",
                 step=step,
