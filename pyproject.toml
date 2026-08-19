@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "TrackmaniaRL"
-version = "1.0.3"
+version = "1.0.4"
 description = "Reinforcement-learning library for training agents in Trackmania 2020"
 readme = "README.md"
 license = "MIT"
