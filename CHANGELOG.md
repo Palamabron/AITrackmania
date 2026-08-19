@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.0.2 - 2026-08-18
+
+- Made the published PyPI installation path the primary README workflow.
+- Added release, Python, CI, license and development-status badges.
+- Documented package extras, platform requirements, the Trackmania template,
+  distributed runtime and the temporary vgamepad source pin.
+- Added documentation, issue tracker and security links to the package metadata.
+- Moved the Windows vgamepad source pin to the patched `Palamabron/vgamepad`
+  revision while upstream PR #47 remains unmerged.
+
 ## 1.0.1 - 2026-08-18
 
 - Fixed Linux CI type checking for Windows input APIs and made checkpoint-path tests portable.

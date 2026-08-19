@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "TrackmaniaRL"
-version = "1.0.1"
+version = "1.0.2"
 description = "Reinforcement-learning library for training agents in Trackmania 2020"
 readme = "README.md"
 license = "MIT"
@@ -83,7 +83,7 @@ torch = [
     { index = "pytorch-cuda", marker = "sys_platform == 'win32'" },
     { index = "pytorch-cpu", marker = "sys_platform != 'win32'" },
 ]
-vgamepad = { git = "https://github.com/yannbouteiller/vgamepad", rev = "90f95e3b0781ea7b9b8e24867c5dfbfda0deecea" }
+vgamepad = { git = "https://github.com/Palamabron/vgamepad", rev = "5f3435df3f8a0e658feb58b207d9137cdb5183cd" }
 
 [[tool.uv.index]]
 name = "pytorch-cpu"
@@ -122,7 +122,10 @@ trackmaniarl = "trackmaniarl.__main__:entrypoint"
 [project.urls]
 Homepage = "https://github.com/Palamabron/AITrackmania"
 Repository = "https://github.com/Palamabron/AITrackmania"
+Documentation = "https://github.com/Palamabron/AITrackmania/tree/main/readme"
+Issues = "https://github.com/Palamabron/AITrackmania/issues"
 Changelog = "https://github.com/Palamabron/AITrackmania/blob/main/CHANGELOG.md"
+Security = "https://github.com/Palamabron/AITrackmania/blob/main/SECURITY.md"
 
 [tool.setuptools.packages.find]
 where = ["."]
