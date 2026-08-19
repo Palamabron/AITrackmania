@@ -64,6 +64,7 @@ coverage.xml
 .pytest_cache/
 .pytest-tmp/
 .pytest-tmp-*/
+.pytest-*/
 .test-temp/
 .tmptest-*/
 *.pytest-tmp*/
