@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.0.4 - 2026-08-19
+
+- Use absolute GitHub image URLs in the package README so architecture diagrams
+  render on PyPI as well as locally and on GitHub.
+
 ## 1.0.3 - 2026-08-19
 
 - Strengthen the release gate with tag/version matching and validation of wheel
