@@ -122,7 +122,7 @@ Torch build.
 ## Runtime model
 
 <p align="center">
-  <img src="docs/diagrams/runtime-architecture-preview.png" alt="TrackmaniaRL runtime architecture: configuration creates actors and learner; actors send durable rollouts to replay, and learner updates publish policy snapshots" width="900">
+  <img src="./docs/diagrams/runtime-architecture-preview.png" alt="TrackmaniaRL runtime architecture: configuration creates actors and learner; actors send durable rollouts to replay, and learner updates publish policy snapshots" width="900">
 </p>
 
 The [architecture guide](https://github.com/Palamabron/AITrackmania/blob/main/readme/architecture.md)
@@ -169,7 +169,7 @@ the gRPC port directly; keep the listener on loopback and use SSH, WireGuard or
 another authenticated encrypted tunnel.
 
 <p align="center">
-  <img src="docs/diagrams/distributed-security-preview.png" alt="Distributed security and durability: an actor spools rollouts, an encrypted tunnel reaches loopback gRPC, then token and contract checks precede WAL ingestion" width="900">
+  <img src="./docs/diagrams/distributed-security-preview.png" alt="Distributed security and durability: an actor spools rollouts, an encrypted tunnel reaches loopback gRPC, then token and contract checks precede WAL ingestion" width="900">
 </p>
 
 Read this diagram from left to right. An actor persists a rollout before it is
@@ -194,7 +194,7 @@ components:
 ### Extension workflow
 
 <p align="center">
-  <img src="docs/diagrams/extension-workflow-preview.png" alt="TrackmaniaRL extension workflow: decide ownership, implement a public contract, configure explicitly and complete verification gates" width="900">
+  <img src="./docs/diagrams/extension-workflow-preview.png" alt="TrackmaniaRL extension workflow: decide ownership, implement a public contract, configure explicitly and complete verification gates" width="900">
 </p>
 
 Start a new component in the generated extension project. Keep it there when
