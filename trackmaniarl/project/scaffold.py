@@ -286,12 +286,9 @@ def create_project(directory: str | Path, package: str, *, template: str = "star
         (plugin_dir / "info.toml").write_text(
             plugin_info.read_text(encoding="utf-8"), encoding="utf-8"
         )
+        plugin_readme = files("trackmaniarl.project").joinpath("openplanet/README.md")
         (plugin_dir / "README.md").write_text(
-            "Copy TrackmaniaRL_GrabData_IQN.as to OpenplanetNext/Scripts, reload OpenPlanet, and "
-            "manually load maps/trackmaniarl-test.Map.Gbx before running smoke or benchmark. "
-            "Copy .env-example to .env and set a random TRACKMANIARL_DISTRIBUTED_TOKEN of at "
-            "least 32 characters before starting distributed processes.\n",
-            encoding="utf-8",
+            plugin_readme.read_text(encoding="utf-8"), encoding="utf-8"
         )
     (target / "run.py").write_text(
         "from trackmaniarl import RunSpec, Trainer, resolve_run\n\n"

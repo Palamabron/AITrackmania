@@ -47,11 +47,11 @@ trackmaniarl/              published library
 tests/                     deterministic unit and integration tests
 readme/                    user and developer guides
 docs/                      audit and research records
-my-trackmania-agent/       example/application project, not library internals
 ```
 
-Generated artifacts belong under `artifacts/` or another ignored run directory;
-they are not source files.
+`trackmaniarl init <project-name>` creates an application project outside the
+library boundary. Generated projects and their artifacts are ignored source-tree
+state, not release contents.
 
 ## Change workflow
 

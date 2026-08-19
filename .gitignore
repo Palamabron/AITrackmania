@@ -151,6 +151,7 @@ plotRewardPoints.py
 # Generated output
 output_files/
 artifacts/
+my-trackmania-agent/
 .trackmaniarl-*.yaml
 .tmrl-*.yaml
 TrackmaniaRL_GrabData_IQN.zip

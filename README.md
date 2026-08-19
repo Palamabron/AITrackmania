@@ -91,7 +91,7 @@ Live collection requires Trackmania 2020 on Windows, the bundled OpenPlanet
 plugin and a prepared map/geometry asset. Follow the
 [Trackmania workflow](https://github.com/Palamabron/AITrackmania/blob/main/readme/trackmania.md)
 or the concrete
-[agent OpenPlanet guide](https://github.com/Palamabron/AITrackmania/blob/main/my-trackmania-agent/openplanet/README.md)
+[OpenPlanet guide](https://github.com/Palamabron/AITrackmania/blob/main/trackmaniarl/project/openplanet/README.md)
 before starting the game integration.
 
 The generated Trackmania project pins the patched

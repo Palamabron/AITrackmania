@@ -26,7 +26,7 @@ Ekspert przejechał mapę klawiaturą w `35.855 s`, więc przestrzeń binarnych 
 
 Nowy recorder utworzył demonstrację:
 
-`my-trackmania-agent/demos-v79/native-v4/demo-01-35.855s.npz`
+lokalny artefakt demonstracyjny `demo-01-35.855s.npz` (nie jest częścią repozytorium)
 
 Parametry nagrania:
 
@@ -118,8 +118,6 @@ Przejrzyj co najmniej:
   - pętla `Main()`;
   - kolejność odczytu `RaceTime`, pozycji, prędkości oraz inputów;
   - częstotliwość `yield()` i związek z render tickiem/fizyką;
-- `my-trackmania-agent/openplanet/TrackmaniaRL_GrabData_IQN.as`
-  - czy jest identyczny z pluginem projektowym i czy użytkownik faktycznie uruchamia tę wersję;
 - `trackmaniarl/trackmania/telemetry.py`
   - `OpenPlanetClient.read()` versus `read_next()`;
   - bufor TCP, kompletność ramek, reconnect i możliwe opóźnienia;
