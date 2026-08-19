@@ -57,6 +57,9 @@ def _validate_sdist(archive: Path, version: str) -> None:
         {
             f"{root}/CHANGELOG.md",
             f"{root}/CONTRIBUTING.md",
+            f"{root}/docs/diagrams/distributed-security-preview.png",
+            f"{root}/docs/diagrams/extension-workflow-preview.png",
+            f"{root}/docs/diagrams/runtime-architecture-preview.png",
             f"{root}/LICENSE",
             f"{root}/NOTICE",
             f"{root}/README.md",

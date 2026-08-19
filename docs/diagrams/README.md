@@ -3,7 +3,8 @@
 Each diagram is stored in three forms:
 
 - `.excalidraw` — canonical editable source that can be imported into Excalidraw;
-- `-preview.svg` — lightweight preview embedded in Markdown documentation;
+- `-preview.png` — GitHub-compatible preview embedded in Markdown documentation;
+- `-preview.svg` — scalable preview for local use;
 - `-preview.html` — local preview with download and optional Open in Excalidraw
   controls;
 
@@ -15,9 +16,9 @@ Excalidraw preview tool. This avoids losing manual layout adjustments.
 
 | Subject | Editable source | Preview |
 | --- | --- | --- |
-| Runtime architecture | [runtime-architecture.excalidraw](runtime-architecture.excalidraw) | [SVG](runtime-architecture-preview.svg) · [HTML](runtime-architecture-preview.html) |
-| Extension workflow | [extension-workflow.excalidraw](extension-workflow.excalidraw) | [SVG](extension-workflow-preview.svg) · [HTML](extension-workflow-preview.html) |
-| Distributed security and durability | [distributed-security.excalidraw](distributed-security.excalidraw) | [SVG](distributed-security-preview.svg) · [HTML](distributed-security-preview.html) |
+| Runtime architecture | [runtime-architecture.excalidraw](runtime-architecture.excalidraw) | [PNG](runtime-architecture-preview.png) · [SVG](runtime-architecture-preview.svg) · [HTML](runtime-architecture-preview.html) |
+| Extension workflow | [extension-workflow.excalidraw](extension-workflow.excalidraw) | [PNG](extension-workflow-preview.png) · [SVG](extension-workflow-preview.svg) · [HTML](extension-workflow-preview.html) |
+| Distributed security and durability | [distributed-security.excalidraw](distributed-security.excalidraw) | [PNG](distributed-security-preview.png) · [SVG](distributed-security-preview.svg) · [HTML](distributed-security-preview.html) |
 
 The committed HTML previews are local-only. Clicking their Open in Excalidraw
 button performs an upload from the browser; merely opening the preview does not

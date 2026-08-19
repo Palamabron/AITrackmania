@@ -5,6 +5,8 @@
 - Strengthen the release gate with tag/version matching and validation of wheel
   metadata, typing markers, bundled OpenPlanet assets, legal files and sdist
   test sources.
+- Use PNG previews for the architecture diagrams embedded in GitHub README,
+  while retaining SVG and editable Excalidraw sources.
 - Add the opt-in `TemporalMambaTrackGeometryEncoder` and
   `LidarMambaModelFactory` for causal lidar sequence modeling on Linux CUDA
   learners, with focused contract coverage and explicit dependency errors.
