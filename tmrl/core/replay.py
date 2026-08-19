@@ -9,6 +9,7 @@ from contextlib import AbstractContextManager, contextmanager
 from dataclasses import replace
 from math import ceil, floor, isfinite
 from numbers import Number
+from pathlib import Path
 from statistics import fmean
 from threading import RLock
 from typing import Any, Protocol, TypeGuard, cast
@@ -525,6 +526,13 @@ class InMemoryReplayStore:
     def __len__(self) -> int:
         with self._lock:
             return self._size
+
+    def load_demonstrations(self, path: Path) -> int:
+        """Load expert transitions and mark them so FIFO eviction cannot drop them."""
+
+        from tmrl.core.offline import OfflineBufferLoader
+
+        return OfflineBufferLoader(self).load_demonstrations(path)
 
     def state_dict(self) -> dict[str, Any]:
         with self._lock:

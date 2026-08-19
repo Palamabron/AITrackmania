@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Ghost Replay Mode extracts lag-free demonstration trajectories from `.Gbx` replays: the OpenPlanet plugin streams 20 Hz `gameTime`-aligned ghost inputs on port 9002, `tmrl track extract-gbx` / `scripts/extract_gbx_demos.py` rebuilds observations with the production feature pipeline, and `InMemoryReplayStore.load_demonstrations` seeds replay with FIFO-protected expert data.
 - Recurrent IQN training now updates every post-burn-in timestep in a sequence (R2D2-style) instead of only the final step, and sequence priorities use a mixed max/mean TD error.
 - Added optional R2D2 value rescaling and a DQfD-style demonstration margin loss to `ImplicitQuantileQLearning`; demonstration transitions are protected from FIFO eviction.
 - Progress rewards bound per-step index advance to a physically reachable arc length, preventing hairpin cuts through folded reference lines.

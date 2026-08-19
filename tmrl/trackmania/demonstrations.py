@@ -87,21 +87,30 @@ def save_demonstration(path: str | Path, demonstration: Demonstration) -> Path:
     return target
 
 
+_DEMO_SUFFIXES = {".npz", ".pkl"}
+
+
 def resolve_demonstration_paths(paths: Sequence[str | Path]) -> tuple[Path, ...]:
-    """Expand ``--demo`` arguments: directories load every ``*.npz``, files stay as-is."""
+    """Expand ``--demo`` arguments: directories load ``*.npz`` and ``*.pkl`` files."""
 
     resolved: list[Path] = []
     seen: set[Path] = set()
     for raw in paths:
         path = Path(raw)
         if path.is_dir():
-            matches = sorted(item.resolve() for item in path.glob("*.npz") if item.is_file())
+            matches = sorted(
+                item.resolve()
+                for item in path.iterdir()
+                if item.is_file() and item.suffix.lower() in _DEMO_SUFFIXES
+            )
             if not matches:
-                raise FileNotFoundError(f"demonstration directory has no .npz files: {path}")
+                raise FileNotFoundError(
+                    f"demonstration directory has no .npz or .pkl files: {path}"
+                )
             candidates = matches
         elif path.is_file():
-            if path.suffix.lower() != ".npz":
-                raise ValueError(f"demonstration file must be a .npz archive: {path}")
+            if path.suffix.lower() not in _DEMO_SUFFIXES:
+                raise ValueError(f"demonstration file must be a .npz or .pkl archive: {path}")
             candidates = [path.resolve()]
         else:
             raise FileNotFoundError(f"demonstration path does not exist: {path}")

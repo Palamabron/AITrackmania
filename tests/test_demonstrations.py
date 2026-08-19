@@ -144,7 +144,7 @@ def test_resolve_demonstration_paths_expands_directories(tmp_path: Path) -> None
 def test_resolve_demonstration_paths_rejects_empty_directory(tmp_path: Path) -> None:
     empty = tmp_path / "empty"
     empty.mkdir()
-    with pytest.raises(FileNotFoundError, match=r"no \.npz files"):
+    with pytest.raises(FileNotFoundError, match=r"no \.npz or \.pkl files"):
         resolve_demonstration_paths([empty])
 
 

@@ -326,20 +326,14 @@ class Coordinator:
     def _import_demonstrations(self) -> None:
         if not self.demo_paths:
             return
-        factory = self.run.environment_factory
-        loader = getattr(factory, "load_demonstration", None)
-        if not callable(loader):
-            raise ValueError("configured environment does not support replay demonstrations")
         logger.info("Importing %d demonstration file(s) into replay...", len(self.demo_paths))
         imported = 0
         finish_times: list[float] = []
         for path in self.demo_paths:
-            transitions = loader(path, self.run.feature_pipeline)
-            for transition in transitions:
-                self.run.replay_store.append(transition)
-            imported += len(transitions)
-            finish_times.append(float(transitions[0].info["sampling/projected_lap_time_s"]))
-            logger.info("Imported demonstration %s: %d transitions", path, len(transitions))
+            count, finish_time_s = self._import_demonstration(path)
+            imported += count
+            finish_times.append(finish_time_s)
+            logger.info("Imported demonstration %s: %d transitions", path, count)
         logger.info(
             "Demonstration import complete: %d transitions from %d file(s)",
             imported,
@@ -355,6 +349,28 @@ class Coordinator:
             },
             step=self.counters.updates,
         )
+
+    def _import_demonstration(self, path: Path) -> tuple[int, float]:
+        if path.suffix.lower() == ".pkl":
+            return self._import_offline_trajectory(path)
+        factory = self.run.environment_factory
+        loader = getattr(factory, "load_demonstration", None)
+        if not callable(loader):
+            raise ValueError("configured environment does not support replay demonstrations")
+        transitions = loader(path, self.run.feature_pipeline)
+        for transition in transitions:
+            self.run.replay_store.append(transition)
+        return len(transitions), float(transitions[0].info["sampling/projected_lap_time_s"])
+
+    def _import_offline_trajectory(self, path: Path) -> tuple[int, float]:
+        loader = getattr(self.run.replay_store, "load_demonstrations", None)
+        if not callable(loader):
+            raise ValueError("replay store does not support offline demonstration files")
+        from tmrl.core.offline import load_trajectory
+
+        trajectory = load_trajectory(path)
+        finish_time_s = float(trajectory.transitions[0].info["sampling/projected_lap_time_s"])
+        return loader(path), finish_time_s
 
     def _request(
         self, request: BytesValue, context: grpc.ServicerContext[Any, Any]

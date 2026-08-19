@@ -1068,6 +1068,7 @@ def test_trackmania_template_contains_first_party_components(tmp_path: Path) -> 
     plugin = target / "openplanet" / "TMRL_GrabData_IQN.as"
     assert plugin.is_file()
     assert 'const string PROTOCOL_VERSION = "2"' in plugin.read_text(encoding="utf-8")
+    assert "const uint GHOST_PORT = 9002" in plugin.read_text(encoding="utf-8")
     assert RunSpec.from_yaml(target / "run.yaml").evaluation is not None
 
 

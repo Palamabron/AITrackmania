@@ -16,7 +16,7 @@ from pathlib import Path
 from time import sleep, time_ns
 from typing import Any
 
-from tmrl.core.runtime import resolve_run, validate_resolved_run
+from tmrl.core.runtime import _instantiate, resolve_run, validate_resolved_run
 from tmrl.core.spec import RunSpec
 from tmrl.project.scaffold import create_project
 from tmrl.trackmania.assets import record_boundary, record_trajectory
@@ -513,6 +513,36 @@ def _record_demo(args: argparse.Namespace) -> None:
     _save_session_demonstrations(args.output, demonstrations, args.max_gap)
 
 
+def _extract_gbx(args: argparse.Namespace) -> None:
+    from tmrl.trackmania.ghost import GbxExtractRequest, GhostReplayClient, extract_gbx_demo
+
+    config_path = args.config.resolve()
+    factory = _trackmania_factory(config_path)
+    config = factory.config.model_copy(update={"start_timeout_s": args.start_timeout})
+    if config.geometry_path is None or config.expected_map_uid is None:
+        raise ValueError("extract-gbx requires geometry_path and expected_map_uid")
+    spec = RunSpec.from_yaml(config_path)
+    pipeline = _instantiate(spec.components.feature_pipeline, base_dir=config_path.parent)
+    geometry = BoundaryGeometry(config.geometry_path, expected_map_uid=config.expected_map_uid)
+    output = args.output if args.output is not None else args.gbx.with_suffix(".pkl")
+    client = GhostReplayClient(args.host, args.port, timeout_s=args.timeout)
+    try:
+        path = extract_gbx_demo(
+            GbxExtractRequest(
+                gbx_path=args.gbx,
+                output=output,
+                pipeline=pipeline,
+                config=config,
+                geometry=geometry,
+                max_duration_s=args.max_duration,
+            ),
+            client,
+        )
+    finally:
+        client.close()
+    print(f"Extracted ghost trajectory: {path}")
+
+
 def _save_session_demonstrations(
     output: Path, demonstrations: list[Demonstration], max_gap_s: float
 ) -> None:
@@ -670,7 +700,7 @@ def entrypoint(argv: list[str] | None = None) -> None:
         action="append",
         type=Path,
         default=[],
-        help="demonstration .npz file or directory of .npz files (repeatable)",
+        help="demonstration .npz/.pkl file or directory of those files (repeatable)",
     )
     train.set_defaults(handler=_train)
     resume = commands.add_parser("resume", help="resume a local asynchronous training run")
@@ -686,7 +716,7 @@ def entrypoint(argv: list[str] | None = None) -> None:
         action="append",
         type=Path,
         default=[],
-        help="demonstration .npz file or directory of .npz files (repeatable)",
+        help="demonstration .npz/.pkl file or directory of those files (repeatable)",
     )
     resume.set_defaults(handler=_train)
     learner = commands.add_parser("learner", help="run a distributed coordinator/learner")
@@ -698,7 +728,7 @@ def entrypoint(argv: list[str] | None = None) -> None:
         action="append",
         type=Path,
         default=[],
-        help="demonstration .npz file or directory of .npz files (repeatable)",
+        help="demonstration .npz/.pkl file or directory of those files (repeatable)",
     )
     learner.set_defaults(handler=_learner)
     actor = commands.add_parser("actor", help="run a remote continuous rollout actor")
@@ -745,6 +775,19 @@ def entrypoint(argv: list[str] | None = None) -> None:
     demo.add_argument("--start-timeout", type=float, default=120.0)
     demo.add_argument("--max-duration", type=float, default=180.0)
     demo.set_defaults(handler=_record_demo)
+    extract = track_commands.add_parser(
+        "extract-gbx",
+        help="extract a lag-free trajectory from a .Gbx ghost via Ghost Replay Mode",
+    )
+    extract.add_argument("gbx", type=Path, help="TrackMania .Replay.Gbx or ghost file")
+    extract.add_argument("--config", type=Path, required=True)
+    extract.add_argument("--output", type=Path, help="trajectory .pkl path (default: GBX stem)")
+    extract.add_argument("--host", default="127.0.0.1")
+    extract.add_argument("--port", type=int, default=9002)
+    extract.add_argument("--timeout", type=float, default=30.0)
+    extract.add_argument("--start-timeout", type=float, default=120.0)
+    extract.add_argument("--max-duration", type=float, default=180.0)
+    extract.set_defaults(handler=_extract_gbx)
     boundary = track_commands.add_parser(
         "record-boundary", help="record a manually driven left or right boundary"
     )

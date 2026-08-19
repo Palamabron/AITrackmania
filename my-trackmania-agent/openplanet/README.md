@@ -4,10 +4,18 @@ Copy `TMRL_GrabData_IQN.as` to `%USERPROFILE%\OpenplanetNext\Scripts`, reload
 OpenPlanet and enable the script. The plugin is intentionally a plain `.as`
 script; it does not need an `info.toml` or a plugin-manager entry.
 
-It exposes two localhost services:
+It exposes three localhost services:
 
 - `127.0.0.1:9000` — the 33-field float32 telemetry stream used by the Python actor;
-- `127.0.0.1:9001` — the map/session JSONL readiness channel.
+- `127.0.0.1:9001` — the map/session JSONL readiness channel;
+- `127.0.0.1:9002` — Ghost Replay Mode: physics-aligned (20 Hz, `gameTime` grid of 50 ms) datagrams whose steer/gas/brake come from the viewed ghost, not the delayed local control loop.
+
+OpenPlanet has no UDP socket API, so port 9002 sends the same 144-byte datagram over TCP. Extract a `.Gbx` replay after loading it on the map:
+
+```powershell
+uv run tmrl track extract-gbx path\to\ghost.Replay.Gbx --config run.yaml --output demos\lap.pkl
+uv run tmrl train run.yaml --demo demos\lap.pkl
+```
 
 Verify the telemetry before recording or training:
 
