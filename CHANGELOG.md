@@ -2,6 +2,9 @@
 
 ## 1.0.3 - 2026-08-19
 
+- Strengthen the release gate with tag/version matching and validation of wheel
+  metadata, typing markers, bundled OpenPlanet assets, legal files and sdist
+  test sources.
 - Add the opt-in `TemporalMambaTrackGeometryEncoder` and
   `LidarMambaModelFactory` for causal lidar sequence modeling on Linux CUDA
   learners, with focused contract coverage and explicit dependency errors.

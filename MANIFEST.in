@@ -7,4 +7,6 @@ include SECURITY.md
 recursive-include readme *.md
 recursive-include docs security-audit.md
 recursive-include docs/diagrams *.md *.excalidraw *.svg *.html
+recursive-include scripts *.py
+recursive-include tests *.py
 recursive-include trackmaniarl/project/openplanet *.as *.md *.toml
