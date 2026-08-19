@@ -16,7 +16,7 @@ def _trackmaniarl_requirement(extras: str) -> str:
     try:
         installed_version = version("trackmaniarl")
     except PackageNotFoundError:
-        installed_version = "1.0.1"
+        installed_version = "1.0.2"
     release = installed_version.split(".", maxsplit=2)
     major = int(release[0])
     minor = int(release[1])
@@ -65,8 +65,8 @@ def _uv_options(*, accelerator: bool) -> str:
         else ""
     )
     vgamepad_source = (
-        'vgamepad = { git = "https://github.com/yannbouteiller/vgamepad", '
-        'rev = "90f95e3b0781ea7b9b8e24867c5dfbfda0deecea" }\n'
+        'vgamepad = { git = "https://github.com/Palamabron/vgamepad", '
+        'rev = "5f3435df3f8a0e658feb58b207d9137cdb5183cd" }\n'
     )
     torch_source = (
         'torch = [{ index = "pytorch-cuda", marker = "sys_platform == \'win32\'" }]\n'
