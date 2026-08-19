@@ -3,6 +3,7 @@
 from trackmaniarl.algorithms.execution import ResolvedTorchExecution, TorchExecutionConfig
 from trackmaniarl.algorithms.implicit_quantile_q_learning import ImplicitQuantileQLearning
 from trackmaniarl.algorithms.optimization import AdaptiveGradientClipper, GradientClipStats
+from trackmaniarl.algorithms.proximal_policy_optimization import ProximalPolicyOptimization
 from trackmaniarl.algorithms.randomized_ensemble_sac import RandomizedEnsembleSAC
 from trackmaniarl.algorithms.soft_actor_critic import SoftActorCritic
 from trackmaniarl.algorithms.stable_discrete_soft_actor_critic import StableDiscreteSoftActorCritic
@@ -12,6 +13,7 @@ __all__ = [
     "AdaptiveGradientClipper",
     "GradientClipStats",
     "ImplicitQuantileQLearning",
+    "ProximalPolicyOptimization",
     "RandomizedEnsembleSAC",
     "ResolvedTorchExecution",
     "SoftActorCritic",

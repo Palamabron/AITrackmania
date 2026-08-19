@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from typing import Protocol, cast, runtime_checkable
 
 import torch
@@ -23,6 +25,34 @@ class ObservationEncoder(Protocol):
     output_dim: int
 
     def __call__(self, observation: torch.Tensor) -> torch.Tensor: ...
+
+
+def require_mamba_layer() -> type[nn.Module]:
+    """Load the optional Mamba layer only when the encoder is selected."""
+
+    try:
+        from mamba_ssm import Mamba
+    except ImportError as exc:
+        raise RuntimeError(
+            "Mamba temporal encoding requires the 'mamba' extra. "
+            "Install it on a Linux CUDA learner with: uv sync --extra mamba"
+        ) from exc
+    return cast(type[nn.Module], Mamba)
+
+
+def _validate_temporal_window(history_length: int, burn_in: int) -> None:
+    if history_length < 2:
+        raise ValueError("temporal encoder requires history_length >= 2")
+    if not 0 <= burn_in < history_length:
+        raise ValueError("burn_in must be in [0, history_length)")
+
+
+@dataclass(slots=True)
+class _MambaInferenceState:
+    max_seqlen: int
+    max_batch_size: int
+    seqlen_offset: int = 0
+    key_value_memory_dict: dict[int, object] = field(default_factory=dict)
 
 
 class TrackGeometryEncoder(nn.Module):
@@ -159,8 +189,7 @@ class TemporalTrackGeometryEncoder(nn.Module):
         legacy_telemetry_layout: bool = False,
     ) -> None:
         super().__init__()
-        if history_length < 2 or not 0 <= burn_in < history_length:
-            raise ValueError("temporal encoder requires history_length >= 2")
+        _validate_temporal_window(history_length, burn_in)
         self.channels = channels
         self.telemetry_dim = telemetry_dim
         self.history_length = history_length
@@ -249,3 +278,130 @@ class TemporalTrackGeometryEncoder(nn.Module):
                 batch, history, self.output_dim
             ),
         )
+
+
+class TemporalMambaTrackGeometryEncoder(nn.Module):
+    """Encode frame histories with a causal, opt-in Mamba sequence layer."""
+
+    def __init__(
+        self,
+        channels: int,
+        telemetry_dim: int,
+        *,
+        history_length: int,
+        hidden_dim: int = 192,
+        output_dim: int = 256,
+        spatial_bins: int = 0,
+        burn_in: int = 0,
+        telemetry_group_dims: tuple[int, ...] | None = None,
+        telemetry_layer_norm: bool = True,
+        legacy_telemetry_layout: bool = False,
+        d_state: int = 16,
+        d_conv: int = 4,
+        expand: int = 2,
+        mamba_cls: Callable[..., nn.Module] | None = None,
+    ) -> None:
+        super().__init__()
+        _validate_temporal_window(history_length, burn_in)
+        if d_state < 1 or d_conv < 1 or expand < 1:
+            raise ValueError("d_state, d_conv and expand must be positive")
+        self.channels = channels
+        self.telemetry_dim = telemetry_dim
+        self.history_length = history_length
+        self.output_dim = output_dim
+        self.burn_in = burn_in
+        self.frame = TrackGeometryEncoder(
+            channels,
+            telemetry_dim,
+            hidden_dim=hidden_dim,
+            output_dim=output_dim,
+            spatial_bins=spatial_bins,
+            telemetry_group_dims=telemetry_group_dims,
+            telemetry_layer_norm=telemetry_layer_norm,
+            legacy_telemetry_layout=legacy_telemetry_layout,
+        )
+        layer_cls = mamba_cls or require_mamba_layer()
+        self.temporal = layer_cls(
+            d_model=output_dim,
+            d_state=d_state,
+            d_conv=d_conv,
+            expand=expand,
+            layer_idx=0,
+        )
+        self.normalization = nn.LayerNorm(output_dim)
+
+    def forward(
+        self,
+        track: torch.Tensor,
+        telemetry: torch.Tensor | None = None,
+        mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        return self.encode_steps(track, telemetry, mask)[:, -1]
+
+    def encode_steps(
+        self,
+        track: torch.Tensor,
+        telemetry: torch.Tensor | None = None,
+        mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """Return causal features for the timesteps included in the loss."""
+
+        self._validate_inputs(track, telemetry, mask)
+        encoded = self._encode_frames(track, telemetry, mask)
+        temporal = self._encode_temporal(encoded)
+        expected_shape = encoded[:, self.burn_in :].shape
+        if temporal.shape != expected_shape:
+            raise RuntimeError("Mamba layer must preserve (batch, loss_steps, feature) shape")
+        return cast(torch.Tensor, self.normalization(temporal))
+
+    def _encode_temporal(self, encoded: torch.Tensor) -> torch.Tensor:
+        if not self.burn_in:
+            return cast(torch.Tensor, self.temporal(encoded))
+        state = _MambaInferenceState(encoded.shape[1], encoded.shape[0])
+        with torch.no_grad():
+            self.temporal(encoded[:, : self.burn_in], inference_params=state)
+        state.seqlen_offset = self.burn_in
+        steps = [
+            self.temporal(encoded[:, index : index + 1], inference_params=state)
+            for index in range(self.burn_in, self.history_length)
+        ]
+        return torch.cat(steps, dim=1)
+
+    def _validate_inputs(
+        self,
+        track: torch.Tensor,
+        telemetry: torch.Tensor | None,
+        mask: torch.Tensor | None,
+    ) -> None:
+        expected = (self.history_length, self.channels)
+        if track.ndim != 4 or track.shape[1:3] != expected:
+            raise ValueError(
+                "temporal track must have shape "
+                f"(batch, {self.history_length}, {self.channels}, points)"
+            )
+        batch, history, _, points = track.shape
+        if self.telemetry_dim and (
+            telemetry is None or telemetry.shape != (batch, history, self.telemetry_dim)
+        ):
+            raise ValueError(
+                f"temporal telemetry must have shape (batch, {history}, {self.telemetry_dim})"
+            )
+        if mask is not None and mask.shape != (batch, history, points):
+            raise ValueError("temporal mask must have shape (batch, history, points)")
+
+    def _encode_frames(
+        self,
+        track: torch.Tensor,
+        telemetry: torch.Tensor | None,
+        mask: torch.Tensor | None,
+    ) -> torch.Tensor:
+        batch, history = track.shape[:2]
+        flat_track = track.reshape(batch * history, *track.shape[2:])
+        flat_telemetry = (
+            telemetry.reshape(batch * history, self.telemetry_dim)
+            if telemetry is not None and self.telemetry_dim
+            else None
+        )
+        flat_mask = mask.reshape(batch * history, mask.shape[-1]) if mask is not None else None
+        encoded = self.frame(flat_track, flat_telemetry, flat_mask)
+        return cast(torch.Tensor, encoded.reshape(batch, history, self.output_dim))

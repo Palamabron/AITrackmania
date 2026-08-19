@@ -6,6 +6,9 @@ import importlib
 from typing import Any, cast
 
 _ALGORITHMS: dict[str, str] = {
+    "proximal_policy_optimization": (
+        "trackmaniarl.algorithms.proximal_policy_optimization:ProximalPolicyOptimization"
+    ),
     "soft_actor_critic": "trackmaniarl.algorithms.soft_actor_critic:SoftActorCritic",
     "randomized_ensemble_sac": (
         "trackmaniarl.algorithms.randomized_ensemble_sac:RandomizedEnsembleSAC"

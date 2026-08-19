@@ -6,6 +6,7 @@ import json
 import struct
 from base64 import b64decode, b64encode
 from collections.abc import Mapping
+from io import BytesIO
 from typing import Any
 
 import numpy as np
@@ -30,9 +31,13 @@ class WireCodec:
         manifest = self._encode_node(value, tensors)
         metadata = json.dumps(manifest, separators=(",", ":"), allow_nan=False).encode()
         tensor_data = save_tensors(tensors) if tensors else b""
-        compressed = zstandard.ZstdCompressor(level=3).compress(
-            _HEADER.pack(len(metadata)) + metadata + tensor_data
-        )
+        raw = _HEADER.pack(len(metadata)) + metadata + tensor_data
+        if len(raw) > self.max_message_bytes:
+            raise ValueError(
+                f"encoded message is {len(raw)} bytes before compression; "
+                f"limit is {self.max_message_bytes}"
+            )
+        compressed = zstandard.ZstdCompressor(level=3).compress(raw)
         if len(compressed) > self.max_message_bytes:
             raise ValueError(
                 f"encoded message is {len(compressed)} bytes; limit is {self.max_message_bytes}"
@@ -44,9 +49,13 @@ class WireCodec:
             raise ValueError(
                 f"received message is {len(payload)} bytes; limit is {self.max_message_bytes}"
             )
-        raw = zstandard.ZstdDecompressor().decompress(
-            payload, max_output_size=self.max_message_bytes * 32
-        )
+        try:
+            with zstandard.ZstdDecompressor().stream_reader(BytesIO(payload)) as reader:
+                raw = reader.read(self.max_message_bytes + 1)
+        except zstandard.ZstdError as exc:
+            raise ValueError("wire payload is invalid") from exc
+        if len(raw) > self.max_message_bytes:
+            raise ValueError("wire payload exceeds the decompressed size limit")
         if len(raw) < _HEADER.size:
             raise ValueError("wire payload is truncated")
         metadata_size = _HEADER.unpack(raw[: _HEADER.size])[0]

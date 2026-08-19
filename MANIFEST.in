@@ -1,7 +1,12 @@
 include README.md
 include CHANGELOG.md
+include CONTRIBUTING.md
 include LICENSE
 include NOTICE
 include SECURITY.md
 recursive-include readme *.md
-recursive-include trackmaniarl/project/openplanet *.as *.toml
+recursive-include docs security-audit.md
+recursive-include docs/diagrams *.md *.excalidraw *.svg *.png *.html
+recursive-include scripts *.py
+recursive-include tests *.py
+recursive-include trackmaniarl/project/openplanet *.as *.md *.toml

@@ -13,6 +13,34 @@ uv run trackmaniarl smoke run.yaml
 uv run trackmaniarl train run.yaml
 ```
 
+The generated `run.yaml` selects the control device explicitly:
+
+```yaml
+components:
+  environment:
+    kwargs:
+      config:
+        control_backend: gamepad
+```
+
+Use `gamepad` for analog steering and rumble-based collision detection. Select
+`keyboard` when a virtual gamepad is unavailable. The keyboard backend converts
+analog model output to digital gas/brake and left/right input, with a steering
+dead zone, and cannot provide rumble collision signals. The choice belongs to
+the environment, not the model, so the same policy can drive either backend;
+expect different driving dynamics after analog-to-digital conversion.
+
+Before `smoke`, `train`, `learner` or `actor`, generate one random distributed
+token and store it as `TRACKMANIARL_DISTRIBUTED_TOKEN` in the project's ignored
+`.env` file:
+
+```bash
+python -c "import secrets; print(secrets.token_urlsafe(32))"
+```
+
+The same requirement applies to local training because the local actor and
+learner are separate authenticated processes.
+
 Generated TrackMania agents select the project's tested PyTorch CUDA runtime by
 default on Windows and Linux; a newer NVIDIA driver stays compatible. macOS
 falls back to its normal PyPI/MPS Torch wheel. ROCm hosts require the matching
@@ -45,6 +73,62 @@ observation is a fixed 20-feature projection of the documented 33-field
 `TrackmaniaRL_GrabData` packet, plus 15 left + 15 right car-local boundary samples.
 The local frame comes from `api.Position` and `vis.Dir`; it does not require
 aim-yaw telemetry. TQC remains an optional example only.
+
+Model factories publish their train-time contract and learners publish the
+contracts they accept. IQN and Mamba expose `discrete_quantile`, the telemetry
+TQC baseline exposes `continuous_quantile_actor_critic`, and behavior cloning
+exposes `categorical_policy`. `trackmaniarl validate` rejects a mismatched pair
+before model setup instead of failing later on a missing head. Models remain
+interchangeable between algorithms that consume the same contract; algorithms
+with different objectives require a matching model head.
+
+## Experimental Mamba
+
+Version 1.0.3 adds an opt-in Mamba temporal encoder. It does not replace the
+GRU-based `LidarIqnModelFactory` default. Use it only as a named experiment
+after recording an identical GRU baseline with the same seed, replay, update
+budget and evaluation suite.
+
+Mamba policy execution is supported only on Linux with an NVIDIA CUDA runtime.
+Every actor evaluates its policy locally, so both the learner and every actor
+must satisfy that requirement; a Windows Trackmania actor cannot collect for
+this model. Linux gamepad support uses `libevdev` and `/dev/uinput`, and remains
+experimental. Install the extra on every process that builds the policy:
+
+```bash
+uv sync --extra mamba
+```
+
+Select the model explicitly in `run.yaml` and make `training.sequence_length`
+match `history_length`:
+
+```yaml
+components:
+  model_factory:
+    class_path: trackmaniarl.trackmania.mamba:LidarMambaModelFactory
+    kwargs:
+      telemetry_dim: 26
+      history_length: 16
+      burn_in: 4
+      spatial_bins: 12
+      d_state: 16
+      d_conv: 4
+      expand: 2
+training:
+  sequence_length: 16
+```
+
+The frame encoder processes all 16 observations and the causal Mamba layer
+uses the full context. `burn_in: 4` excludes the first four outputs from IQN
+losses and replay priorities; it does not detach Mamba's internal causal state.
+This distinction keeps the sequence contract precise and avoids presenting a
+loss window as truncated backpropagation.
+
+The optional dependency is imported only when this model is instantiated, so
+normal TrackmaniaRL imports and GRU runs remain independent of `mamba-ssm`.
+Treat a Linux Trackmania/Proton deployment as unsupported until it passes the
+bounded live smoke test on that exact host; offline contract tests alone are
+not evidence of game compatibility.
 
 Every run writes `manifest.json`, versioned `events.jsonl`, compressed episode
 artifacts, checkpoints and study records. Resume a stopped run with:

@@ -1,5 +1,35 @@
 # Changelog
 
+## 1.0.3 - 2026-08-19
+
+- Strengthen the release gate with tag/version matching and validation of wheel
+  metadata, typing markers, bundled OpenPlanet assets, legal files and sdist
+  test sources.
+- Use PNG previews for the architecture diagrams embedded in GitHub README,
+  while retaining SVG and editable Excalidraw sources.
+- Add the opt-in `TemporalMambaTrackGeometryEncoder` and
+  `LidarMambaModelFactory` for causal lidar sequence modeling on Linux CUDA
+  learners, with focused contract coverage and explicit dependency errors.
+- Document the Mamba training contract, supported deployment split and RunSpec
+  wiring, with a new editable model data-flow diagram.
+- Enable the pinned vgamepad fork and its `libevdev` dependency on Linux, and
+  select the tested CUDA Torch index for Windows and Linux Trackmania hosts.
+
+- Bound distributed wire messages by their decompressed size and added a
+  regression test for highly compressible oversized payloads.
+- Require distributed bearer tokens to contain at least 32 characters.
+- Require `setuptools>=83` for TrackmaniaRL and generated project builds after
+  the packaging audit identified CVE-2026-59890.
+- Add generated `.gitignore` and `.env-example` files, an architecture guide, a
+  development/extension workflow and a dated security audit.
+- Add editable Excalidraw diagrams and SVG/HTML previews for the runtime,
+  extension workflow and distributed security boundaries.
+- Split behavior cloning into model, learner and data package entry points, and
+  move shared lidar encoding out of the IQN-specific module.
+- Validate declared model/learner contracts during RunSpec resolution.
+- Expose gamepad or keyboard control in the generated Trackmania configuration;
+  keyboard control digitizes analog model actions with a steering dead zone.
+
 ## 1.0.2 - 2026-08-18
 
 - Made the published PyPI installation path the primary README workflow.

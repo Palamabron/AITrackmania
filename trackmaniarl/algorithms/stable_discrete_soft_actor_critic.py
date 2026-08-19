@@ -12,6 +12,7 @@ from torch import nn
 
 from trackmaniarl.algorithms._torch import TorchLearnerBase, weighted_mean
 from trackmaniarl.algorithms.execution import TorchExecutionConfig
+from trackmaniarl.core.contracts import ModelContract
 from trackmaniarl.core.data import PriorityUpdate, TrainingBatch
 from trackmaniarl.core.pytree import sanitize_finite, tree_to_device
 
@@ -43,6 +44,8 @@ class _DiscretePolicy:
 
 class StableDiscreteSoftActorCritic(TorchLearnerBase):
     """SD-SAC with double-average Q learning, Q-clip and entropy penalty."""
+
+    accepted_model_contracts = frozenset({ModelContract.DISCRETE_ACTOR_CRITIC})
 
     def __init__(
         self,

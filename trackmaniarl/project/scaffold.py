@@ -16,7 +16,7 @@ def _trackmaniarl_requirement(extras: str) -> str:
     try:
         installed_version = version("trackmaniarl")
     except PackageNotFoundError:
-        installed_version = "1.0.2"
+        installed_version = "1.0.3"
     release = installed_version.split(".", maxsplit=2)
     major = int(release[0])
     minor = int(release[1])
@@ -30,7 +30,7 @@ def _pyproject(
     include_trackmania_tasks: bool = False,
 ) -> str:
     return (
-        '[build-system]\nrequires = ["setuptools>=65"]\n'
+        '[build-system]\nrequires = ["setuptools>=83"]\n'
         'build-backend = "setuptools.build_meta"\n\n'
         '[project]\nname = "' + name + '"\nversion = "0.1.0"\n'
         'requires-python = ">=3.12"\ndependencies = ["'
@@ -69,7 +69,8 @@ def _uv_options(*, accelerator: bool) -> str:
         'rev = "5f3435df3f8a0e658feb58b207d9137cdb5183cd" }\n'
     )
     torch_source = (
-        'torch = [{ index = "pytorch-cuda", marker = "sys_platform == \'win32\'" }]\n'
+        'torch = [{ index = "pytorch-cuda", marker = "sys_platform == \'win32\' or '
+        "sys_platform == 'linux'\" }]\n"
         if accelerator
         else ""
     )
@@ -246,6 +247,15 @@ def create_project(directory: str | Path, package: str, *, template: str = "star
     )
     pyproject += _uv_options(accelerator=template == "trackmania")
     (target / "pyproject.toml").write_text(pyproject, encoding="utf-8")
+    (target / ".gitignore").write_text(
+        ".env\n.venv/\nartifacts/\n__pycache__/\n.pytest_cache/\n.ruff_cache/\n"
+        ".mypy_cache/\n*.egg-info/\ndist/\n",
+        encoding="utf-8",
+    )
+    (target / ".env-example").write_text(
+        "TRACKMANIARL_DISTRIBUTED_TOKEN=\nWANDB_API_KEY=\n",
+        encoding="utf-8",
+    )
     config = _config(package) if template == "starter" else _trackmania_config()
     (target / "run.yaml").write_text(config, encoding="utf-8")
     if template == "trackmania":
@@ -276,10 +286,9 @@ def create_project(directory: str | Path, package: str, *, template: str = "star
         (plugin_dir / "info.toml").write_text(
             plugin_info.read_text(encoding="utf-8"), encoding="utf-8"
         )
+        plugin_readme = files("trackmaniarl.project").joinpath("openplanet/README.md")
         (plugin_dir / "README.md").write_text(
-            "Copy TrackmaniaRL_GrabData_IQN.as to OpenplanetNext/Scripts, reload OpenPlanet, and "
-            "manually load maps/trackmaniarl-test.Map.Gbx before running smoke or benchmark.\n",
-            encoding="utf-8",
+            plugin_readme.read_text(encoding="utf-8"), encoding="utf-8"
         )
     (target / "run.py").write_text(
         "from trackmaniarl import RunSpec, Trainer, resolve_run\n\n"
@@ -328,6 +337,7 @@ components:
         trajectory_path: assets/trajectory.csv
         geometry_path: assets/trackmaniarl-test.geometry.npz
         expected_map_uid: REPLACE_WITH_TEST_3_UID
+        control_backend: gamepad
         action_repeat_frames: 4
         slow_progress_window_steps: 300
         no_progress_steps: 600

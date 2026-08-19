@@ -142,6 +142,12 @@ def _required_token(config: Path) -> str:
         raise ValueError(
             f"Set {spec.distributed.token_env} in the environment or {config.parent / '.env'}"
         )
+    if len(token) < 32:
+        raise ValueError(
+            f"{spec.distributed.token_env} must contain at least 32 characters; "
+            'generate a random token with `python -c "import secrets; '
+            'print(secrets.token_urlsafe(32))"`'
+        )
     return token
 
 

@@ -374,7 +374,12 @@ class ActorRuntime:
             diagnostics = ProgressBinDiagnostics(_policy_action_count(policy), bin_count=20)
             try:
                 for step in range(self.spec.training.max_episode_steps):
-                    action = policy.act(prepared)
+                    sample = getattr(policy, "act_with_info", None)
+                    if callable(sample):
+                        action, policy_info = sample(prepared)
+                    else:
+                        action = policy.act(prepared)
+                        policy_info = {}
                     margins.record(policy, step)
                     next_observation, reward, terminated, truncated, info = environment.step(action)
                     if step == self.spec.training.max_episode_steps - 1 and not terminated:
@@ -394,6 +399,7 @@ class ActorRuntime:
                                 **dict(info),
                                 "policy_version": version,
                                 "actor_epsilon": epsilon,
+                                **policy_info,
                             },
                             episode_id=episode_id,
                             step=step,

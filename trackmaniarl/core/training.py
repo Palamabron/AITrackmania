@@ -11,10 +11,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from trackmaniarl.core.data import PriorityUpdate
+from trackmaniarl.core.collector import EpisodeCollector
+from trackmaniarl.core.data import BatchRequest, PriorityUpdate
 from trackmaniarl.core.runtime import ResolvedRun, prepare_run
 from trackmaniarl.observability.artifacts import AsyncEpisodeWriter
-from trackmaniarl.trackmania.collector import TrackmaniaCollector
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,6 +37,10 @@ class Trainer:
         self.run = run
         self.environment_factory = run.environment_factory
         self.resume_checkpoint = Path(resume_checkpoint) if resume_checkpoint is not None else None
+        if getattr(run.learner, "on_policy", False) and not getattr(
+            run.sampler, "on_policy_rollouts", False
+        ):
+            raise ValueError("On-policy learners require OnPolicySequenceSampler")
 
     def train(self) -> TrainingResult:
         spec = self.run.spec.training
@@ -80,7 +84,7 @@ class Trainer:
             while transitions < spec.total_transitions:
                 previous_transitions = transitions
                 environment = self.environment_factory.create(seed=self.run.spec.seed + episodes)
-                collector = TrackmaniaCollector(
+                collector = EpisodeCollector(
                     self.run.replay_store, self.run.feature_pipeline, self.run.learner.policy()
                 )
                 try:
@@ -125,16 +129,28 @@ class Trainer:
                         f"transitions={transitions}/{spec.total_transitions}, updates={updates}",
                         flush=True,
                     )
+                on_policy = bool(getattr(self.run.learner, "on_policy", False))
                 sample_footprint = spec.batch_size * spec.sequence_length + spec.n_step - 1
-                ready = max(spec.warmup_transitions, sample_footprint)
+                ready = 1 if on_policy else max(spec.warmup_transitions, sample_footprint)
                 # Warm-up gathers data only.  Do not build an update debt that
                 # would turn the first trainable episode into a large burst.
                 newly_trainable = max(0, transitions - ready) - max(0, previous_transitions - ready)
-                fractional_updates += newly_trainable * spec.updates_per_transition
+                fractional_updates += (
+                    1.0 if on_policy else newly_trainable * spec.updates_per_transition
+                )
                 while len(self.run.replay_store) >= ready and fractional_updates >= 1:
+                    request = (
+                        BatchRequest(
+                            batch_size=1,
+                            sequence_length=result.transitions,
+                            gamma=spec.gamma,
+                        )
+                        if on_policy
+                        else spec.batch_request(beta=spec.replay_beta(transitions))
+                    )
                     batch = self.run.sampler.sample(
                         self.run.replay_store,
-                        spec.batch_request(beta=spec.replay_beta(transitions)),
+                        request,
                     )
                     update = self.run.learner.update(batch)
                     metrics, priorities = update if isinstance(update, tuple) else (update, None)

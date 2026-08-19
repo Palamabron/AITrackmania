@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from enum import StrEnum
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
@@ -15,11 +16,32 @@ from trackmaniarl.core.data import (
 )
 
 
+class ModelContract(StrEnum):
+    """Train-time interface exposed by a model bundle."""
+
+    CATEGORICAL_POLICY = "categorical_policy"
+    CONTINUOUS_ACTOR_CRITIC = "continuous_actor_critic"
+    CONTINUOUS_ACTOR_VALUE = "continuous_actor_value"
+    CONTINUOUS_QUANTILE_ACTOR_CRITIC = "continuous_quantile_actor_critic"
+    DISCRETE_ACTOR_CRITIC = "discrete_actor_critic"
+    DISCRETE_QUANTILE = "discrete_quantile"
+    ENSEMBLE_ACTOR_CRITIC = "ensemble_actor_critic"
+
+
 @runtime_checkable
 class Policy(Protocol):
     """Inference-only policy deployed to a rollout worker."""
 
     def act(self, observation: Any, *, deterministic: bool = False) -> Any: ...
+
+
+@runtime_checkable
+class BehaviorPolicy(Policy, Protocol):
+    """Policy that records the behavior statistics required by on-policy learners."""
+
+    def act_with_info(
+        self, observation: Any, *, deterministic: bool = False
+    ) -> tuple[Any, Mapping[str, Any]]: ...
 
 
 @runtime_checkable

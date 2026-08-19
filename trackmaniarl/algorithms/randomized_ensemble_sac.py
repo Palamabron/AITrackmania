@@ -16,11 +16,14 @@ from trackmaniarl.algorithms._torch import (
     weighted_mean,
 )
 from trackmaniarl.algorithms.execution import TorchExecutionConfig
+from trackmaniarl.core.contracts import ModelContract
 from trackmaniarl.core.data import PriorityUpdate, TrainingBatch
 
 
 class RandomizedEnsembleSAC(TorchLearnerBase):
     """REDQ-SAC with a random target subset and an explicit policy-update interval."""
+
+    accepted_model_contracts = frozenset({ModelContract.ENSEMBLE_ACTOR_CRITIC})
 
     def __init__(
         self,

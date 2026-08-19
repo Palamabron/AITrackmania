@@ -1,10 +1,10 @@
 [build-system]
-requires = ["setuptools>=77"]
+requires = ["setuptools>=83"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "TrackmaniaRL"
-version = "1.0.2"
+version = "1.0.3"
 description = "Reinforcement-learning library for training agents in Trackmania 2020"
 readme = "README.md"
 license = "MIT"
@@ -54,7 +54,8 @@ algorithms = [
 ]
 trackmania = [
     "gymnasium>=0.29",
-    "vgamepad>=0.1.0; sys_platform == 'win32'",
+    "libevdev>=0.13; sys_platform == 'linux'",
+    "vgamepad>=0.1.0; sys_platform == 'win32' or sys_platform == 'linux'",
 ]
 wandb = [
     "wandb>=0.15.8",
@@ -64,7 +65,8 @@ distributed = [
     "protobuf>=5.27",
     "safetensors>=0.4.5",
     "zstandard>=0.23",
-    "vgamepad>=0.1.0; sys_platform == 'win32'",
+    "libevdev>=0.13; sys_platform == 'linux'",
+    "vgamepad>=0.1.0; sys_platform == 'win32' or sys_platform == 'linux'",
 ]
 explain = [
     "captum>=0.7",
@@ -72,16 +74,25 @@ explain = [
 vision = [
     "torchvision>=0.15",
 ]
+mamba = [
+    "causal-conv1d>=1.4; sys_platform == 'linux'",
+    "mamba-ssm>=2.2; sys_platform == 'linux'",
+]
 
 [tool.uv]
 default-groups = ["dev"]
+no-build-isolation-package = ["causal-conv1d", "mamba-ssm"]
+
+[tool.uv.extra-build-dependencies]
+causal-conv1d = ["torch", "setuptools", "wheel", "packaging", "ninja"]
+mamba-ssm = ["torch", "setuptools", "wheel", "packaging", "ninja"]
 
 [tool.uv.sources]
-# TrackMania hosts on Windows use the tested CUDA wheels. Other
+# TrackMania hosts on Windows and Linux use the tested CUDA wheels. Other
 # platforms use the CPU index and can override it for ROCm or another backend.
 torch = [
-    { index = "pytorch-cuda", marker = "sys_platform == 'win32'" },
-    { index = "pytorch-cpu", marker = "sys_platform != 'win32'" },
+    { index = "pytorch-cuda", marker = "sys_platform == 'win32' or sys_platform == 'linux'" },
+    { index = "pytorch-cpu", marker = "sys_platform != 'win32' and sys_platform != 'linux'" },
 ]
 vgamepad = { git = "https://github.com/Palamabron/vgamepad", rev = "5f3435df3f8a0e658feb58b207d9137cdb5183cd" }
 
@@ -112,7 +123,8 @@ dev = [
     "protobuf>=5.27",
     "safetensors>=0.4.5",
     "zstandard>=0.23",
-    "vgamepad>=0.1.0; sys_platform == 'win32'",
+    "libevdev>=0.13; sys_platform == 'linux'",
+    "vgamepad>=0.1.0; sys_platform == 'win32' or sys_platform == 'linux'",
     "wandb>=0.15.8",
 ]
 
@@ -209,6 +221,10 @@ module = [
     "optuna.*",
     "tensordict",
     "tensordict.*",
+    "causal_conv1d",
+    "causal_conv1d.*",
+    "mamba_ssm",
+    "mamba_ssm.*",
     "vgamepad",
     "vgamepad.*",
     "wandb",

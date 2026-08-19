@@ -16,6 +16,7 @@ from trackmaniarl.algorithms._torch import (
     weighted_mean,
 )
 from trackmaniarl.algorithms.execution import TorchExecutionConfig
+from trackmaniarl.core.contracts import ModelContract
 from trackmaniarl.core.data import PriorityUpdate, TrainingBatch
 
 
@@ -31,6 +32,8 @@ def quantile_huber_loss(predictions: torch.Tensor, targets: torch.Tensor) -> tor
 
 class TruncatedQuantileCritic(TorchLearnerBase):
     """TQC with global target truncation and direct quantile-regression loss."""
+
+    accepted_model_contracts = frozenset({ModelContract.CONTINUOUS_QUANTILE_ACTOR_CRITIC})
 
     def __init__(
         self,

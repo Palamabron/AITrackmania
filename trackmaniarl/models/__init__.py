@@ -7,12 +7,22 @@ from trackmaniarl.models.backbones import (
     SimbaV2Block,
     project_hyperspherical_weights,
 )
-from trackmaniarl.models.critics import ContinuousQCritic, DiscreteQuantileNetwork, QuantileCritic
-from trackmaniarl.models.encoders import ObservationEncoder, TrackGeometryEncoder
+from trackmaniarl.models.critics import (
+    ContinuousQCritic,
+    ContinuousValueCritic,
+    DiscreteQuantileNetwork,
+    QuantileCritic,
+)
+from trackmaniarl.models.encoders import (
+    ObservationEncoder,
+    TemporalMambaTrackGeometryEncoder,
+    TrackGeometryEncoder,
+)
 
 __all__ = [
     "CategoricalActor",
     "ContinuousQCritic",
+    "ContinuousValueCritic",
     "DiscreteQuantileNetwork",
     "GaussianActor",
     "HypersphericalLinear",
@@ -20,6 +30,7 @@ __all__ = [
     "QuantileCritic",
     "SimbaV2Backbone",
     "SimbaV2Block",
+    "TemporalMambaTrackGeometryEncoder",
     "TrackGeometryEncoder",
     "project_hyperspherical_weights",
 ]

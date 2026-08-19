@@ -16,11 +16,14 @@ from trackmaniarl.algorithms._torch import (
     weighted_mean,
 )
 from trackmaniarl.algorithms.execution import TorchExecutionConfig
+from trackmaniarl.core.contracts import ModelContract
 from trackmaniarl.core.data import PriorityUpdate, TrainingBatch
 
 
 class SoftActorCritic(TorchLearnerBase):
     """SAC v2 with explicit target semantics, optional temperature learning and PER feedback."""
+
+    accepted_model_contracts = frozenset({ModelContract.CONTINUOUS_ACTOR_CRITIC})
 
     def __init__(
         self,

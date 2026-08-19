@@ -1,5 +1,9 @@
 name: Release
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 on:
   push:
     tags:
@@ -30,8 +34,8 @@ jobs:
       - name: Build distributables
         run: uv build
 
-      - name: Verify distribution contents
-        run: uv run python scripts/check_distribution.py
+      - name: Verify distribution contents and release tag
+        run: uv run python scripts/check_distribution.py --tag "$GITHUB_REF_NAME"
 
       - name: Verify wheel CLI
         run: uv run --isolated --no-project --with ./dist/*.whl trackmaniarl --help
