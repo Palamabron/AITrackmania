@@ -204,7 +204,7 @@ class RunSpec(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    api_version: str = "1.2"
+    api_version: str = "2.0"
     run_id: str = Field(min_length=1, pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
     seed: int = 0
     artifacts_dir: Path = Path("artifacts")
@@ -217,8 +217,8 @@ class RunSpec(BaseModel):
     @field_validator("api_version")
     @classmethod
     def _api_version(cls, value: str) -> str:
-        if value != "1.2":
-            raise ValueError("RunSpec api_version must be '1.2'")
+        if value != "2.0":
+            raise ValueError("RunSpec api_version must be '2.0'")
         return value
 
     @classmethod

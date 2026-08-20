@@ -1,6 +1,6 @@
-"""Behavior-cloning datasets, augmentation, and batching."""
+"""Imitation-learning datasets, recovery archives, augmentation and batching."""
 
-from trackmaniarl.trackmania.behavior_cloning._implementation import (
+from trackmaniarl.trackmania.imitation_learning._implementation import (
     INTERVENTION_KEY,
     RECOVERY_DATASET_FORMAT,
     RECOVERY_DATASET_FORMAT_V1,

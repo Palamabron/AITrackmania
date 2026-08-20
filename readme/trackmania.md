@@ -1,4 +1,8 @@
-# TrackMania IQN + lidar release workflow
+# TrackMania lidar training and release workflow
+
+For demonstration recording, behavior cloning, DAgger recovery, exact BC
+resume and the required closed-loop gate, see the
+[imitation-learning workflow](imitation-learning.md).
 
 Install the game integration only on a machine that has TrackMania, OpenPlanet,
 the compatible telemetry plugin, and a virtual gamepad driver:
@@ -67,7 +71,7 @@ already loaded UID before every episode, then confirms an active player after
 the controller reset using protocol version `2`; a timeout, disconnect or UID
 mismatch aborts the run.
 
-The default baseline is a 78-action dueling IQN (`13` steering levels × `2`
+The reference baseline is a 78-action dueling IQN (`13` steering levels × `2`
 gas levels × continuous brake, full brake, or brake tap), not TQC. Its
 observation is a fixed 20-feature projection of the documented 33-field
 `TrackmaniaRL_GrabData` packet, plus 15 left + 15 right car-local boundary samples.
@@ -75,25 +79,55 @@ The local frame comes from `api.Position` and `vis.Dir`; it does not require
 aim-yaw telemetry. TQC remains an optional example only.
 
 Model factories publish their train-time contract and learners publish the
-contracts they accept. IQN and Mamba expose `discrete_quantile`, the telemetry
+contracts they accept. Composed Q/QR-DQN/IQN/FQF models expose `discrete_value`, the telemetry
 TQC baseline exposes `continuous_quantile_actor_critic`, and behavior cloning
 exposes `categorical_policy`. `trackmaniarl validate` rejects a mismatched pair
 before model setup instead of failing later on a missing head. Models remain
 interchangeable between algorithms that consume the same contract; algorithms
 with different objectives require a matching model head.
 
-## Experimental Mamba
+## Value algorithm selection
 
-Version 1.0.3 adds an opt-in Mamba temporal encoder. It does not replace the
-GRU-based `LidarIqnModelFactory` default. Use it only as a named experiment
+All discrete value experiments use `DiscreteValueLearner`. The YAML composition
+selects the algorithm:
+
+| Experiment | Head | Strategy |
+| --- | --- | --- |
+| scalar baseline | `ScalarQHead` | `ScalarValueStrategy` |
+| QR-DQN | `FixedQuantileHead` | `FixedQuantileStrategy` |
+| IQN | `ImplicitQuantileHead` | `RandomQuantileStrategy` |
+| FQF | `ImplicitQuantileHead` | `LearnedFractionStrategy` |
+
+For recurrent experiments select `GruTemporalCore` or `MambaTemporalCore`, set
+`training.sequence_length`, and configure learner `burn_in`. The lidar encoder
+is frame-only: the model vectorizes `[B,T]` into `[B*T]` before encoding and
+restores `[B,T,D]` before the temporal core.
+
+FQF creates its own fraction optimizer from
+`LearnedFractionStrategy.auxiliary_parameters()`. Monitor fraction entropy and
+boundary spacing as well as TD/quantile metrics. The target network contains
+its own fraction proposal network, and target quantiles are evaluated only for
+the action selected by online Double-DQN.
+
+To initialize FQF from a proven IQN run, use the warm-start loader for named
+`encoder`, `temporal` and compatible `head` tensors. Do not use a 1.x IQN
+checkpoint as resume state and do not silently copy mismatched shapes. Preserve
+the generated match report with the experiment artifacts.
+
+## Mamba temporal core
+
+`MambaTemporalCore` is an opt-in temporal component. Use it as a named experiment
 after recording an identical GRU baseline with the same seed, replay, update
 budget and evaluation suite.
 
-Mamba policy execution is supported only on Linux with an NVIDIA CUDA runtime.
-Every actor evaluates its policy locally, so both the learner and every actor
-must satisfy that requirement; a Windows Trackmania actor cannot collect for
-this model. Linux gamepad support uses `libevdev` and `/dev/uinput`, and remains
-experimental. Install the extra on every process that builds the policy:
+The `torch` backend is portable across Windows, Linux, CPU and CUDA. The
+`native` backend requires a working `mamba-ssm` selective-scan kernel; `auto`
+probes native forward/backward and records the Pure PyTorch fallback reason.
+Both backends use the same model parameters and checkpoint fingerprint.
+
+Install the `mamba` extra only when testing the native kernel. The `torch`
+backend is implemented locally with standard Torch operations and works without
+`mamba-ssm`:
 
 ```bash
 uv sync --extra mamba
@@ -105,30 +139,37 @@ match `history_length`:
 ```yaml
 components:
   model_factory:
-    class_path: trackmaniarl.trackmania.mamba:LidarMambaModelFactory
+    class_path: trackmaniarl.models.factory:CompositeValueModelFactory
     kwargs:
-      telemetry_dim: 26
-      history_length: 16
-      burn_in: 4
-      spatial_bins: 12
-      d_state: 16
-      d_conv: 4
-      expand: 2
+      encoder:
+        class_path: trackmaniarl.trackmania.encoders:LidarSensorEncoder
+        kwargs: {telemetry_dim: 26, spatial_bins: 12, output_dim: 256}
+      temporal:
+        class_path: trackmaniarl.models.temporal:MambaTemporalCore
+        kwargs: {input_dim: 256, backend: auto, d_state: 16, d_conv: 4, expand: 2}
+      head:
+        class_path: trackmaniarl.models.heads:ImplicitQuantileHead
+        kwargs: {feature_dim: 256, action_count: 78, cosine_count: 64, dueling: true}
+      strategy:
+        class_path: trackmaniarl.models.strategies:LearnedFractionStrategy
+        kwargs: {feature_dim: 256, fraction_count: 32}
+  learner:
+    class_path: trackmaniarl.algorithms.value_based:DiscreteValueLearner
+    kwargs: {burn_in: 4}
 training:
   sequence_length: 16
 ```
 
-The frame encoder processes all 16 observations and the causal Mamba layer
-uses the full context. `burn_in: 4` excludes the first four outputs from IQN
-losses and replay priorities; it does not detach Mamba's internal causal state.
-This distinction keeps the sequence contract precise and avoids presenting a
-loss window as truncated backpropagation.
+The sensor encoder processes the 16 frames as one vectorized `B*T` batch. The
+Mamba core consumes `[B,T,D]`; `burn_in: 4` builds its initial recurrent state
+without gradients and excludes those positions from losses and priorities.
 
-The optional dependency is imported only when this model is instantiated, so
-normal TrackmaniaRL imports and GRU runs remain independent of `mamba-ssm`.
-Treat a Linux Trackmania/Proton deployment as unsupported until it passes the
-bounded live smoke test on that exact host; offline contract tests alone are
-not evidence of game compatibility.
+The optional dependency is imported only when the native backend is probed, so
+normal imports, GRU runs and Pure PyTorch Mamba remain independent of
+`mamba-ssm`. On Windows, CPU or an unsupported CUDA build, use `backend: torch`
+or let `auto` record its fallback. Treat every new deployment platform as
+unsupported until it passes the bounded live smoke test on that exact host;
+offline contract tests alone are not evidence of game compatibility.
 
 Every run writes `manifest.json`, versioned `events.jsonl`, compressed episode
 artifacts, checkpoints and study records. Resume a stopped run with:

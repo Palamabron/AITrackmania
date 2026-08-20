@@ -25,8 +25,14 @@ disclosure. Security fixes target the current `1.x` release line.
   codec uses PyTorch `weights_only=True`; it rejects payloads requiring
   executable pickle globals. A custom `CheckpointCodec` defines its own trust
   boundary.
+- RunSpec 2.0 resume verifies a complete architecture fingerprint. Partial
+  warm-start deliberately accepts selected compatible tensors and therefore
+  requires review of its generated match report. Neither mechanism proves the
+  checkpoint's origin.
 - Demonstrations and geometry use NumPy loading with `allow_pickle=False`.
-  Their size and semantic correctness must still be suitable for the run.
+  BC manifests hash demonstrations and split membership, but hashes do not
+  authenticate an untrusted dataset. Size and semantic correctness must still
+  be suitable for the run.
 - Distributed gRPC uses a bearer token and loopback-only learner binding. The
   token authenticates but does not encrypt. Remote actors require an
   authenticated encrypted tunnel and a random token of at least 32 characters.

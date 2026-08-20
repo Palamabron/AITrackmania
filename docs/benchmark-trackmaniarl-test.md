@@ -1,7 +1,8 @@
-# IQN + lidar benchmark: `trackmaniarl-test`, version 1
+# Composed IQN + lidar benchmark: `trackmaniarl-test`
 
 This optional smoke benchmark is the release performance gate for the bundled
-IQN + lidar baseline. It is not part of CPU CI because it requires a configured
+RunSpec 2.0 IQN composition (`ImplicitQuantileHead` plus
+`RandomQuantileStrategy`) and lidar baseline. It is not part of CPU CI because it requires a configured
 TrackMania installation and the `trackmaniarl-test` map.
 
 - Run deterministic policy evaluation (`argmax`, no epsilon exploration) on

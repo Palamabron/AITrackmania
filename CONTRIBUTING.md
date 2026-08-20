@@ -22,8 +22,9 @@ impact in the pull request.
 ## Where changes belong
 
 - stable interfaces, data and runtime mechanics: `trackmaniarl.core`;
-- reusable bundled implementations: `trackmaniarl.algorithms`,
-  `trackmaniarl.models` and `trackmaniarl.builtins`;
+- reusable learner/objective implementations: `trackmaniarl.algorithms`;
+- frame encoders, temporal cores, heads, value strategies and model composition:
+  `trackmaniarl.models`;
 - Trackmania/OpenPlanet behavior only: `trackmaniarl.trackmania`;
 - actor/learner transport and durability: `trackmaniarl.distributed`;
 - logging/artifacts: `trackmaniarl.observability`;
@@ -38,5 +39,10 @@ at the boundary; keep Pydantic models out of rollout and sampling hot paths.
 Every bundled component needs deterministic contract coverage. A distributed
 change also needs fake actor/slow learner coverage; a Trackmania change needs an
 offline test and should pass the bounded Windows smoke test before release.
+
+When a public flow or ownership boundary changes, update `README.md`, the
+relevant guide under `readme/`, the diagram spec and all `.excalidraw`, SVG, PNG
+and HTML derivatives. Diagram validation and visual inspection are part of the
+documentation gate.
 
 Security reports follow [SECURITY.md](SECURITY.md), not the public issue tracker.

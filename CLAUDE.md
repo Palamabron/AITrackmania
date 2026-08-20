@@ -1,4 +1,4 @@
-# TMRL development guide
+# TrackmaniaRL development guide
 
 ## Commands
 
@@ -7,23 +7,23 @@ uv sync --group dev
 uv run poe fmt
 uv run poe types
 uv run poe test
-uv run tmrl init my-trackmania-agent
-uv run tmrl validate run.yaml
-uv run tmrl track check
-uv run tmrl smoke run.yaml --transitions 100
-uv run tmrl train run.yaml
+uv run trackmaniarl init my-trackmania-agent
+uv run trackmaniarl validate run.yaml
+uv run trackmaniarl track check
+uv run trackmaniarl smoke run.yaml --transitions 100
+uv run trackmaniarl train run.yaml
 ```
 
 These commands deliberately use `uv` without platform-specific virtualenv or shell branches. They must work unchanged on Windows, Linux, WSL and CI.
 
 ## Architecture
 
-The public flow is `RunSpec 1.2 -> coordinator/learner + actor -> WAL -> replay -> updates`. `tmrl.core` contains contracts, data, replay, runtime and built-ins. `tmrl.distributed` contains the authenticated gRPC actor/learner protocol, codec, coordinator and actor spool. `tmrl.trackmania` contains the game adapter only. `tmrl.observability` owns manifests, W&B/local events and artifacts; `tmrl.experiments` owns suites and study strategies; `tmrl.project` owns the generated extension project.
+The public flow is `RunSpec 2.0 -> actor/spool -> authenticated WAL/replay -> learner -> checkpoint/policy snapshot`. `trackmaniarl.models` composes frame-only encoders, temporal cores, heads and value strategies; `trackmaniarl.algorithms.value_based` trains scalar Q, QR-DQN, IQN and FQF through one learner. `trackmaniarl.core` owns contracts, data, replay and runtime; `trackmaniarl.distributed` owns transport and durability; `trackmaniarl.trackmania` owns the game adapter.
 
-`tmrl train` uses Windows-safe multiprocessing `spawn` and starts one local
-actor by default. Remote deployments use `tmrl learner --bind` and
-`tmrl actor --connect`; all participants must use the same run fingerprint,
-map UID, geometry hash, feature/action contract and `TMRL_DISTRIBUTED_TOKEN`.
+`trackmaniarl train` uses Windows-safe multiprocessing `spawn` and starts one local
+actor by default. Remote deployments use `trackmaniarl learner --bind` and
+`trackmaniarl actor --connect`; all participants must use the same run fingerprint,
+map UID, geometry hash, feature/action contract and `TRACKMANIARL_DISTRIBUTED_TOKEN`.
 Rollouts are flushed every 128 transitions or 2 seconds, policy snapshots are
 published at most every 5 seconds, and actor policy state is transferred with
 safetensors rather than pickle. Actor exploration profiles are assigned by
@@ -73,7 +73,7 @@ All built-ins and generated user components need deterministic contract tests. T
 - Never hardcode secrets. Use environment variables or a gitignored `.env`.
 - Never log secrets, tokens, or PII.
 - Before invoking an external integration, inspect `.env` variable names only; this workspace may
-  provide `GEMINI_API_KEY`, `TMRL_PASSWORD`, and `WANDB_API_KEY`. Never read, print, or record
+  provide `GEMINI_API_KEY`, `TRACKMANIARL_DISTRIBUTED_TOKEN`, and `WANDB_API_KEY`. Never read, print, or record
   their values in code, rules, logs, or chat.
 
 ### Do Not Do

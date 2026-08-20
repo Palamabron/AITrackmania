@@ -10,12 +10,12 @@ from trackmaniarl.trackmania.actions import (
     continuous_control_to_discrete_index,
     select_brake_tap_actions,
 )
-from trackmaniarl.trackmania.behavior_cloning import (
+from trackmaniarl.trackmania.demonstrations import Demonstration
+from trackmaniarl.trackmania.guidance import TrajectoryTrackingDemonstrationPolicy
+from trackmaniarl.trackmania.imitation_learning import (
     RECOVERY_DATASET_FORMAT,
     load_behavior_cloning_recovery,
 )
-from trackmaniarl.trackmania.demonstrations import Demonstration
-from trackmaniarl.trackmania.guidance import TrajectoryTrackingDemonstrationPolicy
 from trackmaniarl.trackmania.synthetic_recovery import (
     SyntheticRecoveryConfig,
     generate_synthetic_recovery,

@@ -96,18 +96,18 @@ def run_fingerprint(spec: Any, base_dir: Path) -> str:
     components.pop("logger", None)
     components.pop("additional_loggers", None)
     component_code: dict[str, str] = {}
-    for component in components.values():
-        if not isinstance(component, dict):
-            continue
-        class_path = component.get("class_path")
-        if not isinstance(class_path, str):
-            continue
+    for component in _component_specs(components):
+        class_path = component["class_path"]
         module_name = class_path.partition(":")[0]
         module = importlib.import_module(module_name)
         source = inspect.getsourcefile(module)
         if source is not None:
             source_bytes = Path(source).read_bytes().replace(b"\r\n", b"\n")
             component_code[class_path] = hashlib.sha256(source_bytes).hexdigest()
+        if class_path.endswith(":MambaTemporalCore"):
+            kwargs = component.get("kwargs")
+            if isinstance(kwargs, dict):
+                kwargs.pop("backend", None)
     config["component_code_sha256"] = component_code
     if any(
         class_path.partition(":")[0].startswith("trackmaniarl.trackmania")
@@ -121,6 +121,15 @@ def run_fingerprint(spec: Any, base_dir: Path) -> str:
         map_spec.pop("map_path", None)
     canonical = json.dumps(config, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode()).hexdigest()
+
+
+def _component_specs(value: Any) -> list[dict[str, Any]]:
+    if isinstance(value, dict):
+        result = [value] if isinstance(value.get("class_path"), str) else []
+        return result + [item for child in value.values() for item in _component_specs(child)]
+    if isinstance(value, list):
+        return [item for child in value for item in _component_specs(child)]
+    return []
 
 
 def _trackmania_contracts() -> dict[str, Any]:

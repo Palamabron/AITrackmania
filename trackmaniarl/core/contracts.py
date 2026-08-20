@@ -24,6 +24,7 @@ class ModelContract(StrEnum):
     CONTINUOUS_ACTOR_VALUE = "continuous_actor_value"
     CONTINUOUS_QUANTILE_ACTOR_CRITIC = "continuous_quantile_actor_critic"
     DISCRETE_ACTOR_CRITIC = "discrete_actor_critic"
+    DISCRETE_VALUE = "discrete_value"
     DISCRETE_QUANTILE = "discrete_quantile"
     ENSEMBLE_ACTOR_CRITIC = "ensemble_actor_critic"
 
@@ -75,6 +76,13 @@ class Learner(Protocol):
     def state_dict(self) -> Mapping[str, Any]: ...
 
     def load_state_dict(self, state: Mapping[str, Any]) -> None: ...
+
+
+@runtime_checkable
+class OfflineSupervisedLearner(Learner, Protocol):
+    """Learner with a synthetic validation step distinct from replay training."""
+
+    def validation_update(self, batch: TrainingBatch) -> Mapping[str, float]: ...
 
 
 @runtime_checkable

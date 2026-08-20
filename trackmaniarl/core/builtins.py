@@ -8,7 +8,7 @@ import threading
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, TextIO, cast
 from uuid import uuid4
 
 from trackmaniarl.core.data import SampleBatch, Transition
@@ -78,6 +78,7 @@ class JsonlRunLogger:
         self._segment_id = uuid4().hex
         self._started_at = datetime.now(UTC)
         self._write_lock = threading.Lock()
+        self._file: TextIO | None = None
 
     def log(self, event: str, payload: Mapping[str, Any], *, step: int | None = None) -> None:
         item = {
@@ -91,11 +92,17 @@ class JsonlRunLogger:
             "step": step,
         }
         line = json.dumps(item, default=str, sort_keys=True) + "\n"
-        with self._write_lock, self._path.open("a", encoding="utf-8") as file:
-            file.write(line)
+        with self._write_lock:
+            if self._file is None:
+                self._file = self._path.open("a", encoding="utf-8")
+            self._file.write(line)
+            self._file.flush()
 
     def close(self) -> None:
-        return None
+        with self._write_lock:
+            if self._file is not None:
+                self._file.close()
+                self._file = None
 
 
 JsonlTracker = JsonlRunLogger

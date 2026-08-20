@@ -1,0 +1,22 @@
+{
+  "title": "TrackmaniaRL 2.0 runtime",
+  "direction": "LR",
+  "nodes": [
+    {"id": "config", "label": "RunSpec 2.0 contracts"},
+    {"id": "actor", "label": "Actor + policy state"},
+    {"id": "durable", "label": "Spool gRPC WAL ingest"},
+    {"id": "learner", "label": "Replay sampler learner"},
+    {"id": "outputs", "label": "Snapshot checkpoint metrics"}
+  ],
+  "edges": [
+    {"from": "config", "to": "actor", "label": "resolve"},
+    {"from": "actor", "to": "durable", "label": "rollouts"},
+    {"from": "durable", "to": "learner", "label": "batches"},
+    {"from": "learner", "to": "outputs", "label": "updates"}
+  ],
+  "groups": [
+    {"label": "Trusted configuration", "nodes": ["config"]},
+    {"label": "Actor runtime", "nodes": ["actor"]},
+    {"label": "Learner runtime and durable state", "nodes": ["durable", "learner", "outputs"]}
+  ]
+}

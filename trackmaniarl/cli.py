@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import logging
 import multiprocessing
@@ -208,7 +209,7 @@ def _new_attempt_spec(config: Path, spec: RunSpec, args: argparse.Namespace) -> 
     """Assign a distinct run ID when a fresh local attempt would reuse artifacts."""
 
     fresh_attempt = bool(getattr(args, "reset_replay", False)) or not bool(
-        getattr(args, "checkpoint", None)
+        getattr(args, "checkpoint", None) or getattr(args, "resume", None)
     )
     artifacts_dir = config.parent / spec.artifacts_dir
     if not fresh_attempt or not (artifacts_dir / spec.run_id).exists():
@@ -221,7 +222,7 @@ def _new_attempt_spec(config: Path, spec: RunSpec, args: argparse.Namespace) -> 
 def _resumed_attempt_spec(config: Path, spec: RunSpec, args: argparse.Namespace) -> RunSpec:
     """Recover an auto-assigned sibling run ID from a local resume checkpoint."""
 
-    checkpoint = getattr(args, "checkpoint", None)
+    checkpoint = getattr(args, "checkpoint", None) or getattr(args, "resume", None)
     if checkpoint is None or bool(getattr(args, "reset_replay", False)):
         return spec
     path = Path(checkpoint).resolve()
@@ -1233,7 +1234,7 @@ def _raw_q_values(model: Any, device: torch.device, observation: Any, learner: A
 
 
 def _bc_train(args: argparse.Namespace) -> None:
-    from trackmaniarl.trackmania.behavior_cloning import (
+    from trackmaniarl.trackmania.imitation_learning import (
         augment_behavior_cloning_laps,
         load_behavior_cloning_laps,
         load_behavior_cloning_recovery,
@@ -1241,11 +1242,13 @@ def _bc_train(args: argparse.Namespace) -> None:
     )
 
     config = args.config.resolve()
-    spec = _new_attempt_spec(config, RunSpec.from_yaml(config), args)
+    spec = RunSpec.from_yaml(config)
+    spec = _new_attempt_spec(config, _resumed_attempt_spec(config, spec, args), args)
     paths = resolve_demonstration_paths(args.demo)
     action_ids = _compact_action_ids(spec)
     run = resolve_run(spec, base_dir=config.parent)
     try:
+        prepare_run(run)
         run.learner.setup(_learner_context(run))
         model = getattr(run.learner, "model", None)
         if model is None or tuple(model.action_ids) != action_ids:
@@ -1256,7 +1259,6 @@ def _bc_train(args: argparse.Namespace) -> None:
             raise ValueError(
                 "behavior cloning must exclude control inputs to prevent target leakage"
             )
-        prepare_run(run)
         environment_config = spec.components.environment
         assert environment_config is not None
         action_repeat_frames = int(
@@ -1280,11 +1282,16 @@ def _bc_train(args: argparse.Namespace) -> None:
                 recovery_paths,
                 run.feature_pipeline,
                 action_ids,
+                previous_action_conditioning=bool(model.previous_action_conditioning),
             )
-            recovery_training, recovery_validation = split_behavior_cloning_laps(
-                recovery_laps,
-                spec.seed + 1,
-            )
+            if len(recovery_laps) < 3:
+                recovery_training: list[Any] = recovery_laps
+                recovery_validation: list[Any] = []
+            else:
+                recovery_training, recovery_validation = split_behavior_cloning_laps(
+                    recovery_laps,
+                    spec.seed + 1,
+                )
             train_laps.extend(recovery_training)
             validation_laps.extend(recovery_validation)
         use_horizontal_flip = bool(
@@ -1295,13 +1302,69 @@ def _bc_train(args: argparse.Namespace) -> None:
             if not getattr(run.feature_pipeline, "local_velocity_features", False):
                 raise ValueError("horizontal flip augmentation requires local_velocity_features")
             train_laps = augment_behavior_cloning_laps(train_laps, action_ids)
-        _train_behavior_cloning(run, train_laps, validation_laps)
+        dataset_fingerprint = _write_behavior_cloning_dataset_manifest(
+            run,
+            (*paths, *recovery_paths),
+            train_laps,
+            validation_laps,
+            action_ids,
+        )
+        bind_dataset = getattr(run.learner, "bind_dataset", None)
+        if not callable(bind_dataset):
+            raise TypeError("bc-train learner must expose bind_dataset()")
+        bind_dataset(dataset_fingerprint)
+        resume = getattr(args, "resume", None)
+        resume_state = None if resume is None else run.checkpoint_codec.load(resume)
+        _train_behavior_cloning(run, train_laps, validation_laps, resume_state)
     finally:
         run.logger.close()
 
 
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as file:
+        for block in iter(lambda: file.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _write_behavior_cloning_dataset_manifest(
+    run: Any,
+    paths: tuple[Path, ...],
+    training: list[Any],
+    validation: list[Any],
+    action_ids: tuple[int, ...],
+) -> str:
+    files = [
+        {
+            "path": str(path.resolve()),
+            "sha256": _file_sha256(path),
+            "size_bytes": path.stat().st_size,
+        }
+        for path in paths
+    ]
+    contract = {
+        "schema_version": "trackmaniarl-bc-dataset-v2",
+        "files": files,
+        "training_sources": [lap.source_id for lap in training],
+        "validation_sources": [lap.source_id for lap in validation],
+        "action_ids": action_ids,
+        "feature_pipeline": run.spec.components.feature_pipeline.model_dump(mode="json"),
+        "model_factory": run.spec.components.model_factory.model_dump(mode="json"),
+    }
+    encoded = json.dumps(contract, sort_keys=True, separators=(",", ":")).encode()
+    fingerprint = hashlib.sha256(encoded).hexdigest()
+    payload = {**contract, "fingerprint": fingerprint}
+    target = run.run_dir / "bc-dataset-manifest.json"
+    candidate = json.dumps(payload, indent=2, sort_keys=True)
+    if target.exists() and target.read_text(encoding="utf-8") != candidate:
+        raise ValueError("BC dataset or split differs from the immutable run manifest")
+    target.write_text(candidate, encoding="utf-8")
+    return fingerprint
+
+
 def _dagger_collect(args: argparse.Namespace) -> None:
-    from trackmaniarl.trackmania.behavior_cloning import (
+    from trackmaniarl.trackmania.imitation_learning import (
         BehaviorCloningPolicy,
         save_behavior_cloning_recovery,
     )
@@ -1505,8 +1568,13 @@ def _behavior_cloning_checkpoint_improved(
     return eligible and (not selected_eligible or score > selection.checkpoint_score + 1.0e-4)
 
 
-def _train_behavior_cloning(run: Any, training: list[Any], validation: list[Any]) -> None:
-    from trackmaniarl.trackmania.behavior_cloning import (
+def _train_behavior_cloning(
+    run: Any,
+    training: list[Any],
+    validation: list[Any],
+    resume: Mapping[str, Any] | None = None,
+) -> None:
+    from trackmaniarl.trackmania.imitation_learning import (
         class_weights,
         clone_state,
         collate_behavior_cloning,
@@ -1516,6 +1584,11 @@ def _train_behavior_cloning(run: Any, training: list[Any], validation: list[Any]
     learner = run.learner
     train_observations, train_labels = flatten_behavior_cloning_laps(training)
     validation_observations, validation_labels = flatten_behavior_cloning_laps(validation)
+    train_tensors = collate_behavior_cloning(train_observations)
+    validation_tensors = collate_behavior_cloning(validation_observations)
+    training.clear()
+    validation.clear()
+    del train_observations, validation_observations
     weights = class_weights(
         train_labels,
         learner.model.head.out_features,
@@ -1524,19 +1597,33 @@ def _train_behavior_cloning(run: Any, training: list[Any], validation: list[Any]
     generator = torch.Generator().manual_seed(run.spec.seed)
     selection = _BehaviorCloningSelection()
     best_step = 0
+    start_step = 1
     checkpoint = run.run_dir / "checkpoints" / "bc-best-validation.pt"
-    for step in range(1, learner.max_steps + 1):
+    latest = run.run_dir / "checkpoints" / "bc-latest.pt"
+    if resume is not None:
+        training_state = resume.get("training")
+        if resume.get("schema_version") != "trackmaniarl-bc-training-v2" or not isinstance(
+            training_state, Mapping
+        ):
+            raise ValueError("BC resume requires a complete v2 training checkpoint")
+        learner.load_state_dict(resume["learner"])
+        generator.set_state(training_state["batch_generator"])
+        selection = _restore_behavior_cloning_selection(training_state["selection"])
+        best_step = int(training_state["best_step"])
+        start_step = int(training_state["step"]) + 1
+    for step in range(start_step, learner.max_steps + 1):
         indices = torch.randint(
             len(train_labels), (run.spec.training.batch_size,), generator=generator
         )
-        observations = [train_observations[int(index)] for index in indices]
         labels = train_labels[indices]
-        metrics = learner.train_batch(collate_behavior_cloning(observations), labels, weights)
-        run.logger.log("bc/train", metrics, step=step)
+        observations = {key: value[indices] for key, value in train_tensors.items()}
+        metrics = learner.train_batch(observations, labels, weights)
+        if step % run.spec.training.metrics_interval_updates == 0:
+            run.logger.log("bc/train", metrics, step=step)
         if step % learner.validation_interval == 0:
             selection, improved = _validate_behavior_cloning(
                 run,
-                validation_observations,
+                validation_tensors,
                 validation_labels,
                 weights,
                 step,
@@ -1546,8 +1633,25 @@ def _train_behavior_cloning(run: Any, training: list[Any], validation: list[Any]
                 assert selection.checkpoint_state is not None
                 best_step = step
                 run.checkpoint_codec.save(
-                    {"learner": clone_state(selection.checkpoint_state)}, checkpoint
+                    {
+                        "schema_version": "trackmaniarl-bc-policy-v2",
+                        "learner": clone_state(selection.checkpoint_state),
+                    },
+                    checkpoint,
                 )
+            run.checkpoint_codec.save(
+                {
+                    "schema_version": "trackmaniarl-bc-training-v2",
+                    "learner": clone_state(learner.state_dict()),
+                    "training": {
+                        "step": step,
+                        "best_step": best_step,
+                        "batch_generator": generator.get_state(),
+                        "selection": _serialize_behavior_cloning_selection(selection),
+                    },
+                },
+                latest,
+            )
             if selection.stale_validations >= learner.early_stopping_patience:
                 print(
                     f"Behavior cloning early-stopped at step {step}: "
@@ -1567,17 +1671,41 @@ def _train_behavior_cloning(run: Any, training: list[Any], validation: list[Any]
     )
 
 
+def _serialize_behavior_cloning_selection(
+    selection: _BehaviorCloningSelection,
+) -> dict[str, Any]:
+    return {
+        "minimum_loss": selection.minimum_loss,
+        "checkpoint_score": selection.checkpoint_score,
+        "checkpoint_loss": selection.checkpoint_loss,
+        "checkpoint_state": selection.checkpoint_state,
+        "stale_validations": selection.stale_validations,
+    }
+
+
+def _restore_behavior_cloning_selection(state: Any) -> _BehaviorCloningSelection:
+    if not isinstance(state, Mapping):
+        raise ValueError("BC resume checkpoint has invalid selection state")
+    return _BehaviorCloningSelection(
+        minimum_loss=float(state["minimum_loss"]),
+        checkpoint_score=float(state["checkpoint_score"]),
+        checkpoint_loss=float(state["checkpoint_loss"]),
+        checkpoint_state=state["checkpoint_state"],
+        stale_validations=int(state["stale_validations"]),
+    )
+
+
 def _validate_behavior_cloning(
     run: Any,
-    observations: list[Any],
+    observations: Mapping[str, torch.Tensor],
     labels: Any,
     weights: Any,
     step: int,
     selection: _BehaviorCloningSelection,
 ) -> tuple[_BehaviorCloningSelection, bool]:
-    from trackmaniarl.trackmania.behavior_cloning import clone_state, collate_behavior_cloning
+    from trackmaniarl.trackmania.imitation_learning import clone_state
 
-    losses: list[float] = []
+    loss_numerator = loss_denominator = 0.0
     correct = total = 0
     transition_correct = transition_total = 0
     steering_correct = steering_total = 0
@@ -1591,9 +1719,12 @@ def _validate_behavior_cloning(
     for start in range(0, len(labels), run.spec.training.batch_size):
         end = start + run.spec.training.batch_size
         batch = run.learner.evaluate_batch(
-            collate_behavior_cloning(observations[start:end]), labels[start:end], weights
+            {key: value[start:end] for key, value in observations.items()},
+            labels[start:end],
+            weights,
         )
-        losses.append(batch.loss * batch.total)
+        loss_numerator += batch.loss_numerator
+        loss_denominator += batch.loss_denominator
         correct += batch.correct
         total += batch.total
         per_action_correct += batch.per_action_correct
@@ -1610,7 +1741,7 @@ def _validate_behavior_cloning(
         intervention_total += batch.intervention_count
         disagreement_correct += batch.student_disagreement_correct
         disagreement_total += batch.student_disagreement_count
-    loss = sum(losses) / total
+    loss = loss_numerator / loss_denominator
     learning_rate = run.learner.step_scheduler(loss)
     action_recall = per_action_correct.float() / per_action_count.clamp_min(1)
     observed_actions = per_action_count > 0
@@ -1983,6 +2114,11 @@ def entrypoint(argv: list[str] | None = None) -> None:
         type=Path,
         required=True,
         help="demonstration .npz file or directory of .npz files (repeatable)",
+    )
+    bc_train.add_argument(
+        "--resume",
+        type=Path,
+        help="resume an exact BC v2 training checkpoint (bc-latest.pt)",
     )
     bc_train.add_argument(
         "--horizontal-flip-augmentation",

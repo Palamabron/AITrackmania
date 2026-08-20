@@ -17,6 +17,7 @@ from trackmaniarl.core.contracts import (
     Learner,
     ModelContract,
     ModelFactory,
+    OfflineSupervisedLearner,
     ReplayStore,
     RunLogger,
     Sampler,
@@ -222,10 +223,10 @@ def prepare_run(run: ResolvedRun) -> None:
 def validate_resolved_run(run: ResolvedRun) -> dict[str, float]:
     """Execute a deterministic no-game smoke update for ``trackmaniarl validate``."""
 
+    prepare_run(run)
     run.learner.setup(
         {"seed": run.spec.seed, "run_dir": run.run_dir, "model_factory": run.model_factory}
     )
-    prepare_run(run)
     request = run.spec.training.batch_request()
     if getattr(run.learner, "on_policy", False):
         request = BatchRequest(
@@ -264,7 +265,11 @@ def validate_resolved_run(run: ResolvedRun) -> dict[str, float]:
             )
         )
     batch = run.sampler.sample(run.replay_store, request)
-    update = run.learner.update(batch)
+    update = (
+        run.learner.validation_update(batch)
+        if isinstance(run.learner, OfflineSupervisedLearner)
+        else run.learner.update(batch)
+    )
     metrics, priority_update = update if isinstance(update, tuple) else (update, None)
     if priority_update is not None:
         run.sampler.update_priorities(priority_update)

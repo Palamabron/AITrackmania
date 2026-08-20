@@ -1,0 +1,22 @@
+{
+  "title": "Imitation learning and safe RL handoff",
+  "direction": "LR",
+  "nodes": [
+    {"id": "record", "label": "Laps + DAgger archives"},
+    {"id": "quality", "label": "Quality gate + lap split"},
+    {"id": "train", "label": "Tensorized BC + AMP"},
+    {"id": "gate", "label": "Closed-loop benchmark"},
+    {"id": "handoff", "label": "Warm-start IQN or FQF"}
+  ],
+  "edges": [
+    {"from": "record", "to": "quality", "label": "ingest"},
+    {"from": "quality", "to": "train", "label": "manifest"},
+    {"from": "train", "to": "gate", "label": "checkpoint"},
+    {"from": "gate", "to": "handoff", "label": "promote"}
+  ],
+  "groups": [
+    {"label": "Trusted offline data", "nodes": ["record", "quality"]},
+    {"label": "Supervised lifecycle", "nodes": ["train", "gate"]},
+    {"label": "RL experiment", "nodes": ["handoff"]}
+  ]
+}

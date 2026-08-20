@@ -4,5 +4,9 @@ This repository originated from TMRL, copyright (c) 2021 Edouard Geze and
 Yann Bouteiller, and includes code derived from that project. The applicable
 MIT license and copyright notice are retained in LICENSE.
 
+The portable selective-scan implementation is informed by the Mamba reference
+implementation, copyright (c) 2023 state-spaces, distributed under the Apache
+License 2.0: https://github.com/state-spaces/mamba
+
 TrackmaniaRL is not affiliated with, endorsed by, or sponsored by Ubisoft,
 Nadeo, or the TMRL maintainers. Trackmania is a trademark of Nadeo/Ubisoft.

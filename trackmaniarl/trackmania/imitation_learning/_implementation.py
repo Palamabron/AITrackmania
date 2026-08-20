@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import random
 from collections.abc import Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass
@@ -13,14 +14,22 @@ import torch
 from torch import nn
 from torch.nn import functional as functional
 
+from trackmaniarl.algorithms.execution import (
+    ResolvedTorchExecution,
+    TorchExecutionConfig,
+    resolve_torch_execution,
+)
 from trackmaniarl.core.contracts import FeaturePipeline, ModelContract, ModelFactory, Policy
+from trackmaniarl.models.composite import FrameBatchAdapter
+from trackmaniarl.models.temporal import GruTemporalCore, IdentityTemporalCore
 from trackmaniarl.trackmania.actions import select_brake_tap_actions
 from trackmaniarl.trackmania.demonstrations import (
     Demonstration,
     load_demonstration,
     resample_demonstration,
+    validate_recording_quality,
 )
-from trackmaniarl.trackmania.lidar import _LidarObservationEncoder
+from trackmaniarl.trackmania.encoders import LidarSensorEncoder
 
 RECOVERY_DATASET_FORMAT_V1 = "trackmaniarl-bc-recovery-v1"
 RECOVERY_DATASET_FORMAT = "trackmaniarl-bc-recovery-v2"
@@ -35,6 +44,8 @@ MINIMUM_LAP_WEIGHT = 0.15
 @dataclass(frozen=True, slots=True)
 class BehaviorCloningValidationBatch:
     loss: float
+    loss_numerator: float
+    loss_denominator: float
     correct: int
     total: int
     per_action_correct: torch.Tensor
@@ -55,8 +66,6 @@ class BehaviorCloningValidationBatch:
 
 class LidarBehaviorCloningModel(nn.Module):
     """Categorical policy over an explicit compact action set and frame history."""
-
-    masked_telemetry_indices: torch.Tensor
 
     def __init__(
         self,
@@ -84,29 +93,25 @@ class LidarBehaviorCloningModel(nn.Module):
             raise ValueError("previous-action policy dimensions must be positive")
         if switch_logit_margin < 0.0:
             raise ValueError("switch_logit_margin must be non-negative")
-        if len(set(masked_telemetry_indices)) != len(masked_telemetry_indices) or any(
-            index < 0 or index >= telemetry_dim for index in masked_telemetry_indices
-        ):
-            raise ValueError("masked telemetry indices must be unique and inside telemetry")
         self.previous_action_conditioning = previous_action_conditioning
         self.previous_action_start = self.action_count
         self.minimum_action_hold_steps = minimum_action_hold_steps
         self.switch_logit_margin = switch_logit_margin
-        self.register_buffer(
-            "masked_telemetry_indices",
-            torch.tensor(masked_telemetry_indices, dtype=torch.long),
-            persistent=False,
-        )
-        self.encoder = _LidarObservationEncoder(
+        self.encoder = LidarSensorEncoder(
             telemetry_dim=telemetry_dim,
-            history_length=history_length,
             spatial_bins=spatial_bins,
-            burn_in=burn_in,
             lidar_channels=lidar_channels,
             telemetry_group_dims=telemetry_group_dims,
             hidden_dim=encoder_hidden_dim,
             output_dim=encoder_output_dim,
+            masked_telemetry_indices=masked_telemetry_indices,
         )
+        self.temporal = (
+            IdentityTemporalCore(encoder_output_dim)
+            if history_length == 1
+            else GruTemporalCore(encoder_output_dim, encoder_output_dim)
+        )
+        self.burn_in = burn_in if history_length > 1 else 0
         self.previous_action_embedding = (
             nn.Embedding(self.action_count + 1, previous_action_embedding_dim)
             if previous_action_conditioning
@@ -117,21 +122,35 @@ class LidarBehaviorCloningModel(nn.Module):
         )
         self.head = nn.Linear(head_input_dim, self.action_count)
 
+    def initial_policy_state(self, device: torch.device) -> Any:
+        return self.temporal.initial_state(1, device)
+
+    def policy_logits(
+        self, observation: Mapping[str, torch.Tensor], state: Any
+    ) -> tuple[torch.Tensor, Any]:
+        frames = {key: observation[key] for key in ("lidar", "lidar_mask", "telemetry")}
+        batch = FrameBatchAdapter.flatten(frames, sequence=False)
+        features = self.encoder(cast(Any, batch.frames))
+        encoded, next_state = self.temporal.step(features, state)
+        return self._logits(encoded, observation), next_state
+
     def forward(self, observation: Mapping[str, torch.Tensor]) -> torch.Tensor:
-        telemetry = observation["telemetry"]
-        if self.masked_telemetry_indices.numel():
-            telemetry = telemetry.index_fill(-1, self.masked_telemetry_indices, 0.0)
-        encoded = self.encoder(
-            {
-                "lidar": observation["lidar"],
-                "lidar_mask": observation["lidar_mask"],
-                "telemetry": telemetry,
-            }
-        )
+        frames = {key: observation[key] for key in ("lidar", "lidar_mask", "telemetry")}
+        sequence = observation["lidar"].ndim == 4
+        batch = FrameBatchAdapter.flatten(frames, sequence=sequence)
+        features = batch.restore(self.encoder(cast(Any, batch.frames)))
+        encoded = self.temporal.unroll(features, self.burn_in)[:, -1]
+        return self._logits(encoded, observation)
+
+    def _logits(
+        self, encoded: torch.Tensor, observation: Mapping[str, torch.Tensor]
+    ) -> torch.Tensor:
         if self.previous_action_embedding is not None:
             previous_action = observation.get("previous_action")
             if previous_action is None:
                 raise ValueError("previous_action is required by this behavior-cloning model")
+            if previous_action.ndim == 2:
+                previous_action = previous_action[:, -1]
             encoded = torch.cat(
                 (encoded, self.previous_action_embedding(previous_action.long())), dim=-1
             )
@@ -199,10 +218,12 @@ class BehaviorCloningPolicy:
         self.device = device
         self.previous_action = model.previous_action_start
         self.action_hold_steps = 0
+        self.temporal_state = model.initial_policy_state(device)
 
     def reset_episode(self) -> None:
         self.previous_action = self.model.previous_action_start
         self.action_hold_steps = 0
+        self.temporal_state = self.model.initial_policy_state(self.device)
 
     def act(self, observation: Mapping[str, torch.Tensor], *, deterministic: bool = False) -> int:
         del deterministic
@@ -212,7 +233,8 @@ class BehaviorCloningPolicy:
                 [self.previous_action], device=self.device, dtype=torch.long
             )
         with torch.inference_mode():
-            logits = self.model(batched).squeeze(0)
+            logits, self.temporal_state = self.model.policy_logits(batched, self.temporal_state)
+            logits = logits.squeeze(0)
         action = int(logits.argmax().item())
         if self.previous_action < self.model.action_count and action != self.previous_action:
             switch_margin = float(logits[action] - logits[self.previous_action])
@@ -251,7 +273,7 @@ class BehaviorCloningLearner:
         focal_gamma: float = 0.0,
         steering_auxiliary_loss_weight: float = 0.0,
         horizontal_flip_augmentation: bool = False,
-        execution: Mapping[str, Any] | None = None,
+        execution: TorchExecutionConfig | Mapping[str, Any] | None = None,
         seed: int = 0,
     ) -> None:
         if (
@@ -289,23 +311,38 @@ class BehaviorCloningLearner:
         self.focal_gamma = focal_gamma
         self.steering_auxiliary_loss_weight = steering_auxiliary_loss_weight
         self.horizontal_flip_augmentation = horizontal_flip_augmentation
-        self.execution = dict(execution or {})
+        self.execution = (
+            TorchExecutionConfig(**execution)
+            if isinstance(execution, Mapping)
+            else execution or TorchExecutionConfig()
+        )
         self.seed = seed
         self.device = torch.device("cpu")
+        self.resolved_execution: ResolvedTorchExecution | None = None
+        self.scaler: Any = None
         self.optimizer: torch.optim.Optimizer | None = None
         self.scheduler: torch.optim.lr_scheduler.ReduceLROnPlateau | None = None
+        self.dataset_fingerprint: str | None = None
 
     def setup(self, context: Mapping[str, Any]) -> None:
+        seed = int(context.get("seed", self.seed))
+        random.seed(seed)
+        np.random.seed(seed)
+        torch.manual_seed(seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(seed)
         factory = self.model_factory or context.get("model_factory")
         if self.model is None:
             if factory is None:
                 raise ValueError("BehaviorCloningLearner requires model_factory")
             self.model = factory.build()
-        requested = str(self.execution.get("device", "cpu"))
-        if requested == "cuda" and not torch.cuda.is_available():
-            raise RuntimeError("behavior cloning requested CUDA but torch.cuda is unavailable")
-        self.device = torch.device(requested)
+        self.resolved_execution = resolve_torch_execution(self.execution)
+        self.device = self.resolved_execution.torch_device
         self.model.to(self.device)
+        self.scaler = cast(Any, torch.amp).GradScaler(
+            self.device.type,
+            enabled=self.resolved_execution.scaler_enabled,
+        )
         self.optimizer = torch.optim.AdamW(
             self.model.parameters(), lr=self.learning_rate, weight_decay=self.weight_decay
         )
@@ -326,16 +363,19 @@ class BehaviorCloningLearner:
         if self.model is None or self.optimizer is None:
             raise RuntimeError("BehaviorCloningLearner.setup must run before training")
         self.model.train()
-        logits = self.model(_to_device(observations, self.device))
         targets = labels.to(self.device)
         weights = class_weights.to(self.device)
-        loss = self._classification_loss(logits, targets, weights, observations)
+        with self._autocast():
+            logits = self.model(_to_device(observations, self.device))
+            loss = self._classification_loss(logits, targets, weights, observations)
         self.optimizer.zero_grad(set_to_none=True)
-        cast(Any, loss).backward()
+        self.scaler.scale(loss).backward()
+        self.scaler.unscale_(self.optimizer)
         gradient_norm = torch.nn.utils.clip_grad_norm_(
             self.model.parameters(), self.gradient_clip_norm
         )
-        self.optimizer.step()
+        self.scaler.step(self.optimizer)
+        self.scaler.update()
         accuracy = (logits.argmax(dim=-1) == targets).float().mean()
         transition_mask = self._transition_mask(observations, targets)
         transition_accuracy = self._masked_accuracy(logits, targets, transition_mask)
@@ -359,10 +399,14 @@ class BehaviorCloningLearner:
             raise RuntimeError("BehaviorCloningLearner.setup must run before evaluation")
         self.model.eval()
         with torch.inference_mode():
-            logits = self.model(_to_device(observations, self.device))
-            targets = labels.to(self.device)
-            weights = class_weights.to(self.device)
-            loss = self._classification_loss(logits, targets, weights, observations)
+            with self._autocast():
+                logits = self.model(_to_device(observations, self.device))
+                targets = labels.to(self.device)
+                weights = class_weights.to(self.device)
+                numerator, denominator = self._classification_loss_terms(
+                    logits, targets, weights, observations
+                )
+                loss = numerator / denominator
             predicted = logits.argmax(dim=-1)
             correct_mask = predicted == targets
             correct = int(correct_mask.sum().item())
@@ -397,6 +441,8 @@ class BehaviorCloningLearner:
             )
         return BehaviorCloningValidationBatch(
             loss=float(loss),
+            loss_numerator=float(numerator),
+            loss_denominator=float(denominator),
             correct=correct,
             total=int(targets.numel()),
             per_action_correct=per_action_correct.cpu(),
@@ -426,6 +472,34 @@ class BehaviorCloningLearner:
         weights = self._sample_weights(observations, targets)
         return float((correct.float() * weights).sum()), float(weights.sum())
 
+    def _autocast(self) -> Any:
+        if self.resolved_execution is None:
+            raise RuntimeError("BehaviorCloningLearner.setup must run before autocast")
+        dtype = {
+            "bfloat16": torch.bfloat16,
+            "float16": torch.float16,
+            "float32": torch.float32,
+        }[self.resolved_execution.precision]
+        return torch.autocast(
+            device_type=self.device.type,
+            dtype=dtype,
+            enabled=self.resolved_execution.precision != "float32",
+        )
+
+    def execution_manifest(self) -> Mapping[str, object]:
+        if self.resolved_execution is None:
+            return {
+                "resolved": False,
+                "requested_device": self.execution.device,
+                "requested_precision": self.execution.precision,
+            }
+        return {"resolved": True, **self.resolved_execution.manifest()}
+
+    def bind_dataset(self, fingerprint: str) -> None:
+        if not fingerprint:
+            raise ValueError("behavior-cloning dataset fingerprint must not be empty")
+        self.dataset_fingerprint = fingerprint
+
     @staticmethod
     def _validation_subset_counts(
         correct: torch.Tensor,
@@ -446,6 +520,18 @@ class BehaviorCloningLearner:
         class_weights: torch.Tensor,
         observations: Mapping[str, torch.Tensor],
     ) -> torch.Tensor:
+        numerator, denominator = self._classification_loss_terms(
+            logits, targets, class_weights, observations
+        )
+        return numerator / denominator
+
+    def _classification_loss_terms(
+        self,
+        logits: torch.Tensor,
+        targets: torch.Tensor,
+        class_weights: torch.Tensor,
+        observations: Mapping[str, torch.Tensor],
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         losses = functional.cross_entropy(
             logits,
             targets,
@@ -466,7 +552,7 @@ class BehaviorCloningLearner:
             target_probability = logits.softmax(dim=-1).gather(1, targets[:, None]).squeeze(1)
             multipliers *= (1.0 - target_probability).pow(self.focal_gamma)
         denominator = (class_weights[targets] * multipliers).sum().clamp_min(1e-8)
-        return (losses * multipliers).sum() / denominator
+        return (losses * multipliers).sum(), denominator
 
     def _steering_loss(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
         steering = self._steering_classes(logits.device)
@@ -604,14 +690,41 @@ class BehaviorCloningLearner:
         del batch
         raise RuntimeError("BehaviorCloningLearner only supports trackmaniarl bc-train")
 
+    def validation_update(self, batch: Any) -> Mapping[str, float]:
+        observations = batch.observations
+        actions = batch.actions
+        if not isinstance(observations, Mapping) or not isinstance(actions, torch.Tensor):
+            raise TypeError("BC validation requires mapping observations and tensor actions")
+        if self.model is None:
+            raise RuntimeError("BehaviorCloningLearner.setup must run before validation")
+        sequence = actions.ndim > 1
+        labels = actions.long().reshape(-1).remainder(self.model.action_count)
+        prepared = {
+            key: value.reshape(-1, *value.shape[2:]) if sequence else value
+            for key, value in observations.items()
+            if isinstance(value, torch.Tensor)
+        }
+        if self.model.previous_action_conditioning and "previous_action" not in prepared:
+            prepared["previous_action"] = torch.full_like(labels, self.model.previous_action_start)
+        metrics = self.train_batch(prepared, labels, torch.ones(self.model.action_count))
+        return {f"validation/{key}": value for key, value in metrics.items()}
+
     def state_dict(self) -> Mapping[str, Any]:
         if self.model is None or self.optimizer is None or self.scheduler is None:
             raise RuntimeError("BehaviorCloningLearner.setup must run before checkpointing")
         return {
+            "schema_version": "trackmaniarl-bc-checkpoint-v2",
             "model": self.model.state_dict(),
             "optimizer": self.optimizer.state_dict(),
             "scheduler": self.scheduler.state_dict(),
             "policy_action_ids": self.model.action_ids,
+            "dataset_fingerprint": self.dataset_fingerprint,
+            "rng": {
+                "python": random.getstate(),
+                "numpy": np.random.get_state(),
+                "torch": torch.get_rng_state(),
+                "accelerator": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else [],
+            },
         }
 
     def load_state_dict(self, state: Mapping[str, Any]) -> None:
@@ -620,11 +733,26 @@ class BehaviorCloningLearner:
         saved_action_ids = state.get("policy_action_ids")
         if saved_action_ids is not None and tuple(saved_action_ids) != self.model.action_ids:
             raise ValueError("behavior-cloning checkpoint action contract does not match")
+        saved_dataset = state.get("dataset_fingerprint")
+        if (
+            self.dataset_fingerprint is not None
+            and saved_dataset is not None
+            and saved_dataset != self.dataset_fingerprint
+        ):
+            raise ValueError("behavior-cloning checkpoint dataset fingerprint does not match")
         self.model.load_state_dict(state["model"])
         self.optimizer.load_state_dict(state["optimizer"])
         scheduler = state.get("scheduler")
         if scheduler is not None:
             self.scheduler.load_state_dict(scheduler)
+        rng = state.get("rng")
+        if isinstance(rng, Mapping):
+            random.setstate(rng["python"])
+            np.random.set_state(rng["numpy"])
+            torch.set_rng_state(rng["torch"])
+            accelerator = rng["accelerator"]
+            if torch.cuda.is_available() and accelerator:
+                torch.cuda.set_rng_state_all(accelerator)
 
 
 @dataclass(frozen=True, slots=True)
@@ -632,6 +760,7 @@ class BehaviorCloningLap:
     observations: tuple[Mapping[str, torch.Tensor], ...]
     labels: torch.Tensor
     quality_weight: float = 1.0
+    source_id: str = ""
 
 
 def save_behavior_cloning_recovery(
@@ -809,6 +938,8 @@ def load_behavior_cloning_recovery(
     paths: Sequence[Path],
     pipeline: FeaturePipeline,
     action_ids: tuple[int, ...],
+    *,
+    previous_action_conditioning: bool = False,
 ) -> list[BehaviorCloningLap]:
     """Rebuild feature histories for DAgger states and keep episodes separate."""
 
@@ -834,7 +965,9 @@ def load_behavior_cloning_recovery(
         boundaries = np.flatnonzero(starts)
         if not len(boundaries) or boundaries[0] != 0:
             raise ValueError(f"recovery data does not begin with an episode: {path}")
-        for start, stop in zip(boundaries, [*boundaries[1:], len(frames)], strict=True):
+        for episode, (start, stop) in enumerate(
+            zip(boundaries, [*boundaries[1:], len(frames)], strict=True)
+        ):
             reset = getattr(pipeline, "reset_episode", None)
             if callable(reset):
                 reset()
@@ -849,11 +982,17 @@ def load_behavior_cloning_recovery(
                 observation["expert_previous_action"] = torch.tensor(
                     previous_action, dtype=torch.long
                 )
+                if previous_action_conditioning:
+                    observation["previous_action"] = torch.tensor(previous_action, dtype=torch.long)
                 _attach_recovery_metadata(observation, metadata, int(start) + offset)
                 observations.append(observation)
                 previous_action = int(label)
             laps.append(
-                BehaviorCloningLap(tuple(observations), torch.from_numpy(labels[start:stop].copy()))
+                BehaviorCloningLap(
+                    tuple(observations),
+                    torch.from_numpy(labels[start:stop].copy()),
+                    source_id=f"{path.resolve()}#episode-{episode}",
+                )
             )
     return laps
 
@@ -887,6 +1026,7 @@ def load_behavior_cloning_laps(
             expected_action_repeat_frames,
             expected_decision_interval_ms,
         )
+        validate_recording_quality(demo)
         frames, actions = resample_demonstration(demo, expected_decision_interval_ms)
         lap_weight = float(
             np.clip(
@@ -925,6 +1065,7 @@ def load_behavior_cloning_laps(
                 tuple(observations),
                 torch.tensor(labels, dtype=torch.long),
                 quality_weight=lap_weight,
+                source_id=str(path.resolve()),
             )
         )
     if len(laps) < 3:
@@ -977,10 +1118,9 @@ def split_behavior_cloning_laps(
     """Split complete laps into an 80/20 deterministic train/validation partition."""
 
     generator = torch.Generator().manual_seed(seed)
+    if len(laps) < 2:
+        raise ValueError("behavior-cloning split requires at least two complete episodes")
     order = torch.randperm(len(laps), generator=generator).tolist()
-    if len(laps) == 3:
-        validation = [laps[order[0]]]
-        return list(laps), validation
     validation_count = max(1, round(len(laps) * 0.2))
     validation_indices = order[:validation_count]
     training_indices = order[validation_count:]
@@ -1008,6 +1148,7 @@ def augment_behavior_cloning_laps(
             ),
             mapping[lap.labels],
             quality_weight=lap.quality_weight,
+            source_id=f"{lap.source_id}#horizontal-reflection",
         )
         for lap in laps
     ]
@@ -1068,11 +1209,10 @@ def horizontal_flip_observation(
     reflected_telemetry[..., 37] = telemetry[..., 35]
     reflected_telemetry[..., 39] = -telemetry[..., 39]
     reflected_telemetry[..., 41] = -telemetry[..., 41]
-    return {
-        "lidar": reflected_lidar,
-        "lidar_mask": observation["lidar_mask"].clone(),
-        "telemetry": reflected_telemetry,
-    }
+    reflected = {key: value.clone() for key, value in observation.items()}
+    reflected["lidar"] = reflected_lidar
+    reflected["telemetry"] = reflected_telemetry
+    return reflected
 
 
 def _horizontal_flip_action_indices(action_ids: tuple[int, ...]) -> torch.Tensor:

@@ -19,9 +19,9 @@ from trackmaniarl.models.encoders import (
     TemporalMambaTrackGeometryEncoder,
     require_mamba_layer,
 )
-from trackmaniarl.trackmania.behavior_cloning import LidarBehaviorCloningModel
 from trackmaniarl.trackmania.features import LidarFeaturePipeline
 from trackmaniarl.trackmania.geometry import BoundaryGeometry, build_geometry_asset
+from trackmaniarl.trackmania.imitation_learning import LidarBehaviorCloningModel
 from trackmaniarl.trackmania.iqn import LidarIqnModel
 from trackmaniarl.trackmania.mamba import (
     LidarMambaModel,

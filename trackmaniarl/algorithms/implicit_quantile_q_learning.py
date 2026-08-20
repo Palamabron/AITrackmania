@@ -1292,11 +1292,19 @@ class ImplicitQuantileQLearning(TorchLearnerBase):
             if target_name.startswith(target_prefix):
                 source = source_state.get(source_prefix + target_name.removeprefix(target_prefix))
                 return source if isinstance(source, torch.Tensor) else None
+        frame_prefix = "encoder.encoder."
+        if target_name.startswith(frame_prefix):
+            source = source_state.get("encoder.frame." + target_name.removeprefix(frame_prefix))
+            if isinstance(source, torch.Tensor):
+                return source
         prefix = "encoder.encoder.frame."
         if not target_name.startswith(prefix):
             return None
         behavior_cloning_name = "encoder.encoder." + target_name.removeprefix(prefix)
         source = source_state.get(behavior_cloning_name)
+        if not isinstance(source, torch.Tensor):
+            behavior_cloning_name = "encoder.frame." + target_name.removeprefix(prefix)
+            source = source_state.get(behavior_cloning_name)
         return source if isinstance(source, torch.Tensor) else None
 
     @staticmethod

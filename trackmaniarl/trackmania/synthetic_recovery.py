@@ -8,9 +8,9 @@ from pathlib import Path
 import numpy as np
 
 from trackmaniarl.trackmania.actions import select_brake_tap_actions
-from trackmaniarl.trackmania.behavior_cloning import save_behavior_cloning_recovery
 from trackmaniarl.trackmania.demonstrations import Demonstration, load_demonstration
 from trackmaniarl.trackmania.guidance import digital_recovery_steering
+from trackmaniarl.trackmania.imitation_learning import save_behavior_cloning_recovery
 
 
 @dataclass(frozen=True, slots=True)

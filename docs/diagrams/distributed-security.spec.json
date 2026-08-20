@@ -1,0 +1,22 @@
+{
+  "title": "Distributed security and durability",
+  "direction": "LR",
+  "nodes": [
+    {"id": "actor", "label": "Actor spool + retries"},
+    {"id": "tunnel", "label": "Encrypted tunnel"},
+    {"id": "checks", "label": "Token limits fingerprint"},
+    {"id": "wal", "label": "WAL + replay watermark"},
+    {"id": "state", "label": "Checkpoint + policy state"}
+  ],
+  "edges": [
+    {"from": "actor", "to": "tunnel", "label": "gRPC"},
+    {"from": "tunnel", "to": "checks", "label": "loopback"},
+    {"from": "checks", "to": "wal", "label": "accepted"},
+    {"from": "wal", "to": "state", "label": "durable"}
+  ],
+  "groups": [
+    {"label": "Remote Trackmania host", "nodes": ["actor"]},
+    {"label": "Transport boundary", "nodes": ["tunnel", "checks"]},
+    {"label": "Learner host", "nodes": ["wal", "state"]}
+  ]
+}

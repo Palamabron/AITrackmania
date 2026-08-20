@@ -1,4 +1,4 @@
-"""Stable contracts and local training runtime for TrackmaniaRL 1.0."""
+"""Stable contracts and local training runtime for TrackmaniaRL 2.0."""
 
 from typing import Any
 
@@ -12,6 +12,7 @@ from trackmaniarl.core.contracts import (
     Learner,
     ModelContract,
     ModelFactory,
+    OfflineSupervisedLearner,
     Policy,
     ReplayStore,
     ReplicablePolicy,
@@ -54,6 +55,7 @@ __all__ = [
     "Learner",
     "ModelContract",
     "ModelFactory",
+    "OfflineSupervisedLearner",
     "OnPolicySequenceSampler",
     "Policy",
     "PrioritizedSampler",

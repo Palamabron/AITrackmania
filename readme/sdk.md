@@ -1,9 +1,9 @@
 # TrackmaniaRL SDK Guide
 
-TrackmaniaRL has one runtime: an explicit `run.yaml` is parsed into `RunSpec`, its
-components are imported, then the local or distributed coordinator performs
-collection and off-policy updates. The same commands work in PowerShell, bash,
-WSL and CI.
+TrackmaniaRL has one RunSpec 2.0 component runtime. An explicit `run.yaml` is
+parsed into `RunSpec`, its components are imported, then the selected online RL
+or offline-supervised lifecycle is executed. The same commands work in
+PowerShell, bash, WSL and CI.
 
 ```bash
 uv tool install trackmaniarl
@@ -20,15 +20,26 @@ place for custom components and run configurations.
 
 ## Start with bundled components
 
-`trackmaniarl.builtins` is the public catalogue. Learners are selected directly by
-their stable descriptive class paths:
+Learners and composable models are selected through stable descriptive class
+paths:
 
 ```yaml
 components:
   learner:
-    class_path: trackmaniarl.algorithms.implicit_quantile_q_learning:ImplicitQuantileQLearning
+    class_path: trackmaniarl.algorithms.value_based:DiscreteValueLearner
   model_factory:
-    class_path: my_agent.models:MyIqnModelFactory
+    class_path: trackmaniarl.models.factory:CompositeValueModelFactory
+    kwargs:
+      encoder: {class_path: my_agent.models:MySensorEncoder}
+      temporal:
+        class_path: trackmaniarl.models.temporal:IdentityTemporalCore
+        kwargs: {input_dim: 256}
+      head:
+        class_path: trackmaniarl.models.heads:ImplicitQuantileHead
+        kwargs: {feature_dim: 256, action_count: 78, cosine_count: 64, dueling: true}
+      strategy:
+        class_path: trackmaniarl.models.strategies:RandomQuantileStrategy
+        kwargs: {train_quantile_count: 32, target_quantile_count: 32}
   feature_pipeline:
     class_path: trackmaniarl.builtins.features:TransitionFeaturePipeline
   replay_store:
@@ -54,15 +65,61 @@ mixing enforces explicit min/max fractions.
 Bundled model factories declare a `ModelContract`, and bundled learners declare
 the contracts they accept. This keeps an encoder choice independent from runtime
 or controller selection while preventing invalid objective/head combinations.
-For example, both the GRU lidar model and the Mamba lidar model implement
-`discrete_quantile` and can be used by any learner accepting that contract;
+For example, scalar Q, QR-DQN, IQN and FQF compositions implement
+`discrete_value` and are all trained by `DiscreteValueLearner`;
 TQC requires `continuous_quantile_actor_critic`, and behavior cloning requires
 `categorical_policy`. Custom components without declarations retain structural
 protocol validation, while declared incompatible pairs fail during resolution.
 
+### Value-model composition
+
+`CompositeValueModelFactory` validates dimensions and representation contracts
+before training:
+
+| Algorithm | Head | Strategy | Optimizers |
+| --- | --- | --- | --- |
+| Standard Q | `ScalarQHead` | `ScalarValueStrategy` | main |
+| QR-DQN | `FixedQuantileHead` | `FixedQuantileStrategy` | main |
+| IQN | `ImplicitQuantileHead` | `RandomQuantileStrategy` | main |
+| FQF | `ImplicitQuantileHead` | `LearnedFractionStrategy` | main + fractions |
+
+The encoder maps independent `[N,...]` frames to `[N,D]`.
+`FrameBatchAdapter` owns `[B,T]` flatten/restore, and `IdentityTemporalCore`,
+`GruTemporalCore` or `MambaTemporalCore` consumes `[B,T,D]`. History, burn-in
+and recurrent state do not belong in a `SensorEncoder`.
+
+The learner creates a fraction optimizer whenever
+`strategy.auxiliary_parameters()` is non-empty. FQF quantile regression does
+not update fraction boundaries, and its analytical fraction objective does not
+update the encoder or quantile head.
+
+`evaluate_actions` is the selected-action hot path. Double-DQN first obtains
+online expected values for action selection, then asks the target model only
+for the distribution of `a*`. Objectives must explicitly request all-action
+tensors.
+
+### Mamba backend selection
+
+```yaml
+temporal:
+  class_path: trackmaniarl.models.temporal:MambaTemporalCore
+  kwargs:
+    input_dim: 256
+    backend: auto  # auto | native | torch
+    d_state: 16
+    d_conv: 4
+    expand: 2
+```
+
+`native` fails validation when its extension/kernel is unavailable. `torch` is
+portable Pure PyTorch. `auto` probes native forward/backward and records its
+choice and fallback reason. Both backends share parameters and checkpoint
+fingerprints; no backend silently substitutes GRU.
+
 ## Implement only what changes
 
-An extension project may supply any of these protocols: `Learner`, `Policy`,
+An extension project may supply any of these protocols: `Learner`,
+`OfflineSupervisedLearner`, `Policy`,
 `ModelFactory`, `ReplayStore`, `Sampler`, `FeaturePipeline`, `Evaluator`,
 `RunLogger`, `CheckpointCodec`, and an environment factory with `create(seed=)`.
 Use `module:Symbol` paths in `run.yaml`; do not modify the TrackmaniaRL package for an
@@ -114,13 +171,14 @@ learner. Keep it typed and deterministic, and test one synthetic transition
 round trip before a live run.
 
 `validate` does not start TrackMania. It resolves components, writes the
-redacted manifest and runs a deterministic synthetic update. `train` requires
+redacted manifest and runs a deterministic synthetic RL or supervised update.
+`train` requires
 `components.environment`; it collects bounded episodes, writes compressed
 reference-only artifacts, samples replay, applies updates, checkpoints and
 runs an optional evaluator.
 
 `validate` is game-free, not code-free: it imports every configured component
-and invokes constructors and a learner update. Never validate an untrusted
+and invokes constructors and a learner validation update. Never validate an untrusted
 configuration or Python package.
 
 ## Component responsibilities
@@ -129,6 +187,7 @@ configuration or Python package.
 | --- | --- | --- |
 | `Policy` | deterministic or exploratory inference | model/policy tensors when replicated |
 | `Learner` | setup, update, policy access and state round trip | model, optimizer, schedules and algorithm statistics |
+| `OfflineSupervisedLearner` | supervised validation without replay semantics | learner, dataset and trainer state required for exact resume |
 | `ModelFactory` | construct the configured train-time model | none unless the factory is stateful |
 | `EnvironmentFactory` | create one isolated environment per seed | environment state is normally episode-local |
 | `FeaturePipeline` | transform one observation and collate transitions | normalization statistics, if learned |
@@ -142,11 +201,31 @@ If resume behavior would change after recreating a component, its relevant state
 belongs in the checkpoint. Do not hide configuration in module globals or read
 environment variables inside hot-path objects.
 
+## Checkpoint and warm-start rules
+
+Resume and warm-start are different operations:
+
+- resume requires schema 2.0, the exact architecture fingerprint, all online
+  and target components, optimizers, objectives, counters, schedules and RNG;
+- warm-start loads only named submodules and always produces a match report;
+- name, shape and dtype match by default;
+- zero matches, ambiguity and missing required tensors are errors;
+- overlapping slices require explicit `shape_policy: overlap`;
+- IQN 1.x import is warm-start only, never a 2.0 resume.
+
+Stable RL component names are `encoder`, `temporal`, `head` and `strategy`
+under `online` and `target`. Mamba's resolved kernel backend is runtime metadata
+and may change without changing its parameter fingerprint.
+
+Behavior cloning has a separate exact-resume artifact, `bc-latest.pt`, bound to
+`bc-dataset-manifest.json`. Its best open-loop policy checkpoint is not a full
+trainer resume. See [imitation learning](imitation-learning.md).
+
 ## RunSpec layout
 
 The root fields are intentionally small:
 
-- `api_version`: serialized contract version, currently `1.2`;
+- `api_version`: serialized contract version, currently `2.0`;
 - `run_id`, `seed`, `artifacts_dir`: identity and local output ownership;
 - `components`: import paths and constructor keyword arguments;
 - `training`: batch, replay, update, evaluation and checkpoint schedule;
@@ -177,7 +256,9 @@ checklist.
 | Namespace | Responsibility |
 | --- | --- |
 | `trackmaniarl.core` | contracts, run spec, trainer, data and reference replay |
-| `trackmaniarl.builtins` | supported algorithms, models, buffers and feature components |
+| `trackmaniarl.algorithms` | learners, targets, losses and objectives |
+| `trackmaniarl.models` | encoders, temporal cores, heads, strategies and factories |
+| `trackmaniarl.distributed` | authenticated actor/learner transport, WAL and spool |
 | `trackmaniarl.trackmania` | TrackMania environment collection adapter |
 | `trackmaniarl.observability` | manifest, JSONL events, artifacts and optional adapters |
 | `trackmaniarl.experiments` | evaluation suites and study strategies |

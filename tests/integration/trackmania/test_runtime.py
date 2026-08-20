@@ -47,7 +47,7 @@ def test_distributed_token_requires_at_least_32_characters(
 
     config = tmp_path / "run.yaml"
     config.write_text(
-        """api_version: \"1.2\"
+        """api_version: \"2.0\"
 run_id: token-test
 components:
   learner: {class_path: trackmaniarl.core.builtins:NullLearner}

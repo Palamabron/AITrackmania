@@ -1708,8 +1708,22 @@ class DemoMixSampler:
             raise RuntimeError(
                 f"Need {request.batch_size} transitions, replay has {len(transition_ids)}"
             )
-        items = dict(zip(transition_ids, store.get(transition_ids), strict=True))
-        demos = [index for index, value in items.items() if _is_demo(value.info)]
+        flags = getattr(store, "demo_flags", None)
+        if callable(flags):
+            demos = [
+                transition_id
+                for transition_id, is_demo in zip(
+                    transition_ids, flags(transition_ids), strict=True
+                )
+                if is_demo
+            ]
+        else:
+            items = store.get(transition_ids)
+            demos = [
+                transition_id
+                for transition_id, value in zip(transition_ids, items, strict=True)
+                if _is_demo(value.info)
+            ]
         demo_indices = set(demos)
         online = [
             transition_id for transition_id in transition_ids if transition_id not in demo_indices

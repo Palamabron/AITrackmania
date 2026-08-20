@@ -37,16 +37,20 @@ class _PpoPolicy:
         self, observation: Any, *, deterministic: bool
     ) -> tuple[np.ndarray[Any, Any], dict[str, Any]]:
         prepared = tree_to_device(sanitize_finite(observation), self.device)
+        prepared = tree_map(
+            lambda leaf: leaf.unsqueeze(0) if isinstance(leaf, torch.Tensor) else leaf,
+            prepared,
+        )
         with torch.no_grad():
             sample = cast(Any, self.actor).sample_with_latent
             action, log_probability, latent_action = sample(prepared, deterministic=deterministic)
             value = self.value(prepared)
         if log_probability.numel() != 1 or value.numel() != 1:
             raise ValueError("PPO rollout policy expects one unbatched observation")
-        return action.detach().cpu().numpy(), {
+        return action[0].detach().cpu().numpy(), {
             "_trackmaniarl_behavior_log_probability": float(log_probability.item()),
             "_trackmaniarl_behavior_value": float(value.item()),
-            "_trackmaniarl_behavior_latent_action": latent_action.detach().cpu().numpy(),
+            "_trackmaniarl_behavior_latent_action": latent_action[0].detach().cpu().numpy(),
         }
 
     def export_state(self) -> Mapping[str, Any]:

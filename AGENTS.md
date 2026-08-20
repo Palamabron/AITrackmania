@@ -18,7 +18,7 @@ These commands deliberately use `uv` without platform-specific virtualenv or she
 
 ## Architecture
 
-The public flow is `RunSpec 1.2 -> coordinator/learner + actor -> WAL -> replay -> updates`. `trackmaniarl.core` contains contracts, data, replay, runtime and built-ins. `trackmaniarl.distributed` contains the authenticated gRPC actor/learner protocol, codec, coordinator and actor spool. `trackmaniarl.trackmania` contains the game adapter only. `trackmaniarl.observability` owns manifests, W&B/local events and artifacts; `trackmaniarl.experiments` owns suites and study strategies; `trackmaniarl.project` owns the generated extension project.
+The public flow is `RunSpec 2.0 -> actor/spool -> authenticated WAL/replay -> learner -> checkpoint/policy snapshot`. `trackmaniarl.models` composes frame-only encoders, temporal cores, heads and value strategies; `trackmaniarl.algorithms.value_based` trains scalar Q, QR-DQN, IQN and FQF through one learner. `trackmaniarl.core` owns contracts, data, replay and runtime; `trackmaniarl.distributed` owns transport and durability; `trackmaniarl.trackmania` owns the game adapter. Behavior cloning uses the offline-supervised validation lifecycle and shares encoders/temporal cores without entering the RL WAL/replay path.
 
 `trackmaniarl train` uses Windows-safe multiprocessing `spawn` and starts one local
 actor by default. Remote deployments use `trackmaniarl learner --bind` and

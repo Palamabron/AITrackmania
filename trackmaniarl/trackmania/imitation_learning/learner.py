@@ -1,6 +1,6 @@
 """Behavior-cloning learner entry points."""
 
-from trackmaniarl.trackmania.behavior_cloning._implementation import (
+from trackmaniarl.trackmania.imitation_learning._implementation import (
     BehaviorCloningLearner,
     BehaviorCloningValidationBatch,
 )

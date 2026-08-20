@@ -8,6 +8,7 @@ to OpenPlanet, a gamepad, or a test environment.
 from __future__ import annotations
 
 import numpy as np
+import torch
 
 DEFAULT_N_STEER = 5
 DEFAULT_N_GAS = 3
@@ -17,6 +18,46 @@ BRAKE_TAP_TABLE_N_GAS = 2
 BRAKE_TAP_SENTINEL = -1.0
 BRAKE_TAP_DURATION_S = 0.01
 BRAKE_TAP_MATCH_PENALTY = 2.0
+
+
+class TrackmaniaActionSelector:
+    """TrackMania-aware weighted and steering-neighbor exploration."""
+
+    def __init__(self, action_ids: tuple[int, ...] | None = None) -> None:
+        self.action_ids = action_ids
+        self.weights = torch.from_numpy(select_brake_tap_exploration_weights(action_ids))
+
+    def select(
+        self,
+        q_values: torch.Tensor,
+        greedy: torch.Tensor,
+        *,
+        deterministic: bool,
+        epsilon: float,
+    ) -> torch.Tensor:
+        if deterministic or not epsilon:
+            return greedy
+        explore = torch.rand(greedy.shape, device=greedy.device) < epsilon
+        random = self._exploration_action(q_values, greedy)
+        return torch.where(explore, random, greedy)
+
+    def _exploration_action(self, q_values: torch.Tensor, greedy: torch.Tensor) -> torch.Tensor:
+        weights = self.weights.to(q_values.device)
+        global_action = torch.multinomial(weights, greedy.numel(), replacement=True).reshape(
+            greedy.shape
+        )
+        if self.action_ids is not None:
+            return global_action.to(greedy.dtype)
+        modes_per_steering = 6
+        steering_bins = q_values.shape[-1] // modes_per_steering
+        if steering_bins * modes_per_steering != q_values.shape[-1]:
+            return global_action.to(greedy.dtype)
+        steering = greedy // modes_per_steering
+        mode = greedy % modes_per_steering
+        delta = torch.randint(-1, 2, greedy.shape, device=greedy.device, dtype=greedy.dtype)
+        neighboring = (steering + delta).clamp(0, steering_bins - 1) * 6 + mode
+        change_mode = torch.rand(greedy.shape, device=greedy.device) < 0.15
+        return torch.where(change_mode, global_action, neighboring).to(greedy.dtype)
 
 
 def build_discrete_to_continuous(

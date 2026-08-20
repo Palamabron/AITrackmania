@@ -1,0 +1,21 @@
+{
+  "title": "Composable value model + DiscreteValueLearner",
+  "direction": "LR",
+  "nodes": [
+    {"id": "batch", "label": "FrameBatchAdapter B×T ↔ B·T"},
+    {"id": "encoder", "label": "Frame-only SensorEncoder"},
+    {"id": "temporal", "label": "Identity GRU Mamba core"},
+    {"id": "value", "label": "Head + value strategy"},
+    {"id": "learner", "label": "Targets + two optimizers"}
+  ],
+  "edges": [
+    {"from": "batch", "to": "encoder", "label": "[B·T,…]"},
+    {"from": "encoder", "to": "temporal", "label": "[B,T,D]"},
+    {"from": "temporal", "to": "value", "label": "features"},
+    {"from": "value", "to": "learner", "label": "selected actions"}
+  ],
+  "groups": [
+    {"label": "Vectorized representation", "nodes": ["batch", "encoder", "temporal"]},
+    {"label": "Algorithm composition", "nodes": ["value", "learner"]}
+  ]
+}

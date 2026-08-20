@@ -7,6 +7,7 @@ from trackmaniarl.trackmania.actions import (
 )
 from trackmaniarl.trackmania.assets import record_boundary, record_trajectory
 from trackmaniarl.trackmania.baseline import TelemetryTqcModelFactory
+from trackmaniarl.trackmania.encoders import LidarSensorEncoder
 from trackmaniarl.trackmania.environment import (
     OpenPlanetEnvironmentFactory,
     TrackmaniaEnvironmentConfig,
@@ -23,6 +24,7 @@ __all__ = [
     "LidarFeaturePipeline",
     "LidarIqnModelFactory",
     "LidarMambaModelFactory",
+    "LidarSensorEncoder",
     "OpenPlanetEnvironmentFactory",
     "TelemetryFeaturePipeline",
     "TelemetryTqcModelFactory",

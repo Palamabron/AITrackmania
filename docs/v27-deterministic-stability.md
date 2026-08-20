@@ -1,5 +1,10 @@
 # v27: deterministic-evaluation stability
 
+> Historical experiment record. Names such as `ImplicitQuantileQLearning` and
+> v26/v27 checkpoint paths describe the pre-2.0 run. For new experiments use
+> `DiscreteValueLearner` with an IQN composition; import old IQN weights through
+> explicit warm-start rather than resume.
+
 Successor to the v26 experiment. Target metric order: deterministic finish rate
 first (>= 90%), then deterministic mean below 45 s, then stable sub-40 s.
 

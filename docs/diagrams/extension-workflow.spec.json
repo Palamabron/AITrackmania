@@ -1,0 +1,21 @@
+{
+  "title": "Extending TrackmaniaRL 2.0",
+  "direction": "LR",
+  "nodes": [
+    {"id": "owner", "label": "Extension or library?"},
+    {"id": "contract", "label": "Contract + module path"},
+    {"id": "offline", "label": "Offline quality gates"},
+    {"id": "live", "label": "Conditional live gate"},
+    {"id": "release", "label": "Benchmark docs release"}
+  ],
+  "edges": [
+    {"from": "owner", "to": "contract", "label": "scope"},
+    {"from": "contract", "to": "offline", "label": "verify"},
+    {"from": "offline", "to": "live", "label": "conditional"},
+    {"from": "live", "to": "release", "label": "promote"}
+  ],
+  "groups": [
+    {"label": "Design", "nodes": ["owner", "contract"]},
+    {"label": "Required quality gates", "nodes": ["offline", "live", "release"]}
+  ]
+}

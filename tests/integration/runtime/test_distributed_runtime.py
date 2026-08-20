@@ -197,7 +197,7 @@ def test_authentication_and_run_fingerprint_cover_geometry(tmp_path: Path) -> No
     geometry = tmp_path / "geometry.npz"
     geometry.write_bytes(b"geometry-v1")
     config = {
-        "api_version": "1.2",
+        "api_version": "2.0",
         "run_id": "run-a",
         "components": {
             "learner": {"class_path": "trackmaniarl.core.builtins:NullLearner"},
@@ -505,7 +505,7 @@ def test_external_stop_does_not_ingest_or_train_a_queued_backlog(tmp_path: Path)
 
     spec = RunSpec.model_validate(
         {
-            "api_version": "1.2",
+            "api_version": "2.0",
             "run_id": "drain-first",
             "artifacts_dir": str(tmp_path),
             "components": {
@@ -760,7 +760,7 @@ def test_coordinator_reset_replay_restores_only_learner_state(tmp_path: Path) ->
 def _resolved_run(tmp_path: Path, run_id: str, training: dict[str, Any]) -> ResolvedRun:
     spec = RunSpec.model_validate(
         {
-            "api_version": "1.2",
+            "api_version": "2.0",
             "run_id": run_id,
             "artifacts_dir": str(tmp_path),
             "components": {
@@ -860,7 +860,7 @@ def test_two_fake_actors_feed_slow_learner_without_data_loss(tmp_path: Path) -> 
         port = int(probe.getsockname()[1])
     spec = RunSpec.model_validate(
         {
-            "api_version": "1.2",
+            "api_version": "2.0",
             "run_id": "async-smoke",
             "artifacts_dir": str(tmp_path),
             "components": {

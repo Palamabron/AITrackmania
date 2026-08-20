@@ -8,9 +8,11 @@ from trackmaniarl.algorithms.randomized_ensemble_sac import RandomizedEnsembleSA
 from trackmaniarl.algorithms.soft_actor_critic import SoftActorCritic
 from trackmaniarl.algorithms.stable_discrete_soft_actor_critic import StableDiscreteSoftActorCritic
 from trackmaniarl.algorithms.truncated_quantile_critic import TruncatedQuantileCritic
+from trackmaniarl.algorithms.value_based import DiscreteValueLearner
 
 __all__ = [
     "AdaptiveGradientClipper",
+    "DiscreteValueLearner",
     "GradientClipStats",
     "ImplicitQuantileQLearning",
     "ProximalPolicyOptimization",

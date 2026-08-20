@@ -18,7 +18,8 @@ The current release is available on
 ## What you get
 
 - asynchronous local or distributed actor/learner training;
-- SAC, REDQ-SAC, TQC, IQN and stable discrete SAC learners;
+- Standard Q, QR-DQN, IQN and FQF through one distributional learner, plus
+  SAC, REDQ-SAC, TQC, PPO, BC and stable discrete SAC;
 - uniform, prioritized, sequence and demonstration-mixing replay;
 - typed configuration, transitions and training batches;
 - Trackmania telemetry, lidar and track-geometry feature pipelines;
@@ -40,6 +41,7 @@ component paths.
 | understand processes, data flow, security boundaries and package ownership | [Architecture and editable diagrams](https://github.com/Palamabron/AITrackmania/blob/main/readme/architecture.md) |
 | replace a learner, model, replay strategy or game adapter | [SDK and extension guide](https://github.com/Palamabron/AITrackmania/blob/main/readme/sdk.md) |
 | prepare Trackmania and OpenPlanet | [Trackmania workflow](https://github.com/Palamabron/AITrackmania/blob/main/readme/trackmania.md) |
+| record demonstrations, train BC and hand off to RL | [Imitation-learning workflow](https://github.com/Palamabron/AITrackmania/blob/main/readme/imitation-learning.md) |
 | report or assess a security issue | [Security policy](https://github.com/Palamabron/AITrackmania/blob/main/SECURITY.md) and [audit](https://github.com/Palamabron/AITrackmania/blob/main/docs/security-audit.md) |
 
 ## Install and create an agent
@@ -83,7 +85,7 @@ uv add "trackmaniarl[algorithms,distributed]"
 | `explain` | Captum attribution helpers |
 | `orchestrator` | Gemini and Optuna experiment strategies |
 | `vision` | torchvision support |
-| `mamba` | experimental Mamba sequence layers for a Linux CUDA learner |
+| `mamba` | optional native Mamba kernel; the Pure PyTorch backend needs no extension |
 
 ## Run Trackmania
 
@@ -111,7 +113,7 @@ uv run trackmaniarl train run.yaml
 The bounded smoke test uses the same asynchronous learner/actor path as
 training, verifies a live policy refresh and writes a checkpoint. Start a fresh
 run directory when the run API or immutable configuration changes; the current
-schema is RunSpec `1.2`.
+schema is RunSpec `2.0`.
 
 On Windows, a generated project selects the tested CUDA PyTorch wheels. Linux
 uses CPU wheels by default and can host an offline or remote learner. ROCm users
@@ -181,14 +183,15 @@ is available for architecture reviews.
 
 ## Components and extension API
 
-`trackmaniarl.builtins` is the supported catalogue of bundled algorithms,
-models, feature pipelines and replay strategies. A component can also be
-referenced directly, for example:
+Components are selected through stable descriptive module paths. The unified
+value learner and composite model factory are configured directly, for example:
 
 ```yaml
 components:
   learner:
-    class_path: trackmaniarl.algorithms.implicit_quantile_q_learning:ImplicitQuantileQLearning
+    class_path: trackmaniarl.algorithms.value_based:DiscreteValueLearner
+  model_factory:
+    class_path: trackmaniarl.models.factory:CompositeValueModelFactory
 ```
 
 ### Extension workflow
@@ -209,9 +212,9 @@ contract and expose it through an installable `module:attribute`, and finally
 run deterministic state, formatting, type, test and configuration gates. The
 Trackmania check and bounded smoke test apply only to game-facing components.
 
-The stable contracts in `trackmaniarl.core` include `Learner`, `Policy`,
-`ModelFactory`, `ReplayStore`, `Sampler`, `FeaturePipeline`, `Evaluator`,
-`RunLogger` and `CheckpointCodec`. Game-specific implementations belong in the
+The stable contracts in `trackmaniarl.core` include `Learner`,
+`OfflineSupervisedLearner`, `Policy`, `ModelFactory`, `ReplayStore`, `Sampler`,
+`FeaturePipeline`, `Evaluator`, `RunLogger` and `CheckpointCodec`. Game-specific implementations belong in the
 generated extension project, so offline validation does not require Trackmania
 or optional game dependencies.
 

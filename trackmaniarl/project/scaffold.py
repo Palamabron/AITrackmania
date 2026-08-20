@@ -86,7 +86,7 @@ def _uv_options(*, accelerator: bool) -> str:
 
 
 def _config(package: str) -> str:
-    return f"""api_version: "1.2"
+    return f"""api_version: "2.0"
 run_id: starter
 seed: 0
 artifacts_dir: artifacts
@@ -311,20 +311,20 @@ def create_project(directory: str | Path, package: str, *, template: str = "star
 
 
 def _trackmania_config() -> str:
-    return """api_version: \"1.2\"
+    return """api_version: \"2.0\"
 run_id: trackmania-iqn-lidar-v1
 seed: 0
 artifacts_dir: artifacts
 components:
   learner:
-    class_path: trackmaniarl.algorithms.implicit_quantile_q_learning:ImplicitQuantileQLearning
+    class_path: trackmaniarl.algorithms.value_based:DiscreteValueLearner
     kwargs:
       learning_rate: 3.0e-5
       gradient_clip_norm: 1.0
       target_update_interval: 5000
       exploration_epsilon: 1.0
-      exploration_epsilon_final: 0.05
-      exploration_epsilon_decay_updates: 100000
+      action_selector:
+        class_path: trackmaniarl.trackmania.actions:TrackmaniaActionSelector
       execution:
         device: auto
         precision: auto
@@ -343,7 +343,29 @@ components:
         no_progress_steps: 600
         minimum_progress_per_window_m: 0.5
   model_factory:
-    class_path: trackmaniarl.trackmania.iqn:LidarIqnModelFactory
+    class_path: trackmaniarl.models.factory:CompositeValueModelFactory
+    kwargs:
+      encoder:
+        class_path: trackmaniarl.trackmania.encoders:LidarSensorEncoder
+        kwargs:
+          output_dim: 256
+      temporal:
+        class_path: trackmaniarl.models.temporal:IdentityTemporalCore
+        kwargs:
+          input_dim: 256
+      head:
+        class_path: trackmaniarl.models.heads:ImplicitQuantileHead
+        kwargs:
+          feature_dim: 256
+          action_count: 78
+          cosine_count: 64
+          dueling: true
+      strategy:
+        class_path: trackmaniarl.models.strategies:RandomQuantileStrategy
+        kwargs:
+          train_quantile_count: 32
+          target_quantile_count: 32
+          evaluation_quantile_count: 32
   replay_store:
     class_path: trackmaniarl.core.replay:InMemoryReplayStore
   sampler:

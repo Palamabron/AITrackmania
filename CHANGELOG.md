@@ -1,5 +1,29 @@
 # Changelog
 
+## Unreleased
+
+- Require RunSpec API 2.0 and compose discrete value models from a frame-only
+  encoder, temporal core, head and value strategy.
+- Add one `DiscreteValueLearner` for Standard Q, QR-DQN, IQN and FQF, including
+  selected-action Double-DQN targets and an isolated FQF fraction optimizer.
+- Add portable Mamba selective scan with `auto`, `native` and Pure PyTorch
+  backends sharing one checkpoint-compatible parameter layout.
+- Add checkpoint schema 2.0, architecture fingerprints, safe named-submodule
+  warm-start reports and a legacy IQN warm-start mapper.
+- Make behavior-cloning splits disjoint, seed model construction, aggregate
+  weighted validation correctly, quality-gate recordings and support exact BC
+  resume bound to an immutable dataset manifest.
+- Tensorize behavior-cloning data once, use the shared Torch execution policy,
+  remove per-update CUDA transfer synchronization and reduce logging/replay
+  bookkeeping overhead.
+- Rename the public offline-learning package from the too-narrow
+  `trackmaniarl.trackmania.behavior_cloning` to
+  `trackmaniarl.trackmania.imitation_learning`; BC class and CLI names remain
+  precise, while DAgger and recovery artifacts now have an accurate namespace.
+- Rewrite architecture, SDK, Trackmania, imitation-learning and development
+  documentation for 2.0 and regenerate the editable runtime, model-composition,
+  imitation-learning, extension and distributed-security diagrams.
+
 ## 1.0.4 - 2026-08-19
 
 - Use absolute GitHub image URLs in the package README so architecture diagrams
