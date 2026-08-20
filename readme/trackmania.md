@@ -34,16 +34,17 @@ dead zone, and cannot provide rumble collision signals. The choice belongs to
 the environment, not the model, so the same policy can drive either backend;
 expect different driving dynamics after analog-to-digital conversion.
 
-Before `smoke`, `train`, `learner` or `actor`, generate one random distributed
-token and store it as `TRACKMANIARL_DISTRIBUTED_TOKEN` in the project's ignored
-`.env` file:
+Before starting separate `learner` or `actor` commands, generate one random
+distributed token and store the same value as
+`TRACKMANIARL_DISTRIBUTED_TOKEN` in each project's ignored `.env` file:
 
 ```bash
 python -c "import secrets; print(secrets.token_urlsafe(32))"
 ```
 
-The same requirement applies to local training because the local actor and
-learner are separate authenticated processes.
+Local `train` and `smoke` still authenticate their actor/learner processes, but
+the launcher generates an ephemeral token internally; they do not require this
+environment variable.
 
 Generated TrackMania agents select the project's tested PyTorch CUDA runtime by
 default on Windows and Linux; a newer NVIDIA driver stays compatible. macOS
@@ -72,11 +73,13 @@ the controller reset using protocol version `2`; a timeout, disconnect or UID
 mismatch aborts the run.
 
 The reference baseline is a 78-action dueling IQN (`13` steering levels × `2`
-gas levels × continuous brake, full brake, or brake tap), not TQC. Its
-observation is a fixed 20-feature projection of the documented 33-field
-`TrackmaniaRL_GrabData` packet, plus 15 left + 15 right car-local boundary samples.
-The local frame comes from `api.Position` and `vis.Dir`; it does not require
-aim-yaw telemetry. TQC remains an optional example only.
+gas levels × no brake, full brake, or timed brake tap), not TQC. With default
+feature settings, each observation contains 20 normalized telemetry values, a
+`[4, 60]` car-local boundary tensor and a 60-element validity mask, all derived
+from the documented 33-field `TrackmaniaRL_GrabData` packet and the geometry
+asset. The four lidar channels are the lateral/forward coordinates of the left
+and right boundaries. The local frame comes from `api.Position` and `vis.Dir`;
+it does not require aim-yaw telemetry. TQC remains an optional example only.
 
 Model factories publish their train-time contract and learners publish the
 contracts they accept. Composed Q/QR-DQN/IQN/FQF models expose `discrete_value`, the telemetry
@@ -133,8 +136,12 @@ backend is implemented locally with standard Torch operations and works without
 uv sync --extra mamba
 ```
 
-Select the model explicitly in `run.yaml` and make `training.sequence_length`
-match `history_length`:
+Select the model explicitly in `run.yaml` and set
+`training.sequence_length > 1`. In the composed replay path, keep
+`LidarFeaturePipeline.history_length: 1`: the sampler creates `[B,T,...]`
+sequences, `FrameBatchAdapter` flattens their frames for the sensor encoder and
+the temporal core receives the restored sequence. Do not also stack history in
+the feature pipeline.
 
 ```yaml
 components:
@@ -160,9 +167,10 @@ training:
   sequence_length: 16
 ```
 
-The sensor encoder processes the 16 frames as one vectorized `B*T` batch. The
-Mamba core consumes `[B,T,D]`; `burn_in: 4` builds its initial recurrent state
-without gradients and excludes those positions from losses and priorities.
+The sensor encoder processes the 16 replay frames as one vectorized `B*T`
+batch. The Mamba core consumes `[B,T,D]`; `burn_in: 4` builds its initial
+recurrent state without gradients and excludes those positions from losses and
+priorities.
 
 The optional dependency is imported only when the native backend is probed, so
 normal imports, GRU runs and Pure PyTorch Mamba remain independent of

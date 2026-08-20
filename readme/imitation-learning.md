@@ -41,7 +41,9 @@ configuration, split membership and a dataset fingerprint.
 ## Configuration
 
 The RunSpec must use API 2.0, a feature pipeline without control inputs, a
-categorical model factory and the BC learner:
+categorical model factory and the BC learner. Starting from the generated
+Trackmania configuration, make these entries agree (the replay, sampler,
+evaluator and geometry settings can remain in place):
 
 ```yaml
 api_version: "2.0"
@@ -55,14 +57,30 @@ components:
       early_stopping_patience: 30
       execution: {device: auto, precision: bfloat16}
 
+  environment:
+    class_path: trackmaniarl.trackmania.environment:OpenPlanetEnvironmentFactory
+    kwargs:
+      config:
+        geometry_path: assets/trackmaniarl-test.geometry.npz
+        expected_map_uid: <map-uid>
+        compact_action_ids: [0, 1, 3, 39, 72, 73, 75]
+
   model_factory:
     class_path: trackmaniarl.trackmania.imitation_learning:LidarBehaviorCloningModelFactory
     kwargs:
       action_ids: [0, 1, 3, 39, 72, 73, 75]
-      telemetry_dim: 46
+      telemetry_dim: 17
       spatial_bins: 12
       history_length: 8
       previous_action_conditioning: false
+
+  feature_pipeline:
+    class_path: trackmaniarl.trackmania.features:LidarFeaturePipeline
+    kwargs:
+      geometry_path: assets/trackmaniarl-test.geometry.npz
+      expected_map_uid: <map-uid>
+      history_length: 8
+      include_control_inputs: false
 
 training:
   batch_size: 256
@@ -70,15 +88,21 @@ training:
 ```
 
 `action_ids` must exactly match
-`components.environment.kwargs.config.compact_action_ids`. If
+`components.environment.kwargs.config.compact_action_ids`, and the model's
+`history_length`, `telemetry_dim` and `lidar_channels` must match the feature
+pipeline output. The minimal configuration above produces 17 telemetry values
+and four lidar channels. If
 `previous_action_conditioning` is enabled, human and recovery data use expert
 previous actions during training; inference uses the policy's previous
 prediction. DAgger collection deliberately requires conditioning to be off.
 
-Horizontal reflection is opt-in and currently accepts the versioned local
-8-channel lidar/46-feature telemetry schema. It mirrors steering labels and
-known directional fields, preserves other tensor fields, and fails explicitly
-for an incompatible schema.
+Horizontal reflection is opt-in and only accepts the versioned local
+8-channel lidar/46-feature telemetry schema. That schema requires local
+velocity, track-relative, pace, racing-line, finish, dynamics and goal features
+with control inputs excluded; set the model to `lidar_channels: 8`,
+`telemetry_dim: 46` and `telemetry_group_dims: [23, 5, 4, 14]`. It mirrors
+steering labels and known directional fields, preserves other tensor fields,
+and fails explicitly for an incompatible schema.
 
 ## Commands
 
@@ -86,6 +110,7 @@ for an incompatible schema.
 uv run trackmaniarl track record-demo demonstrations --config run.yaml --count 3
 uv run trackmaniarl validate run.yaml
 uv run trackmaniarl bc-train run.yaml --demo demonstrations
+# Requires the 8-channel/46-feature schema described above.
 uv run trackmaniarl bc-train run.yaml --demo demonstrations \
   --recovery recovery.npz --horizontal-flip-augmentation
 uv run trackmaniarl bc-train run.yaml --demo demonstrations \

@@ -42,7 +42,7 @@ component paths.
 | replace a learner, model, replay strategy or game adapter | [SDK and extension guide](https://github.com/Palamabron/AITrackmania/blob/main/readme/sdk.md) |
 | prepare Trackmania and OpenPlanet | [Trackmania workflow](https://github.com/Palamabron/AITrackmania/blob/main/readme/trackmania.md) |
 | record demonstrations, train BC and hand off to RL | [Imitation-learning workflow](https://github.com/Palamabron/AITrackmania/blob/main/readme/imitation-learning.md) |
-| report or assess a security issue | [Security policy](https://github.com/Palamabron/AITrackmania/blob/main/SECURITY.md) and [audit](https://github.com/Palamabron/AITrackmania/blob/main/docs/security-audit.md) |
+| report a security issue or review trust boundaries | [Security policy](https://github.com/Palamabron/AITrackmania/blob/main/SECURITY.md) |
 
 ## Install and create an agent
 
@@ -115,9 +115,9 @@ training, verifies a live policy refresh and writes a checkpoint. Start a fresh
 run directory when the run API or immutable configuration changes; the current
 schema is RunSpec `2.0`.
 
-On Windows, a generated project selects the tested CUDA PyTorch wheels. Linux
-uses CPU wheels by default and can host an offline or remote learner. ROCm users
-must select the matching AMD Torch index; macOS uses the normal PyPI wheel and
+Generated Trackmania projects select the tested CUDA PyTorch wheels on Windows
+and Linux. CPU-only Linux and ROCm users must replace that generated Torch
+source with the index matching their host; macOS uses the normal PyPI wheel and
 can use MPS. `device: auto` resolves CUDA, ROCm, MPS or CPU from the installed
 Torch build.
 
@@ -132,8 +132,12 @@ contains the full explanation and editable Excalidraw sources for the runtime,
 extension workflow and distributed security model.
 
 `trackmaniarl train` starts a coordinator/learner and one local actor as
-independent, Windows-safe `spawn` processes. Collection continues while the
-learner updates replay and periodically publishes policy snapshots.
+independent, Windows-safe `spawn` processes. This is the off-policy runtime used
+by the value-based and actor-critic learners: collection continues while the
+learner updates replay and periodically publishes policy snapshots. PPO is an
+on-policy exception and uses the local `trackmaniarl.Trainer` API with
+`OnPolicySequenceSampler`; it is not supported by the distributed
+learner/actor commands.
 
 Read the diagram from top to bottom: `run.yaml` selects and validates
 components, the actor collects game transitions and spools them durably, and

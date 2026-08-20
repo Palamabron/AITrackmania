@@ -13,12 +13,16 @@ geometry and controls stay in `trackmaniarl.trackmania`.
 [Editable source](../docs/diagrams/runtime-architecture.excalidraw) ·
 [local preview](../docs/diagrams/runtime-architecture-preview.html)
 
-`trackmaniarl train` starts a coordinator/learner and one local actor with the
-portable multiprocessing `spawn` method. Remote mode runs the same roles as
-`trackmaniarl learner` and `trackmaniarl actor` through an encrypted tunnel.
-Actors collect continuously and spool rollouts durably. The learner authenticates
-chunks, commits them to WAL, ingests replay, samples batches, updates the model
-and publishes immutable policy tensor snapshots.
+For off-policy learners, `trackmaniarl train` starts a coordinator/learner and
+one local actor with the portable multiprocessing `spawn` method. Remote mode
+runs the same roles as `trackmaniarl learner` and `trackmaniarl actor` through
+an encrypted tunnel. Actors collect continuously and spool rollouts durably.
+The learner authenticates chunks, commits them to WAL, ingests replay, samples
+batches, updates the model and publishes immutable policy tensor snapshots.
+
+PPO follows a separate, single-process on-policy lifecycle through
+`trackmaniarl.Trainer` and `OnPolicySequenceSampler`; it does not use the
+distributed WAL/replay protocol shown here.
 
 The actor–learner protocol, replay records and WAL format are algorithm-neutral.
 Changing scalar Q, QR-DQN, IQN or FQF changes composed model components and the
@@ -119,12 +123,16 @@ perform a deterministic synthetic state round trip without starting the game.
 
 ## Persistence and compatibility
 
-RL checkpoint schema 2.0 separates online/target encoder, temporal, head and
-strategy state; main/strategy optimizers; objective state; counters, schedules
-and RNG; and resolved runtime metadata. Resume requires an exact architecture
-fingerprint and complete state. A Mamba kernel backend may differ because
-`native` and `torch` share parameters and the backend is excluded from the
-architecture fingerprint.
+The asynchronous off-policy checkpoint schema 2.0 separates online/target
+encoder, temporal, head and strategy state; main/strategy optimizers; objective
+state; counters, schedules and RNG; and resolved runtime metadata. Resume
+requires an exact architecture fingerprint and complete state. A Mamba kernel
+backend may differ because `native` and `torch` share parameters and the backend
+is excluded from the architecture fingerprint.
+
+The single-process `Trainer` used by PPO has its own schema 1.0 checkpoint with
+learner, replay, sampler and local counters. It is resumed through `Trainer` and
+is not interchangeable with a distributed schema 2.0 checkpoint.
 
 Warm-start is deliberately weaker than resume. It loads named submodules,
 matches name/shape/dtype, reports every match and mismatch, fails on zero or

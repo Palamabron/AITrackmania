@@ -51,7 +51,7 @@ trackmaniarl/              published library
   project/                 `trackmaniarl init` templates
 tests/                     deterministic unit and integration tests
 readme/                    user and developer guides
-docs/                      audit and research records
+docs/diagrams/             reproducible architecture diagrams and previews
 ```
 
 `trackmaniarl init <project-name>` creates an application project outside the
@@ -59,6 +59,13 @@ library boundary. Generated projects and their artifacts are ignored source-tree
 state, not release contents.
 
 ## Change workflow
+
+<p align="center">
+  <img src="../docs/diagrams/extension-workflow-preview.svg" alt="TrackmaniaRL extension ownership, contract and promotion gates" width="900">
+</p>
+
+[Editable diagram](../docs/diagrams/extension-workflow.excalidraw) ·
+[local preview](../docs/diagrams/extension-workflow-preview.html)
 
 1. Decide whether the behavior is reusable library code or application-specific
    experiment code. Prefer the generated agent project for the latter.
@@ -71,8 +78,9 @@ state, not release contents.
 6. Run formatting, strict typing and the full test suite.
 7. Update user/developer documentation and editable diagram sources whenever a
    public flow, ownership boundary or checkpoint contract changes.
-8. Validate every changed `.excalidraw` scene and regenerate SVG, PNG and HTML
-   previews from the canonical editable source.
+8. Regenerate each changed diagram from its `.spec.json`, validate the
+   `.excalidraw` scene and visually inspect its SVG/PNG preview at documentation
+   width.
 9. For game changes, run `trackmaniarl track check` and the bounded smoke test
    on Windows with Trackmania before release.
 

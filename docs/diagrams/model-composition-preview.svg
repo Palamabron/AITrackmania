@@ -1,36 +1,109 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1740" height="380" viewBox="0 0 1740 380">
-<defs><marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,6 L9,3 z" fill="#1e1e1e"/></marker><filter id="shadow" x="-20%" y="-20%" width="140%" height="140%"><feDropShadow dx="0" dy="2" stdDeviation="3" flood-color="#000" flood-opacity="0.14"/></filter></defs>
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1160" viewBox="0 0 1600 1160">
+<defs><marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="context-stroke"/></marker><filter id="shadow" x="-20%" y="-20%" width="140%" height="140%"><feDropShadow dx="0" dy="2" stdDeviation="3" flood-opacity=".14"/></filter></defs>
 <rect width="100%" height="100%" fill="#ffffff"/>
-<text x="80" y="64" font-family="Inter, Arial, sans-serif" font-size="30" font-weight="700" fill="#1e1e1e">Composable value model + DiscreteValueLearner</text>
-<rect x="48" y="76" width="964" height="182" rx="10" fill="none" stroke="#adb5bd" stroke-width="1.5" stroke-dasharray="7 7"/>
-<text x="62" y="104" font-family="Inter, Arial, sans-serif" font-size="18" fill="#495057">Vectorized representation</text>
-<rect x="1068" y="76" width="624" height="182" rx="10" fill="none" stroke="#adb5bd" stroke-width="1.5" stroke-dasharray="7 7"/>
-<text x="1082" y="104" font-family="Inter, Arial, sans-serif" font-size="18" fill="#495057">Algorithm composition</text>
-<line x1="300" y1="174.0" x2="420" y2="174.0" stroke="#1e1e1e" stroke-width="2.2" marker-end="url(#arrow)"/>
-<rect x="298.0" y="138.0" width="124" height="28" rx="5" fill="#ffffff" stroke="#dee2e6"/>
-<text x="360.0" y="158.0" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="13" fill="#495057">[B·T,…]</text>
-<line x1="640" y1="174.0" x2="760" y2="174.0" stroke="#1e1e1e" stroke-width="2.2" marker-end="url(#arrow)"/>
-<rect x="638.0" y="138.0" width="124" height="28" rx="5" fill="#ffffff" stroke="#dee2e6"/>
-<text x="700.0" y="158.0" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="13" fill="#495057">[B,T,D]</text>
-<line x1="980" y1="174.0" x2="1100" y2="174.0" stroke="#1e1e1e" stroke-width="2.2" marker-end="url(#arrow)"/>
-<rect x="978.0" y="138.0" width="124" height="28" rx="5" fill="#ffffff" stroke="#dee2e6"/>
-<text x="1040.0" y="158.0" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="13" fill="#495057">features</text>
-<line x1="1320" y1="174.0" x2="1440" y2="174.0" stroke="#1e1e1e" stroke-width="2.2" marker-end="url(#arrow)"/>
-<rect x="1318.0" y="138.0" width="124" height="28" rx="5" fill="#ffffff" stroke="#dee2e6"/>
-<text x="1380.0" y="158.0" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="13" fill="#495057">selected actions</text>
-<rect x="80" y="130" width="220" height="88" rx="12" fill="#e7f5ff" stroke="#1971c2" stroke-width="2.5" filter="url(#shadow)"/>
-<text x="190.0" y="170.0" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="20" font-weight="600" fill="#1e1e1e">FrameBatchAdapter</text>
-<text x="190.0" y="192.0" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="20" font-weight="600" fill="#1e1e1e">B×T ↔ B·T</text>
-<rect x="420" y="130" width="220" height="88" rx="12" fill="#f8f9fa" stroke="#1e1e1e" stroke-width="2.5" filter="url(#shadow)"/>
-<text x="530.0" y="170.0" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="20" font-weight="600" fill="#1e1e1e">Frame-only</text>
-<text x="530.0" y="192.0" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="20" font-weight="600" fill="#1e1e1e">SensorEncoder</text>
-<rect x="760" y="130" width="220" height="88" rx="12" fill="#f8f9fa" stroke="#1e1e1e" stroke-width="2.5" filter="url(#shadow)"/>
-<text x="870.0" y="170.0" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="20" font-weight="600" fill="#1e1e1e">Identity GRU Mamba</text>
-<text x="870.0" y="192.0" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="20" font-weight="600" fill="#1e1e1e">core</text>
-<rect x="1100" y="130" width="220" height="88" rx="12" fill="#f8f9fa" stroke="#1e1e1e" stroke-width="2.5" filter="url(#shadow)"/>
-<text x="1210.0" y="170.0" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="20" font-weight="600" fill="#1e1e1e">Head + value</text>
-<text x="1210.0" y="192.0" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="20" font-weight="600" fill="#1e1e1e">strategy</text>
-<rect x="1440" y="130" width="220" height="88" rx="12" fill="#f8f9fa" stroke="#1e1e1e" stroke-width="2.5" filter="url(#shadow)"/>
-<text x="1550.0" y="170.0" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="20" font-weight="600" fill="#1e1e1e">Targets + two</text>
-<text x="1550.0" y="192.0" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="20" font-weight="600" fill="#1e1e1e">optimizers</text>
+<text x="55" y="61" text-anchor="start" font-family="Inter,Arial,sans-serif" font-size="32" fill="#111827"><tspan x="55" dy="0">Composable value model and unified distributional learner</tspan></text>
+<text x="55" y="99" text-anchor="start" font-family="Inter,Arial,sans-serif" font-size="18" fill="#64748b"><tspan x="55" dy="0">The hot path keeps frame encoding, temporal state, value representation and quantile sampling independently replaceable.</tspan></text>
+<rect x="55" y="125" width="1490" height="255" rx="14" fill="#dbeafe" fill-opacity=".35" stroke="#1864ab" stroke-width="1.5" stroke-dasharray="8 7"/>
+<text x="73" y="154" text-anchor="start" font-family="Inter,Arial,sans-serif" font-size="19" fill="#1864ab"><tspan x="73" dy="0">Vectorized representation path</tspan></text>
+<rect x="55" y="410" width="650" height="405" rx="14" fill="#cffafe" fill-opacity=".35" stroke="#087f8c" stroke-width="1.5" stroke-dasharray="8 7"/>
+<text x="73" y="439" text-anchor="start" font-family="Inter,Arial,sans-serif" font-size="19" fill="#087f8c"><tspan x="73" dy="0">Head and ValueStrategy composition</tspan></text>
+<rect x="735" y="410" width="810" height="405" rx="14" fill="#ede9fe" fill-opacity=".35" stroke="#7048e8" stroke-width="1.5" stroke-dasharray="8 7"/>
+<text x="753" y="439" text-anchor="start" font-family="Inter,Arial,sans-serif" font-size="19" fill="#7048e8"><tspan x="753" dy="0">Efficient Double-DQN target path</tspan></text>
+<polyline points="335,238.0 380,238.0" fill="none" stroke="#1864ab" stroke-width="2.5" marker-end="url(#arrow)"/>
+<polyline points="625,238.0 670,238.0" fill="none" stroke="#1864ab" stroke-width="2.5" marker-end="url(#arrow)"/>
+<rect x="559" y="153" width="176" height="25" rx="5" fill="#ffffff" fill-opacity=".92"/>
+<text x="647.0" y="170" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#1864ab"><tspan x="647.0" dy="0">flatten frames</tspan></text>
+<polyline points="915,238.0 960,238.0" fill="none" stroke="#2b8a3e" stroke-width="2.5" marker-end="url(#arrow)"/>
+<polyline points="1205,238.0 1250,238.0" fill="none" stroke="#7048e8" stroke-width="2.5" marker-end="url(#arrow)"/>
+<rect x="1139" y="153" width="176" height="25" rx="5" fill="#ffffff" fill-opacity=".92"/>
+<text x="1227.0" y="170" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#7048e8"><tspan x="1227.0" dy="0">sequence</tspan></text>
+<polyline points="1378,286 1378,392 230,392 230,485" fill="none" stroke="#087f8c" stroke-width="2.5" marker-end="url(#arrow)"/>
+<rect x="782" y="370" width="176" height="25" rx="5" fill="#ffffff" fill-opacity=".92"/>
+<text x="870.0" y="387" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#087f8c"><tspan x="870.0" dy="0">representations</tspan></text>
+<polyline points="1378,286 1405,286 1405,400 538,400 538,485" fill="none" stroke="#7048e8" stroke-width="2.5" marker-end="url(#arrow)"/>
+<polyline points="538,585 538,620 385,620 385,655" fill="none" stroke="#7048e8" stroke-width="2.5" marker-end="url(#arrow)"/>
+<rect x="407" y="598" width="176" height="25" rx="5" fill="#ffffff" fill-opacity=".92"/>
+<text x="495.0" y="615" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#7048e8"><tspan x="495.0" dy="0">support</tspan></text>
+<polyline points="385,655 385,625 230,625 230,585" fill="none" stroke="#d97706" stroke-width="2.5" marker-end="url(#arrow)"/>
+<rect x="212" y="603" width="176" height="25" rx="5" fill="#ffffff" fill-opacity=".92"/>
+<text x="300.0" y="620" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#d97706"><tspan x="300.0" dy="0">quantile</tspan><tspan x="300.0" dy="22.5">locations</tspan></text>
+<polyline points="365,510 390,510 390,450 750,450 750,533 775,533" fill="none" stroke="#2b8a3e" stroke-width="2.5" marker-end="url(#arrow)"/>
+<polyline points="365,500 380,500 380,420 1140,420 1140,485" fill="none" stroke="#1864ab" stroke-width="2.5" marker-end="url(#arrow)"/>
+<polyline points="883,581 883,785 1398,785 1398,751" fill="none" stroke="#2b8a3e" stroke-width="2.5" marker-end="url(#arrow)"/>
+<rect x="932" y="763" width="176" height="25" rx="5" fill="#ffffff" fill-opacity=".92"/>
+<text x="1020.0" y="780" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#2b8a3e"><tspan x="1020.0" dy="0">predictions</tspan></text>
+<polyline points="1250,533.0 1290,533.0" fill="none" stroke="#1864ab" stroke-width="2.5" marker-end="url(#arrow)"/>
+<rect x="1182" y="448" width="176" height="25" rx="5" fill="#ffffff" fill-opacity=".92"/>
+<text x="1270.0" y="465" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#1864ab"><tspan x="1270.0" dy="0">all actions</tspan></text>
+<polyline points="1398,581 1398,620 1140,620 1140,655" fill="none" stroke="#087f8c" stroke-width="2.5" marker-end="url(#arrow)"/>
+<rect x="1182" y="598" width="176" height="25" rx="5" fill="#ffffff" fill-opacity=".92"/>
+<text x="1270.0" y="615" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#087f8c"><tspan x="1270.0" dy="0">selected a*</tspan></text>
+<polyline points="1250,703.0 1290,703.0" fill="none" stroke="#7048e8" stroke-width="2.5" marker-end="url(#arrow)"/>
+<rect x="1182" y="618" width="176" height="25" rx="5" fill="#ffffff" fill-opacity=".92"/>
+<text x="1270.0" y="635" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#7048e8"><tspan x="1270.0" dy="0">[B,T,N]</tspan></text>
+<polyline points="1398,751 1398,835 295,835 295,875" fill="none" stroke="#2b8a3e" stroke-width="2.5" marker-end="url(#arrow)"/>
+<rect x="1032" y="813" width="176" height="25" rx="5" fill="#ffffff" fill-opacity=".92"/>
+<text x="1120.0" y="830" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#2b8a3e"><tspan x="1120.0" dy="0">regression</tspan></text>
+<polyline points="385,751 385,835 630,835 630,875" fill="none" stroke="#d97706" stroke-width="2.5" marker-end="url(#arrow)"/>
+<rect x="422" y="813" width="176" height="25" rx="5" fill="#ffffff" fill-opacity=".92"/>
+<text x="510.0" y="830" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#d97706"><tspan x="510.0" dy="0">FQF only</tspan></text>
+<polyline points="425,919.0 835,919.0" fill="none" stroke="#7048e8" stroke-width="2.5" stroke-dasharray="8 7" marker-end="url(#arrow)"/>
+<polyline points="1338,963 1338,990 295,990 295,963" fill="none" stroke="#475569" stroke-width="2.5" marker-end="url(#arrow)"/>
+<rect x="712" y="968" width="176" height="25" rx="5" fill="#ffffff" fill-opacity=".92"/>
+<text x="800.0" y="985" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#475569"><tspan x="800.0" dy="0">additive loss</tspan></text>
+<rect x="90" y="190" width="245" height="96" rx="12" fill="#f1f5f9" stroke="#475569" stroke-width="2.5" filter="url(#shadow)"/>
+<text x="212.5" y="220.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="20" fill="#111827"><tspan x="212.5" dy="0">ValueBatchView</tspan></text>
+<text x="212.5" y="248.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#475569"><tspan x="212.5" dy="0">masks · n-step ·</tspan><tspan x="212.5" dy="22.5">bootstrap · burn-in</tspan></text>
+<rect x="380" y="190" width="245" height="96" rx="12" fill="#dbeafe" stroke="#1864ab" stroke-width="2.5" filter="url(#shadow)"/>
+<text x="502.5" y="231.75" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="20" fill="#111827"><tspan x="502.5" dy="0">FrameBatchAdapter</tspan></text>
+<text x="502.5" y="259.75" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#475569"><tspan x="502.5" dy="0">[B,T,…] → [B·T,…]</tspan></text>
+<rect x="670" y="190" width="245" height="96" rx="12" fill="#dcfce7" stroke="#2b8a3e" stroke-width="2.5" filter="url(#shadow)"/>
+<text x="792.5" y="220.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="20" fill="#111827"><tspan x="792.5" dy="0">SensorEncoder</tspan></text>
+<text x="792.5" y="248.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#475569"><tspan x="792.5" dy="0">independent frames →</tspan><tspan x="792.5" dy="22.5">[B·T,D]</tspan></text>
+<rect x="960" y="190" width="245" height="96" rx="12" fill="#dbeafe" stroke="#1864ab" stroke-width="2.5" filter="url(#shadow)"/>
+<text x="1082.5" y="231.75" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="20" fill="#111827"><tspan x="1082.5" dy="0">Sequence restore</tspan></text>
+<text x="1082.5" y="259.75" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#475569"><tspan x="1082.5" dy="0">[B·T,D] → [B,T,D]</tspan></text>
+<rect x="1250" y="190" width="255" height="96" rx="12" fill="#ede9fe" stroke="#7048e8" stroke-width="2.5" filter="url(#shadow)"/>
+<text x="1377.5" y="220.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="20" fill="#111827"><tspan x="1377.5" dy="0">TemporalCore</tspan></text>
+<text x="1377.5" y="248.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#475569"><tspan x="1377.5" dy="0">Identity · GRU ·</tspan><tspan x="1377.5" dy="22.5">Mamba; no-grad burn-in</tspan></text>
+<rect x="95" y="485" width="270" height="100" rx="12" fill="#cffafe" stroke="#087f8c" stroke-width="2.5" filter="url(#shadow)"/>
+<text x="230.0" y="517.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="20" fill="#111827"><tspan x="230.0" dy="0">ValueHead</tspan></text>
+<text x="230.0" y="545.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#475569"><tspan x="230.0" dy="0">ScalarQ · FixedQuantile</tspan><tspan x="230.0" dy="22.5">· ImplicitQuantile</tspan></text>
+<rect x="410" y="485" width="255" height="100" rx="12" fill="#ede9fe" stroke="#7048e8" stroke-width="2.5" filter="url(#shadow)"/>
+<text x="537.5" y="517.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="20" fill="#111827"><tspan x="537.5" dy="0">ValueStrategy</tspan></text>
+<text x="537.5" y="545.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#475569"><tspan x="537.5" dy="0">Scalar · Fixed ·</tspan><tspan x="537.5" dy="22.5">Random · FQF</tspan></text>
+<rect x="250" y="655" width="270" height="96" rx="12" fill="#ffedd5" stroke="#d97706" stroke-width="2.5" filter="url(#shadow)"/>
+<text x="385.0" y="685.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="20" fill="#111827"><tspan x="385.0" dy="0">ValueSupport</tspan></text>
+<text x="385.0" y="713.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#475569"><tspan x="385.0" dy="0">midpoints · boundaries ·</tspan><tspan x="385.0" dy="22.5">masses · entropy</tspan></text>
+<rect x="775" y="485" width="215" height="96" rx="12" fill="#dcfce7" stroke="#2b8a3e" stroke-width="2.5" filter="url(#shadow)"/>
+<text x="882.5" y="515.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="20" fill="#111827"><tspan x="882.5" dy="0">Current actions</tspan></text>
+<text x="882.5" y="543.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#475569"><tspan x="882.5" dy="0">evaluate_actions</tspan><tspan x="882.5" dy="22.5">only</tspan></text>
+<rect x="1030" y="485" width="220" height="96" rx="12" fill="#dbeafe" stroke="#1864ab" stroke-width="2.5" filter="url(#shadow)"/>
+<text x="1140.0" y="515.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="20" fill="#111827"><tspan x="1140.0" dy="0">Online next state</tspan></text>
+<text x="1140.0" y="543.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#475569"><tspan x="1140.0" dy="0">support +</tspan><tspan x="1140.0" dy="22.5">evaluate_all</tspan></text>
+<rect x="1290" y="485" width="215" height="96" rx="12" fill="#cffafe" stroke="#087f8c" stroke-width="2.5" filter="url(#shadow)"/>
+<text x="1397.5" y="515.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="20" fill="#111827"><tspan x="1397.5" dy="0">Expected Q → a*</tspan></text>
+<text x="1397.5" y="543.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#475569"><tspan x="1397.5" dy="0">mass-weighted</tspan><tspan x="1397.5" dy="22.5">expectation / risk</tspan></text>
+<rect x="1030" y="655" width="220" height="96" rx="12" fill="#ede9fe" stroke="#7048e8" stroke-width="2.5" filter="url(#shadow)"/>
+<text x="1140.0" y="685.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="20" fill="#111827"><tspan x="1140.0" dy="0">Target next state</tspan></text>
+<text x="1140.0" y="713.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#475569"><tspan x="1140.0" dy="0">support after a*;</tspan><tspan x="1140.0" dy="22.5">evaluate_actions</tspan></text>
+<rect x="1290" y="655" width="215" height="96" rx="12" fill="#fee2e2" stroke="#c92a2a" stroke-width="2.5" filter="url(#shadow)"/>
+<text x="1397.5" y="685.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="20" fill="#111827"><tspan x="1397.5" dy="0">Regression target</tspan></text>
+<text x="1397.5" y="713.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#475569"><tspan x="1397.5" dy="0">TD / quantile</tspan><tspan x="1397.5" dy="22.5">Huber</tspan></text>
+<rect x="165" y="875" width="260" height="88" rx="12" fill="#dcfce7" stroke="#2b8a3e" stroke-width="2.5" filter="url(#shadow)"/>
+<text x="295.0" y="902" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="20" fill="#111827"><tspan x="295.0" dy="0">Main optimizer</tspan></text>
+<text x="295.0" y="930" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#475569"><tspan x="295.0" dy="0">encoder · temporal ·</tspan><tspan x="295.0" dy="22.5">head</tspan></text>
+<rect x="500" y="875" width="260" height="88" rx="12" fill="#ffedd5" stroke="#d97706" stroke-width="2.5" filter="url(#shadow)"/>
+<text x="630.0" y="912.75" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="20" fill="#111827"><tspan x="630.0" dy="0">Fraction optimizer</tspan></text>
+<text x="630.0" y="940.75" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#475569"><tspan x="630.0" dy="0">FPN only · analytic W1</tspan></text>
+<rect x="835" y="875" width="285" height="88" rx="12" fill="#ede9fe" stroke="#7048e8" stroke-width="2.5" filter="url(#shadow)"/>
+<text x="977.5" y="912.75" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="20" fill="#111827"><tspan x="977.5" dy="0">Target synchronization</tspan></text>
+<text x="977.5" y="940.75" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#475569"><tspan x="977.5" dy="0">all model components</tspan></text>
+<rect x="1195" y="875" width="285" height="88" rx="12" fill="#f1f5f9" stroke="#475569" stroke-width="2.5" filter="url(#shadow)"/>
+<text x="1337.5" y="902" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="20" fill="#111827"><tspan x="1337.5" dy="0">Optional objectives</tspan></text>
+<text x="1337.5" y="930" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#475569"><tspan x="1337.5" dy="0">margin · CE · policy</tspan><tspan x="1337.5" dy="22.5">anchor</tspan></text>
+<rect x="100" y="1010" width="1400" height="62" rx="10" fill="#cffafe" stroke="#087f8c" stroke-width="1.5"/>
+<text x="114" y="1041" text-anchor="start" font-family="Inter,Arial,sans-serif" font-size="18" fill="#1f2937"><tspan x="114" dy="0">Valid pairs: ScalarQ + Scalar · FixedQuantile + Fixed (QR-DQN) · ImplicitQuantile + Random (IQN) or Learned fractions (FQF).</tspan></text>
+<rect x="100" y="1085" width="1400" height="62" rx="10" fill="#ffedd5" stroke="#d97706" stroke-width="1.5"/>
+<text x="114" y="1116" text-anchor="start" font-family="Inter,Arial,sans-serif" font-size="18" fill="#1f2937"><tspan x="114" dy="0">FQF separation: detached midpoint support for quantile regression; detached head values and encoder features for the analytic</tspan><tspan x="114" dy="22.5">1-Wasserstein fraction loss.</tspan></text>
 </svg>

@@ -1,37 +1,84 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1740" height="380" viewBox="0 0 1740 380">
-<defs><marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,6 L9,3 z" fill="#1e1e1e"/></marker><filter id="shadow" x="-20%" y="-20%" width="140%" height="140%"><feDropShadow dx="0" dy="2" stdDeviation="3" flood-color="#000" flood-opacity="0.14"/></filter></defs>
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1120" viewBox="0 0 1600 1120">
+<defs><marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="context-stroke"/></marker><filter id="shadow" x="-20%" y="-20%" width="140%" height="140%"><feDropShadow dx="0" dy="2" stdDeviation="3" flood-opacity=".14"/></filter></defs>
 <rect width="100%" height="100%" fill="#ffffff"/>
-<text x="80" y="64" font-family="Inter, Arial, sans-serif" font-size="30" font-weight="700" fill="#1e1e1e">Distributed security and durability</text>
-<rect x="48" y="76" width="284" height="182" rx="10" fill="none" stroke="#adb5bd" stroke-width="1.5" stroke-dasharray="7 7"/>
-<text x="62" y="104" font-family="Inter, Arial, sans-serif" font-size="18" fill="#495057">Remote Trackmania host</text>
-<rect x="388" y="76" width="624" height="182" rx="10" fill="none" stroke="#adb5bd" stroke-width="1.5" stroke-dasharray="7 7"/>
-<text x="402" y="104" font-family="Inter, Arial, sans-serif" font-size="18" fill="#495057">Transport boundary</text>
-<rect x="1068" y="76" width="624" height="182" rx="10" fill="none" stroke="#adb5bd" stroke-width="1.5" stroke-dasharray="7 7"/>
-<text x="1082" y="104" font-family="Inter, Arial, sans-serif" font-size="18" fill="#495057">Learner host</text>
-<line x1="300" y1="174.0" x2="420" y2="174.0" stroke="#1e1e1e" stroke-width="2.2" marker-end="url(#arrow)"/>
-<rect x="298.0" y="138.0" width="124" height="28" rx="5" fill="#ffffff" stroke="#dee2e6"/>
-<text x="360.0" y="158.0" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="13" fill="#495057">gRPC</text>
-<line x1="640" y1="174.0" x2="760" y2="174.0" stroke="#1e1e1e" stroke-width="2.2" marker-end="url(#arrow)"/>
-<rect x="638.0" y="138.0" width="124" height="28" rx="5" fill="#ffffff" stroke="#dee2e6"/>
-<text x="700.0" y="158.0" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="13" fill="#495057">loopback</text>
-<line x1="980" y1="174.0" x2="1100" y2="174.0" stroke="#1e1e1e" stroke-width="2.2" marker-end="url(#arrow)"/>
-<rect x="978.0" y="138.0" width="124" height="28" rx="5" fill="#ffffff" stroke="#dee2e6"/>
-<text x="1040.0" y="158.0" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="13" fill="#495057">accepted</text>
-<line x1="1320" y1="174.0" x2="1440" y2="174.0" stroke="#1e1e1e" stroke-width="2.2" marker-end="url(#arrow)"/>
-<rect x="1318.0" y="138.0" width="124" height="28" rx="5" fill="#ffffff" stroke="#dee2e6"/>
-<text x="1380.0" y="158.0" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="13" fill="#495057">durable</text>
-<rect x="80" y="130" width="220" height="88" rx="12" fill="#e7f5ff" stroke="#1971c2" stroke-width="2.5" filter="url(#shadow)"/>
-<text x="190.0" y="170.0" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="20" font-weight="600" fill="#1e1e1e">Actor spool +</text>
-<text x="190.0" y="192.0" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="20" font-weight="600" fill="#1e1e1e">retries</text>
-<rect x="420" y="130" width="220" height="88" rx="12" fill="#f8f9fa" stroke="#1e1e1e" stroke-width="2.5" filter="url(#shadow)"/>
-<text x="530.0" y="181.0" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="20" font-weight="600" fill="#1e1e1e">Encrypted tunnel</text>
-<rect x="760" y="130" width="220" height="88" rx="12" fill="#f8f9fa" stroke="#1e1e1e" stroke-width="2.5" filter="url(#shadow)"/>
-<text x="870.0" y="170.0" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="20" font-weight="600" fill="#1e1e1e">Token limits</text>
-<text x="870.0" y="192.0" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="20" font-weight="600" fill="#1e1e1e">fingerprint</text>
-<rect x="1100" y="130" width="220" height="88" rx="12" fill="#f8f9fa" stroke="#1e1e1e" stroke-width="2.5" filter="url(#shadow)"/>
-<text x="1210.0" y="170.0" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="20" font-weight="600" fill="#1e1e1e">WAL + replay</text>
-<text x="1210.0" y="192.0" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="20" font-weight="600" fill="#1e1e1e">watermark</text>
-<rect x="1440" y="130" width="220" height="88" rx="12" fill="#f8f9fa" stroke="#1e1e1e" stroke-width="2.5" filter="url(#shadow)"/>
-<text x="1550.0" y="170.0" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="20" font-weight="600" fill="#1e1e1e">Checkpoint +</text>
-<text x="1550.0" y="192.0" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="20" font-weight="600" fill="#1e1e1e">policy state</text>
+<text x="55" y="61" text-anchor="start" font-family="Inter,Arial,sans-serif" font-size="32" fill="#111827"><tspan x="55" dy="0">Distributed security, delivery and recovery</tspan></text>
+<text x="55" y="99" text-anchor="start" font-family="Inter,Arial,sans-serif" font-size="18" fill="#64748b"><tspan x="55" dy="0">Transport encryption protects the link; application checks bind every rollout to one run and the WAL makes accepted data recoverable.</tspan></text>
+<rect x="55" y="125" width="455" height="680" rx="14" fill="#dcfce7" fill-opacity=".35" stroke="#2b8a3e" stroke-width="1.5" stroke-dasharray="8 7"/>
+<text x="73" y="154" text-anchor="start" font-family="Inter,Arial,sans-serif" font-size="19" fill="#2b8a3e"><tspan x="73" dy="0">Remote Trackmania host</tspan></text>
+<rect x="545" y="125" width="320" height="680" rx="14" fill="#dbeafe" fill-opacity=".35" stroke="#1864ab" stroke-width="1.5" stroke-dasharray="8 7"/>
+<text x="563" y="154" text-anchor="start" font-family="Inter,Arial,sans-serif" font-size="19" fill="#1864ab"><tspan x="563" dy="0">Encrypted transport</tspan><tspan x="563" dy="23.75">boundary</tspan></text>
+<rect x="900" y="125" width="645" height="680" rx="14" fill="#ede9fe" fill-opacity=".35" stroke="#7048e8" stroke-width="1.5" stroke-dasharray="8 7"/>
+<text x="918" y="154" text-anchor="start" font-family="Inter,Arial,sans-serif" font-size="19" fill="#7048e8"><tspan x="918" dy="0">Learner host · loopback listener</tspan></text>
+<polyline points="280,248.0 300,248.0" fill="none" stroke="#2b8a3e" stroke-width="2.5" marker-end="url(#arrow)"/>
+<polyline points="383,296 383,340 283,340 283,390" fill="none" stroke="#d97706" stroke-width="2.5" marker-end="url(#arrow)"/>
+<polyline points="385,438 535,438 535,310 590,310" fill="none" stroke="#1864ab" stroke-width="2.5" marker-end="url(#arrow)"/>
+<rect x="447" y="368" width="176" height="25" rx="5" fill="#ffffff" fill-opacity=".92"/>
+<text x="535.0" y="385" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#1864ab"><tspan x="535.0" dy="0">encrypted tunnel</tspan></text>
+<polyline points="705,360 705,520" fill="none" stroke="#1864ab" stroke-width="2.5" marker-end="url(#arrow)"/>
+<rect x="617" y="428" width="176" height="25" rx="5" fill="#ffffff" fill-opacity=".92"/>
+<text x="705.0" y="445" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#1864ab"><tspan x="705.0" dy="0">forward</tspan></text>
+<polyline points="820,570 875,570 875,238 945,238" fill="none" stroke="#c92a2a" stroke-width="2.5" marker-end="url(#arrow)"/>
+<polyline points="1190,238.0 1240,238.0" fill="none" stroke="#c92a2a" stroke-width="2.5" marker-end="url(#arrow)"/>
+<rect x="1127" y="148" width="176" height="25" rx="5" fill="#ffffff" fill-opacity=".92"/>
+<text x="1215.0" y="165" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#c92a2a"><tspan x="1215.0" dy="0">authenticated</tspan></text>
+<polyline points="1363,286 1363,330 1068,330 1068,370" fill="none" stroke="#d97706" stroke-width="2.5" marker-end="url(#arrow)"/>
+<polyline points="1190,420.0 1240,420.0" fill="none" stroke="#7048e8" stroke-width="2.5" marker-end="url(#arrow)"/>
+<rect x="1127" y="328" width="176" height="25" rx="5" fill="#ffffff" fill-opacity=".92"/>
+<text x="1215.0" y="345" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#7048e8"><tspan x="1215.0" dy="0">accepted</tspan></text>
+<polyline points="1363,470 1363,520 1068,520 1068,565" fill="none" stroke="#d97706" stroke-width="2.5" marker-end="url(#arrow)"/>
+<rect x="1127" y="498" width="176" height="25" rx="5" fill="#ffffff" fill-opacity=".92"/>
+<text x="1215.0" y="515" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#d97706"><tspan x="1215.0" dy="0">commit</tspan></text>
+<polyline points="1190,613.0 1240,613.0" fill="none" stroke="#d97706" stroke-width="2.5" marker-end="url(#arrow)"/>
+<rect x="1127" y="523" width="176" height="25" rx="5" fill="#ffffff" fill-opacity=".92"/>
+<text x="1215.0" y="540" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#d97706"><tspan x="1215.0" dy="0">resume state</tspan></text>
+<polyline points="1363,661 1363,680 1215,680 1215,700" fill="none" stroke="#7048e8" stroke-width="2.5" marker-end="url(#arrow)"/>
+<polyline points="1090,739 875,739 875,850 283,850 283,686" fill="none" stroke="#7048e8" stroke-width="2.5" stroke-dasharray="8 7" marker-end="url(#arrow)"/>
+<rect x="542" y="828" width="176" height="25" rx="5" fill="#ffffff" fill-opacity=".92"/>
+<text x="630.0" y="845" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#7048e8"><tspan x="630.0" dy="0">versioned</tspan><tspan x="630.0" dy="22.5">download</tspan></text>
+<polyline points="1485,420 1515,420 1515,875 480,875 480,248 465,248" fill="none" stroke="#d97706" stroke-width="2.5" stroke-dasharray="8 7" marker-end="url(#arrow)"/>
+<rect x="1042" y="853" width="176" height="25" rx="5" fill="#ffffff" fill-opacity=".92"/>
+<text x="1130.0" y="870" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#d97706"><tspan x="1130.0" dy="0">ACK after</tspan><tspan x="1130.0" dy="22.5">persistence</tspan></text>
+<rect x="100" y="200" width="180" height="96" rx="12" fill="#dcfce7" stroke="#2b8a3e" stroke-width="2.5" filter="url(#shadow)"/>
+<text x="190.0" y="230.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="20" fill="#111827"><tspan x="190.0" dy="0">Actor process</tspan></text>
+<text x="190.0" y="258.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#475569"><tspan x="190.0" dy="0">stable ID ·</tspan><tspan x="190.0" dy="22.5">frozen policy</tspan></text>
+<rect x="300" y="200" width="165" height="96" rx="12" fill="#ffedd5" stroke="#d97706" stroke-width="2.5" filter="url(#shadow)"/>
+<text x="382.5" y="227" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="20" fill="#111827"><tspan x="382.5" dy="0">Durable</tspan><tspan x="382.5" dy="25.0">spool</tspan></text>
+<text x="382.5" y="280" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#475569"><tspan x="382.5" dy="0">sequence IDs</tspan><tspan x="382.5" dy="22.5">· retries</tspan></text>
+<rect x="180" y="390" width="205" height="96" rx="12" fill="#dbeafe" stroke="#1864ab" stroke-width="2.5" filter="url(#shadow)"/>
+<text x="282.5" y="420.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="20" fill="#111827"><tspan x="282.5" dy="0">gRPC client</tspan></text>
+<text x="282.5" y="448.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#475569"><tspan x="282.5" dy="0">bounded chunks ·</tspan><tspan x="282.5" dy="22.5">bearer token</tspan></text>
+<rect x="180" y="590" width="205" height="96" rx="12" fill="#ede9fe" stroke="#7048e8" stroke-width="2.5" filter="url(#shadow)"/>
+<text x="282.5" y="620.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="20" fill="#111827"><tspan x="282.5" dy="0">Policy cache</tspan></text>
+<text x="282.5" y="648.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#475569"><tspan x="282.5" dy="0">safetensors ·</tspan><tspan x="282.5" dy="22.5">version</tspan></text>
+<rect x="590" y="260" width="230" height="100" rx="12" fill="#dbeafe" stroke="#1864ab" stroke-width="2.5" filter="url(#shadow)"/>
+<text x="705.0" y="292.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="20" fill="#111827"><tspan x="705.0" dy="0">SSH / VPN tunnel</tspan></text>
+<text x="705.0" y="320.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#475569"><tspan x="705.0" dy="0">authenticated</tspan><tspan x="705.0" dy="22.5">encryption</tspan></text>
+<rect x="590" y="520" width="230" height="100" rx="12" fill="#fee2e2" stroke="#c92a2a" stroke-width="2.5" filter="url(#shadow)"/>
+<text x="705.0" y="552.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="20" fill="#111827"><tspan x="705.0" dy="0">Loopback endpoint</tspan></text>
+<text x="705.0" y="580.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#475569"><tspan x="705.0" dy="0">learner never binds</tspan><tspan x="705.0" dy="22.5">publicly</tspan></text>
+<rect x="945" y="190" width="245" height="96" rx="12" fill="#fee2e2" stroke="#c92a2a" stroke-width="2.5" filter="url(#shadow)"/>
+<text x="1067.5" y="220.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="20" fill="#111827"><tspan x="1067.5" dy="0">Authentication</tspan></text>
+<text x="1067.5" y="248.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#475569"><tspan x="1067.5" dy="0">constant-time token</tspan><tspan x="1067.5" dy="22.5">comparison</tspan></text>
+<rect x="1240" y="190" width="245" height="96" rx="12" fill="#ffedd5" stroke="#d97706" stroke-width="2.5" filter="url(#shadow)"/>
+<text x="1362.5" y="220.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="20" fill="#111827"><tspan x="1362.5" dy="0">Message limits</tspan></text>
+<text x="1362.5" y="248.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#475569"><tspan x="1362.5" dy="0">size · schema ·</tspan><tspan x="1362.5" dy="22.5">protocol version</tspan></text>
+<rect x="945" y="370" width="245" height="100" rx="12" fill="#ede9fe" stroke="#7048e8" stroke-width="2.5" filter="url(#shadow)"/>
+<text x="1067.5" y="402.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="20" fill="#111827"><tspan x="1067.5" dy="0">Run contract</tspan></text>
+<text x="1067.5" y="430.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#475569"><tspan x="1067.5" dy="0">fingerprint · map ·</tspan><tspan x="1067.5" dy="22.5">contracts</tspan></text>
+<rect x="1240" y="370" width="245" height="100" rx="12" fill="#ffedd5" stroke="#d97706" stroke-width="2.5" filter="url(#shadow)"/>
+<text x="1362.5" y="402.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="20" fill="#111827"><tspan x="1362.5" dy="0">SQLite WAL</tspan></text>
+<text x="1362.5" y="430.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#475569"><tspan x="1362.5" dy="0">persist rollout</tspan><tspan x="1362.5" dy="22.5">before ACK</tspan></text>
+<rect x="945" y="565" width="245" height="96" rx="12" fill="#ffedd5" stroke="#d97706" stroke-width="2.5" filter="url(#shadow)"/>
+<text x="1067.5" y="595.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="20" fill="#111827"><tspan x="1067.5" dy="0">Ingest watermark</tspan></text>
+<text x="1067.5" y="623.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#475569"><tspan x="1067.5" dy="0">idempotent replay</tspan><tspan x="1067.5" dy="22.5">after restart</tspan></text>
+<rect x="1240" y="565" width="245" height="96" rx="12" fill="#dbeafe" stroke="#1864ab" stroke-width="2.5" filter="url(#shadow)"/>
+<text x="1362.5" y="595.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="20" fill="#111827"><tspan x="1362.5" dy="0">Atomic checkpoint</tspan></text>
+<text x="1362.5" y="623.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#475569"><tspan x="1362.5" dy="0">model · optimizers ·</tspan><tspan x="1362.5" dy="22.5">RNG · counters</tspan></text>
+<rect x="1090" y="700" width="250" height="92" rx="12" fill="#ede9fe" stroke="#7048e8" stroke-width="2.5" filter="url(#shadow)"/>
+<text x="1215.0" y="728.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="20" fill="#111827"><tspan x="1215.0" dy="0">Policy publisher</tspan></text>
+<text x="1215.0" y="756.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#475569"><tspan x="1215.0" dy="0">parameters only · no</tspan><tspan x="1215.0" dy="22.5">hidden state</tspan></text>
+<rect x="110" y="925" width="1380" height="68" rx="10" fill="#fee2e2" stroke="#c92a2a" stroke-width="1.5"/>
+<text x="124" y="956" text-anchor="start" font-family="Inter,Arial,sans-serif" font-size="18" fill="#1f2937"><tspan x="124" dy="0">Trusted-code boundary: run.yaml and imported module:attribute components execute Python. Authentication does not make untrusted</tspan><tspan x="124" dy="22.5">extensions or checkpoints safe.</tspan></text>
+<rect x="110" y="1005" width="1380" height="70" rx="10" fill="#ffedd5" stroke="#d97706" stroke-width="1.5"/>
+<text x="124" y="1036" text-anchor="start" font-family="Inter,Arial,sans-serif" font-size="18" fill="#1f2937"><tspan x="124" dy="0">Recovery invariant: session ID + chunk sequence + learner ingest watermark prevent duplicate replay insertion when either side restarts</tspan><tspan x="124" dy="22.5">after an uncertain acknowledgement.</tspan></text>
 </svg>

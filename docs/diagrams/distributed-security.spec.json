@@ -1,22 +1,45 @@
 {
-  "title": "Distributed security and durability",
-  "direction": "LR",
+  "title": "Distributed security, delivery and recovery",
+  "subtitle": "Transport encryption protects the link; application checks bind every rollout to one run and the WAL makes accepted data recoverable.",
+  "width": 1600,
+  "height": 1120,
+  "zones": [
+    {"id": "remote", "label": "Remote Trackmania host", "x": 55, "y": 125, "w": 455, "h": 680, "color": "green"},
+    {"id": "transport", "label": "Encrypted transport boundary", "x": 545, "y": 125, "w": 320, "h": 680, "color": "blue"},
+    {"id": "learner", "label": "Learner host · loopback listener", "x": 900, "y": 125, "w": 645, "h": 680, "color": "purple"}
+  ],
   "nodes": [
-    {"id": "actor", "label": "Actor spool + retries"},
-    {"id": "tunnel", "label": "Encrypted tunnel"},
-    {"id": "checks", "label": "Token limits fingerprint"},
-    {"id": "wal", "label": "WAL + replay watermark"},
-    {"id": "state", "label": "Checkpoint + policy state"}
+    {"id": "actor", "label": "Actor process", "detail": "stable ID · frozen policy", "x": 100, "y": 200, "w": 180, "h": 96, "color": "green"},
+    {"id": "spool", "label": "Durable spool", "detail": "sequence IDs · retries", "x": 300, "y": 200, "w": 165, "h": 96, "color": "orange"},
+    {"id": "grpc-client", "label": "gRPC client", "detail": "bounded chunks · bearer token", "x": 180, "y": 390, "w": 205, "h": 96, "color": "blue"},
+    {"id": "policy-cache", "label": "Policy cache", "detail": "safetensors · version", "x": 180, "y": 590, "w": 205, "h": 96, "color": "purple"},
+    {"id": "tunnel", "label": "SSH / VPN tunnel", "detail": "authenticated encryption", "x": 590, "y": 260, "w": 230, "h": 100, "color": "blue"},
+    {"id": "loopback", "label": "Loopback endpoint", "detail": "learner never binds publicly", "x": 590, "y": 520, "w": 230, "h": 100, "color": "red"},
+    {"id": "auth", "label": "Authentication", "detail": "constant-time token comparison", "x": 945, "y": 190, "w": 245, "h": 96, "color": "red"},
+    {"id": "limits", "label": "Message limits", "detail": "size · schema · protocol version", "x": 1240, "y": 190, "w": 245, "h": 96, "color": "orange"},
+    {"id": "contract", "label": "Run contract", "detail": "fingerprint · map · contracts", "x": 945, "y": 370, "w": 245, "h": 100, "color": "purple"},
+    {"id": "wal", "label": "SQLite WAL", "detail": "persist rollout before ACK", "x": 1240, "y": 370, "w": 245, "h": 100, "color": "orange"},
+    {"id": "watermark", "label": "Ingest watermark", "detail": "idempotent replay after restart", "x": 945, "y": 565, "w": 245, "h": 96, "color": "orange"},
+    {"id": "checkpoint", "label": "Atomic checkpoint", "detail": "model · optimizers · RNG · counters", "x": 1240, "y": 565, "w": 245, "h": 96, "color": "blue"},
+    {"id": "snapshot", "label": "Policy publisher", "detail": "parameters only · no hidden state", "x": 1090, "y": 700, "w": 250, "h": 92, "color": "purple"}
   ],
   "edges": [
-    {"from": "actor", "to": "tunnel", "label": "gRPC"},
-    {"from": "tunnel", "to": "checks", "label": "loopback"},
-    {"from": "checks", "to": "wal", "label": "accepted"},
-    {"from": "wal", "to": "state", "label": "durable"}
+    {"id": "e-actor-spool", "from": "actor", "to": "spool", "color": "green"},
+    {"id": "e-spool-client", "from": "spool", "to": "grpc-client", "points": [[383,296],[383,340],[283,340],[283,390]], "color": "orange"},
+    {"id": "e-client-tunnel", "from": "grpc-client", "to": "tunnel", "points": [[385,438],[535,438],[535,310],[590,310]], "label": "encrypted tunnel", "label_at": [535,390], "color": "blue"},
+    {"id": "e-tunnel-loopback", "from": "tunnel", "to": "loopback", "points": [[705,360],[705,520]], "label": "forward", "label_at": [705,450], "color": "blue"},
+    {"id": "e-loopback-auth", "from": "loopback", "to": "auth", "points": [[820,570],[875,570],[875,238],[945,238]], "color": "red"},
+    {"id": "e-auth-limits", "from": "auth", "to": "limits", "label": "authenticated", "label_at": [1215,170], "color": "red"},
+    {"id": "e-limits-contract", "from": "limits", "to": "contract", "points": [[1363,286],[1363,330],[1068,330],[1068,370]], "color": "orange"},
+    {"id": "e-contract-wal", "from": "contract", "to": "wal", "label": "accepted", "label_at": [1215,350], "color": "purple"},
+    {"id": "e-wal-watermark", "from": "wal", "to": "watermark", "points": [[1363,470],[1363,520],[1068,520],[1068,565]], "label": "commit", "label_at": [1215,520], "color": "orange"},
+    {"id": "e-watermark-checkpoint", "from": "watermark", "to": "checkpoint", "label": "resume state", "label_at": [1215,545], "color": "orange"},
+    {"id": "e-checkpoint-snapshot", "from": "checkpoint", "to": "snapshot", "points": [[1363,661],[1363,680],[1215,680],[1215,700]], "color": "purple"},
+    {"id": "e-snapshot-policy", "from": "snapshot", "to": "policy-cache", "points": [[1090,739],[875,739],[875,850],[283,850],[283,686]], "label": "versioned download", "label_at": [630,850], "color": "purple", "style": "dashed"},
+    {"id": "e-wal-ack", "from": "wal", "to": "spool", "points": [[1485,420],[1515,420],[1515,875],[480,875],[480,248],[465,248]], "label": "ACK after persistence", "label_at": [1130,875], "color": "orange", "style": "dashed"}
   ],
-  "groups": [
-    {"label": "Remote Trackmania host", "nodes": ["actor"]},
-    {"label": "Transport boundary", "nodes": ["tunnel", "checks"]},
-    {"label": "Learner host", "nodes": ["wal", "state"]}
+  "notes": [
+    {"id": "trust", "text": "Trusted-code boundary: run.yaml and imported module:attribute components execute Python. Authentication does not make untrusted extensions or checkpoints safe.", "x": 110, "y": 925, "w": 1380, "h": 68, "color": "red"},
+    {"id": "recovery", "text": "Recovery invariant: session ID + chunk sequence + learner ingest watermark prevent duplicate replay insertion when either side restarts after an uncertain acknowledgement.", "x": 110, "y": 1005, "w": 1380, "h": 70, "color": "orange"}
   ]
 }

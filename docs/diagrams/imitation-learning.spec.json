@@ -1,22 +1,48 @@
 {
-  "title": "Imitation learning and safe RL handoff",
-  "direction": "LR",
+  "title": "Imitation learning lifecycle and controlled RL handoff",
+  "subtitle": "Behavior cloning is the supervised algorithm; imitation_learning owns the wider data, recovery, evaluation and warm-start workflow.",
+  "width": 1600,
+  "height": 1080,
+  "zones": [
+    {"id": "data", "label": "Trusted demonstration data", "x": 55, "y": 125, "w": 500, "h": 690, "color": "green"},
+    {"id": "supervised", "label": "Behavior-cloning lifecycle", "x": 590, "y": 125, "w": 560, "h": 690, "color": "blue"},
+    {"id": "handoff", "label": "Closed-loop gate and RL experiment", "x": 1185, "y": 125, "w": 360, "h": 690, "color": "purple"}
+  ],
   "nodes": [
-    {"id": "record", "label": "Laps + DAgger archives"},
-    {"id": "quality", "label": "Quality gate + lap split"},
-    {"id": "train", "label": "Tensorized BC + AMP"},
-    {"id": "gate", "label": "Closed-loop benchmark"},
-    {"id": "handoff", "label": "Warm-start IQN or FQF"}
+    {"id": "record", "label": "record-demo", "detail": "whole laps · outlier filtering", "x": 95, "y": 195, "w": 200, "h": 92, "color": "green"},
+    {"id": "dagger", "label": "DAgger recovery", "detail": "student states · expert labels", "x": 315, "y": 195, "w": 200, "h": 92, "color": "orange"},
+    {"id": "quality", "label": "Dataset quality", "detail": "complete laps · timing", "x": 95, "y": 370, "w": 200, "h": 98, "color": "red"},
+    {"id": "manifest", "label": "Dataset manifest", "detail": "fingerprint · provenance", "x": 315, "y": 370, "w": 200, "h": 98, "color": "slate"},
+    {"id": "split", "label": "Lap-level split", "detail": "train / validation; no leakage", "x": 205, "y": 555, "w": 220, "h": 96, "color": "cyan"},
+    {"id": "augment", "label": "Safe augmentation", "detail": "horizontal flip; preserve unknowns", "x": 205, "y": 690, "w": 220, "h": 82, "color": "green"},
+    {"id": "model", "label": "BehaviorCloningModel", "detail": "encoder · temporal · actor head", "x": 630, "y": 195, "w": 230, "h": 96, "color": "blue"},
+    {"id": "train", "label": "Offline learner", "detail": "contiguous batches · AMP · scaler", "x": 880, "y": 195, "w": 230, "h": 96, "color": "cyan"},
+    {"id": "validation", "label": "Validation aggregate", "detail": "loss numerator / sample count", "x": 630, "y": 395, "w": 230, "h": 96, "color": "green"},
+    {"id": "checkpoint", "label": "BC checkpoint", "detail": "exact trainer state", "x": 880, "y": 395, "w": 230, "h": 96, "color": "blue"},
+    {"id": "resume", "label": "Exact resume", "detail": "same split, order and next update", "x": 755, "y": 595, "w": 230, "h": 92, "color": "slate"},
+    {"id": "benchmark", "label": "Closed-loop eval", "detail": "finish · pace · intervention rate", "x": 1240, "y": 230, "w": 250, "h": 100, "color": "orange"},
+    {"id": "promote", "label": "Promotion gate", "detail": "named criteria, never implicit", "x": 1240, "y": 425, "w": 250, "h": 100, "color": "red", "shape": "diamond"},
+    {"id": "warmstart", "label": "Warm-start RL", "detail": "encoder + temporal; new value head", "x": 1240, "y": 630, "w": 250, "h": 96, "color": "purple"}
   ],
   "edges": [
-    {"from": "record", "to": "quality", "label": "ingest"},
-    {"from": "quality", "to": "train", "label": "manifest"},
-    {"from": "train", "to": "gate", "label": "checkpoint"},
-    {"from": "gate", "to": "handoff", "label": "promote"}
+    {"id": "e-record-quality", "from": "record", "to": "quality", "points": [[195,287],[195,370]], "color": "green"},
+    {"id": "e-dagger-manifest", "from": "dagger", "to": "manifest", "points": [[415,287],[415,370]], "color": "orange"},
+    {"id": "e-quality-split", "from": "quality", "to": "split", "points": [[195,468],[195,510],[315,510],[315,555]], "color": "red"},
+    {"id": "e-manifest-split", "from": "manifest", "to": "split", "points": [[415,468],[415,510],[315,510],[315,555]], "color": "slate"},
+    {"id": "e-split-augment", "from": "split", "to": "augment", "points": [[315,651],[315,690]], "color": "green"},
+    {"id": "e-augment-model", "from": "augment", "to": "model", "points": [[425,731],[575,731],[575,243],[630,243]], "label": "training set", "label_at": [575,520], "color": "green"},
+    {"id": "e-split-validation", "from": "split", "to": "validation", "points": [[425,603],[575,603],[575,443],[630,443]], "label": "held-out laps", "label_at": [575,575], "color": "cyan"},
+    {"id": "e-model-train", "from": "model", "to": "train", "color": "blue"},
+    {"id": "e-train-validation", "from": "train", "to": "validation", "points": [[995,291],[995,345],[745,345],[745,395]], "label": "epochs", "label_at": [870,345], "color": "cyan"},
+    {"id": "e-validation-checkpoint", "from": "validation", "to": "checkpoint", "color": "green"},
+    {"id": "e-checkpoint-resume", "from": "checkpoint", "to": "resume", "points": [[995,491],[995,545],[870,545],[870,595]], "color": "blue"},
+    {"id": "e-checkpoint-benchmark", "from": "checkpoint", "to": "benchmark", "points": [[1110,443],[1165,443],[1165,280],[1240,280]], "label": "candidate", "label_at": [1165,365], "color": "orange"},
+    {"id": "e-benchmark-promote", "from": "benchmark", "to": "promote", "points": [[1365,330],[1365,425]], "label": "metrics", "label_at": [1365,395], "color": "orange"},
+    {"id": "e-promote-warmstart", "from": "promote", "to": "warmstart", "points": [[1365,525],[1365,630]], "label": "pass", "label_at": [1365,600], "color": "purple"},
+    {"id": "e-promote-dagger", "from": "promote", "to": "dagger", "points": [[1240,475],[1165,475],[1165,855],[415,855],[415,287]], "label": "fail / intervene", "label_at": [790,855], "color": "orange", "style": "dashed"}
   ],
-  "groups": [
-    {"label": "Trusted offline data", "nodes": ["record", "quality"]},
-    {"label": "Supervised lifecycle", "nodes": ["train", "gate"]},
-    {"label": "RL experiment", "nodes": ["handoff"]}
+  "notes": [
+    {"id": "scope", "text": "Package boundary: trackmaniarl.trackmania.imitation_learning. Public classes include LidarBehaviorCloningModelFactory and BehaviorCloningLearner.", "x": 115, "y": 900, "w": 1370, "h": 62, "color": "blue"},
+    {"id": "handoff-note", "text": "Warm-start is partial loading with an explicit match report; it is not a resume and it does not transfer optimizer state or episodic hidden state.", "x": 115, "y": 980, "w": 1370, "h": 62, "color": "purple"}
   ]
 }

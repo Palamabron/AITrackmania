@@ -76,6 +76,13 @@ protocol validation, while declared incompatible pairs fail during resolution.
 `CompositeValueModelFactory` validates dimensions and representation contracts
 before training:
 
+<p align="center">
+  <img src="../docs/diagrams/model-composition-preview.svg" alt="Composable value model, FQF target path and optimizer separation" width="900">
+</p>
+
+[Editable diagram](../docs/diagrams/model-composition.excalidraw) ·
+[local preview](../docs/diagrams/model-composition-preview.html)
+
 | Algorithm | Head | Strategy | Optimizers |
 | --- | --- | --- | --- |
 | Standard Q | `ScalarQHead` | `ScalarValueStrategy` | main |
@@ -127,6 +134,13 @@ experiment.
 
 The normal extension loop is:
 
+<p align="center">
+  <img src="../docs/diagrams/extension-workflow-preview.svg" alt="TrackmaniaRL extension ownership, contract and verification workflow" width="900">
+</p>
+
+[Editable diagram](../docs/diagrams/extension-workflow.excalidraw) ·
+[local preview](../docs/diagrams/extension-workflow-preview.html)
+
 1. generate an installable project with `trackmaniarl init`;
 2. implement or subclass one component under `src/<package>/`;
 3. point the matching `components` entry at its import path;
@@ -172,10 +186,12 @@ round trip before a live run.
 
 `validate` does not start TrackMania. It resolves components, writes the
 redacted manifest and runs a deterministic synthetic RL or supervised update.
-`train` requires
-`components.environment`; it collects bounded episodes, writes compressed
-reference-only artifacts, samples replay, applies updates, checkpoints and
-runs an optional evaluator.
+The `trackmaniarl train` command requires `components.environment` and runs the
+asynchronous off-policy actor/learner path. It collects bounded episodes,
+writes compressed reference-only artifacts, samples replay, applies updates,
+checkpoints and runs an optional evaluator. On-policy PPO instead uses the
+public `trackmaniarl.Trainer` API with `OnPolicySequenceSampler`; distributed
+`learner` and `actor` do not support it.
 
 `validate` is game-free, not code-free: it imports every configured component
 and invokes constructors and a learner validation update. Never validate an untrusted
@@ -203,7 +219,8 @@ environment variables inside hot-path objects.
 
 ## Checkpoint and warm-start rules
 
-Resume and warm-start are different operations:
+Resume and warm-start are different operations. For the asynchronous
+off-policy runtime:
 
 - resume requires schema 2.0, the exact architecture fingerprint, all online
   and target components, optimizers, objectives, counters, schedules and RNG;
@@ -212,6 +229,10 @@ Resume and warm-start are different operations:
 - zero matches, ambiguity and missing required tensors are errors;
 - overlapping slices require explicit `shape_policy: overlap`;
 - IQN 1.x import is warm-start only, never a 2.0 resume.
+
+The local on-policy `Trainer` used by PPO persists a separate schema 1.0 state
+containing its learner, replay store, sampler and counters. Do not pass that
+checkpoint to distributed `resume` or `learner --checkpoint`.
 
 Stable RL component names are `encoder`, `temporal`, `head` and `strategy`
 under `online` and `target`. Mamba's resolved kernel backend is runtime metadata
@@ -255,7 +276,7 @@ checklist.
 
 | Namespace | Responsibility |
 | --- | --- |
-| `trackmaniarl.core` | contracts, run spec, trainer, data and reference replay |
+| `trackmaniarl.core` | contracts, run spec, trainer, data and replay |
 | `trackmaniarl.algorithms` | learners, targets, losses and objectives |
 | `trackmaniarl.models` | encoders, temporal cores, heads, strategies and factories |
 | `trackmaniarl.distributed` | authenticated actor/learner transport, WAL and spool |
