@@ -34,7 +34,7 @@ class GaussianActor(nn.Module):
             raise ValueError("action bounds must match action_dim and satisfy high > low")
         self.encoder = encoder
         self.mean = nn.Linear(feature_dim, action_dim)
-        self.log_std = nn.Linear(feature_dim, action_dim)
+        self.log_std: nn.Linear | nn.Parameter = nn.Linear(feature_dim, action_dim)
         self.register_buffer("action_scale", (high - low) / 2.0)
         self.register_buffer("action_bias", (high + low) / 2.0)
 
@@ -71,6 +71,8 @@ class GaussianActor(nn.Module):
     def _distribution(self, observation: Any) -> Any:
         features = _encode(self.encoder, observation)
         mean = self.mean(features)
+        if not isinstance(self.log_std, nn.Linear):
+            raise TypeError("GaussianActor requires an observation-dependent standard deviation")
         log_std = self.log_std(features).clamp(-5, 2)
         return Normal(mean, log_std.exp())
 
@@ -84,6 +86,46 @@ class GaussianActor(nn.Module):
                 - cast(torch.Tensor, self.action_scale).log()
             ).sum(dim=-1),
         )
+
+
+class PpoGaussianActor(GaussianActor):
+    """Squashed Gaussian PPO policy with state-independent exploration."""
+
+    def __init__(
+        self,
+        encoder: nn.Module,
+        feature_dim: int,
+        action_dim: int,
+        *,
+        action_low: Sequence[float] | None = None,
+        action_high: Sequence[float] | None = None,
+    ) -> None:
+        super().__init__(
+            encoder,
+            feature_dim,
+            action_dim,
+            action_low=action_low,
+            action_high=action_high,
+        )
+        del self.log_std
+        self.log_std = nn.Parameter(torch.zeros(action_dim))
+        self._initialize_weights()
+
+    def _distribution(self, observation: Any) -> Any:
+        features = _encode(self.encoder, observation)
+        mean = self.mean(features)
+        if not isinstance(self.log_std, nn.Parameter):
+            raise TypeError("PpoGaussianActor requires a state-independent standard deviation")
+        log_std = self.log_std.expand_as(mean).clamp(-5, 2)
+        return Normal(mean, log_std.exp())
+
+    def _initialize_weights(self) -> None:
+        for module in self.encoder.modules():
+            if isinstance(module, nn.Linear):
+                nn.init.orthogonal_(module.weight, math.sqrt(2.0))
+                nn.init.zeros_(module.bias)
+        nn.init.orthogonal_(self.mean.weight, 0.01)
+        nn.init.zeros_(self.mean.bias)
 
 
 def _encode(encoder: nn.Module, observation: Any) -> torch.Tensor:

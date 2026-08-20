@@ -18,10 +18,17 @@ from trackmaniarl.core.pytree import sanitize_finite, tree_map, tree_to_device
 
 
 class _PpoPolicy:
-    def __init__(self, actor: nn.Module, value: nn.Module, device: torch.device) -> None:
+    def __init__(
+        self,
+        actor: nn.Module,
+        value: nn.Module,
+        device: torch.device,
+        observation_normalizer: _ObservationNormalizer,
+    ) -> None:
         self.actor = deepcopy(actor).to(device).eval()
         self.value = deepcopy(value).to(device).eval()
         self.device = device
+        self.observation_normalizer = deepcopy(observation_normalizer)
 
     def act(self, observation: Any, *, deterministic: bool = False) -> np.ndarray[Any, Any]:
         action, _ = self._sample(observation, deterministic=deterministic)
@@ -37,6 +44,7 @@ class _PpoPolicy:
         self, observation: Any, *, deterministic: bool
     ) -> tuple[np.ndarray[Any, Any], dict[str, Any]]:
         prepared = tree_to_device(sanitize_finite(observation), self.device)
+        prepared = self.observation_normalizer.normalize(prepared, sample_dimensions=0)
         prepared = tree_map(
             lambda leaf: leaf.unsqueeze(0) if isinstance(leaf, torch.Tensor) else leaf,
             prepared,
@@ -95,6 +103,10 @@ class ProximalPolicyOptimization(TorchLearnerBase):
         update_epochs: int = 10,
         minibatch_size: int = 256,
         target_kl: float | None = 0.02,
+        normalize_observations: bool = True,
+        observation_clip: float = 10.0,
+        normalize_rewards: bool = True,
+        reward_clip: float = 10.0,
         device: str | None = None,
         execution: TorchExecutionConfig | Mapping[str, Any] | None = None,
         seed: int = 0,
@@ -110,6 +122,8 @@ class ProximalPolicyOptimization(TorchLearnerBase):
             raise ValueError("Invalid PPO GAE or loss coefficient")
         if update_epochs < 1 or minibatch_size < 1 or (target_kl is not None and target_kl <= 0.0):
             raise ValueError("Invalid PPO update schedule")
+        if observation_clip <= 0.0 or reward_clip <= 0.0:
+            raise ValueError("PPO normalization clips must be positive")
         self.learning_rate = learning_rate
         self.clip_epsilon = clip_epsilon
         self.value_clip_epsilon = value_clip_epsilon
@@ -120,6 +134,17 @@ class ProximalPolicyOptimization(TorchLearnerBase):
         self.update_epochs = update_epochs
         self.minibatch_size = minibatch_size
         self.target_kl = target_kl
+        self.observation_normalizer = _ObservationNormalizer(
+            enabled=normalize_observations, clip=observation_clip
+        )
+        self.reward_normalizer = _RewardNormalizer(enabled=normalize_rewards, clip=reward_clip)
+        self.total_transitions: int | None = None
+        self.processed_transitions = 0
+
+    def setup(self, context: Mapping[str, Any]) -> None:
+        total_transitions = context.get("total_transitions")
+        self.total_transitions = int(total_transitions) if total_transitions is not None else None
+        super().setup(context)
 
     def _setup_model(self) -> None:
         assert self.model is not None
@@ -143,8 +168,17 @@ class ProximalPolicyOptimization(TorchLearnerBase):
         old_log_probabilities = self._behavior_tensor(batch, "behavior_log_probabilities")
         old_values = self._behavior_tensor(batch, "behavior_values")
         latent_actions = self._behavior_tensor(batch, "behavior_latent_actions")
+        sample_dimensions = rewards.ndim
+        normalized_observations = self.observation_normalizer.normalize(
+            observations, sample_dimensions
+        )
+        normalized_next_observations = self.observation_normalizer.normalize(
+            next_observations, sample_dimensions
+        )
+        rewards = self.reward_normalizer.normalize(rewards, terminated | truncated, discounts)
+        self._anneal_learning_rate()
         with torch.no_grad():
-            next_values = self.model.value(next_observations)
+            next_values = self.model.value(normalized_next_observations)
             advantages, returns = generalized_advantage_estimate(
                 rewards,
                 old_values,
@@ -156,14 +190,17 @@ class ProximalPolicyOptimization(TorchLearnerBase):
             advantages = (advantages - advantages.mean()) / advantages.std(
                 unbiased=False
             ).clamp_min(1e-8)
-        return self._optimize_epochs(
-            observations,
+        metrics = self._optimize_epochs(
+            normalized_observations,
             latent_actions,
             old_log_probabilities,
             old_values,
             advantages,
             returns,
         )
+        self.observation_normalizer.update(observations, sample_dimensions)
+        self.processed_transitions += rewards.numel()
+        return {**metrics, "state/learning_rate": self._current_learning_rate()}
 
     def _optimize_epochs(
         self,
@@ -274,13 +311,24 @@ class ProximalPolicyOptimization(TorchLearnerBase):
 
     def policy(self) -> _PpoPolicy:
         assert self.model is not None
-        return _PpoPolicy(self.model.actor, self.model.value, self.device)
+        return _PpoPolicy(
+            self.model.actor,
+            self.model.value,
+            self.device,
+            self.observation_normalizer,
+        )
+
+    def reset_environment_state(self) -> None:
+        self.reward_normalizer.discounted_returns = None
 
     def state_dict(self) -> Mapping[str, Any]:
         assert self.model is not None
         return {
             "model": self.model.state_dict(),
             "optimizer": self.optimizer.state_dict(),
+            "observation_normalizer": self.observation_normalizer.state_dict(),
+            "reward_normalizer": self.reward_normalizer.state_dict(),
+            "processed_transitions": self.processed_transitions,
             "rng": self._rng_state(),
         }
 
@@ -288,7 +336,188 @@ class ProximalPolicyOptimization(TorchLearnerBase):
         assert self.model is not None
         self.model.load_state_dict(state["model"])
         self.optimizer.load_state_dict(state["optimizer"])
+        self.observation_normalizer.load_state_dict(
+            cast(Mapping[str, Any], state.get("observation_normalizer", {}))
+        )
+        self.reward_normalizer.load_state_dict(
+            cast(Mapping[str, Any], state.get("reward_normalizer", {}))
+        )
+        self.processed_transitions = int(state.get("processed_transitions", 0))
         self._restore_rng(cast(Mapping[str, Any], state.get("rng", {})))
+
+    def _anneal_learning_rate(self) -> None:
+        if self.total_transitions is None:
+            return
+        fraction = 1.0 - min(1.0, self.processed_transitions / self.total_transitions)
+        for group in self.optimizer.param_groups:
+            group["lr"] = self.learning_rate * fraction
+
+    def _current_learning_rate(self) -> float:
+        return float(self.optimizer.param_groups[0]["lr"])
+
+
+class _ObservationNormalizer:
+    def __init__(self, *, enabled: bool, clip: float) -> None:
+        self.enabled = enabled
+        self.clip = clip
+        self._moments: dict[str, _Moments] = {}
+
+    def normalize(self, value: Any, sample_dimensions: int) -> Any:
+        if not self.enabled:
+            return value
+        return _map_tensor_tree(
+            value,
+            lambda path, leaf: self._normalize_leaf(path, leaf),
+        )
+
+    def update(self, value: Any, sample_dimensions: int) -> None:
+        if not self.enabled:
+            return
+        _map_tensor_tree(
+            value,
+            lambda path, leaf: self._update_leaf(path, leaf, sample_dimensions),
+        )
+
+    def _normalize_leaf(self, path: str, value: torch.Tensor) -> torch.Tensor:
+        moments = self._moments.get(path)
+        if moments is None:
+            return value
+        mean = moments.mean.to(value.device)
+        variance = moments.variance.to(value.device)
+        return ((value - mean) / (variance + 1e-8).sqrt()).clamp(-self.clip, self.clip)
+
+    def _update_leaf(self, path: str, value: torch.Tensor, sample_dimensions: int) -> torch.Tensor:
+        dimensions = tuple(range(sample_dimensions))
+        mean = value.detach().mean(dim=dimensions).cpu()
+        variance = value.detach().var(dim=dimensions, unbiased=False).cpu()
+        count = int(np.prod(value.shape[:sample_dimensions]))
+        moments = self._moments.setdefault(path, _Moments.zeros_like(mean))
+        moments.update(mean, variance, count)
+        return value
+
+    def state_dict(self) -> Mapping[str, Any]:
+        return {
+            "enabled": self.enabled,
+            "clip": self.clip,
+            "moments": {key: value.state_dict() for key, value in self._moments.items()},
+        }
+
+    def load_state_dict(self, state: Mapping[str, Any]) -> None:
+        if not state:
+            return
+        self._moments = {
+            str(key): _Moments.from_state(cast(Mapping[str, Any], value))
+            for key, value in cast(Mapping[str, Any], state["moments"]).items()
+        }
+
+
+class _RewardNormalizer:
+    def __init__(self, *, enabled: bool, clip: float) -> None:
+        self.enabled = enabled
+        self.clip = clip
+        self.moments = _Moments.zeros_like(torch.zeros(()))
+        self.discounted_returns: torch.Tensor | None = None
+
+    def normalize(
+        self,
+        rewards: torch.Tensor,
+        episode_ends: torch.Tensor,
+        discounts: torch.Tensor,
+    ) -> torch.Tensor:
+        if not self.enabled:
+            return rewards
+        sequence = rewards if rewards.ndim > 1 else rewards.unsqueeze(0)
+        ends = episode_ends if rewards.ndim > 1 else episode_ends.unsqueeze(0)
+        gamma = float(discounts.max().item()) if discounts.numel() else 0.0
+        self._ensure_returns(sequence.shape[0], rewards.device, rewards.dtype)
+        normalized = torch.empty_like(sequence)
+        for step in range(sequence.shape[1]):
+            self._normalize_step(sequence, ends, normalized, step, gamma)
+        return normalized if rewards.ndim > 1 else normalized[0]
+
+    def _normalize_step(
+        self,
+        rewards: torch.Tensor,
+        ends: torch.Tensor,
+        normalized: torch.Tensor,
+        step: int,
+        gamma: float,
+    ) -> None:
+        assert self.discounted_returns is not None
+        self.discounted_returns.mul_(gamma).add_(rewards[:, step])
+        values = self.discounted_returns.detach().cpu()
+        self.moments.update(values.mean(), values.var(unbiased=False), values.numel())
+        scale = float((self.moments.variance + 1e-8).sqrt().item())
+        normalized[:, step] = (rewards[:, step] / scale).clamp(-self.clip, self.clip)
+        self.discounted_returns.masked_fill_(ends[:, step], 0.0)
+
+    def _ensure_returns(self, count: int, device: torch.device, dtype: torch.dtype) -> None:
+        if self.discounted_returns is None or self.discounted_returns.shape != (count,):
+            self.discounted_returns = torch.zeros(count, device=device, dtype=dtype)
+        else:
+            self.discounted_returns = self.discounted_returns.to(device=device, dtype=dtype)
+
+    def state_dict(self) -> Mapping[str, Any]:
+        return {
+            "enabled": self.enabled,
+            "clip": self.clip,
+            "moments": self.moments.state_dict(),
+            "discounted_returns": self.discounted_returns,
+        }
+
+    def load_state_dict(self, state: Mapping[str, Any]) -> None:
+        if not state:
+            return
+        self.moments = _Moments.from_state(cast(Mapping[str, Any], state["moments"]))
+        value = state.get("discounted_returns")
+        self.discounted_returns = cast(torch.Tensor | None, value)
+
+
+class _Moments:
+    def __init__(self, mean: torch.Tensor, variance: torch.Tensor, count: float) -> None:
+        self.mean = mean
+        self.variance = variance
+        self.count = count
+
+    @classmethod
+    def zeros_like(cls, value: torch.Tensor) -> _Moments:
+        return cls(torch.zeros_like(value), torch.ones_like(value), 1e-4)
+
+    def update(self, mean: torch.Tensor, variance: torch.Tensor, count: int) -> None:
+        if count < 1:
+            return
+        delta = mean - self.mean
+        total = self.count + count
+        combined = self.variance * self.count + variance * count
+        combined += delta.square() * self.count * count / total
+        self.mean = self.mean + delta * count / total
+        self.variance = combined / total
+        self.count = total
+
+    def state_dict(self) -> Mapping[str, Any]:
+        return {"mean": self.mean, "variance": self.variance, "count": self.count}
+
+    @classmethod
+    def from_state(cls, state: Mapping[str, Any]) -> _Moments:
+        return cls(
+            cast(torch.Tensor, state["mean"]),
+            cast(torch.Tensor, state["variance"]),
+            float(state["count"]),
+        )
+
+
+def _map_tensor_tree(value: Any, function: Any, path: str = "root") -> Any:
+    if isinstance(value, torch.Tensor):
+        return function(path, value)
+    if isinstance(value, Mapping):
+        return {
+            key: _map_tensor_tree(item, function, f"{path}.{key}") for key, item in value.items()
+        }
+    if isinstance(value, tuple):
+        return tuple(
+            _map_tensor_tree(item, function, f"{path}.{index}") for index, item in enumerate(value)
+        )
+    raise TypeError("PPO observation PyTrees must contain tensors, mappings, or tuples")
 
 
 def generalized_advantage_estimate(

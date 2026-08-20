@@ -1,6 +1,6 @@
 """Composable TrackmaniaRL neural-network building blocks."""
 
-from trackmaniarl.models.actors import CategoricalActor, GaussianActor
+from trackmaniarl.models.actors import CategoricalActor, GaussianActor, PpoGaussianActor
 from trackmaniarl.models.backbones import (
     HypersphericalLinear,
     SimbaV2Backbone,
@@ -32,6 +32,7 @@ __all__ = [
     "GaussianActor",
     "HypersphericalLinear",
     "ObservationEncoder",
+    "PpoGaussianActor",
     "QuantileCritic",
     "SimbaV2Backbone",
     "SimbaV2Block",

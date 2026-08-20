@@ -152,6 +152,14 @@ def test_telemetry_ppo_factory_declares_actor_value_contract() -> None:
     assert factory.model_contract is ModelContract.CONTINUOUS_ACTOR_VALUE
     assert hasattr(model, "actor")
     assert hasattr(model, "value")
+    assert set(model.actor.state_dict()) >= {"log_std", "mean.weight", "mean.bias"}
+    assert "log_std.weight" not in model.actor.state_dict()
+    assert torch.allclose(
+        model.actor.mean.weight @ model.actor.mean.weight.T,
+        torch.eye(3) * 1e-4,
+        atol=1e-6,
+    )
+    assert torch.isclose(model.value.value.weight.norm(), torch.tensor(1.0))
 
 
 def test_ppo_stack_validates_with_trackmania_control_bounds(tmp_path: Path) -> None:

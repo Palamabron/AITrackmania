@@ -107,6 +107,10 @@ class TorchLearnerBase:
         torch.manual_seed(seed)
         if torch.cuda.is_available():
             torch.cuda.manual_seed_all(seed)
+        torch.use_deterministic_algorithms(self.execution.deterministic)
+        if torch.cuda.is_available():
+            torch.backends.cudnn.deterministic = self.execution.deterministic
+            torch.backends.cudnn.benchmark = not self.execution.deterministic
         if self.model is None:
             factory = self.model_factory or context.get("model_factory")
             if factory is None:
@@ -149,6 +153,7 @@ class TorchLearnerBase:
                 "requested_device": self.execution.device,
                 "requested_precision": self.execution.precision,
                 "compile_requested": self.execution.compile,
+                "deterministic": self.execution.deterministic,
                 "compile_mode": self.execution.compile_mode,
                 "resolved": False,
             }

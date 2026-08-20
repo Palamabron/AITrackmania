@@ -5,7 +5,7 @@ from __future__ import annotations
 from torch import nn
 
 from trackmaniarl.core.contracts import ModelContract
-from trackmaniarl.models.actors import GaussianActor
+from trackmaniarl.models.actors import GaussianActor, PpoGaussianActor
 from trackmaniarl.models.critics import ContinuousValueCritic, QuantileCritic
 from trackmaniarl.trackmania.telemetry import DEFAULT_TELEMETRY_FIELD_COUNT
 
@@ -66,7 +66,7 @@ class TelemetryPpoModel(nn.Module):
         hidden_dim: int = 256,
     ) -> None:
         super().__init__()
-        self.actor = GaussianActor(
+        self.actor = PpoGaussianActor(
             _encoder(input_dim, hidden_dim),
             hidden_dim,
             3,
@@ -74,6 +74,7 @@ class TelemetryPpoModel(nn.Module):
             action_high=(1.0, 1.0, 1.0),
         )
         self.value = ContinuousValueCritic(_encoder(input_dim, hidden_dim), hidden_dim)
+        _initialize_value(self.value)
 
 
 class TelemetryPpoModelFactory:
@@ -89,3 +90,12 @@ class TelemetryPpoModelFactory:
 
     def build(self) -> TelemetryPpoModel:
         return TelemetryPpoModel(self.input_dim, self.hidden_dim)
+
+
+def _initialize_value(value: ContinuousValueCritic) -> None:
+    for module in value.encoder.modules():
+        if isinstance(module, nn.Linear):
+            nn.init.orthogonal_(module.weight, 2**0.5)
+            nn.init.zeros_(module.bias)
+    nn.init.orthogonal_(value.value.weight, 1.0)
+    nn.init.zeros_(value.value.bias)

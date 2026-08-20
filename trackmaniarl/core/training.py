@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from trackmaniarl.core.collector import EpisodeCollector
+from trackmaniarl.core.collector import EpisodeCollector, FixedStepRolloutCollector
 from trackmaniarl.core.data import BatchRequest, PriorityUpdate
 from trackmaniarl.core.runtime import ResolvedRun, prepare_run
 from trackmaniarl.observability.artifacts import AsyncEpisodeWriter
@@ -37,10 +37,14 @@ class Trainer:
         self.run = run
         self.environment_factory = run.environment_factory
         self.resume_checkpoint = Path(resume_checkpoint) if resume_checkpoint is not None else None
-        if getattr(run.learner, "on_policy", False) and not getattr(
-            run.sampler, "on_policy_rollouts", False
-        ):
+        self.on_policy = bool(getattr(run.learner, "on_policy", False))
+        if self.on_policy and not getattr(run.sampler, "on_policy_rollouts", False):
             raise ValueError("On-policy learners require OnPolicySequenceSampler")
+        if (
+            self.on_policy
+            and run.spec.training.total_transitions % run.spec.training.sequence_length
+        ):
+            raise ValueError("On-policy total_transitions must be divisible by sequence_length")
 
     def train(self) -> TrainingResult:
         spec = self.run.spec.training
@@ -49,6 +53,7 @@ class Trainer:
                 "seed": self.run.spec.seed,
                 "run_dir": self.run.run_dir,
                 "model_factory": self.run.model_factory,
+                "total_transitions": spec.total_transitions,
             }
         )
         prepare_run(self.run)
@@ -80,27 +85,53 @@ class Trainer:
                 updates,
                 episodes,
             )
+        rollout_environment: Any | None = None
+        rollout_collector: FixedStepRolloutCollector | None = None
+        if self.on_policy:
+            reset_environment_state = getattr(self.run.learner, "reset_environment_state", None)
+            if callable(reset_environment_state):
+                reset_environment_state()
+            rollout_environment = self.environment_factory.create(seed=self.run.spec.seed)
+            rollout_collector = FixedStepRolloutCollector(
+                self.run.replay_store,
+                self.run.feature_pipeline,
+                self.run.learner.policy(),
+                rollout_environment,
+                max_episode_steps=spec.max_episode_steps,
+                seed=self.run.spec.seed,
+                start_episode_index=episodes,
+            )
         try:
             while transitions < spec.total_transitions:
                 previous_transitions = transitions
-                environment = self.environment_factory.create(seed=self.run.spec.seed + episodes)
-                collector = EpisodeCollector(
-                    self.run.replay_store, self.run.feature_pipeline, self.run.learner.policy()
-                )
-                try:
-                    remaining = spec.total_transitions - transitions
-                    result = collector.collect(
-                        environment,
-                        episode_id=f"episode-{episodes:08d}",
-                        max_steps=min(spec.max_episode_steps, remaining),
+                previous_episodes = episodes
+                remaining = spec.total_transitions - transitions
+                if rollout_collector is not None:
+                    rollout_collector.set_policy(self.run.learner.policy())
+                    result = rollout_collector.collect(
+                        min(spec.sequence_length, remaining),
+                        rollout_id=f"rollout-{updates:08d}",
                     )
-                finally:
-                    close = getattr(environment, "close", None)
-                    if callable(close):
-                        close()
+                else:
+                    environment = self.environment_factory.create(
+                        seed=self.run.spec.seed + episodes
+                    )
+                    collector = EpisodeCollector(
+                        self.run.replay_store, self.run.feature_pipeline, self.run.learner.policy()
+                    )
+                    try:
+                        result = collector.collect(
+                            environment,
+                            episode_id=f"episode-{episodes:08d}",
+                            max_steps=min(spec.max_episode_steps, remaining),
+                        )
+                    finally:
+                        close = getattr(environment, "close", None)
+                        if callable(close):
+                            close()
                 writer.submit(result.artifact)
                 transitions += result.transitions
-                episodes += 1
+                episodes += result.completed_episodes
                 if result.transitions == 0:
                     raise RuntimeError(
                         "Environment returned an empty episode; refusing to spin forever"
@@ -118,7 +149,7 @@ class Trainer:
                     updates,
                     episodes,
                 )
-                if episodes:
+                if result.completed_episodes:
                     termination = result.artifact.metadata.get("termination", "unknown")
                     episode_metrics = self._episode_metrics(result)
                     print(
@@ -129,14 +160,13 @@ class Trainer:
                         f"transitions={transitions}/{spec.total_transitions}, updates={updates}",
                         flush=True,
                     )
-                on_policy = bool(getattr(self.run.learner, "on_policy", False))
                 sample_footprint = spec.batch_size * spec.sequence_length + spec.n_step - 1
-                ready = 1 if on_policy else max(spec.warmup_transitions, sample_footprint)
+                ready = 1 if self.on_policy else max(spec.warmup_transitions, sample_footprint)
                 # Warm-up gathers data only.  Do not build an update debt that
                 # would turn the first trainable episode into a large burst.
                 newly_trainable = max(0, transitions - ready) - max(0, previous_transitions - ready)
                 fractional_updates += (
-                    1.0 if on_policy else newly_trainable * spec.updates_per_transition
+                    1.0 if self.on_policy else newly_trainable * spec.updates_per_transition
                 )
                 while len(self.run.replay_store) >= ready and fractional_updates >= 1:
                     request = (
@@ -145,7 +175,7 @@ class Trainer:
                             sequence_length=result.transitions,
                             gamma=spec.gamma,
                         )
-                        if on_policy
+                        if self.on_policy
                         else spec.batch_request(beta=spec.replay_beta(transitions))
                     )
                     batch = self.run.sampler.sample(
@@ -182,7 +212,8 @@ class Trainer:
                 if (
                     self.run.evaluator is not None
                     and spec.evaluate_every_episodes is not None
-                    and episodes % spec.evaluate_every_episodes == 0
+                    and episodes // spec.evaluate_every_episodes
+                    > previous_episodes // spec.evaluate_every_episodes
                     and transitions < spec.total_transitions
                 ):
                     self._checkpoint_for_evaluation(
@@ -217,6 +248,10 @@ class Trainer:
             )
             raise
         finally:
+            if rollout_environment is not None:
+                close = getattr(rollout_environment, "close", None)
+                if callable(close):
+                    close()
             writer.close()
 
     def _update_priorities(self, update: PriorityUpdate) -> None:

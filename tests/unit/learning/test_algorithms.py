@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pytest
 import torch
 from torch import nn
 
@@ -148,7 +149,7 @@ def test_ppo_updates_from_behavior_policy_sequences() -> None:
         minibatch_size=8,
         execution={"device": "cpu", "precision": "float32"},
     )
-    learner.setup({"seed": 0})
+    learner.setup({"seed": 0, "total_transitions": 32})
     observations = torch.randn(4, 4, 4)
     next_observations = torch.randn(4, 4, 4)
     with torch.no_grad():
@@ -177,6 +178,12 @@ def test_ppo_updates_from_behavior_policy_sequences() -> None:
 
     assert all(torch.isfinite(torch.tensor(value)) for value in metrics.values())
     assert 0.0 <= metrics["state/clip_fraction"] <= 1.0
+    assert metrics["state/learning_rate"] == pytest.approx(3e-4)
+
+    annealed = learner.update(batch)
+
+    assert annealed["state/learning_rate"] == pytest.approx(1.5e-4)
+    assert learner.state_dict()["observation_normalizer"]["moments"]
 
 
 def test_ppo_gae_stops_recursion_at_episode_end_but_bootstraps_truncation() -> None:

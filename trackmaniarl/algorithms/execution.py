@@ -24,6 +24,7 @@ class TorchExecutionConfig:
     precision: RequestedPrecision = "auto"
     compile: bool = False
     compile_mode: CompileMode = "default"
+    deterministic: bool = True
 
     def __post_init__(self) -> None:
         if self.device not in {"auto", "cuda", "rocm", "mps", "cpu"}:
@@ -45,6 +46,7 @@ class ResolvedTorchExecution:
     compile_requested: bool
     compile_effective: bool
     compile_mode: CompileMode
+    deterministic: bool
     fallback_reason: str | None = None
 
     def with_compile_result(
@@ -67,6 +69,7 @@ class ResolvedTorchExecution:
             "compile_requested": self.compile_requested,
             "compile_effective": self.compile_effective,
             "compile_mode": self.compile_mode,
+            "deterministic": self.deterministic,
             "fallback_reason": self.fallback_reason,
         }
 
@@ -108,6 +111,7 @@ def resolve_torch_execution(config: TorchExecutionConfig) -> ResolvedTorchExecut
         compile_requested=config.compile,
         compile_effective=False,
         compile_mode=config.compile_mode,
+        deterministic=config.deterministic,
     )
 
 

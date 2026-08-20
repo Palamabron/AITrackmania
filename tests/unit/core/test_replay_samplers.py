@@ -180,7 +180,7 @@ def test_sequence_sampler_preserves_ppo_behavior_statistics() -> None:
     )
 
 
-def test_on_policy_sampler_uses_only_the_latest_episode() -> None:
+def test_on_policy_sampler_uses_latest_fixed_rollout() -> None:
     store = _store(episodes=2, steps=3)
 
     batch = OnPolicySequenceSampler(IdentityFeaturePipeline()).sample(
@@ -190,6 +190,17 @@ def test_on_policy_sampler_uses_only_the_latest_episode() -> None:
     assert batch.transition_ids == [3, 4, 5]
     assert batch.metadata["sampling"] == "on_policy"
     assert batch.rewards.shape == (1, 3)
+
+
+def test_on_policy_sampler_allows_episode_boundary_inside_rollout() -> None:
+    store = _store(episodes=2, steps=3)
+
+    batch = OnPolicySequenceSampler(IdentityFeaturePipeline()).sample(
+        store, BatchRequest(batch_size=1, sequence_length=4)
+    )
+
+    assert batch.transition_ids == [2, 3, 4, 5]
+    assert torch.equal(batch.terminated, torch.tensor([[True, False, False, True]]))
 
 
 def test_prioritized_sampler_returns_episode_local_sequences_and_target_priorities() -> None:

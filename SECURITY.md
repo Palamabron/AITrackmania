@@ -43,6 +43,3 @@ Never commit `.env`, API keys, distributed tokens, raw telemetry containing
 personal data, or private checkpoints. Run manifests redact keys whose names
 contain `key`, `token`, `secret` or `password`, but custom component payloads
 must avoid placing secrets under misleading names.
-
-The latest repository-level review is recorded in
-[docs/security-audit.md](docs/security-audit.md).
