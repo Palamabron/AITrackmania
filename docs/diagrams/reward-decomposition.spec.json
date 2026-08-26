@@ -1,0 +1,65 @@
+{
+  "title": "Trackmania reward decomposition and terminal-safe shaping",
+  "subtitle": "Ordinary reward terms remain separate from two potential-based shaping terms; terminal transitions use an absorbing zero potential.",
+  "width": 1700,
+  "height": 1130,
+  "zones": [
+    {"id": "signals", "label": "Validated signals", "x": 45, "y": 130, "w": 330, "h": 790, "color": "blue"},
+    {"id": "ordinary", "label": "Ordinary and terminal reward terms", "x": 400, "y": 130, "w": 470, "h": 790, "color": "green"},
+    {"id": "shaping", "label": "Potential-based shaping", "x": 895, "y": 130, "w": 385, "h": 790, "color": "purple"},
+    {"id": "result", "label": "Transition result", "x": 1305, "y": 130, "w": 350, "h": 790, "color": "orange"}
+  ],
+  "nodes": [
+    {"id": "telemetry", "label": "Telemetry delta", "detail": "Δt · path progress · velocity · steering", "x": 80, "y": 190, "w": 260, "h": 105, "color": "blue"},
+    {"id": "reference", "label": "Track references", "detail": "lap length · tangent · human pace", "x": 80, "y": 385, "w": 260, "h": 105, "color": "cyan"},
+    {"id": "terminal-signal", "label": "Terminal contract", "detail": "finish · off-track · time or stall limit", "x": 80, "y": 580, "w": 260, "h": 115, "color": "red"},
+    {"id": "configuration", "label": "Reward configuration", "detail": "finite scales · shared reward_gamma", "x": 80, "y": 785, "w": 260, "h": 95, "color": "slate"},
+
+    {"id": "time", "label": "Time cost", "detail": "−time_scale · Δt", "x": 435, "y": 190, "w": 190, "h": 90, "color": "orange"},
+    {"id": "progress", "label": "Direct progress", "detail": "lap_scale · Δd / L", "x": 650, "y": 190, "w": 185, "h": 110, "color": "green"},
+    {"id": "projected", "label": "Projected velocity", "detail": "scale · v∥ · Δt", "x": 435, "y": 350, "w": 190, "h": 100, "color": "cyan"},
+    {"id": "control", "label": "Speed and steering", "detail": "speed² bonus\nsteer Δ penalty", "x": 650, "y": 350, "w": 185, "h": 110, "color": "purple"},
+    {"id": "collision", "label": "Collision", "detail": "cooldown-gated penalty", "x": 435, "y": 515, "w": 190, "h": 90, "color": "red"},
+    {"id": "terminal-base", "label": "Terminal base", "detail": "finish bonus or failure penalty", "x": 650, "y": 515, "w": 185, "h": 90, "color": "red"},
+    {"id": "time-attack", "label": "Time-attack finish term", "detail": "finish timing bonus", "x": 545, "y": 675, "w": 190, "h": 105, "color": "orange"},
+    {"id": "ordinary-sum", "label": "Ordinary subtotal", "detail": "per-step + terminal terms", "x": 535, "y": 815, "w": 220, "h": 85, "color": "green"},
+
+    {"id": "progress-potential", "label": "Progress potential", "detail": "Φp = wp · d / L", "x": 935, "y": 185, "w": 305, "h": 100, "color": "purple"},
+    {"id": "pace-potential", "label": "Pace potential", "detail": "Φpace(s) = −wd · clipped time debt", "x": 935, "y": 330, "w": 305, "h": 105, "color": "cyan"},
+    {"id": "nonterminal-pbrs", "label": "Non-terminal shaping", "detail": "F = γ Φ(s′) − Φ(s), for both potentials", "x": 935, "y": 505, "w": 305, "h": 120, "color": "green"},
+    {"id": "terminal-zero", "label": "Terminal reset", "detail": "Φ(terminal) = 0; emit −Φ(previous) for both potentials", "x": 935, "y": 700, "w": 305, "h": 135, "color": "red"},
+
+    {"id": "total", "label": "Total reward", "detail": "ordinary + progress\nPBRS + pace PBRS", "x": 1350, "y": 255, "w": 260, "h": 135, "color": "orange"},
+    {"id": "breakdown", "label": "RewardResult breakdown", "detail": "named terms · potential · pace debt · collision", "x": 1350, "y": 505, "w": 260, "h": 120, "color": "blue"},
+    {"id": "transition", "label": "Learner transition", "detail": "scalar reward · terminated · reason", "x": 1350, "y": 740, "w": 260, "h": 105, "color": "slate"}
+  ],
+  "edges": [
+    {"id": "e-time-sum", "from": "time", "to": "ordinary-sum", "points": [[530,280],[530,805],[645,805],[645,825]], "color": "orange"},
+    {"id": "e-progress-sum", "from": "progress", "to": "ordinary-sum", "points": [[742,280],[742,805],[645,805],[645,825]], "color": "green"},
+    {"id": "e-projected-sum", "from": "projected", "to": "ordinary-sum", "points": [[530,450],[530,805],[645,805],[645,825]], "color": "cyan"},
+    {"id": "e-control-sum", "from": "control", "to": "ordinary-sum", "points": [[742,450],[742,805],[645,805],[645,825]], "color": "purple"},
+    {"id": "e-collision-sum", "from": "collision", "to": "ordinary-sum", "points": [[530,605],[530,805],[645,805],[645,825]], "color": "red"},
+    {"id": "e-terminal-base-sum", "from": "terminal-base", "to": "ordinary-sum", "points": [[742,605],[742,805],[645,805],[645,825]], "color": "red"},
+    {"id": "e-time-attack-sum", "from": "time-attack", "to": "ordinary-sum", "points": [[640,780],[640,815]], "color": "orange"},
+    {"id": "e-telemetry-time", "from": "telemetry", "to": "time", "points": [[340,242],[390,242],[390,235],[435,235]], "color": "blue"},
+    {"id": "e-reference-progress", "from": "reference", "to": "progress", "points": [[340,437],[385,437],[385,315],[742,315],[742,280]], "color": "cyan"},
+    {"id": "e-terminal-base", "from": "terminal-signal", "to": "terminal-base", "points": [[340,637],[385,637],[385,640],[742,640],[742,605]], "color": "red"},
+    {"id": "e-terminal-time-attack", "from": "terminal-signal", "to": "time-attack", "points": [[340,637],[390,637],[390,727],[545,727]], "color": "red"},
+    {"id": "e-reference-progress-potential", "from": "reference", "to": "progress-potential", "points": [[340,437],[380,437],[380,320],[880,320],[880,235],[935,235]], "color": "purple"},
+    {"id": "e-reference-pace-potential", "from": "reference", "to": "pace-potential", "points": [[340,437],[385,437],[385,325],[885,325],[885,382],[935,382]], "color": "cyan"},
+    {"id": "e-progress-potential-step", "from": "progress-potential", "to": "nonterminal-pbrs", "points": [[1087,285],[1087,505]], "color": "purple"},
+    {"id": "e-pace-potential-step", "from": "pace-potential", "to": "nonterminal-pbrs", "points": [[1087,435],[1087,505]], "color": "cyan"},
+    {"id": "e-progress-potential-terminal", "from": "progress-potential", "to": "terminal-zero", "points": [[1240,235],[1260,235],[1260,670],[1087,670],[1087,700]], "color": "purple", "style": "dashed"},
+    {"id": "e-pace-potential-terminal", "from": "pace-potential", "to": "terminal-zero", "points": [[1240,382],[1260,382],[1260,670],[1087,670],[1087,700]], "color": "cyan", "style": "dashed"},
+    {"id": "e-terminal-reset", "from": "terminal-signal", "to": "terminal-zero", "points": [[340,637],[380,637],[380,950],[1087,950],[1087,835]], "color": "red"},
+    {"id": "e-ordinary-total", "from": "ordinary-sum", "to": "total", "points": [[755,857],[875,857],[875,935],[1320,935],[1320,322],[1350,322]], "color": "green"},
+    {"id": "e-step-total", "from": "nonterminal-pbrs", "to": "total", "points": [[1240,565],[1285,565],[1285,322],[1350,322]], "color": "green"},
+    {"id": "e-terminal-total", "from": "terminal-zero", "to": "total", "points": [[1240,767],[1290,767],[1290,322],[1350,322]], "color": "red"},
+    {"id": "e-total-breakdown", "from": "total", "to": "breakdown", "points": [[1480,390],[1480,505]], "color": "orange"},
+    {"id": "e-breakdown-transition", "from": "breakdown", "to": "transition", "points": [[1480,625],[1480,740]], "color": "blue"}
+  ],
+  "notes": [
+    {"id": "gamma-invariant", "text": "Runtime invariant: reward_gamma must equal training.gamma so the implemented PBRS difference uses the learner's discount.", "x": 85, "y": 970, "w": 1530, "h": 55, "color": "red"},
+    {"id": "diagnostic-separation", "text": "Direct progress is an intentional ordinary term. Progress PBRS is reported separately, and terminal/time-attack diagnostics do not double-count the base finish reward.", "x": 85, "y": 1045, "w": 1530, "h": 58, "color": "slate"}
+  ]
+}

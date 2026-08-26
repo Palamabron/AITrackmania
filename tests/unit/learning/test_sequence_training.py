@@ -55,23 +55,19 @@ def test_demo_transitions_survive_fifo_eviction() -> None:
     assert all(item.episode_id == "demo-lap" for item in resurrected)
 
 
-def test_prioritized_sequence_masks_mark_left_padding() -> None:
+def test_prioritized_sequence_masks_cover_complete_histories() -> None:
     store = InMemoryReplayStore()
-    _fill_episode(store, "episode-0", 3)
+    _fill_episode(store, "episode-0", 6)
     sampler = PrioritizedSampler(IdentityFeaturePipeline(), seed=3)
 
     batch = sampler.sample(store, BatchRequest(batch_size=3, sequence_length=4, n_step=1))
 
     assert isinstance(batch.masks, torch.Tensor)
     assert batch.masks.shape == (3, 4)
+    assert bool(batch.masks.all())
     assert batch.metadata["gamma"] == pytest.approx(0.99)
     assert batch.metadata["n_step"] == 1
     assert len(batch.metadata["demo_flags"]) == 3
-    for row in range(3):
-        row_mask = batch.masks[row]
-        assert bool(row_mask[-1])
-        padding = int((~row_mask).sum())
-        assert torch.equal(row_mask, torch.tensor([False] * padding + [True] * (4 - padding)))
 
 
 class _SequenceEncoder(nn.Module):

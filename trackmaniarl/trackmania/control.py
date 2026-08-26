@@ -130,8 +130,6 @@ class GamepadController:
         self._gamepad = vgamepad.VX360Gamepad()
         self._tap_lock = RLock()
         self._collision_lock = RLock()
-        self._tap_timer: Timer | None = None
-        self._tap_generation = 0
         self._collision_detected = False
         register_notification = getattr(self._gamepad, "register_notification", None)
         if callable(register_notification):
@@ -169,22 +167,8 @@ class GamepadController:
         self._gamepad.left_joystick_float(float(steer), 0.0)
         self._gamepad.update()
 
-    def _cancel_tap_unlocked(self) -> None:
-        self._tap_generation += 1
-        if self._tap_timer is not None:
-            self._tap_timer.cancel()
-            self._tap_timer = None
-
-    def _release_tap(self, generation: int, gas: float, steer: float) -> None:
-        with self._tap_lock:
-            if generation != self._tap_generation:
-                return
-            self._tap_timer = None
-            self._apply(np.asarray([gas, 0.0, steer], dtype=np.float32))
-
     def apply(self, action: np.ndarray) -> None:
         with self._tap_lock:
-            self._cancel_tap_unlocked()
             self._apply(action)
 
     def apply_discrete(self, action: np.ndarray) -> None:
@@ -195,16 +179,9 @@ class GamepadController:
             raise ValueError("discrete TrackMania control must be [gas, brake, steer]")
         if float(control[1]) == BRAKE_TAP_SENTINEL:
             with self._tap_lock:
-                self._cancel_tap_unlocked()
                 self._apply(np.asarray([control[0], 1.0, control[2]], dtype=np.float32))
-                generation = self._tap_generation
-                self._tap_timer = Timer(
-                    BRAKE_TAP_DURATION_S,
-                    self._release_tap,
-                    args=(generation, float(control[0]), float(control[2])),
-                )
-                self._tap_timer.daemon = True
-                self._tap_timer.start()
+                sleep(BRAKE_TAP_DURATION_S)
+                self._apply(np.asarray([control[0], 0.0, control[2]], dtype=np.float32))
             return
         self.apply(control)
 
@@ -212,7 +189,6 @@ class GamepadController:
         """Release controls and request a TrackMania restart before an episode."""
 
         with self._tap_lock:
-            self._cancel_tap_unlocked()
             self._gamepad.reset()
             self._gamepad.press_button(button=self._RESTART_BUTTON)
             self._gamepad.update()
@@ -228,7 +204,6 @@ class GamepadController:
 
     def close(self) -> None:
         with self._tap_lock:
-            self._cancel_tap_unlocked()
             self._gamepad.reset()
             self._gamepad.update()
 

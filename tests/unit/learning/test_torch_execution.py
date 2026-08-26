@@ -5,6 +5,7 @@ import torch
 from torch import nn
 
 from trackmaniarl.algorithms import ImplicitQuantileQLearning
+from trackmaniarl.algorithms._torch import TorchLearnerBase
 from trackmaniarl.algorithms.execution import (
     TorchExecutionConfig,
     TorchExecutionError,
@@ -22,6 +23,11 @@ class _Encoder(nn.Module):
 
     def forward(self, observation: torch.Tensor) -> torch.Tensor:
         return torch.relu(self.linear(observation))
+
+
+class _NoCompileLearner(TorchLearnerBase):
+    def _setup_model(self) -> None:
+        return
 
 
 def _batch() -> TrainingBatch:
@@ -149,3 +155,13 @@ def test_compile_failure_retries_iqn_update_eagerly(monkeypatch) -> None:
     assert learner.resolved_execution is not None
     assert not learner.resolved_execution.compile_effective
     assert "compiler unavailable" in str(learner.resolved_execution.fallback_reason)
+
+
+def test_generic_torch_learner_rejects_unimplemented_compile_request() -> None:
+    learner = _NoCompileLearner(
+        nn.Identity(),
+        execution={"device": "cpu", "precision": "float32", "compile": True},
+    )
+
+    with pytest.raises(TorchExecutionError, match=r"_NoCompileLearner.*execution.compile"):
+        learner.setup({"seed": 0})

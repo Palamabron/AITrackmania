@@ -1,45 +1,42 @@
 {
-  "title": "Distributed security, delivery and recovery",
-  "subtitle": "Transport encryption protects the link; application checks bind every rollout to one run and the WAL makes accepted data recoverable.",
-  "width": 1600,
-  "height": 1120,
+  "title": "Local and remote deployment",
+  "subtitle": "Both modes use the same actor/learner protocol and durability; remote mode adds an encrypted tunnel because the bearer token does not encrypt traffic.",
+  "width": 1200,
+  "height": 980,
   "zones": [
-    {"id": "remote", "label": "Remote Trackmania host", "x": 55, "y": 125, "w": 455, "h": 680, "color": "green"},
-    {"id": "transport", "label": "Encrypted transport boundary", "x": 545, "y": 125, "w": 320, "h": 680, "color": "blue"},
-    {"id": "learner", "label": "Learner host · loopback listener", "x": 900, "y": 125, "w": 645, "h": 680, "color": "purple"}
+    {"id": "local-zone", "label": "Local train · one Windows host", "x": 40, "y": 150, "w": 520, "h": 315, "color": "green"},
+    {"id": "remote-zone", "label": "Remote actor · separate Trackmania host", "x": 590, "y": 150, "w": 570, "h": 315, "color": "blue"},
+    {"id": "learner-zone", "label": "Shared learner runtime", "x": 40, "y": 495, "w": 1120, "h": 300, "color": "purple"}
   ],
   "nodes": [
-    {"id": "actor", "label": "Actor process", "detail": "stable ID · frozen policy", "x": 100, "y": 200, "w": 180, "h": 96, "color": "green"},
-    {"id": "spool", "label": "Durable spool", "detail": "sequence IDs · retries", "x": 300, "y": 200, "w": 165, "h": 96, "color": "orange"},
-    {"id": "grpc-client", "label": "gRPC client", "detail": "bounded chunks · bearer token", "x": 180, "y": 390, "w": 205, "h": 96, "color": "blue"},
-    {"id": "policy-cache", "label": "Policy cache", "detail": "safetensors · version", "x": 180, "y": 590, "w": 205, "h": 96, "color": "purple"},
-    {"id": "tunnel", "label": "SSH / VPN tunnel", "detail": "authenticated encryption", "x": 590, "y": 260, "w": 230, "h": 100, "color": "blue"},
-    {"id": "loopback", "label": "Loopback endpoint", "detail": "learner never binds publicly", "x": 590, "y": 520, "w": 230, "h": 100, "color": "red"},
-    {"id": "auth", "label": "Authentication", "detail": "constant-time token comparison", "x": 945, "y": 190, "w": 245, "h": 96, "color": "red"},
-    {"id": "limits", "label": "Message limits", "detail": "size · schema · protocol version", "x": 1240, "y": 190, "w": 245, "h": 96, "color": "orange"},
-    {"id": "contract", "label": "Run contract", "detail": "fingerprint · map · contracts", "x": 945, "y": 370, "w": 245, "h": 100, "color": "purple"},
-    {"id": "wal", "label": "SQLite WAL", "detail": "persist rollout before ACK", "x": 1240, "y": 370, "w": 245, "h": 100, "color": "orange"},
-    {"id": "watermark", "label": "Ingest watermark", "detail": "idempotent replay after restart", "x": 945, "y": 565, "w": 245, "h": 96, "color": "orange"},
-    {"id": "checkpoint", "label": "Atomic checkpoint", "detail": "model · optimizers · RNG · counters", "x": 1240, "y": 565, "w": 245, "h": 96, "color": "blue"},
-    {"id": "snapshot", "label": "Policy publisher", "detail": "parameters only · no hidden state", "x": 1090, "y": 700, "w": 250, "h": 92, "color": "purple"}
+    {"id": "launcher", "label": "CLI launcher", "detail": "multiprocessing spawn", "x": 70, "y": 220, "w": 200, "h": 95, "color": "green"},
+    {"id": "local-actor", "label": "Actor process", "detail": "game · policy · spool", "x": 330, "y": 220, "w": 200, "h": 95, "color": "green"},
+    {"id": "local-learner", "label": "Learner process", "detail": "loopback gRPC", "x": 200, "y": 350, "w": 200, "h": 90, "color": "purple"},
+    {"id": "remote-actor", "label": "Actor + spool", "detail": "stable actor ID", "x": 620, "y": 220, "w": 180, "h": 95, "color": "green"},
+    {"id": "tunnel", "label": "SSH or VPN", "detail": "authenticated encryption", "x": 820, "y": 220, "w": 160, "h": 95, "color": "blue"},
+    {"id": "remote-loopback", "label": "Loopback port", "detail": "SSH/VPN forward", "x": 1000, "y": 220, "w": 130, "h": 95, "color": "red"},
+    {"id": "same-contract", "label": "Same run identity", "detail": "token · fingerprint · map · contracts", "x": 780, "y": 350, "w": 260, "h": 90, "color": "red"},
+    {"id": "endpoint", "label": "Coordinator endpoint", "detail": "bounded authenticated requests", "x": 75, "y": 570, "w": 240, "h": 105, "color": "red"},
+    {"id": "wal", "label": "WAL + applied frontier", "detail": "persist before ACK", "x": 350, "y": 570, "w": 240, "h": 105, "color": "orange"},
+    {"id": "learner", "label": "Replay + learner", "detail": "sample · update · evaluate", "x": 625, "y": 570, "w": 240, "h": 105, "color": "purple"},
+    {"id": "outputs", "label": "Portable outputs", "detail": "policy snapshot · checkpoint", "x": 900, "y": 570, "w": 220, "h": 105, "color": "blue"}
   ],
   "edges": [
-    {"id": "e-actor-spool", "from": "actor", "to": "spool", "color": "green"},
-    {"id": "e-spool-client", "from": "spool", "to": "grpc-client", "points": [[383,296],[383,340],[283,340],[283,390]], "color": "orange"},
-    {"id": "e-client-tunnel", "from": "grpc-client", "to": "tunnel", "points": [[385,438],[535,438],[535,310],[590,310]], "label": "encrypted tunnel", "label_at": [535,390], "color": "blue"},
-    {"id": "e-tunnel-loopback", "from": "tunnel", "to": "loopback", "points": [[705,360],[705,520]], "label": "forward", "label_at": [705,450], "color": "blue"},
-    {"id": "e-loopback-auth", "from": "loopback", "to": "auth", "points": [[820,570],[875,570],[875,238],[945,238]], "color": "red"},
-    {"id": "e-auth-limits", "from": "auth", "to": "limits", "label": "authenticated", "label_at": [1215,170], "color": "red"},
-    {"id": "e-limits-contract", "from": "limits", "to": "contract", "points": [[1363,286],[1363,330],[1068,330],[1068,370]], "color": "orange"},
-    {"id": "e-contract-wal", "from": "contract", "to": "wal", "label": "accepted", "label_at": [1215,350], "color": "purple"},
-    {"id": "e-wal-watermark", "from": "wal", "to": "watermark", "points": [[1363,470],[1363,520],[1068,520],[1068,565]], "label": "commit", "label_at": [1215,520], "color": "orange"},
-    {"id": "e-watermark-checkpoint", "from": "watermark", "to": "checkpoint", "label": "resume state", "label_at": [1215,545], "color": "orange"},
-    {"id": "e-checkpoint-snapshot", "from": "checkpoint", "to": "snapshot", "points": [[1363,661],[1363,680],[1215,680],[1215,700]], "color": "purple"},
-    {"id": "e-snapshot-policy", "from": "snapshot", "to": "policy-cache", "points": [[1090,739],[875,739],[875,850],[283,850],[283,686]], "label": "versioned download", "label_at": [630,850], "color": "purple", "style": "dashed"},
-    {"id": "e-wal-ack", "from": "wal", "to": "spool", "points": [[1485,420],[1515,420],[1515,875],[480,875],[480,248],[465,248]], "label": "ACK after persistence", "label_at": [1130,875], "color": "orange", "style": "dashed"}
+    {"id": "e-launcher-actor", "from": "launcher", "to": "local-actor", "label": "spawn", "color": "green"},
+    {"id": "e-launcher-learner", "from": "launcher", "to": "local-learner", "points": [[170,315],[170,395],[200,395]], "color": "purple"},
+    {"id": "e-local-actor-learner", "from": "local-actor", "to": "local-learner", "points": [[430,315],[430,330],[300,330],[300,350]], "label": "rollouts", "label_at": [365,330], "color": "green"},
+    {"id": "e-remote-actor-tunnel", "from": "remote-actor", "to": "tunnel", "color": "blue"},
+    {"id": "e-tunnel-loopback", "from": "tunnel", "to": "remote-loopback", "color": "blue"},
+    {"id": "e-remote-identity", "from": "remote-actor", "to": "same-contract", "points": [[710,315],[710,395],[780,395]], "color": "red"},
+    {"id": "e-loopback-identity", "from": "remote-loopback", "to": "same-contract", "points": [[1065,315],[1065,395],[1040,395]], "color": "red"},
+    {"id": "e-local-endpoint", "from": "local-learner", "to": "endpoint", "points": [[300,440],[300,475],[20,475],[20,622],[75,622]], "color": "purple"},
+    {"id": "e-remote-endpoint", "from": "same-contract", "to": "endpoint", "points": [[780,395],[575,395],[575,470],[20,470],[20,622],[75,622]], "color": "blue"},
+    {"id": "e-endpoint-wal", "from": "endpoint", "to": "wal", "color": "red"},
+    {"id": "e-wal-learner", "from": "wal", "to": "learner", "color": "orange"},
+    {"id": "e-learner-outputs", "from": "learner", "to": "outputs", "color": "purple"}
   ],
   "notes": [
-    {"id": "trust", "text": "Trusted-code boundary: run.yaml and imported module:attribute components execute Python. Authentication does not make untrusted extensions or checkpoints safe.", "x": 110, "y": 925, "w": 1380, "h": 68, "color": "red"},
-    {"id": "recovery", "text": "Recovery invariant: session ID + chunk sequence + learner ingest watermark prevent duplicate replay insertion when either side restarts after an uncertain acknowledgement.", "x": 110, "y": 1005, "w": 1380, "h": 70, "color": "orange"}
+    {"id": "local-note", "text": "Local does not mean in-process: actor and learner are separate spawn-safe processes, and failures must propagate to the launcher.", "x": 80, "y": 825, "w": 1040, "h": 60, "color": "green"},
+    {"id": "remote-note", "text": "Never expose gRPC directly. Keep the learner on literal loopback and carry it through an authenticated encrypted tunnel.", "x": 80, "y": 905, "w": 1040, "h": 60, "color": "red"}
   ]
 }

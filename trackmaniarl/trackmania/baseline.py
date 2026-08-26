@@ -28,7 +28,15 @@ class TelemetryTqcModel(nn.Module):
         super().__init__()
         if critics < 2 or quantiles < 2:
             raise ValueError("TQC requires at least two critics and quantiles")
-        self.actor = GaussianActor(_encoder(input_dim, hidden_dim), hidden_dim, action_dim)
+        if action_dim != 3:
+            raise ValueError("TelemetryTqcModel requires Trackmania's three control dimensions")
+        self.actor = GaussianActor(
+            _encoder(input_dim, hidden_dim),
+            hidden_dim,
+            action_dim,
+            action_low=(0.0, 0.0, -1.0),
+            action_high=(1.0, 1.0, 1.0),
+        )
         self.critics = nn.ModuleList(
             [
                 QuantileCritic(_encoder(input_dim, hidden_dim), hidden_dim, action_dim, quantiles)

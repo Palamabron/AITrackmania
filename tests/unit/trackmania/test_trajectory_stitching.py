@@ -42,6 +42,7 @@ def _demonstration(
     *,
     action_repeat_frames: int = 1,
     lateral_offset_m: float = 0.0,
+    control_alignment: str = "frame_start",
 ) -> Demonstration:
     frames = np.zeros((len(race_times_ms), 33), dtype=np.float32)
     frames[:, 3] = race_times_ms
@@ -62,6 +63,7 @@ def _demonstration(
         actions=np.full(len(frames) - 1, action, dtype=np.int64),
         controls=np.tile(control, (len(frames) - 1, 1)),
         finish_time_s=race_times_ms[-1] / 1_000.0,
+        control_alignment=control_alignment,
     )
 
 
@@ -112,6 +114,22 @@ def test_stitcher_never_crosses_timing_contracts(tmp_path: Path) -> None:
 
     assert result.joins == ()
     assert result.demonstration.finish_time_s == pytest.approx(4.51)
+
+
+def test_stitcher_never_crosses_control_alignment_contracts(tmp_path: Path) -> None:
+    geometry = _geometry(tmp_path)
+    first, second = _paths(tmp_path, geometry)
+    incompatible = _demonstration(
+        geometry,
+        [10, 610, 1_210, 1_810, 2_410, 3_010, 3_310, 3_610, 3_910, 4_210, 4_510],
+        control_alignment="transition_end",
+    )
+    save_demonstration(second, incompatible)
+
+    result = build_fastest_compatible_trajectory([first, second], geometry)
+
+    assert result.joins == ()
+    assert result.demonstration.control_alignment == "transition_end"
 
 
 def test_stitcher_rejects_a_spatially_discontinuous_join(tmp_path: Path) -> None:

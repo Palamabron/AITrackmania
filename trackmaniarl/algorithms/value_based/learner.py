@@ -14,6 +14,7 @@ import torch
 
 from trackmaniarl.algorithms._torch import TorchLearnerBase, polyak_update, weighted_mean
 from trackmaniarl.algorithms.execution import TorchExecutionConfig
+from trackmaniarl.algorithms.optimization import AdaptiveGradientClipper, GradientClipStats
 from trackmaniarl.algorithms.value_based.batches import ValueBatchView
 from trackmaniarl.algorithms.value_based.objectives import (
     ValueObjective,
@@ -21,9 +22,14 @@ from trackmaniarl.algorithms.value_based.objectives import (
 )
 from trackmaniarl.algorithms.value_based.policy import DiscreteValuePolicy
 from trackmaniarl.algorithms.value_based.targets import bootstrap_target
-from trackmaniarl.core.checkpoints import CHECKPOINT_SCHEMA_VERSION, validate_checkpoint_v2
+from trackmaniarl.core.checkpoints import (
+    CHECKPOINT_SCHEMA_VERSION,
+    validate_checkpoint_v2,
+    validate_policy_checkpoint_v2,
+)
 from trackmaniarl.core.contracts import ModelContract
 from trackmaniarl.core.data import PriorityUpdate, TrainingBatch
+from trackmaniarl.models.backbones import project_hyperspherical_weights
 from trackmaniarl.models.composite import CompositeValueModel
 from trackmaniarl.models.contracts import (
     FractionLossContext,
@@ -56,13 +62,16 @@ class DiscreteValueLearner(TorchLearnerBase):
         evaluation_quantile_distortion: str = "neutral",
         upper_cvar_alpha: float = 0.25,
         value_rescaling: bool = False,
+        adaptive_gradient_clipper: Any | None = None,
+        diagnostics_interval_updates: int = 100,
         objectives: Sequence[ValueObjective] = (),
         action_selector: Any | None = None,
         model_initialization_checkpoint: str | Path | None = None,
-        warm_start_submodules: tuple[str, ...] = ("encoder", "temporal", "head"),
+        warm_start_submodules: tuple[str, ...] = ("encoder", "temporal"),
         warm_start_prefix_map: Mapping[str, str] | None = None,
         warm_start_shape_policy: str = "exact",
         warm_start_required_tensors: tuple[str, ...] = (),
+        freeze_warm_start_during_offline_pretraining: bool = False,
         base_dir: str | Path = ".",
         execution: TorchExecutionConfig | Mapping[str, Any] | None = None,
         seed: int = 0,
@@ -72,6 +81,8 @@ class DiscreteValueLearner(TorchLearnerBase):
             raise ValueError("optimizer learning rates must be positive")
         if target_update_interval < 1 or not 0.0 <= target_tau <= 1.0:
             raise ValueError("target update configuration is invalid")
+        if diagnostics_interval_updates < 1:
+            raise ValueError("diagnostics interval must be positive")
         if min(gradient_clip_norm, fraction_gradient_clip_norm) <= 0.0 or burn_in < 0:
             raise ValueError("gradient clips must be positive and burn_in non-negative")
         if not 0.0 <= exploration_epsilon <= 1.0:
@@ -80,10 +91,19 @@ class DiscreteValueLearner(TorchLearnerBase):
         self.fraction_learning_rate = fraction_learning_rate
         self.target_update_interval = target_update_interval
         self.target_tau = target_tau
+        self.diagnostics_interval_updates = diagnostics_interval_updates
         self.gradient_clip_norm = gradient_clip_norm
         self.fraction_gradient_clip_norm = fraction_gradient_clip_norm
         self.burn_in = burn_in
         self.exploration_epsilon = exploration_epsilon
+        if policy_action_ids is not None:
+            policy_action_ids = tuple(policy_action_ids)
+            if (
+                not policy_action_ids
+                or len(set(policy_action_ids)) != len(policy_action_ids)
+                or min(policy_action_ids) < 0
+            ):
+                raise ValueError("policy_action_ids must contain unique non-negative actions")
         self.policy_action_ids = policy_action_ids
         self.online_risk = RiskSpec(RiskDistortion(online_quantile_distortion), upper_cvar_alpha)
         self.evaluation_risk = RiskSpec(
@@ -91,6 +111,12 @@ class DiscreteValueLearner(TorchLearnerBase):
         )
         self.neutral_risk = RiskSpec()
         self.value_rescaling = value_rescaling
+        configured_clipper = self._configured(adaptive_gradient_clipper)
+        if configured_clipper is not None and not isinstance(
+            configured_clipper, AdaptiveGradientClipper
+        ):
+            raise TypeError("adaptive_gradient_clipper must be an AdaptiveGradientClipper")
+        self.adaptive_gradient_clipper = configured_clipper
         self.objectives = tuple(self._configured(value) for value in objectives)
         self.action_selector = self._configured(action_selector)
         initialization = (
@@ -103,14 +129,27 @@ class DiscreteValueLearner(TorchLearnerBase):
         self.warm_start_prefix_map = dict(warm_start_prefix_map or {})
         self.warm_start_shape_policy = warm_start_shape_policy
         self.warm_start_required_tensors = warm_start_required_tensors
+        self.freeze_warm_start_during_offline_pretraining = (
+            freeze_warm_start_during_offline_pretraining
+        )
+        self._offline_warm_start_requires_grad: (
+            tuple[tuple[torch.nn.Parameter, bool], ...] | None
+        ) = None
         self.update_count = 0
 
     def _setup_model(self) -> None:
         if not isinstance(self.model, CompositeValueModel):
             raise TypeError("DiscreteValueLearner requires CompositeValueModel")
+        if (
+            self.policy_action_ids is not None
+            and max(self.policy_action_ids) >= self.model.action_count
+        ):
+            raise ValueError("policy_action_ids must be below the model action_count")
         resolver = getattr(self.model.temporal, "resolve_backend", None)
         if callable(resolver):
             resolver(self.device)
+        if self.adaptive_gradient_clipper is not None:
+            self.adaptive_gradient_clipper.to(self.device)
         self._load_warm_start()
         self.target_model = deepcopy(self.model).to(self.device).eval()
         for parameter in self.target_model.parameters():
@@ -169,10 +208,33 @@ class DiscreteValueLearner(TorchLearnerBase):
         objective_loss = self._objective_loss(expected_all, actions, valid, batch.metadata)
         total_loss = value_loss + objective_loss
         fraction = self._fraction_loss(features, actions, valid, current_support, predictions)
-        gradient_norm, fraction_gradient_norm = self._optimize_update(total_loss, fraction)
+        priorities = self._priorities(
+            predictions,
+            current_support,
+            targets,
+            target_support,
+            valid,
+        )
+        diagnostics = (
+            self._value_diagnostics(
+                predictions,
+                current_support,
+                targets,
+                target_support,
+                rewards,
+                discounts,
+                actions,
+                valid,
+            )
+            if (self.update_count + 1) % self.diagnostics_interval_updates == 0
+            else {}
+        )
+        priority_update = PriorityUpdate(view.priority_transition_ids(), priorities)
+        gradient_norm, fraction_gradient_norm, adaptive_stats = self._optimize_update(
+            total_loss, fraction
+        )
         self.update_count += 1
         target_synced = self._sync_target()
-        priorities = self._priorities(predictions, current_support, targets, target_support, valid)
         elapsed = perf_counter() - started
         metrics: dict[str, float] = {
             "loss/value": float(value_loss.detach().item()),
@@ -183,10 +245,19 @@ class DiscreteValueLearner(TorchLearnerBase):
             "debug/trained_positions": float(len(positions)),
             "debug/target_synced_fraction": float(target_synced),
             "timing/update_s": elapsed,
+            **diagnostics,
         }
+        if adaptive_stats is not None:
+            metrics.update(
+                {
+                    "gradients/adaptive_ema_norm": adaptive_stats.ema_norm,
+                    "gradients/adaptive_coefficient": adaptive_stats.coefficient,
+                    "gradients/adaptive_clipped": float(adaptive_stats.clipped),
+                }
+            )
         if fraction is not None:
             metrics.update({key: float(value.item()) for key, value in fraction.metrics.items()})
-        return metrics, PriorityUpdate(view.priority_transition_ids(), priorities)
+        return metrics, priority_update
 
     def _features(
         self, view: ValueBatchView, positions: list[int]
@@ -253,7 +324,11 @@ class DiscreteValueLearner(TorchLearnerBase):
             return loss
         if expected is None:
             raise RuntimeError("configured objectives require all-action values")
-        context = ValueObjectiveContext(expected, actions, valid, dict(metadata))
+        action_mask = None
+        if self.policy_action_ids is not None:
+            action_mask = torch.zeros(expected.shape[-1], dtype=torch.bool, device=expected.device)
+            action_mask[list(self.policy_action_ids)] = True
+        context = ValueObjectiveContext(expected, actions, valid, dict(metadata), action_mask)
         for objective in self.objectives:
             value = objective.loss(context)
             if value is not None:
@@ -262,7 +337,7 @@ class DiscreteValueLearner(TorchLearnerBase):
 
     def _optimize_update(
         self, loss: torch.Tensor, fraction: Any
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor, GradientClipStats | None]:
         assert self.scaler is not None
         self.optimizer.zero_grad(set_to_none=True)
         if self.fraction_optimizer is not None:
@@ -271,9 +346,19 @@ class DiscreteValueLearner(TorchLearnerBase):
         if fraction is not None:
             self.scaler.scale(fraction.loss).backward()
         self.scaler.unscale_(self.optimizer)
-        main_norm = torch.nn.utils.clip_grad_norm_(
-            [parameter for group in self.optimizer.param_groups for parameter in group["params"]],
-            self.gradient_clip_norm,
+        main_parameters = [
+            parameter for group in self.optimizer.param_groups for parameter in group["params"]
+        ]
+        adaptive_stats = (
+            self.adaptive_gradient_clipper(main_parameters)
+            if self.adaptive_gradient_clipper is not None
+            else None
+        )
+        hard_clip_norm = torch.nn.utils.clip_grad_norm_(main_parameters, self.gradient_clip_norm)
+        main_norm = (
+            hard_clip_norm
+            if adaptive_stats is None
+            else hard_clip_norm.new_tensor(adaptive_stats.norm)
         )
         fraction_norm = torch.zeros((), device=self.device)
         if self.fraction_optimizer is not None:
@@ -287,10 +372,11 @@ class DiscreteValueLearner(TorchLearnerBase):
                 self.fraction_gradient_clip_norm,
             )
         self.scaler.step(self.optimizer)
+        project_hyperspherical_weights(self.model)
         if self.fraction_optimizer is not None:
             self.scaler.step(self.fraction_optimizer)
         self.scaler.update()
-        return main_norm, fraction_norm
+        return main_norm, fraction_norm, adaptive_stats
 
     def _priorities(
         self,
@@ -301,11 +387,11 @@ class DiscreteValueLearner(TorchLearnerBase):
         valid: torch.Tensor,
     ) -> list[float]:
         predicted = self.model.strategy.expectation(
-            predictions.float(), current_support, self.neutral_risk
-        )
+            predictions.float().unsqueeze(-1), current_support, self.neutral_risk
+        ).squeeze(-1)
         target = self.target_model.strategy.expectation(
-            targets.float(), target_support, self.neutral_risk
-        )
+            targets.float().unsqueeze(-1), target_support, self.neutral_risk
+        ).squeeze(-1)
         errors = (predicted - target).detach().abs() * valid
         maximum = errors.max(dim=1).values
         mean = errors.sum(dim=1) / valid.sum(dim=1).clamp_min(1)
@@ -313,6 +399,49 @@ class DiscreteValueLearner(TorchLearnerBase):
             _SEQUENCE_PRIORITY_MAX_WEIGHT * maximum + (1.0 - _SEQUENCE_PRIORITY_MAX_WEIGHT) * mean
         )
         return [float(value) for value in priority.cpu().tolist()]
+
+    @torch.no_grad()
+    def _value_diagnostics(
+        self,
+        predictions: torch.Tensor,
+        current_support: Any,
+        targets: torch.Tensor,
+        target_support: Any,
+        rewards: torch.Tensor,
+        discounts: torch.Tensor,
+        actions: torch.Tensor,
+        valid: torch.Tensor,
+    ) -> dict[str, float]:
+        assert isinstance(self.model, CompositeValueModel)
+        selected = self.model.strategy.expectation(
+            predictions.detach().float().unsqueeze(-1), current_support, self.neutral_risk
+        ).squeeze(-1)
+        target = self.target_model.strategy.expectation(
+            targets.detach().float().unsqueeze(-1), target_support, self.neutral_risk
+        ).squeeze(-1)
+        selected_valid = selected[valid]
+        target_valid = target[valid]
+        td_abs = (selected_valid - target_valid).abs()
+        valid_actions = actions[valid]
+        counts = torch.bincount(valid_actions, minlength=self.model.action_count).float()
+        probabilities = counts / counts.sum().clamp_min(1.0)
+        positive = probabilities[probabilities > 0.0]
+        entropy = -(positive * positive.log()).sum()
+        if self.model.action_count > 1:
+            entropy = entropy / entropy.new_tensor(float(self.model.action_count)).log()
+        return {
+            "debug/q_selected_mean": float(selected_valid.mean().item()),
+            "debug/q_selected_max": float(selected_valid.max().item()),
+            "debug/q_target_mean": float(target_valid.mean().item()),
+            "debug/q_target_max": float(target_valid.max().item()),
+            "debug/td_abs_mean": float(td_abs.mean().item()),
+            "debug/td_abs_max": float(td_abs.max().item()),
+            "debug/n_step_return_mean": float(rewards[valid].mean().item()),
+            "debug/bootstrap_discount_mean": float(discounts[valid].mean().item()),
+            "debug/bootstrap_zero_fraction": float((discounts[valid] == 0.0).float().mean().item()),
+            "debug/action_batch_unique_fraction": float((counts > 0.0).float().mean().item()),
+            "debug/action_batch_entropy": float(entropy.item()),
+        }
 
     def _masked(self, values: torch.Tensor) -> torch.Tensor:
         if self.policy_action_ids is None:
@@ -343,6 +472,41 @@ class DiscreteValueLearner(TorchLearnerBase):
             action_selector=self.action_selector,
         )
 
+    def begin_offline_pretraining(self) -> None:
+        if (
+            not self.freeze_warm_start_during_offline_pretraining
+            or self.model_initialization_checkpoint is None
+            or self._offline_warm_start_requires_grad is not None
+        ):
+            return
+        assert isinstance(self.model, CompositeValueModel)
+        parameters = self._warm_start_parameters()
+        self._offline_warm_start_requires_grad = tuple(
+            (parameter, parameter.requires_grad) for parameter in parameters
+        )
+        for parameter in parameters:
+            parameter.requires_grad_(False)
+
+    def end_offline_pretraining(self) -> None:
+        state = self._offline_warm_start_requires_grad
+        if state is None:
+            return
+        for parameter, requires_grad in state:
+            parameter.requires_grad_(requires_grad)
+        self._offline_warm_start_requires_grad = None
+
+    def _warm_start_parameters(self) -> tuple[torch.nn.Parameter, ...]:
+        assert isinstance(self.model, CompositeValueModel)
+        parameters: list[torch.nn.Parameter] = []
+        seen: set[int] = set()
+        for name in self.warm_start_submodules:
+            module = cast(torch.nn.Module, getattr(self.model, name))
+            for parameter in module.parameters():
+                if id(parameter) not in seen:
+                    parameters.append(parameter)
+                    seen.add(id(parameter))
+        return tuple(parameters)
+
     def execution_manifest(self) -> Mapping[str, object]:
         manifest = dict(super().execution_manifest())
         if isinstance(self.model, CompositeValueModel):
@@ -367,8 +531,15 @@ class DiscreteValueLearner(TorchLearnerBase):
             "objectives": self._objective_state(),
             "training": {
                 "update_count": self.update_count,
+                "scaler": self._scaler_state(),
                 "rng": self._rng_state(),
-                "schedules": {},
+                "schedules": {
+                    "adaptive_gradient_clipper": (
+                        self.adaptive_gradient_clipper.state_dict()
+                        if self.adaptive_gradient_clipper is not None
+                        else None
+                    )
+                },
             },
             "runtime": self.model.execution_manifest(),
         }
@@ -419,8 +590,27 @@ class DiscreteValueLearner(TorchLearnerBase):
             self.fraction_optimizer.load_state_dict(strategy_state)
         training = cast(Mapping[str, Any], state["training"])
         self.update_count = int(training["update_count"])
+        self._restore_scaler(training.get("scaler"))
         self._restore_rng(cast(Mapping[str, Any], training["rng"]))
+        schedules = cast(Mapping[str, Any], training["schedules"])
+        clipper_state = schedules.get("adaptive_gradient_clipper")
+        if self.adaptive_gradient_clipper is not None:
+            if not isinstance(clipper_state, Mapping):
+                raise ValueError("checkpoint is missing adaptive gradient clipper state")
+            self.adaptive_gradient_clipper.load_state_dict(clipper_state, strict=True)
         self._load_objective_state(cast(Sequence[Any], state["objectives"]))
+
+    def load_policy_state_dict(self, state: Mapping[str, Any]) -> None:
+        validate_policy_checkpoint_v2(state)
+        assert isinstance(self.model, CompositeValueModel)
+        compatible = {
+            self.model.architecture_fingerprint(),
+            self.model.legacy_architecture_fingerprint(),
+        }
+        if state.get("architecture_fingerprint") not in compatible:
+            raise ValueError("checkpoint architecture fingerprint does not match the model")
+        self._load_modules(self.model, cast(Mapping[str, Any], state["online"]))
+        self.target_model.load_state_dict(self.model.state_dict(), strict=True)
 
     @staticmethod
     def _module_state(model: CompositeValueModel) -> dict[str, Mapping[str, Any]]:

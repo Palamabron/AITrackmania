@@ -1,4 +1,4 @@
-"""Single-process trainer for the TrackMania 1.0 runtime.
+"""Single-process trainer for local on-policy and off-policy runs.
 
 Workers and remote servers can use the same contracts later; this trainer owns
 the local lifecycle so a project can train and debug without hidden processes.
@@ -29,7 +29,7 @@ class TrainingResult:
 
 
 class Trainer:
-    """Collect TrackMania episodes, update an off-policy learner, and persist state."""
+    """Collect local episodes, update the learner, and persist training state."""
 
     def __init__(self, run: ResolvedRun, *, resume_checkpoint: str | Path | None = None) -> None:
         if run.environment_factory is None:
@@ -69,6 +69,7 @@ class Trainer:
         transitions = 0
         updates = 0
         episodes = 0
+        next_episode_index = 0
         fractional_updates = 0.0
         evaluation: Mapping[str, float] | None = None
         if self.resume_checkpoint is not None:
@@ -77,6 +78,7 @@ class Trainer:
             transitions = int(counters["transitions"])
             updates = int(counters["updates"])
             episodes = int(counters["episodes"])
+            next_episode_index = int(counters.get("next_episode_index", episodes))
             fractional_updates = float(counters["fractional_updates"])
             self._log(
                 "train/resumed",
@@ -99,7 +101,7 @@ class Trainer:
                 rollout_environment,
                 max_episode_steps=spec.max_episode_steps,
                 seed=self.run.spec.seed,
-                start_episode_index=episodes,
+                start_episode_index=next_episode_index,
             )
         try:
             while transitions < spec.total_transitions:
@@ -221,10 +223,12 @@ class Trainer:
                     )
                     evaluation = self.run.evaluator.evaluate(self.run.learner.policy())
                     self._log("eval/suite", evaluation, transitions, updates, episodes)
-            if not checkpoints or checkpoints[-1].name != f"update-{updates:08d}.pt":
-                checkpoints.append(
-                    self._checkpoint(transitions, updates, episodes, fractional_updates)
+            if self.run.spec.training.save_final_checkpoint:
+                final_checkpoint = self._checkpoint(
+                    transitions, updates, episodes, fractional_updates
                 )
+                if not checkpoints or checkpoints[-1] != final_checkpoint:
+                    checkpoints.append(final_checkpoint)
             if self.run.evaluator is not None:
                 # Release artifacts must name the checkpoint that produced them.
                 # A periodic evaluation can otherwise leave evaluation.json pointing
@@ -238,9 +242,24 @@ class Trainer:
                 flush=True,
             )
             return TrainingResult(episodes, transitions, updates, tuple(checkpoints), evaluation)
+        except KeyboardInterrupt as exc:
+            if spec.save_final_checkpoint:
+                interrupted_checkpoint = self._checkpoint(
+                    transitions, updates, episodes, fractional_updates
+                )
+                if not checkpoints or checkpoints[-1] != interrupted_checkpoint:
+                    checkpoints.append(interrupted_checkpoint)
+            self._log(
+                "run/interrupted",
+                {"exception_type": type(exc).__name__, "message": str(exc)},
+                transitions,
+                updates,
+                episodes,
+            )
+            raise
         except BaseException as exc:
             self._log(
-                "train/failure",
+                "run/failure",
                 {"exception_type": type(exc).__name__, "message": str(exc)},
                 transitions,
                 updates,
@@ -302,20 +321,37 @@ class Trainer:
         self, transitions: int, update: int, episodes: int, fractional_updates: float
     ) -> Path:
         path = self.run.run_dir / "checkpoints" / f"update-{update:08d}.pt"
+        next_episode_index = self._next_episode_index(episodes)
         state = {
             "schema_version": "1.0",
             "learner": self.run.learner.state_dict(),
-            "replay_store": _state_dict(self.run.replay_store),
-            "sampler": _state_dict(self.run.sampler),
+            "replay_store": None if self.on_policy else _state_dict(self.run.replay_store),
+            "sampler": None if self.on_policy else _state_dict(self.run.sampler),
             "counters": {
                 "transitions": transitions,
                 "updates": update,
                 "episodes": episodes,
                 "fractional_updates": fractional_updates,
+                "next_episode_index": next_episode_index,
             },
         }
-        self.run.checkpoint_codec.save(state, path)
         self._log("train/checkpoint", {"path": str(path)}, transitions, update, episodes)
+        try:
+            self.run.checkpoint_codec.save(state, path)
+        except BaseException as exc:
+            self._log(
+                "train/checkpoint_failed",
+                {
+                    "path": str(path),
+                    "exception_type": type(exc).__name__,
+                    "message": str(exc),
+                },
+                transitions,
+                update,
+                episodes,
+            )
+            raise
+        self._log("train/checkpoint_completed", {"path": str(path)}, transitions, update, episodes)
         print(f"Checkpoint saved: {path}", flush=True)
         return path
 
@@ -331,10 +367,25 @@ class Trainer:
         required_counters = {"transitions", "updates", "episodes", "fractional_updates"}
         if required_counters - counters.keys():
             raise ValueError("Training checkpoint has incomplete counters")
+        if self.on_policy and "next_episode_index" not in counters:
+            raise ValueError(
+                "on-policy checkpoint predates restart-safe episode boundaries; "
+                "start a new run instead of restoring partial replay"
+            )
         self.run.learner.load_state_dict(learner_state)
-        _load_state_dict(self.run.replay_store, state.get("replay_store"))
-        _load_state_dict(self.run.sampler, state.get("sampler"))
+        if not self.on_policy:
+            _load_state_dict(self.run.replay_store, state.get("replay_store"))
+            _load_state_dict(self.run.sampler, state.get("sampler"))
         return counters
+
+    def _next_episode_index(self, completed_episodes: int) -> int:
+        if not self.on_policy:
+            return completed_episodes
+        transition_ids = self.run.replay_store.available_ids()
+        if not transition_ids:
+            return completed_episodes
+        latest = self.run.replay_store.get([transition_ids[-1]])[0]
+        return completed_episodes + int(not latest.terminated and not latest.truncated)
 
     def _log(
         self,

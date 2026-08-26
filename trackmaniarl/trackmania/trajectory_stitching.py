@@ -100,7 +100,7 @@ class _JoinState:
     gaps: tuple[float, float, float]
 
 
-type _TimingContract = tuple[int, float | None, int]
+type _TimingContract = tuple[int, float | None, str, int]
 
 
 def build_fastest_compatible_trajectory(
@@ -165,6 +165,7 @@ def _group_by_timing_contract(
         contract = (
             demonstration.action_repeat_frames,
             demonstration.decision_interval_ms,
+            demonstration.control_alignment,
             demonstration.frames.shape[1],
         )
         groups[contract].append(candidate)

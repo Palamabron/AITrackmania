@@ -1,3 +1,8 @@
+// Historical, unsupported prototype retained only for research archaeology.
+// Do not install this script. Use signed TrackmaniaRL Connect / SAC_GetData
+// 2.4.0 from Openplanet Plugin Manager; the maintained developer snapshot is
+// under trackmaniarl/project/openplanet.
+
 BonkStateManager bs;
 
 float prev_speed = 0;

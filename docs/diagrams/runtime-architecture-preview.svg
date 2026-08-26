@@ -1,102 +1,96 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1100" viewBox="0 0 1600 1100">
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="1060" viewBox="0 0 1200 1060">
 <defs><marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="context-stroke"/></marker><filter id="shadow" x="-20%" y="-20%" width="140%" height="140%"><feDropShadow dx="0" dy="2" stdDeviation="3" flood-opacity=".14"/></filter></defs>
 <rect width="100%" height="100%" fill="#ffffff"/>
-<text x="55" y="61" text-anchor="start" font-family="Inter,Arial,sans-serif" font-size="32" fill="#111827"><tspan x="55" dy="0">TrackmaniaRL 2.0 runtime architecture</tspan></text>
-<text x="55" y="99" text-anchor="start" font-family="Inter,Arial,sans-serif" font-size="18" fill="#64748b"><tspan x="55" dy="0">The asynchronous off-policy path: one typed RunSpec composes actor and learner processes connected by durable rollouts and portable policy snapshots.</tspan></text>
-<rect x="55" y="125" width="1490" height="180" rx="14" fill="#dbeafe" fill-opacity=".35" stroke="#1864ab" stroke-width="1.5" stroke-dasharray="8 7"/>
-<text x="73" y="154" text-anchor="start" font-family="Inter,Arial,sans-serif" font-size="19" fill="#1864ab"><tspan x="73" dy="0">Trusted configuration and component resolution</tspan></text>
-<rect x="55" y="335" width="560" height="510" rx="14" fill="#dcfce7" fill-opacity=".35" stroke="#2b8a3e" stroke-width="1.5" stroke-dasharray="8 7"/>
-<text x="73" y="364" text-anchor="start" font-family="Inter,Arial,sans-serif" font-size="19" fill="#2b8a3e"><tspan x="73" dy="0">Actor runtime · local process or remote Trackmania</tspan><tspan x="73" dy="23.75">host</tspan></text>
-<rect x="650" y="335" width="330" height="510" rx="14" fill="#ffedd5" fill-opacity=".35" stroke="#d97706" stroke-width="1.5" stroke-dasharray="8 7"/>
-<text x="668" y="364" text-anchor="start" font-family="Inter,Arial,sans-serif" font-size="19" fill="#d97706"><tspan x="668" dy="0">Durable ingest</tspan></text>
-<rect x="1015" y="335" width="530" height="510" rx="14" fill="#ede9fe" fill-opacity=".35" stroke="#7048e8" stroke-width="1.5" stroke-dasharray="8 7"/>
-<text x="1033" y="364" text-anchor="start" font-family="Inter,Arial,sans-serif" font-size="19" fill="#7048e8"><tspan x="1033" dy="0">Learner runtime</tspan></text>
-<polyline points="305,223.0 390,223.0" fill="none" stroke="#1864ab" stroke-width="2.5" marker-end="url(#arrow)"/>
-<rect x="259.5" y="183.0" width="176" height="25" rx="5" fill="#ffffff" fill-opacity=".92"/>
-<text x="347.5" y="200.0" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#1864ab"><tspan x="347.5" dy="0">parse</tspan></text>
-<polyline points="670,223.0 760,223.0" fill="none" stroke="#1864ab" stroke-width="2.5" marker-end="url(#arrow)"/>
-<rect x="627.0" y="183.0" width="176" height="25" rx="5" fill="#ffffff" fill-opacity=".92"/>
-<text x="715.0" y="200.0" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#1864ab"><tspan x="715.0" dy="0">validate</tspan></text>
-<polyline points="1060,223.0 1150,223.0" fill="none" stroke="#087f8c" stroke-width="2.5" marker-end="url(#arrow)"/>
-<rect x="1017.0" y="183.0" width="176" height="25" rx="5" fill="#ffffff" fill-opacity=".92"/>
-<text x="1105.0" y="200.0" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#087f8c"><tspan x="1105.0" dy="0">resolve</tspan></text>
-<polyline points="345,451.0 365,451.0" fill="none" stroke="#2b8a3e" stroke-width="2.5" marker-end="url(#arrow)"/>
-<polyline points="220,497 220,570" fill="none" stroke="#2b8a3e" stroke-width="2.5" marker-end="url(#arrow)"/>
-<polyline points="475,497 475,535 220,535 220,570" fill="none" stroke="#2b8a3e" stroke-width="2.5" marker-end="url(#arrow)"/>
-<rect x="277" y="513" width="176" height="25" rx="5" fill="#ffffff" fill-opacity=".92"/>
-<text x="365.0" y="530" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#2b8a3e"><tspan x="365.0" dy="0">action</tspan></text>
-<polyline points="345,616.0 365,616.0" fill="none" stroke="#d97706" stroke-width="2.5" marker-end="url(#arrow)"/>
-<polyline points="585,616 635,616 635,451 690,451" fill="none" stroke="#d97706" stroke-width="2.5" marker-end="url(#arrow)"/>
-<rect x="547" y="508" width="176" height="25" rx="5" fill="#ffffff" fill-opacity=".92"/>
-<text x="635.0" y="525" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#d97706"><tspan x="635.0" dy="0">rollout chunks</tspan></text>
-<polyline points="815,497 815,570" fill="none" stroke="#c92a2a" stroke-width="2.5" marker-end="url(#arrow)"/>
-<rect x="727" y="526" width="176" height="25" rx="5" fill="#ffffff" fill-opacity=".92"/>
-<text x="815.0" y="543" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#c92a2a"><tspan x="815.0" dy="0">accepted</tspan></text>
-<polyline points="815,662 815,720" fill="none" stroke="#d97706" stroke-width="2.5" marker-end="url(#arrow)"/>
-<polyline points="940,616 990,616 990,451 1055,451" fill="none" stroke="#d97706" stroke-width="2.5" marker-end="url(#arrow)"/>
-<rect x="902" y="508" width="176" height="25" rx="5" fill="#ffffff" fill-opacity=".92"/>
-<text x="990.0" y="525" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#d97706"><tspan x="990.0" dy="0">ingest</tspan></text>
-<polyline points="1275,451.0 1295,451.0" fill="none" stroke="#7048e8" stroke-width="2.5" marker-end="url(#arrow)"/>
-<polyline points="1400,497 1400,535 1165,535 1165,570" fill="none" stroke="#7048e8" stroke-width="2.5" marker-end="url(#arrow)"/>
-<polyline points="1275,616.0 1295,616.0" fill="none" stroke="#1864ab" stroke-width="2.5" marker-end="url(#arrow)"/>
-<polyline points="1165,662 1165,685 1300,685 1300,720" fill="none" stroke="#475569" stroke-width="2.5" marker-end="url(#arrow)"/>
-<polyline points="1055,616 970,616 970,875 360,875 360,802" fill="none" stroke="#7048e8" stroke-width="2.5" stroke-dasharray="8 7" marker-end="url(#arrow)"/>
-<polyline points="360,720 360,690 475,690 475,497" fill="none" stroke="#7048e8" stroke-width="2.5" stroke-dasharray="8 7" marker-end="url(#arrow)"/>
-<rect x="387" y="663" width="176" height="25" rx="5" fill="#ffffff" fill-opacity=".92"/>
-<text x="475.0" y="680" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#7048e8"><tspan x="475.0" dy="0">activate next</tspan><tspan x="475.0" dy="22.5">episode</tspan></text>
-<rect x="95" y="180" width="210" height="86" rx="12" fill="#dbeafe" stroke="#1864ab" stroke-width="2.5" filter="url(#shadow)"/>
-<text x="200.0" y="216.75" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="20" fill="#111827"><tspan x="200.0" dy="0">run.yaml</tspan></text>
-<text x="200.0" y="244.75" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#475569"><tspan x="200.0" dy="0">api_version: 2.0</tspan></text>
-<rect x="390" y="180" width="280" height="86" rx="12" fill="#dbeafe" stroke="#1864ab" stroke-width="2.5" filter="url(#shadow)"/>
-<text x="530.0" y="207" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="20" fill="#111827"><tspan x="530.0" dy="0">RunSpec validation</tspan></text>
-<text x="530.0" y="235" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#475569"><tspan x="530.0" dy="0">imports · contracts ·</tspan><tspan x="530.0" dy="22.5">fingerprint</tspan></text>
-<rect x="760" y="180" width="300" height="86" rx="12" fill="#cffafe" stroke="#087f8c" stroke-width="2.5" filter="url(#shadow)"/>
-<text x="910.0" y="216.75" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="20" fill="#111827"><tspan x="910.0" dy="0">Component factories</tspan></text>
-<text x="910.0" y="244.75" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#475569"><tspan x="910.0" dy="0">model · learner · replay</tspan></text>
-<rect x="1150" y="180" width="310" height="86" rx="12" fill="#f1f5f9" stroke="#475569" stroke-width="2.5" filter="url(#shadow)"/>
-<text x="1305.0" y="207" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="20" fill="#111827"><tspan x="1305.0" dy="0">Resolved manifest</tspan></text>
-<text x="1305.0" y="235" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#475569"><tspan x="1305.0" dy="0">versions · seeds · Mamba</tspan><tspan x="1305.0" dy="22.5">backend</tspan></text>
-<rect x="95" y="405" width="250" height="92" rx="12" fill="#dcfce7" stroke="#2b8a3e" stroke-width="2.5" filter="url(#shadow)"/>
-<text x="220.0" y="433.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="20" fill="#111827"><tspan x="220.0" dy="0">Trackmania env</tspan></text>
-<text x="220.0" y="461.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#475569"><tspan x="220.0" dy="0">telemetry · lidar ·</tspan><tspan x="220.0" dy="22.5">action table</tspan></text>
-<rect x="365" y="405" width="220" height="92" rx="12" fill="#dcfce7" stroke="#2b8a3e" stroke-width="2.5" filter="url(#shadow)"/>
-<text x="475.0" y="433.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="20" fill="#111827"><tspan x="475.0" dy="0">Actor policy</tspan></text>
-<text x="475.0" y="461.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#475569"><tspan x="475.0" dy="0">state · selector ·</tspan><tspan x="475.0" dy="22.5">epsilon</tspan></text>
-<rect x="95" y="570" width="250" height="92" rx="12" fill="#cffafe" stroke="#087f8c" stroke-width="2.5" filter="url(#shadow)"/>
-<text x="220.0" y="598.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="20" fill="#111827"><tspan x="220.0" dy="0">Transition contract</tspan></text>
-<text x="220.0" y="626.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#475569"><tspan x="220.0" dy="0">contract IDs · policy</tspan><tspan x="220.0" dy="22.5">version</tspan></text>
-<rect x="365" y="570" width="220" height="92" rx="12" fill="#ffedd5" stroke="#d97706" stroke-width="2.5" filter="url(#shadow)"/>
-<text x="475.0" y="598.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="20" fill="#111827"><tspan x="475.0" dy="0">Actor spool</tspan></text>
-<text x="475.0" y="626.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#475569"><tspan x="475.0" dy="0">128 transitions / 2</tspan><tspan x="475.0" dy="22.5">s · retry</tspan></text>
-<rect x="220" y="720" width="280" height="82" rx="12" fill="#ede9fe" stroke="#7048e8" stroke-width="2.5" filter="url(#shadow)"/>
-<text x="360.0" y="747" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="20" fill="#111827"><tspan x="360.0" dy="0">Policy snapshot</tspan></text>
-<text x="360.0" y="775" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#475569"><tspan x="360.0" dy="0">safetensors · ≤ 5 s</tspan><tspan x="360.0" dy="22.5">publish</tspan></text>
-<rect x="690" y="405" width="250" height="92" rx="12" fill="#fee2e2" stroke="#c92a2a" stroke-width="2.5" filter="url(#shadow)"/>
-<text x="815.0" y="433.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="20" fill="#111827"><tspan x="815.0" dy="0">Authenticated gRPC</tspan></text>
-<text x="815.0" y="461.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#475569"><tspan x="815.0" dy="0">token · limits ·</tspan><tspan x="815.0" dy="22.5">fingerprint</tspan></text>
-<rect x="690" y="570" width="250" height="92" rx="12" fill="#ffedd5" stroke="#d97706" stroke-width="2.5" filter="url(#shadow)"/>
-<text x="815.0" y="598.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="20" fill="#111827"><tspan x="815.0" dy="0">SQLite WAL</tspan></text>
-<text x="815.0" y="626.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#475569"><tspan x="815.0" dy="0">persist before</tspan><tspan x="815.0" dy="22.5">acknowledgement</tspan></text>
-<rect x="690" y="720" width="250" height="82" rx="12" fill="#ffedd5" stroke="#d97706" stroke-width="2.5" filter="url(#shadow)"/>
-<text x="815.0" y="747" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="20" fill="#111827"><tspan x="815.0" dy="0">Ingest watermark</tspan></text>
-<text x="815.0" y="775" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#475569"><tspan x="815.0" dy="0">session + chunk</tspan><tspan x="815.0" dy="22.5">sequence</tspan></text>
-<rect x="1055" y="405" width="220" height="92" rx="12" fill="#ede9fe" stroke="#7048e8" stroke-width="2.5" filter="url(#shadow)"/>
-<text x="1165.0" y="433.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="20" fill="#111827"><tspan x="1165.0" dy="0">Replay + sampler</tspan></text>
-<text x="1165.0" y="461.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#475569"><tspan x="1165.0" dy="0">uniform · PER ·</tspan><tspan x="1165.0" dy="22.5">sequence · demos</tspan></text>
-<rect x="1295" y="405" width="210" height="92" rx="12" fill="#cffafe" stroke="#087f8c" stroke-width="2.5" filter="url(#shadow)"/>
-<text x="1400.0" y="433.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="20" fill="#111827"><tspan x="1400.0" dy="0">Typed batch</tspan></text>
-<text x="1400.0" y="461.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#475569"><tspan x="1400.0" dy="0">single-step or</tspan><tspan x="1400.0" dy="22.5">[B,T,…]</tspan></text>
-<rect x="1055" y="570" width="220" height="92" rx="12" fill="#ede9fe" stroke="#7048e8" stroke-width="2.5" filter="url(#shadow)"/>
-<text x="1165.0" y="598.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="20" fill="#111827"><tspan x="1165.0" dy="0">Learner update</tspan></text>
-<text x="1165.0" y="626.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#475569"><tspan x="1165.0" dy="0">online · target ·</tspan><tspan x="1165.0" dy="22.5">objectives</tspan></text>
-<rect x="1295" y="570" width="210" height="92" rx="12" fill="#dbeafe" stroke="#1864ab" stroke-width="2.5" filter="url(#shadow)"/>
-<text x="1400.0" y="598.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="20" fill="#111827"><tspan x="1400.0" dy="0">Checkpoint 2.0</tspan></text>
-<text x="1400.0" y="626.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#475569"><tspan x="1400.0" dy="0">model · target ·</tspan><tspan x="1400.0" dy="22.5">optimizers · RNG</tspan></text>
-<rect x="1175" y="720" width="250" height="82" rx="12" fill="#f1f5f9" stroke="#475569" stroke-width="2.5" filter="url(#shadow)"/>
-<text x="1300.0" y="747" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="20" fill="#111827"><tspan x="1300.0" dy="0">Observability</tspan></text>
-<text x="1300.0" y="775" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#475569"><tspan x="1300.0" dy="0">manifest · JSONL/W&amp;B ·</tspan><tspan x="1300.0" dy="22.5">artifacts</tspan></text>
-<rect x="120" y="925" width="1360" height="68" rx="10" fill="#fee2e2" stroke="#c92a2a" stroke-width="1.5"/>
-<text x="134" y="956" text-anchor="start" font-family="Inter,Arial,sans-serif" font-size="18" fill="#1f2937"><tspan x="134" dy="0">Distributed invariant: run fingerprint + map UID + geometry hash + feature/action contract must match on every participant.</tspan></text>
-<rect x="120" y="1005" width="1360" height="70" rx="10" fill="#f1f5f9" stroke="#475569" stroke-width="1.5"/>
-<text x="134" y="1036" text-anchor="start" font-family="Inter,Arial,sans-serif" font-size="18" fill="#1f2937"><tspan x="134" dy="0">Model hidden state stays in the actor policy; checkpoints contain component parameters and training state, never episodic temporal</tspan><tspan x="134" dy="22.5">state. PPO uses the separate local on-policy Trainer path.</tspan></text>
+<text x="55" y="61" text-anchor="start" font-family="Inter,Arial,sans-serif" font-size="32" fill="#111827"><tspan x="55" dy="0">TrackmaniaRL 2.0 off-policy runtime</tspan></text>
+<text x="55" y="99" text-anchor="start" font-family="Inter,Arial,sans-serif" font-size="18" fill="#64748b"><tspan x="55" dy="0">Accepted rollouts are durable before acknowledgement; only a checkpointed contiguous WAL frontier may be</tspan><tspan x="55" dy="22.5">pruned.</tspan></text>
+<rect x="40" y="145" width="1120" height="150" rx="14" fill="#dbeafe" fill-opacity=".35" stroke="#1864ab" stroke-width="1.5" stroke-dasharray="8 7"/>
+<text x="58" y="174" text-anchor="start" font-family="Inter,Arial,sans-serif" font-size="19" fill="#1864ab"><tspan x="58" dy="0">Resolve once</tspan></text>
+<rect x="40" y="325" width="300" height="480" rx="14" fill="#dcfce7" fill-opacity=".35" stroke="#2b8a3e" stroke-width="1.5" stroke-dasharray="8 7"/>
+<text x="58" y="354" text-anchor="start" font-family="Inter,Arial,sans-serif" font-size="19" fill="#2b8a3e"><tspan x="58" dy="0">Actor · local process or</tspan><tspan x="58" dy="23.75">remote game host</tspan></text>
+<rect x="370" y="325" width="250" height="480" rx="14" fill="#ffedd5" fill-opacity=".35" stroke="#d97706" stroke-width="1.5" stroke-dasharray="8 7"/>
+<text x="388" y="354" text-anchor="start" font-family="Inter,Arial,sans-serif" font-size="19" fill="#d97706"><tspan x="388" dy="0">Authenticated</tspan><tspan x="388" dy="23.75">durable ingest</tspan></text>
+<rect x="650" y="325" width="510" height="480" rx="14" fill="#ede9fe" fill-opacity=".35" stroke="#7048e8" stroke-width="1.5" stroke-dasharray="8 7"/>
+<text x="668" y="354" text-anchor="start" font-family="Inter,Arial,sans-serif" font-size="19" fill="#7048e8"><tspan x="668" dy="0">Learner process</tspan></text>
+<polyline points="350,227.5 465,227.5" fill="none" stroke="#1864ab" stroke-width="2.5" marker-end="url(#arrow)"/>
+<rect x="319.5" y="187.5" width="176" height="25" rx="5" fill="#ffffff" fill-opacity=".92"/>
+<text x="407.5" y="204.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#1864ab"><tspan x="407.5" dy="0">parse</tspan></text>
+<polyline points="735,227.5 850,227.5" fill="none" stroke="#087f8c" stroke-width="2.5" marker-end="url(#arrow)"/>
+<rect x="704.5" y="187.5" width="176" height="25" rx="5" fill="#ffffff" fill-opacity=".92"/>
+<text x="792.5" y="204.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#087f8c"><tspan x="792.5" dy="0">record</tspan></text>
+<polyline points="190,485 190,535" fill="none" stroke="#2b8a3e" stroke-width="2.5" marker-end="url(#arrow)"/>
+<rect x="162" y="503" width="176" height="25" rx="5" fill="#ffffff" fill-opacity=".92"/>
+<text x="250.0" y="520" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#2b8a3e"><tspan x="250.0" dy="0">action</tspan></text>
+<polyline points="190,635 190,685" fill="none" stroke="#d97706" stroke-width="2.5" marker-end="url(#arrow)"/>
+<rect x="162" y="653" width="176" height="25" rx="5" fill="#ffffff" fill-opacity=".92"/>
+<text x="250.0" y="670" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#d97706"><tspan x="250.0" dy="0">rollout</tspan></text>
+<polyline points="310,735 350,735 350,435 390,435" fill="none" stroke="#d97706" stroke-width="2.5" marker-end="url(#arrow)"/>
+<rect x="262" y="503" width="176" height="25" rx="5" fill="#ffffff" fill-opacity=".92"/>
+<text x="350.0" y="520" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#d97706"><tspan x="350.0" dy="0">submit</tspan></text>
+<polyline points="495,485 495,535" fill="none" stroke="#c92a2a" stroke-width="2.5" marker-end="url(#arrow)"/>
+<rect x="407" y="503" width="176" height="25" rx="5" fill="#ffffff" fill-opacity=".92"/>
+<text x="495.0" y="520" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#c92a2a"><tspan x="495.0" dy="0">persist, then ACK</tspan></text>
+<polyline points="495,635 495,685" fill="none" stroke="#d97706" stroke-width="2.5" marker-end="url(#arrow)"/>
+<rect x="407" y="653" width="176" height="25" rx="5" fill="#ffffff" fill-opacity=".92"/>
+<text x="495.0" y="670" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#d97706"><tspan x="495.0" dy="0">apply in order</tspan></text>
+<polyline points="600,585 640,585 640,435 680,435" fill="none" stroke="#d97706" stroke-width="2.5" marker-end="url(#arrow)"/>
+<polyline points="880,435.0 930,435.0" fill="none" stroke="#7048e8" stroke-width="2.5" marker-end="url(#arrow)"/>
+<polyline points="1030,485 1030,510 780,510 780,535" fill="none" stroke="#7048e8" stroke-width="2.5" marker-end="url(#arrow)"/>
+<polyline points="880,585.0 930,585.0" fill="none" stroke="#1864ab" stroke-width="2.5" marker-end="url(#arrow)"/>
+<polyline points="600,735 635,735 635,825 1030,825 1030,635" fill="none" stroke="#d97706" stroke-width="2.5" stroke-dasharray="8 7" marker-end="url(#arrow)"/>
+<rect x="737" y="803" width="176" height="25" rx="5" fill="#ffffff" fill-opacity=".92"/>
+<text x="825.0" y="820" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#d97706"><tspan x="825.0" dy="0">capture; prune</tspan><tspan x="825.0" dy="22.5">after save</tspan></text>
+<polyline points="780,635 780,685" fill="none" stroke="#7048e8" stroke-width="2.5" marker-end="url(#arrow)"/>
+<polyline points="880,585 905,585 905,735 930,735" fill="none" stroke="#475569" stroke-width="2.5" marker-end="url(#arrow)"/>
+<polyline points="680,735 650,735 650,855 25,855 25,435 70,435" fill="none" stroke="#7048e8" stroke-width="2.5" stroke-dasharray="8 7" marker-end="url(#arrow)"/>
+<rect x="212" y="833" width="176" height="25" rx="5" fill="#ffffff" fill-opacity=".92"/>
+<text x="300.0" y="850" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#7048e8"><tspan x="300.0" dy="0">activate next</tspan><tspan x="300.0" dy="22.5">episode</tspan></text>
+<rect x="80" y="185" width="270" height="85" rx="12" fill="#dbeafe" stroke="#1864ab" stroke-width="2.5" filter="url(#shadow)"/>
+<text x="215.0" y="212" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="20" fill="#111827"><tspan x="215.0" dy="0">RunSpec 2.0</tspan></text>
+<text x="215.0" y="240" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#475569"><tspan x="215.0" dy="0">strict YAML · explicit</tspan><tspan x="215.0" dy="22.5">components</tspan></text>
+<rect x="465" y="185" width="270" height="85" rx="12" fill="#cffafe" stroke="#087f8c" stroke-width="2.5" filter="url(#shadow)"/>
+<text x="600.0" y="212" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="20" fill="#111827"><tspan x="600.0" dy="0">Resolve contracts</tspan></text>
+<text x="600.0" y="240" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#475569"><tspan x="600.0" dy="0">seed · imports ·</tspan><tspan x="600.0" dy="22.5">fingerprint</tspan></text>
+<rect x="850" y="185" width="270" height="85" rx="12" fill="#f1f5f9" stroke="#475569" stroke-width="2.5" filter="url(#shadow)"/>
+<text x="985.0" y="212" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="20" fill="#111827"><tspan x="985.0" dy="0">Immutable manifest</tspan></text>
+<text x="985.0" y="240" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#475569"><tspan x="985.0" dy="0">map · geometry ·</tspan><tspan x="985.0" dy="22.5">feature/action IDs</tspan></text>
+<rect x="70" y="385" width="240" height="100" rx="12" fill="#dcfce7" stroke="#2b8a3e" stroke-width="2.5" filter="url(#shadow)"/>
+<text x="190.0" y="417.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="20" fill="#111827"><tspan x="190.0" dy="0">Frozen actor policy</tspan></text>
+<text x="190.0" y="445.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#475569"><tspan x="190.0" dy="0">one version per</tspan><tspan x="190.0" dy="22.5">episode</tspan></text>
+<rect x="70" y="535" width="240" height="100" rx="12" fill="#dcfce7" stroke="#2b8a3e" stroke-width="2.5" filter="url(#shadow)"/>
+<text x="190.0" y="567.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="20" fill="#111827"><tspan x="190.0" dy="0">Game adapter</tspan></text>
+<text x="190.0" y="595.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#475569"><tspan x="190.0" dy="0">telemetry → features</tspan><tspan x="190.0" dy="22.5">→ transition</tspan></text>
+<rect x="70" y="685" width="240" height="100" rx="12" fill="#ffedd5" stroke="#d97706" stroke-width="2.5" filter="url(#shadow)"/>
+<text x="190.0" y="728.75" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="20" fill="#111827"><tspan x="190.0" dy="0">Durable actor spool</tspan></text>
+<text x="190.0" y="756.75" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#475569"><tspan x="190.0" dy="0">retry until accepted</tspan></text>
+<rect x="390" y="385" width="210" height="100" rx="12" fill="#fee2e2" stroke="#c92a2a" stroke-width="2.5" filter="url(#shadow)"/>
+<text x="495.0" y="417.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="20" fill="#111827"><tspan x="495.0" dy="0">Loopback gRPC</tspan></text>
+<text x="495.0" y="445.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#475569"><tspan x="495.0" dy="0">token · size ·</tspan><tspan x="495.0" dy="22.5">fingerprint</tspan></text>
+<rect x="390" y="535" width="210" height="100" rx="12" fill="#ffedd5" stroke="#d97706" stroke-width="2.5" filter="url(#shadow)"/>
+<text x="495.0" y="567.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="20" fill="#111827"><tspan x="495.0" dy="0">SQLite WAL</tspan></text>
+<text x="495.0" y="595.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#475569"><tspan x="495.0" dy="0">accepted rows</tspan><tspan x="495.0" dy="22.5">ordered by ID</tspan></text>
+<rect x="390" y="685" width="210" height="100" rx="12" fill="#ffedd5" stroke="#d97706" stroke-width="2.5" filter="url(#shadow)"/>
+<text x="495.0" y="717.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="20" fill="#111827"><tspan x="495.0" dy="0">Applied frontier</tspan></text>
+<text x="495.0" y="745.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#475569"><tspan x="495.0" dy="0">contiguous replay</tspan><tspan x="495.0" dy="22.5">commit</tspan></text>
+<rect x="680" y="385" width="200" height="100" rx="12" fill="#ede9fe" stroke="#7048e8" stroke-width="2.5" filter="url(#shadow)"/>
+<text x="780.0" y="417.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="20" fill="#111827"><tspan x="780.0" dy="0">Replay + sampler</tspan></text>
+<text x="780.0" y="445.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#475569"><tspan x="780.0" dy="0">uniform · PER ·</tspan><tspan x="780.0" dy="22.5">sequence</tspan></text>
+<rect x="930" y="385" width="200" height="100" rx="12" fill="#cffafe" stroke="#087f8c" stroke-width="2.5" filter="url(#shadow)"/>
+<text x="1030.0" y="417.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="20" fill="#111827"><tspan x="1030.0" dy="0">Typed batch</tspan></text>
+<text x="1030.0" y="445.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#475569"><tspan x="1030.0" dy="0">n-step · masks ·</tspan><tspan x="1030.0" dy="22.5">IDs</tspan></text>
+<rect x="680" y="535" width="200" height="100" rx="12" fill="#ede9fe" stroke="#7048e8" stroke-width="2.5" filter="url(#shadow)"/>
+<text x="780.0" y="567.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="20" fill="#111827"><tspan x="780.0" dy="0">Learner update</tspan></text>
+<text x="780.0" y="595.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#475569"><tspan x="780.0" dy="0">validate →</tspan><tspan x="780.0" dy="22.5">backward → step</tspan></text>
+<rect x="930" y="535" width="200" height="100" rx="12" fill="#dbeafe" stroke="#1864ab" stroke-width="2.5" filter="url(#shadow)"/>
+<text x="1030.0" y="567.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="20" fill="#111827"><tspan x="1030.0" dy="0">Checkpoint</tspan></text>
+<text x="1030.0" y="595.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#475569"><tspan x="1030.0" dy="0">state · RNG · WAL</tspan><tspan x="1030.0" dy="22.5">frontier</tspan></text>
+<rect x="680" y="685" width="200" height="100" rx="12" fill="#ede9fe" stroke="#7048e8" stroke-width="2.5" filter="url(#shadow)"/>
+<text x="780.0" y="717.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="20" fill="#111827"><tspan x="780.0" dy="0">Policy snapshot</tspan></text>
+<text x="780.0" y="745.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#475569"><tspan x="780.0" dy="0">portable tensor</tspan><tspan x="780.0" dy="22.5">state</tspan></text>
+<rect x="930" y="685" width="200" height="100" rx="12" fill="#f1f5f9" stroke="#475569" stroke-width="2.5" filter="url(#shadow)"/>
+<text x="1030.0" y="717.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="20" fill="#111827"><tspan x="1030.0" dy="0">Run evidence</tspan></text>
+<text x="1030.0" y="745.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#475569"><tspan x="1030.0" dy="0">JSONL · W&amp;B ·</tspan><tspan x="1030.0" dy="22.5">artifacts</tspan></text>
+<rect x="85" y="890" width="1030" height="58" rx="10" fill="#fee2e2" stroke="#c92a2a" stroke-width="1.5"/>
+<text x="99" y="921" text-anchor="start" font-family="Inter,Arial,sans-serif" font-size="18" fill="#1f2937"><tspan x="99" dy="0">Invariant: acknowledged chunks remain recoverable until the exact applied frontier is inside a</tspan><tspan x="99" dy="22.5">durable checkpoint.</tspan></text>
+<rect x="85" y="970" width="1030" height="52" rx="10" fill="#f1f5f9" stroke="#475569" stroke-width="1.5"/>
+<text x="99" y="1001" text-anchor="start" font-family="Inter,Arial,sans-serif" font-size="18" fill="#1f2937"><tspan x="99" dy="0">PPO is a separate local on-policy lifecycle; it never enters this actor/WAL/replay path.</tspan></text>
 </svg>

@@ -9,11 +9,14 @@ import pytest
 
 from trackmaniarl.core.data import Transition
 from trackmaniarl.trackmania.actions import (
+    BRAKE_TAP_SENTINEL,
     build_brake_tap_action_table,
     continuous_control_to_discrete_index,
+    continuous_control_to_discrete_indices_batch,
 )
 from trackmaniarl.trackmania.demonstrations import (
     Demonstration,
+    _control,
     demonstration_transitions,
     load_demonstration,
     record_demonstration,
@@ -69,6 +72,16 @@ class _EventTelemetryClient:
         return self.read()
 
 
+def test_recorded_control_preserves_openplanet_steering_direction() -> None:
+    values = np.zeros(33, dtype=np.float32)
+    values[30] = -1.0
+    values[31] = 1.0
+
+    control = _control(TelemetryFrame(values))
+
+    np.testing.assert_array_equal(control, np.asarray([1.0, 0.0, -1.0], dtype=np.float32))
+
+
 def _geometry(tmp_path: Path) -> BoundaryGeometry:
     left = np.asarray([[float(x), 0.0, -5.0] for x in range(101)], dtype=np.float32)
     right = left + np.asarray([0.0, 0.0, 10.0], dtype=np.float32)
@@ -121,6 +134,25 @@ def _frames(count: int = 61) -> np.ndarray:
     return frames
 
 
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"decision_interval_ms": None},
+        {"decision_interval_ms": 50.0, "control_backend": "keyboard"},
+    ],
+)
+def test_control_aggregation_requires_an_analog_timed_environment(
+    tmp_path: Path, overrides: dict[str, object]
+) -> None:
+    with pytest.raises(ValueError, match="demonstration control aggregation requires"):
+        TrackmaniaEnvironmentConfig(
+            trajectory_path=tmp_path / "track.npy",
+            action_repeat_frames=1,
+            demonstration_control_aggregation=True,
+            **overrides,
+        )
+
+
 def _demonstration(geometry: BoundaryGeometry) -> Demonstration:
     frames = _frames()
     _, table = build_brake_tap_action_table()
@@ -164,6 +196,114 @@ def test_resample_demonstration_uses_the_online_decision_interval(tmp_path: Path
 
     assert np.array_equal(selected_frames[:, 3], frames[::2, 3])
     assert len(selected_actions) == len(selected_frames) - 1
+
+
+def test_resample_demonstration_leads_actions_by_race_time(tmp_path: Path) -> None:
+    geometry = _geometry(tmp_path)
+    demonstration = _demonstration(geometry)
+    frames = demonstration.frames[:6].copy()
+    frames[:, 3] = np.arange(len(frames), dtype=np.float32) * 10.0
+    frames[-1, 2] = 1.0
+    actions = np.asarray([0, 1, 3, 39, 75], dtype=np.int64)
+    _, table = build_brake_tap_action_table()
+    demonstration = replace(
+        demonstration,
+        frames=frames,
+        actions=actions,
+        controls=np.asarray([table[action] for action in actions], dtype=np.float32),
+        finish_time_s=0.05,
+    )
+
+    selected_frames, selected_actions = resample_demonstration(
+        demonstration,
+        20.0,
+        action_lead_ms=20.0,
+    )
+
+    assert selected_frames[:, 3].tolist() == [0.0, 20.0, 40.0, 50.0]
+    assert selected_actions.tolist() == [3, 75, 75]
+
+
+@pytest.mark.parametrize("action_lead_ms", [float("nan"), float("inf")])
+def test_resample_demonstration_rejects_non_finite_action_lead(
+    tmp_path: Path, action_lead_ms: float
+) -> None:
+    demonstration = _demonstration(_geometry(tmp_path))
+
+    with pytest.raises(ValueError, match="finite and non-negative"):
+        resample_demonstration(demonstration, None, action_lead_ms=action_lead_ms)
+
+
+def test_resample_demonstration_aggregates_keyboard_pwm_into_analog_action(
+    tmp_path: Path,
+) -> None:
+    geometry = _geometry(tmp_path)
+    demonstration = _demonstration(geometry)
+    frames = demonstration.frames[:6].copy()
+    frames[:, 3] = np.arange(len(frames), dtype=np.float32) * 10.0
+    frames[-1, 2] = 1.0
+    controls = np.asarray(
+        [
+            [1.0, 0.0, -1.0],
+            [1.0, 1.0, -1.0],
+            [1.0, 0.0, 1.0],
+            [1.0, 0.0, 1.0],
+            [1.0, 0.0, 1.0],
+        ],
+        dtype=np.float32,
+    )
+    _, table = build_brake_tap_action_table()
+    demonstration = replace(
+        demonstration,
+        frames=frames,
+        actions=continuous_control_to_discrete_indices_batch(controls, table),
+        controls=controls,
+        finish_time_s=0.05,
+        control_alignment="frame_start",
+    )
+
+    _, default_actions = resample_demonstration(demonstration, 50.0)
+    _, aggregated_actions = resample_demonstration(
+        demonstration,
+        50.0,
+        aggregate_controls=True,
+    )
+
+    assert int(default_actions[0]) == int(demonstration.actions[0])
+    gas, brake, steer = table[int(aggregated_actions[0])]
+    assert gas == pytest.approx(1.0)
+    assert brake == pytest.approx(BRAKE_TAP_SENTINEL)
+    assert steer == pytest.approx(1.0 / 6.0)
+
+
+def test_control_aggregation_shifts_the_entire_window_by_action_lead(tmp_path: Path) -> None:
+    geometry = _geometry(tmp_path)
+    demonstration = _demonstration(geometry)
+    frames = demonstration.frames[:6].copy()
+    frames[:, 3] = np.arange(len(frames), dtype=np.float32) * 10.0
+    frames[-1, 2] = 1.0
+    controls = np.asarray(
+        [[1.0, 0.0, -1.0]] * 2 + [[1.0, 0.0, 1.0]] * 3,
+        dtype=np.float32,
+    )
+    _, table = build_brake_tap_action_table()
+    demonstration = replace(
+        demonstration,
+        frames=frames,
+        actions=continuous_control_to_discrete_indices_batch(controls, table),
+        controls=controls,
+        finish_time_s=0.05,
+        control_alignment="frame_start",
+    )
+
+    _, actions = resample_demonstration(
+        demonstration,
+        20.0,
+        action_lead_ms=20.0,
+        aggregate_controls=True,
+    )
+
+    assert [float(table[int(action)][2]) for action in actions] == [1.0, 1.0, 1.0]
 
 
 def test_resolve_demonstration_paths_expands_directories(tmp_path: Path) -> None:
@@ -266,7 +406,7 @@ def test_recorder_aligns_each_control_with_the_transition_start_frame(
         status=lambda _message: None,
     )
 
-    assert demo.controls[:, 2].tolist() == [-0.0, -1.0]
+    assert demo.controls[:, 2].tolist() == [0.0, 1.0]
 
 
 def test_recorder_estimates_native_finish_between_telemetry_frames(tmp_path: Path) -> None:

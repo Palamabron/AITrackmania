@@ -6,7 +6,7 @@ or offline-supervised lifecycle is executed. The same commands work in
 PowerShell, bash, WSL and CI.
 
 ```bash
-uv tool install trackmaniarl
+uv tool install "trackmaniarl==2.0.0rc1"
 trackmaniarl init my-trackmania-agent --template trackmania
 cd my-trackmania-agent
 uv sync
@@ -133,13 +133,6 @@ Use `module:Symbol` paths in `run.yaml`; do not modify the TrackmaniaRL package 
 experiment.
 
 The normal extension loop is:
-
-<p align="center">
-  <img src="../docs/diagrams/extension-workflow-preview.svg" alt="TrackmaniaRL extension ownership, contract and verification workflow" width="900">
-</p>
-
-[Editable diagram](../docs/diagrams/extension-workflow.excalidraw) ·
-[local preview](../docs/diagrams/extension-workflow-preview.html)
 
 1. generate an installable project with `trackmaniarl init`;
 2. implement or subclass one component under `src/<package>/`;

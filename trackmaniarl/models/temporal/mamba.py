@@ -18,6 +18,8 @@ MambaBackend = Literal["auto", "native", "torch"]
 class MambaTemporalCore(nn.Module):
     """A parameter-portable Mamba block whose scan backend is runtime-selectable."""
 
+    fingerprint_ignored_parameters = frozenset({"backend"})
+
     def __init__(
         self,
         input_dim: int,

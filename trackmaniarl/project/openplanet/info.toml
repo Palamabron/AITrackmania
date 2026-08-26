@@ -1,8 +1,9 @@
 [meta]
-name = "TrackmaniaRL_GrabData_IQN"
+name = "TrackmaniaRL Connect"
 author = "Palamabron / AITrackmania"
 category = "Trackmania Reinforcement Learning"
-version = "2.2.1"
+version = "2.4.0"
+siteid = 421
 
 [script]
 dependencies = ["VehicleState", "PlayerState"]

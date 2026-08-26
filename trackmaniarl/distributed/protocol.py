@@ -9,6 +9,7 @@ import inspect
 import ipaddress
 import json
 from collections.abc import Mapping
+from enum import Enum
 from pathlib import Path
 from typing import Any, cast
 
@@ -19,6 +20,7 @@ from trackmaniarl.core.data import Transition
 
 PROTOCOL_VERSION = "1"
 SERVICE = "trackmaniarl.Distributed"
+MIN_DISTRIBUTED_TOKEN_LENGTH = 32
 
 
 def grpc_method(name: str) -> str:
@@ -75,6 +77,12 @@ def auth_metadata(token: str) -> tuple[tuple[str, str], ...]:
     return (("authorization", f"Bearer {token}"),)
 
 
+def require_distributed_token(token: str, *, name: str = "distributed token") -> str:
+    if len(token) < MIN_DISTRIBUTED_TOKEN_LENGTH:
+        raise ValueError(f"{name} must contain at least 32 characters")
+    return token
+
+
 def require_loopback_bind(bind: str) -> str:
     host, separator, port = bind.rpartition(":")
     if not separator or not port.isdecimal():
@@ -95,23 +103,15 @@ def run_fingerprint(spec: Any, base_dir: Path) -> str:
     components = config.get("components", {})
     components.pop("logger", None)
     components.pop("additional_loggers", None)
-    component_code: dict[str, str] = {}
-    for component in _component_specs(components):
-        class_path = component["class_path"]
-        module_name = class_path.partition(":")[0]
-        module = importlib.import_module(module_name)
-        source = inspect.getsourcefile(module)
-        if source is not None:
-            source_bytes = Path(source).read_bytes().replace(b"\r\n", b"\n")
-            component_code[class_path] = hashlib.sha256(source_bytes).hexdigest()
-        if class_path.endswith(":MambaTemporalCore"):
-            kwargs = component.get("kwargs")
-            if isinstance(kwargs, dict):
-                kwargs.pop("backend", None)
-    config["component_code_sha256"] = component_code
+    component_manifest: list[dict[str, Any]] = []
+    config["components"] = _semantic_component_tree(components, component_manifest)
+    config["component_manifest"] = sorted(
+        component_manifest,
+        key=lambda item: json.dumps(item, sort_keys=True, separators=(",", ":")),
+    )
     if any(
-        class_path.partition(":")[0].startswith("trackmaniarl.trackmania")
-        for class_path in component_code
+        str(item["resolved_symbol"]).partition(":")[0].startswith("trackmaniarl.trackmania")
+        for item in component_manifest
     ):
         config["builtin_contracts"] = _trackmania_contracts()
     config = _hash_geometry_paths(config, base_dir)
@@ -123,13 +123,81 @@ def run_fingerprint(spec: Any, base_dir: Path) -> str:
     return hashlib.sha256(canonical.encode()).hexdigest()
 
 
-def _component_specs(value: Any) -> list[dict[str, Any]]:
+def _semantic_component_tree(value: Any, manifest: list[dict[str, Any]]) -> Any:
     if isinstance(value, dict):
-        result = [value] if isinstance(value.get("class_path"), str) else []
-        return result + [item for child in value.values() for item in _component_specs(child)]
-    if isinstance(value, list):
-        return [item for child in value for item in _component_specs(child)]
-    return []
+        class_path = value.get("class_path")
+        if isinstance(class_path, str):
+            symbol = _resolved_symbol(class_path)
+            provided = value.get("kwargs", {})
+            if not isinstance(provided, Mapping):
+                raise TypeError(f"Component {class_path!r} kwargs must be a mapping")
+            parameters = _semantic_parameters(symbol, provided)
+            parameters = _semantic_component_tree(parameters, manifest)
+            implementation = _component_implementation(symbol)
+            manifest.append(
+                {
+                    "class_path": class_path,
+                    "resolved_symbol": implementation["resolved_symbol"],
+                    "source_sha256": implementation["source_sha256"],
+                    "parameters": parameters,
+                }
+            )
+            return {"class_path": class_path, "kwargs": parameters}
+        return {str(key): _semantic_component_tree(item, manifest) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_semantic_component_tree(item, manifest) for item in value]
+    if isinstance(value, Path):
+        return value.as_posix()
+    if isinstance(value, Enum):
+        return _semantic_component_tree(value.value, manifest)
+    if isinstance(value, (set, frozenset)):
+        normalized = [_semantic_component_tree(item, manifest) for item in value]
+        return sorted(normalized, key=lambda item: json.dumps(item, sort_keys=True, default=str))
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    dump = getattr(value, "model_dump", None)
+    if callable(dump):
+        return _semantic_component_tree(dump(mode="json"), manifest)
+    return {"type": f"{type(value).__module__}:{type(value).__qualname__}"}
+
+
+def _resolved_symbol(class_path: str) -> Any:
+    module_name, _, symbol_name = class_path.partition(":")
+    return getattr(importlib.import_module(module_name), symbol_name)
+
+
+def _component_implementation(symbol: Any) -> dict[str, str | None]:
+    module_name = getattr(symbol, "__module__", type(symbol).__module__)
+    qualname = getattr(symbol, "__qualname__", type(symbol).__qualname__)
+    try:
+        source = inspect.getsourcefile(symbol)
+    except TypeError:
+        source = None
+    source_hash = None
+    if source is not None:
+        source_bytes = Path(source).read_bytes().replace(b"\r\n", b"\n")
+        source_hash = hashlib.sha256(source_bytes).hexdigest()
+    return {
+        "resolved_symbol": f"{module_name}:{qualname}",
+        "source_sha256": source_hash,
+    }
+
+
+def _semantic_parameters(symbol: Any, provided: Mapping[str, Any]) -> dict[str, Any]:
+    ignored = frozenset(getattr(symbol, "fingerprint_ignored_parameters", ()))
+    parameters = {str(key): value for key, value in provided.items() if key not in ignored}
+    try:
+        signature = inspect.signature(symbol)
+    except (TypeError, ValueError):
+        return parameters
+    for name, parameter in signature.parameters.items():
+        if name in ignored or name in parameters:
+            continue
+        if parameter.kind in {parameter.VAR_POSITIONAL, parameter.VAR_KEYWORD}:
+            continue
+        if parameter.default is not inspect.Parameter.empty:
+            parameters[name] = parameter.default
+    return parameters
 
 
 def _trackmania_contracts() -> dict[str, Any]:

@@ -81,6 +81,9 @@ class DiscreteValuePolicy:
 
     def reset_episode(self) -> None:
         self._state = self.model.initial_policy_state(1, self.device)
+        reset_selector = getattr(self.action_selector, "reset_episode", None)
+        if callable(reset_selector):
+            reset_selector()
 
     def _mask(self, values: torch.Tensor) -> torch.Tensor:
         if self.policy_action_ids is None:

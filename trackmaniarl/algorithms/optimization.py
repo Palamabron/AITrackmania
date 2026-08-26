@@ -55,14 +55,15 @@ class AdaptiveGradientClipper(nn.Module):
             error_if_nonfinite=True,
         )
         current = float(norm.detach())
-        self._update_ema(current)
+        has_history = not bool(torch.isnan(self.ema_norm))
         threshold = self._ema_value() * self.clip_factor
         coefficient = 1.0
-        if int(self.step_count) > self.warmup_steps and current > threshold:
+        if has_history and int(self.step_count) >= self.warmup_steps and current > threshold:
             coefficient = threshold / current
             for parameter in trainable:
                 assert parameter.grad is not None
                 parameter.grad.mul_(coefficient)
+        self._update_ema(current)
         return GradientClipStats(
             norm=current,
             ema_norm=self._ema_value(),

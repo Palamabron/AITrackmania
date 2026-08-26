@@ -7,10 +7,21 @@ from pathlib import Path
 
 import numpy as np
 
-from trackmaniarl.trackmania.actions import select_brake_tap_actions
-from trackmaniarl.trackmania.demonstrations import Demonstration, load_demonstration
+from trackmaniarl.trackmania.actions import (
+    build_brake_tap_action_table,
+    select_brake_tap_actions,
+)
+from trackmaniarl.trackmania.demonstrations import (
+    Demonstration,
+    load_demonstration,
+    resample_demonstration,
+)
 from trackmaniarl.trackmania.guidance import digital_recovery_steering
-from trackmaniarl.trackmania.imitation_learning import save_behavior_cloning_recovery
+from trackmaniarl.trackmania.imitation_learning import (
+    RecoveryContract,
+    RecoveryProvenance,
+    save_behavior_cloning_recovery,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,6 +77,7 @@ class SyntheticRecoveryDataset:
     interventions: np.ndarray
     state_errors: np.ndarray
     action_ids: tuple[int, ...]
+    provenance: RecoveryProvenance
 
     def __post_init__(self) -> None:
         sample_count = len(self.frames)
@@ -101,6 +113,7 @@ class SyntheticRecoveryDataset:
             self.labels,
             self.episode_starts,
             self.action_ids,
+            provenance=self.provenance,
             sample_weights=self.sample_weights,
             interventions=self.interventions,
             state_errors=self.state_errors,
@@ -122,6 +135,8 @@ def generate_synthetic_recovery(
     demonstration: Demonstration,
     action_ids: tuple[int, ...],
     config: SyntheticRecoveryConfig | None = None,
+    *,
+    provenance: RecoveryProvenance | None = None,
 ) -> SyntheticRecoveryDataset:
     """Build monotonic counterfactual trajectories around one demonstration."""
 
@@ -143,7 +158,7 @@ def generate_synthetic_recovery(
     errors: list[float] = []
     episode_starts: list[bool] = []
     for perturbation in perturbations:
-        for offset, index in enumerate(eligible):
+        for index in eligible:
             expert = demonstration.controls[_command_index(reference_frames, index, selected)]
             frame = _perturb_frame(reference_frames[index], perturbation)
             control, error = _recovery_control(expert, perturbation, selected)
@@ -152,7 +167,7 @@ def generate_synthetic_recovery(
             weights.append(_sample_weight(perturbation, selected))
             interventions.append(not perturbation.is_nominal)
             errors.append(error)
-            episode_starts.append(offset == 0)
+            episode_starts.append(True)
     if not frames:
         raise ValueError("demonstration has no eligible synthetic recovery frames")
     return SyntheticRecoveryDataset(
@@ -163,6 +178,7 @@ def generate_synthetic_recovery(
         interventions=np.asarray(interventions, dtype=np.bool_),
         state_errors=np.asarray(errors, dtype=np.float32),
         action_ids=action_ids,
+        provenance=provenance or RecoveryProvenance.from_demonstration(demonstration),
     )
 
 
@@ -170,11 +186,57 @@ def generate_synthetic_recovery_from_path(
     demonstration_path: str | Path,
     action_ids: tuple[int, ...],
     config: SyntheticRecoveryConfig | None = None,
+    *,
+    contract: RecoveryContract | None = None,
+    aggregate_controls: bool = False,
 ) -> SyntheticRecoveryDataset:
+    source = load_demonstration(demonstration_path)
+    selected_contract = contract or RecoveryContract.from_demonstration(source)
+    demonstration = _align_demonstration(source, selected_contract, aggregate_controls)
     return generate_synthetic_recovery(
-        load_demonstration(demonstration_path),
+        demonstration,
         action_ids,
         config,
+        provenance=RecoveryProvenance.from_demonstration(
+            source,
+            contract=selected_contract,
+        ),
+    )
+
+
+def _align_demonstration(
+    demonstration: Demonstration,
+    contract: RecoveryContract,
+    aggregate_controls: bool,
+) -> Demonstration:
+    if demonstration.map_uid != contract.map_uid:
+        raise ValueError("synthetic recovery map UID does not match its target contract")
+    if demonstration.geometry_sha256 != contract.geometry_sha256:
+        raise ValueError("synthetic recovery geometry does not match its target contract")
+    if contract.decision_interval_ms is None:
+        if (
+            demonstration.decision_interval_ms is not None
+            or demonstration.action_repeat_frames != contract.action_repeat_frames
+        ):
+            raise ValueError("synthetic recovery action repeat does not match its target contract")
+        return demonstration
+    frames, actions = resample_demonstration(
+        demonstration,
+        contract.decision_interval_ms,
+        aggregate_controls=aggregate_controls,
+    )
+    _, action_table = build_brake_tap_action_table()
+    controls = np.asarray(action_table, dtype=np.float32)[actions]
+    return Demonstration(
+        map_uid=demonstration.map_uid,
+        geometry_sha256=demonstration.geometry_sha256,
+        action_repeat_frames=contract.action_repeat_frames,
+        decision_interval_ms=contract.decision_interval_ms,
+        frames=frames,
+        actions=actions,
+        controls=controls,
+        finish_time_s=demonstration.finish_time_s,
+        control_alignment=contract.control_alignment,
     )
 
 
@@ -215,10 +277,10 @@ def _command_index(frames: np.ndarray, index: int, config: SyntheticRecoveryConf
 def _perturb_frame(reference: np.ndarray, perturbation: _Perturbation) -> np.ndarray:
     frame = np.asarray(reference, dtype=np.float32).copy()
     forward = _horizontal_unit(frame[10:13])
-    right = np.asarray([forward[2], 0.0, -forward[0]], dtype=np.float32)
+    right = np.asarray([-forward[2], 0.0, forward[0]], dtype=np.float32)
     frame[4:7] += perturbation.lateral_m * right
-    _rotate_yaw(frame[10:13], perturbation.heading_rad)
-    _rotate_yaw(frame[13:16], perturbation.heading_rad)
+    _rotate_yaw(frame[10:13], -perturbation.heading_rad)
+    _rotate_yaw(frame[13:16], -perturbation.heading_rad)
     frame[7:10] += perturbation.lateral_velocity_mps * right
     frame[16] = float(np.linalg.norm(frame[7:10]))
     return frame

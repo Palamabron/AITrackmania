@@ -71,6 +71,7 @@ class SimbaV2Backbone(nn.Module):
         if input_dim <= 0 or hidden_dim <= 0 or block_count < 0:
             raise ValueError("SimbaV2 backbone dimensions are invalid")
         self.input_dim = input_dim
+        self.output_dim = hidden_dim
         self.input_shift = input_shift
         self.input_projection = HypersphericalLinear(input_dim + 1, hidden_dim)
         self.blocks = nn.ModuleList(SimbaV2Block(hidden_dim, expansion) for _ in range(block_count))

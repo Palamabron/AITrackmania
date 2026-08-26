@@ -153,7 +153,7 @@ class GymnasiumObservationCollator:
 
 
 class TransitionFeaturePipeline:
-    """Collate finite standard transitions for TrackmaniaRL 1.0 learners."""
+    """Collate finite standard transitions for TrackmaniaRL 2.0 learners."""
 
     def __init__(self, observation_space: gymnasium.Space[Any] | None = None) -> None:
         self.observation_space = observation_space

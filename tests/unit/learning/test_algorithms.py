@@ -1,6 +1,9 @@
-"""CPU contract checks for the five first-class TrackmaniaRL 1.0 learners."""
+"""CPU contract checks for the first-class TrackmaniaRL 2.0 learners."""
 
 from __future__ import annotations
+
+from dataclasses import replace
+from typing import Any
 
 import pytest
 import torch
@@ -19,6 +22,7 @@ from trackmaniarl.algorithms._torch import polyak_update, weighted_mean
 from trackmaniarl.algorithms.execution import TorchExecutionConfig
 from trackmaniarl.algorithms.implicit_quantile_q_learning import implicit_quantile_huber_loss
 from trackmaniarl.algorithms.proximal_policy_optimization import generalized_advantage_estimate
+from trackmaniarl.algorithms.truncated_quantile_critic import _truncate_quantile_mixture
 from trackmaniarl.core.data import TrainingBatch
 from trackmaniarl.models import (
     HypersphericalLinear,
@@ -32,6 +36,7 @@ from trackmaniarl.models.critics import (
     DiscreteQuantileNetwork,
     QuantileCritic,
 )
+from trackmaniarl.models.encoders import ConvolutionalSensorEncoder
 
 
 class Encoder(nn.Module):
@@ -109,6 +114,44 @@ class DiscreteSacModel(nn.Module):
         self.q2 = DiscreteValue(3)
 
 
+class ConstantActor(nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.action = nn.Parameter(torch.zeros(2))
+
+    def forward(self, observation: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        actions = self.action.expand(*observation.shape[:-1], 2)
+        return actions, actions.sum(dim=-1) * 0.0
+
+
+class ConstantQuantileCritic(nn.Module):
+    def __init__(self, value: float, quantile_count: int = 5) -> None:
+        super().__init__()
+        self.quantiles = nn.Parameter(torch.full((quantile_count,), value))
+
+    def forward(self, observation: torch.Tensor, action: torch.Tensor) -> torch.Tensor:
+        values = self.quantiles.expand(*observation.shape[:-1], self.quantiles.shape[0])
+        return values + action.sum(dim=-1, keepdim=True) * 0.0
+
+
+class ConstantTqcModel(nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.actor = ConstantActor()
+        self.critics = nn.ModuleList([ConstantQuantileCritic(1.0), ConstantQuantileCritic(3.0)])
+
+
+class CheckpointScaler:
+    def __init__(self, scale: float) -> None:
+        self.current_scale = scale
+
+    def state_dict(self) -> dict[str, float]:
+        return {"current_scale": self.current_scale}
+
+    def load_state_dict(self, state: dict[str, object]) -> None:
+        self.current_scale = float(state["current_scale"])
+
+
 def _batch(*, discrete: bool) -> TrainingBatch:
     observations = torch.randn(8, 4)
     actions = torch.randint(0, 3, (8,)) if discrete else torch.tanh(torch.randn(8, 2))
@@ -125,6 +168,25 @@ def _batch(*, discrete: bool) -> TrainingBatch:
     )
 
 
+def _sequence_batch(*, discrete: bool) -> TrainingBatch:
+    batch = _batch(discrete=discrete)
+    observations = batch.observations.reshape(2, 4, 4)
+    actions = batch.actions.reshape(2, 4, *batch.actions.shape[1:])
+    return replace(
+        batch,
+        data=observations,
+        observations=observations,
+        actions=actions,
+        rewards=batch.rewards.reshape(2, 4),
+        next_observations=batch.next_observations.reshape(2, 4, 4),
+        terminated=batch.terminated.reshape(2, 4),
+        truncated=batch.truncated.reshape(2, 4),
+        bootstrap_discounts=batch.bootstrap_discounts.reshape(2, 4),
+        masks=torch.ones(2, 4, dtype=torch.bool),
+        metadata={"sequence_length": 4},
+    )
+
+
 def _assert_update(learner, batch: TrainingBatch) -> None:
     learner.execution = TorchExecutionConfig(device="cpu", precision="float32")
     learner.setup({"seed": 0})
@@ -132,6 +194,7 @@ def _assert_update(learner, batch: TrainingBatch) -> None:
     assert all(torch.isfinite(torch.tensor(value)) for value in metrics.values())
     assert priorities.transition_ids == batch.transition_ids
     assert len(priorities.priorities) == len(batch.transition_ids)
+    assert "scaler" in learner.state_dict()
 
 
 def test_continuous_learners_update_without_shape_or_target_errors() -> None:
@@ -140,6 +203,125 @@ def test_continuous_learners_update_without_shape_or_target_errors() -> None:
         RandomizedEnsembleSAC(RedqModel(), policy_update_interval=1), _batch(discrete=False)
     )
     _assert_update(TruncatedQuantileCritic(ContinuousModel(quantiles=5)), _batch(discrete=False))
+
+
+@pytest.mark.parametrize(
+    "learner",
+    [
+        SoftActorCritic(ContinuousModel()),
+        RandomizedEnsembleSAC(RedqModel()),
+        TruncatedQuantileCritic(ContinuousModel(quantiles=5)),
+        StableDiscreteSoftActorCritic(DiscreteSacModel()),
+    ],
+)
+def test_actor_critic_builds_resumable_exact_evaluated_policy_state(learner: Any) -> None:
+    learner.setup({"seed": 0})
+    policy_state = {
+        name: value.detach().clone() + (1.0 if value.is_floating_point() else 0)
+        for name, value in learner.policy().export_state().items()
+    }
+
+    state = learner.state_dict_for_policy(policy_state)
+
+    for name, value in policy_state.items():
+        torch.testing.assert_close(state["model"][f"actor.{name}"], value)
+        torch.testing.assert_close(state["target_model"][f"actor.{name}"], value)
+    assert state["actor_optimizer"]["state"] == {}
+
+
+@pytest.mark.parametrize(
+    ("source", "restored"),
+    [
+        (SoftActorCritic(ContinuousModel()), SoftActorCritic(ContinuousModel())),
+        (
+            RandomizedEnsembleSAC(RedqModel()),
+            RandomizedEnsembleSAC(RedqModel()),
+        ),
+        (
+            TruncatedQuantileCritic(ContinuousModel(quantiles=5)),
+            TruncatedQuantileCritic(ContinuousModel(quantiles=5)),
+        ),
+        (
+            StableDiscreteSoftActorCritic(DiscreteSacModel()),
+            StableDiscreteSoftActorCritic(DiscreteSacModel()),
+        ),
+        (
+            ProximalPolicyOptimization(ContinuousPpoModel()),
+            ProximalPolicyOptimization(ContinuousPpoModel()),
+        ),
+        (
+            ImplicitQuantileQLearning(DiscreteQuantileNetwork(Encoder(), 16, 3)),
+            ImplicitQuantileQLearning(DiscreteQuantileNetwork(Encoder(), 16, 3)),
+        ),
+    ],
+)
+def test_torch_learners_restore_gradient_scaler_state(source, restored) -> None:
+    source.execution = TorchExecutionConfig(device="cpu", precision="float32")
+    restored.execution = TorchExecutionConfig(device="cpu", precision="float32")
+    source.setup({"seed": 0})
+    restored.setup({"seed": 1})
+    source.scaler = CheckpointScaler(17.0)
+    restored.scaler = CheckpointScaler(99.0)
+
+    restored.load_state_dict(source.state_dict())
+
+    assert restored.scaler.current_scale == 17.0
+
+
+def test_tqc_drops_the_configured_number_of_quantiles_per_critic() -> None:
+    quantiles = torch.arange(20, dtype=torch.float32).reshape(2, 10)
+
+    truncated = _truncate_quantile_mixture(
+        quantiles,
+        critic_count=2,
+        top_quantiles_to_drop_per_critic=2,
+    )
+
+    torch.testing.assert_close(truncated, quantiles[:, :6])
+
+
+def test_tqc_actor_uses_the_mean_of_every_critic_quantile(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    learner = TruncatedQuantileCritic(
+        ConstantTqcModel(),
+        learn_entropy_coefficient=False,
+        top_quantiles_to_drop_per_critic=0,
+        execution={"device": "cpu", "precision": "float32"},
+    )
+    learner.setup({"seed": 0})
+
+    def skip_optimization(loss: torch.Tensor, optimizer: torch.optim.Optimizer) -> None:
+        del loss, optimizer
+
+    monkeypatch.setattr(learner, "_optimize", skip_optimization)
+
+    metrics, _ = learner.update(_batch(discrete=False))
+
+    assert metrics["loss/actor"] == pytest.approx(-2.0)
+
+
+def test_tqc_rejects_the_removed_global_drop_name() -> None:
+    with pytest.raises(TypeError, match="top_quantiles_to_drop"):
+        TruncatedQuantileCritic(
+            ConstantTqcModel(),
+            top_quantiles_to_drop=2,
+        )
+
+
+def test_nonrecurrent_actor_critic_learners_reject_sequence_batches_before_forward() -> None:
+    learners_and_batches = (
+        (SoftActorCritic(ContinuousModel()), _sequence_batch(discrete=False)),
+        (RandomizedEnsembleSAC(RedqModel()), _sequence_batch(discrete=False)),
+        (TruncatedQuantileCritic(ContinuousModel(quantiles=5)), _sequence_batch(discrete=False)),
+        (StableDiscreteSoftActorCritic(DiscreteSacModel()), _sequence_batch(discrete=True)),
+    )
+    for learner, batch in learners_and_batches:
+        learner.execution = TorchExecutionConfig(device="cpu", precision="float32")
+        learner.setup({"seed": 0})
+
+        with pytest.raises(ValueError, match=r"requires sequence_length=1"):
+            learner.update(batch)
 
 
 def test_ppo_updates_from_behavior_policy_sequences() -> None:
@@ -184,6 +366,7 @@ def test_ppo_updates_from_behavior_policy_sequences() -> None:
 
     assert annealed["state/learning_rate"] == pytest.approx(1.5e-4)
     assert learner.state_dict()["observation_normalizer"]["moments"]
+    assert "scaler" in learner.state_dict()
 
 
 def test_ppo_gae_stops_recursion_at_episode_end_but_bootstraps_truncation() -> None:
@@ -262,6 +445,32 @@ def test_discrete_learners_update_without_shape_or_target_errors() -> None:
         _batch(discrete=True),
     )
     _assert_update(StableDiscreteSoftActorCritic(DiscreteSacModel()), _batch(discrete=True))
+
+
+@pytest.mark.parametrize(
+    "configuration",
+    [
+        {"learning_rate": 0.0},
+        {"train_quantile_count": 0},
+        {"target_quantile_count": 0},
+        {"evaluation_quantile_count": 0},
+        {"target_update_interval": 0},
+        {"gradient_clip_norm": 0.0},
+    ],
+)
+def test_legacy_iqn_rejects_nonpositive_training_parameters(
+    configuration: dict[str, float | int],
+) -> None:
+    with pytest.raises(ValueError, match="must be positive"):
+        ImplicitQuantileQLearning(
+            DiscreteQuantileNetwork(Encoder(), 16, 3, cosine_count=8),
+            **configuration,
+        )
+
+
+def test_convolutional_encoder_rejects_a_zero_width_first_convolution() -> None:
+    with pytest.raises(ValueError, match="hidden_dim at least two"):
+        ConvolutionalSensorEncoder(channels=3, output_dim=8, hidden_dim=1)
 
 
 def test_iqn_network_is_batch_size_invariant() -> None:
@@ -427,13 +636,15 @@ def test_adaptive_gradient_clipper_limits_spikes_and_restores_state() -> None:
     clipper = AdaptiveGradientClipper(decay=0.5, warmup_steps=0, clip_factor=1.0)
     parameter.grad = torch.ones_like(parameter)
     baseline = clipper([parameter])
+    prior_ema = baseline.ema_norm
     parameter.grad = torch.full_like(parameter, 100.0)
 
     spike = clipper([parameter])
 
     assert baseline.coefficient == 1.0
     assert spike.clipped
-    assert parameter.grad.norm() == torch.tensor(spike.ema_norm)
+    assert float(parameter.grad.norm()) == pytest.approx(prior_ema)
+    assert spike.ema_norm > prior_ema
     restored = AdaptiveGradientClipper()
     restored.load_state_dict(clipper.state_dict())
     assert restored.step_count == clipper.step_count

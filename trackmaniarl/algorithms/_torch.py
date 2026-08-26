@@ -1,4 +1,4 @@
-"""Shared torch implementation details for TrackmaniaRL 1.0 learners."""
+"""Shared torch implementation details for TrackmaniaRL 2.0 learners."""
 
 from __future__ import annotations
 
@@ -19,6 +19,7 @@ from trackmaniarl.algorithms.execution import (
     RequestedDevice,
     ResolvedTorchExecution,
     TorchExecutionConfig,
+    TorchExecutionError,
     resolve_torch_execution,
 )
 from trackmaniarl.core.data import TrainingBatch
@@ -37,6 +38,10 @@ class _GradScaler(Protocol):
     def step(self, optimizer: torch.optim.Optimizer) -> Any: ...
 
     def update(self) -> None: ...
+
+    def state_dict(self) -> dict[str, Any]: ...
+
+    def load_state_dict(self, state: dict[str, Any]) -> None: ...
 
 
 class TorchPolicy:
@@ -65,6 +70,21 @@ class TorchPolicy:
 
     def load_state(self, state: Mapping[str, Any]) -> None:
         self.actor.load_state_dict(state)
+
+
+def evaluated_actor_state(
+    state: Mapping[str, Any], model: nn.Module, policy_state: Mapping[str, Any]
+) -> dict[str, Any]:
+    actor = cast(Any, model).actor
+    if set(policy_state) != set(actor.state_dict()):
+        raise ValueError("evaluated policy state does not match the learner actor")
+    result = deepcopy(dict(state))
+    for name in ("model", "target_model"):
+        module_state = dict(cast(Mapping[str, Any], result[name]))
+        for key, value in policy_state.items():
+            module_state[f"actor.{key}"] = deepcopy(value)
+        result[name] = module_state
+    return result
 
 
 class TorchLearnerBase:
@@ -100,6 +120,10 @@ class TorchLearnerBase:
         run_dir = context.get("run_dir")
         self.run_dir = Path(run_dir) if run_dir is not None else None
         self.resolved_execution = resolve_torch_execution(self.execution)
+        if self.resolved_execution.compile_requested and not getattr(
+            self, "supports_compile", False
+        ):
+            raise TorchExecutionError(f"{type(self).__name__} does not support execution.compile")
         self.device = self.resolved_execution.torch_device
         seed = int(context.get("seed", self.seed))
         random.seed(seed)
@@ -178,6 +202,7 @@ class TorchLearnerBase:
         raise NotImplementedError
 
     def _batch(self, batch: TrainingBatch) -> TrainingBatch:
+        self._validate_batch_layout(batch)
         event = batch.metadata.get("_trackmaniarl_transfer_event")
         if event is not None:
             torch.cuda.current_stream(self.device).wait_event(event)
@@ -194,6 +219,14 @@ class TorchLearnerBase:
                 },
             )
         return self._move_batch(batch, non_blocking=False)
+
+    def _validate_batch_layout(self, batch: TrainingBatch) -> None:
+        if getattr(self, "supports_sequence_training", None) is not False:
+            return
+        configured = batch.metadata.get("sequence_length")
+        rewards_are_sequential = isinstance(batch.rewards, torch.Tensor) and batch.rewards.ndim > 1
+        if (isinstance(configured, int) and configured > 1) or rewards_are_sequential:
+            raise ValueError(f"{type(self).__name__} requires sequence_length=1")
 
     def prepare_batch(self, batch: TrainingBatch) -> TrainingBatch:
         """Pin and stage one batch on a dedicated accelerator transfer stream."""
@@ -294,6 +327,18 @@ class TorchLearnerBase:
         if torch.cuda.is_available():
             state["cuda"] = torch.cuda.get_rng_state_all()
         return state
+
+    def _scaler_state(self) -> dict[str, Any]:
+        if self.scaler is None:
+            raise RuntimeError("Learner setup() must be called before checkpointing")
+        return self.scaler.state_dict()
+
+    def _restore_scaler(self, state: object) -> None:
+        if self.scaler is None:
+            raise RuntimeError("Learner setup() must be called before restoring")
+        if not isinstance(state, Mapping):
+            raise ValueError("checkpoint is missing gradient scaler state")
+        self.scaler.load_state_dict(dict(state))
 
     @staticmethod
     def _restore_rng(state: Mapping[str, Any]) -> None:

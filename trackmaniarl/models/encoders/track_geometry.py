@@ -47,6 +47,16 @@ def _validate_temporal_window(history_length: int, burn_in: int) -> None:
         raise ValueError("burn_in must be in [0, history_length)")
 
 
+def _deterministic_adaptive_mean_pool(value: torch.Tensor, bins: int) -> torch.Tensor:
+    points = value.shape[-1]
+    pooled = []
+    for index in range(bins):
+        start = index * points // bins
+        stop = ((index + 1) * points + bins - 1) // bins
+        pooled.append(value[..., start:stop].mean(dim=-1))
+    return torch.stack(pooled, dim=-1)
+
+
 @dataclass(slots=True)
 class _MambaInferenceState:
     max_seqlen: int
@@ -150,9 +160,7 @@ class TrackGeometryEncoder(nn.Module):
         track_features = (encoded_track * attention.unsqueeze(1)).sum(dim=2)
         features = [track_features]
         if self.spatial_bins:
-            ordered = torch.nn.functional.adaptive_avg_pool1d(
-                encoded_track, self.spatial_bins
-            ).flatten(1)
+            ordered = _deterministic_adaptive_mean_pool(encoded_track, self.spatial_bins).flatten(1)
             features.append(ordered)
         if self.telemetry_dim:
             if telemetry is None or telemetry.shape != (track.shape[0], self.telemetry_dim):

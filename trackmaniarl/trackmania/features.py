@@ -13,7 +13,7 @@ from gymnasium import spaces
 from trackmaniarl.builtins.features import GymnasiumObservationCollator
 from trackmaniarl.core.data import Transition
 from trackmaniarl.trackmania.geometry import BoundaryGeometry
-from trackmaniarl.trackmania.pace import ReferencePaceProfile
+from trackmaniarl.trackmania.pace import ReferencePaceProfile, demonstration_guidance_line
 from trackmaniarl.trackmania.telemetry import DEFAULT_TELEMETRY_FIELD_COUNT
 
 
@@ -133,6 +133,7 @@ class LidarFeaturePipeline:
         history_length: int = 1,
         include_track_relative: bool = False,
         include_control_inputs: bool = True,
+        mask_current_control_inputs: bool = False,
         local_velocity_features: bool = False,
         use_racing_line: bool = False,
         max_speed_mps: float = 80.0,
@@ -165,6 +166,8 @@ class LidarFeaturePipeline:
             raise ValueError("distance and speed scales must be positive")
         if history_length < 1:
             raise ValueError("history_length must be positive")
+        if mask_current_control_inputs and not include_control_inputs:
+            raise ValueError("current control masking requires control inputs")
         path = Path(geometry_path)
         if not path.is_absolute():
             path = (Path(base_dir) / path).resolve()
@@ -174,6 +177,7 @@ class LidarFeaturePipeline:
         self.history_length = history_length
         self.include_track_relative = include_track_relative
         self.include_control_inputs = include_control_inputs
+        self.mask_current_control_inputs = mask_current_control_inputs
         self.local_velocity_features = local_velocity_features
         self.use_racing_line = use_racing_line
         self.max_speed_mps = max_speed_mps
@@ -189,6 +193,7 @@ class LidarFeaturePipeline:
         self.include_dynamics = include_dynamics
         self.include_goal_features = include_goal_features
         self.pace_profile: ReferencePaceProfile | None = None
+        self._expert_guidance_line: np.ndarray | None = None
         if pace_reference_path is not None:
             pace_path = Path(pace_reference_path)
             if not pace_path.is_absolute():
@@ -199,18 +204,17 @@ class LidarFeaturePipeline:
             self.pace_profile = ReferencePaceProfile.from_demonstration(
                 pace_path, self.geometry, reference
             )
+            if include_racing_line_channels:
+                self._expert_guidance_line = demonstration_guidance_line(
+                    pace_path, self.geometry, reference
+                )
         if self.reference_speed_offsets_m and self.pace_profile is None:
             self.reference_speed_offsets_m = ()
         self._reference_line = (
             self.geometry.racing_line if use_racing_line else self.geometry.reward_center
         )
         self._reference_cumulative_distance = self._line_cumulative_distance(self._reference_line)
-        self._lookahead_line = np.concatenate(
-            (
-                self._reference_line,
-                self.geometry.center[self.geometry.recorded_count :],
-            )
-        )
+        self._lookahead_line = self._guidance_lookahead_line()
         self._cumulative_distance = self._geometry_cumulative_distance()
         self._progress_index = 0
         self._last_race_time_ms: float | None = None
@@ -282,12 +286,7 @@ class LidarFeaturePipeline:
             self.geometry.racing_line if self.use_racing_line else self.geometry.reward_center
         )
         self._reference_cumulative_distance = self._line_cumulative_distance(self._reference_line)
-        self._lookahead_line = np.concatenate(
-            (
-                self._reference_line,
-                self.geometry.center[self.geometry.recorded_count :],
-            )
-        )
+        self._lookahead_line = self._guidance_lookahead_line()
         self._cumulative_distance = self._geometry_cumulative_distance()
         self.reset_episode()
 
@@ -408,6 +407,16 @@ class LidarFeaturePipeline:
         cumulative[0] = 0.0
         np.cumsum(distances, out=cumulative[1:])
         return cumulative
+
+    def _guidance_lookahead_line(self) -> np.ndarray:
+        guidance = (
+            self._expert_guidance_line
+            if self._expert_guidance_line is not None
+            else self._reference_line
+        )
+        if len(guidance) != self.geometry.recorded_count:
+            raise ValueError("guidance line length must match recorded geometry")
+        return np.concatenate((guidance, self.geometry.center[self.geometry.recorded_count :]))
 
     def _nearest_progress_index(self, position: np.ndarray, race_time_ms: float) -> int:
         start = max(0, self._progress_index - self.nearest_backward_points)
@@ -596,15 +605,30 @@ class LidarFeaturePipeline:
 
     def _stack_history(self, frame: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
         if self.history_length == 1:
-            return frame
+            return self._mask_current_controls(frame)
         self._history.append(frame)
         frames = [self._history[0]] * (self.history_length - len(self._history)) + list(
             self._history
         )
-        return {
+        stacked = {
             key: torch.stack([item[key] for item in frames])
             for key in ("lidar", "lidar_mask", "telemetry")
         }
+        return self._mask_current_controls(stacked)
+
+    def _mask_current_controls(
+        self, observation: dict[str, torch.Tensor]
+    ) -> dict[str, torch.Tensor]:
+        if not self.mask_current_control_inputs:
+            return observation
+        prepared = dict(observation)
+        telemetry = observation["telemetry"].clone()
+        if self.history_length == 1:
+            telemetry[17:20] = 0.0
+        else:
+            telemetry[-1, 17:20] = 0.0
+        prepared["telemetry"] = telemetry
+        return prepared
 
     def _prepared_shapes(self) -> dict[str, tuple[int, ...]]:
         if self.history_length == 1:
@@ -635,7 +659,7 @@ class LidarFeaturePipeline:
                 raise ValueError(
                     "prepared lidar observation has invalid shape or non-finite values"
                 )
-            return prepared
+            return self._mask_current_controls(prepared)
         values = self._telemetry(observation)
         return self._stack_history(self._frame(values))
 

@@ -4,18 +4,32 @@ For demonstration recording, behavior cloning, DAgger recovery, exact BC
 resume and the required closed-loop gate, see the
 [imitation-learning workflow](imitation-learning.md).
 
-Install the game integration only on a machine that has TrackMania, OpenPlanet,
-the compatible telemetry plugin, and a virtual gamepad driver:
+Install the released CLI, then create the game project only on a machine that
+has Trackmania, Openplanet and a virtual gamepad driver:
 
-```bash
-uv sync
-uv run trackmaniarl init --template trackmania my-agent
+```powershell
+uv tool install "trackmaniarl==2.0.0rc1"
+trackmaniarl init my-agent --template trackmania
 cd my-agent
 uv sync
 uv run trackmaniarl validate run.yaml
-uv run trackmaniarl smoke run.yaml
-uv run trackmaniarl train run.yaml
 ```
+
+In Openplanet's **Plugin Manager**, install the signed
+[**TrackmaniaRL Connect**](https://openplanet.dev/plugin/sac_getdata) plugin
+(identifier `SAC_GetData`) and verify version **2.4.0**. Enable
+[School Mode](https://openplanet.dev/docs/school-mode) on Openplanet 1.26.0 or
+newer, which blocks online play and official leaderboard submissions while the
+plugin is active. Do not copy the bundled developer-reference `.as` file into
+`Scripts` or enable a legacy loose TrackmaniaRL script alongside the managed
+plugin.
+
+<p align="center">
+  <img src="../docs/diagrams/trackmania-integration-preview.svg" alt="Trackmania and signed Openplanet plugin integration boundary" width="900">
+</p>
+
+[Editable integration diagram](../docs/diagrams/trackmania-integration.excalidraw) ·
+[local preview](../docs/diagrams/trackmania-integration-preview.html)
 
 The generated `run.yaml` selects the control device explicitly:
 
@@ -38,8 +52,8 @@ Before starting separate `learner` or `actor` commands, generate one random
 distributed token and store the same value as
 `TRACKMANIARL_DISTRIBUTED_TOKEN` in each project's ignored `.env` file:
 
-```bash
-python -c "import secrets; print(secrets.token_urlsafe(32))"
+```powershell
+uv run python -c "import secrets; print(secrets.token_urlsafe(32))"
 ```
 
 Local `train` and `smoke` still authenticate their actor/learner processes, but
@@ -55,28 +69,37 @@ The generated `.npz` is a structural placeholder only. Before training, record
 the two map boundaries by hand and build a UID-bound asset. Do not reuse an
 asset from another map:
 
-```bash
+```powershell
 uv run trackmaniarl track record-boundary left assets/trackmaniarl-test-left.npy
 uv run trackmaniarl track record-boundary right assets/trackmaniarl-test-right.npy
-uv run trackmaniarl track build-geometry assets/trackmaniarl-test.geometry.npz \
-  --left assets/trackmaniarl-test-left.npy --right assets/trackmaniarl-test-right.npy \
-  --map-uid <trackmaniarl-test-map-uid> --map-path maps/trackmaniarl-test.Map.Gbx
+uv run trackmaniarl track build-geometry assets/trackmaniarl-test.geometry.npz --left assets/trackmaniarl-test-left.npy --right assets/trackmaniarl-test-right.npy --map-uid TRACKMANIARL_TEST_MAP_UID --map-path maps/trackmaniarl-test.Map.Gbx
 ```
 
-Set that same UID in both `feature_pipeline.kwargs.expected_map_uid` and
-`evaluation.maps[].expected_map_uid`. Before a live evaluation, load that local
-`.Map.Gbx` manually in TrackMania. The documented OpenPlanet API exposes the
-active map UID but not a safe API to load an arbitrary local map. The bundled
-plugin's second local command port (default `9001`) therefore verifies the
-already loaded UID before every episode, then confirms an active player after
-the controller reset using protocol version `2`; a timeout, disconnect or UID
-mismatch aborts the run.
+Replace `TRACKMANIARL_TEST_MAP_UID` with the UID reported by `track check` and
+set that same UID in `environment.kwargs.config.expected_map_uid`,
+`feature_pipeline.kwargs.expected_map_uid` and
+`evaluation.maps[].expected_map_uid`. Load that local `.Map.Gbx` manually in
+Trackmania, enter it with a visible vehicle, and run:
+
+```powershell
+uv run trackmaniarl track check --config run.yaml
+uv run trackmaniarl smoke run.yaml --transitions 100
+uv run trackmaniarl train run.yaml
+```
+
+Openplanet does not expose a documented safe API for loading an arbitrary local
+map. The plugin's second localhost port (default `9001`) therefore verifies the
+already loaded UID and protocol before every training, smoke and evaluation
+episode, then confirms a ready local player after controller reset. A timeout,
+disconnect, UID mismatch or readiness rejection terminates the actor with a
+failing process status. The protocol does not expose the plugin package's
+signature or version; verify those properties in Plugin Manager.
 
 The reference baseline is a 78-action dueling IQN (`13` steering levels × `2`
 gas levels × no brake, full brake, or timed brake tap), not TQC. With default
 feature settings, each observation contains 20 normalized telemetry values, a
 `[4, 60]` car-local boundary tensor and a 60-element validity mask, all derived
-from the documented 33-field `TrackmaniaRL_GrabData` packet and the geometry
+from the documented 33-field `SAC_GetData` packet and the geometry
 asset. The four lidar channels are the lateral/forward coordinates of the left
 and right boundaries. The local frame comes from `api.Position` and `vis.Dir`;
 it does not require aim-yaw telemetry. TQC remains an optional example only.
@@ -150,7 +173,7 @@ components:
     kwargs:
       encoder:
         class_path: trackmaniarl.trackmania.encoders:LidarSensorEncoder
-        kwargs: {telemetry_dim: 26, spatial_bins: 12, output_dim: 256}
+        kwargs: {telemetry_dim: 20, spatial_bins: 12, output_dim: 256}
       temporal:
         class_path: trackmaniarl.models.temporal:MambaTemporalCore
         kwargs: {input_dim: 256, backend: auto, d_state: 16, d_conv: 4, expand: 2}
@@ -183,8 +206,15 @@ Every run writes `manifest.json`, versioned `events.jsonl`, compressed episode
 artifacts, checkpoints and study records. Resume a stopped run with:
 
 ```bash
-uv run trackmaniarl resume run.yaml artifacts/<run-id>/checkpoints/distributed-update-XXXXXXXX.pt
+uv run trackmaniarl resume run.yaml artifacts/trackmania-iqn/checkpoints/distributed-update-XXXXXXXX.pt
 ```
+
+Replace `trackmania-iqn` if your `run_id` differs.
+
+W&B is optional. The generated project logs locally until you run
+`uv add "trackmaniarl[trackmania,algorithms,distributed,wandb]"` and add an
+explicit `WandbTracker` under `components.additional_loggers`. Supply
+`WANDB_API_KEY` only through a private environment or ignored `.env` file.
 
 `trackmaniarl smoke` is the required Windows preflight. It collects a bounded number of
 real actions, completes at least one update, verifies a live policy refresh,
@@ -207,3 +237,19 @@ uv run trackmaniarl benchmark run.yaml artifacts/trackmania-iqn-lidar/checkpoint
 The remaining manual release gate is a four-hour Windows soak on the real game,
 with periodic checkpoints and at least one successful `trackmaniarl resume`. A failed
 benchmark or soak blocks release.
+
+## Connection troubleshooting
+
+- **Port 9000 refuses the connection:** keep only signed TrackmaniaRL Connect
+  2.4.0 enabled in Plugin Manager, enable School Mode, and enter the local map.
+- **Port 9000 connects but sends no complete frame:** make sure a local vehicle
+  is visible. The supported plugin waits for real player and vehicle-visual
+  state instead of zero-filling missing fields.
+- **Port 9001, protocol or readiness fails:** reload the managed plugin and
+  return to the local map. Protocol 2 and a ready local player are required.
+- **The active UID differs:** use the UID printed by `track check`, replace all
+  three UID settings, and rebuild geometry from that exact `.Map.Gbx`.
+- **Geometry checksum is missing or different:** re-run `track build-geometry`
+  with `--map-path`; the generated `.npz` is intentionally only a placeholder.
+- **Reset times out:** confirm that the configured `gamepad` or `keyboard`
+  backend actually restarts the race timer before increasing any timeout.

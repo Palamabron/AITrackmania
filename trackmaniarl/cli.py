@@ -24,8 +24,9 @@ import torch
 
 from trackmaniarl.core.contracts import Policy
 from trackmaniarl.core.pytree import sanitize_finite, tree_map, tree_to_device
-from trackmaniarl.core.runtime import prepare_run, resolve_run, validate_resolved_run
+from trackmaniarl.core.runtime import import_symbol, prepare_run, resolve_run, validate_resolved_run
 from trackmaniarl.core.spec import RunSpec, TrainingSpec
+from trackmaniarl.core.training import Trainer
 from trackmaniarl.project.scaffold import create_project
 from trackmaniarl.trackmania.actions import (
     continuous_control_to_discrete_index,
@@ -56,6 +57,7 @@ from trackmaniarl.trackmania.guidance import (
     PhaseLockedDemonstrationPolicy,
     TrajectoryTrackingDemonstrationPolicy,
 )
+from trackmaniarl.trackmania.imitation_learning import RecoveryContract, RecoveryProvenance
 from trackmaniarl.trackmania.pace import ReferencePaceProfile
 from trackmaniarl.trackmania.reward import TrajectoryReward
 from trackmaniarl.trackmania.session import OpenPlanetSessionClient
@@ -101,8 +103,10 @@ def _package_name(value: str) -> str:
 def _init(args: argparse.Namespace) -> None:
     package = _package_name(args.package or Path(args.directory).name)
     target = create_project(args.directory, package, template=args.template)
-    print(f"Created {target}. Install it with: uv sync --directory {target}")
-    print(f"Then run: trackmaniarl validate {target / 'run.yaml'}")
+    print(f"Created {target}")
+    print(f'Next: cd "{target}"')
+    print("      uv sync")
+    print("      uv run trackmaniarl validate run.yaml")
 
 
 def _validate(args: argparse.Namespace) -> None:
@@ -137,19 +141,22 @@ def _load_env_value(config: Path, name: str) -> str | None:
 
 
 def _required_token(config: Path) -> str:
+    from trackmaniarl.distributed.protocol import require_distributed_token
+
     spec = RunSpec.from_yaml(config)
     token = _load_env_value(config, spec.distributed.token_env)
     if not token:
         raise ValueError(
             f"Set {spec.distributed.token_env} in the environment or {config.parent / '.env'}"
         )
-    if len(token) < 32:
+    try:
+        return require_distributed_token(token, name=spec.distributed.token_env)
+    except ValueError as exc:
         raise ValueError(
-            f"{spec.distributed.token_env} must contain at least 32 characters; "
+            f"{exc}; "
             'generate a random token with `python -c "import secrets; '
             'print(secrets.token_urlsafe(32))"`'
-        )
-    return token
+        ) from exc
 
 
 def _spawn_executable() -> str:
@@ -232,15 +239,48 @@ def _resumed_attempt_spec(config: Path, spec: RunSpec, args: argparse.Namespace)
         return spec
     configured = re.fullmatch(r"(?P<base>.+-v\d+)(?P<suffix>[a-z]*)", spec.run_id)
     resumed = re.fullmatch(r"(?P<base>.+-v\d+)(?P<suffix>[a-z]*)", run_dir.name)
-    if configured is None or resumed is None or configured.group("base") != resumed.group("base"):
+    versioned_siblings = (
+        configured is not None
+        and resumed is not None
+        and configured.group("base") == resumed.group("base")
+    )
+    numbered_sibling = run_dir.name.startswith(f"{spec.run_id}-")
+    if run_dir.name != spec.run_id and not versioned_siblings and not numbered_sibling:
         return spec
     if run_dir.name != spec.run_id:
         print(f"Resuming checkpoint run ID {run_dir.name!r}.")
-    return spec.model_copy(update={"run_id": run_dir.name})
+    resumed_spec = spec.model_copy(update={"run_id": run_dir.name})
+    return _restore_warm_start_identity(resumed_spec, run_dir)
+
+
+def _restore_warm_start_identity(spec: RunSpec, run_dir: Path) -> RunSpec:
+    manifest_path = run_dir / "manifest.json"
+    if not manifest_path.is_file():
+        return spec
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    config = manifest.get("config")
+    if not isinstance(config, dict):
+        return spec
+    components = config.get("components")
+    if not isinstance(components, dict):
+        return spec
+    learner = components.get("learner")
+    if not isinstance(learner, dict):
+        return spec
+    kwargs = learner.get("kwargs")
+    initialization = (
+        kwargs.get("model_initialization_checkpoint") if isinstance(kwargs, dict) else None
+    )
+    if (
+        not isinstance(initialization, str)
+        or "model_initialization_checkpoint" in spec.components.learner.kwargs
+    ):
+        return spec
+    return _with_model_initialization_checkpoint(spec, Path(initialization))
 
 
 def _train(args: argparse.Namespace) -> None:
-    """Launch a spawn-safe local learner and actor pair."""
+    """Run the configured local training lifecycle."""
 
     source_config = args.config.resolve()
     configured_spec = RunSpec.from_yaml(source_config)
@@ -252,9 +292,22 @@ def _train(args: argparse.Namespace) -> None:
     )
     spec = _resumed_attempt_spec(source_config, source_spec, args)
     spec = _new_attempt_spec(source_config, spec, args)
+    learner_factory = import_symbol(spec.components.learner.class_path)
+    if bool(getattr(learner_factory, "on_policy", False)):
+        run = resolve_run(spec, base_dir=source_config.parent)
+        try:
+            result = Trainer(run, resume_checkpoint=getattr(args, "checkpoint", None)).train()
+        finally:
+            run.logger.close()
+        print(
+            f"Finished local on-policy run {spec.run_id}: "
+            f"transitions={result.transitions}, updates={result.updates}. "
+            f"Artifacts: {run.run_dir}"
+        )
+        return
     temporary_config: Path | None = None
     config = source_config
-    if spec.run_id != configured_spec.run_id or initialization is not None:
+    if spec != configured_spec:
         temporary_config = source_config.with_name(f".trackmaniarl-{spec.run_id}-{time_ns()}.yaml")
         temporary_config.write_text(spec.to_yaml(), encoding="utf-8")
         config = temporary_config
@@ -522,13 +575,14 @@ def _smoke_training(spec: TrainingSpec, transitions: int) -> TrainingSpec:
             "n_step": n_step,
             "warmup_transitions": ready,
             "updates_per_transition": 1.0,
-            "checkpoint_interval_updates": 25,
+            "checkpoint_interval_updates": transitions,
         }
     )
 
 
 def _restore_smoke_checkpoint(config: Path, spec: RunSpec) -> None:
     from trackmaniarl.distributed.coordinator import Coordinator
+    from trackmaniarl.distributed.protocol import run_fingerprint
 
     checkpoint_dir = config.parent / spec.artifacts_dir / spec.run_id / "checkpoints"
     checkpoints = sorted(checkpoint_dir.glob("distributed-update-*.pt"))
@@ -537,7 +591,12 @@ def _restore_smoke_checkpoint(config: Path, spec: RunSpec) -> None:
     components = spec.components.model_copy(update={"additional_loggers": ()})
     restore_spec = spec.model_copy(update={"components": components})
     run = resolve_run(restore_spec, base_dir=config.parent)
-    coordinator = Coordinator(run, bind="127.0.0.1:8787", token="smoke", fingerprint="smoke")
+    coordinator = Coordinator(
+        run,
+        bind="127.0.0.1:8787",
+        token="trackmaniarl-smoke-checkpoint-token",
+        fingerprint=run_fingerprint(restore_spec, config.parent),
+    )
     try:
         run.learner.setup(
             {
@@ -590,7 +649,7 @@ def _trackmania_factory(config_path: Path) -> OpenPlanetEnvironmentFactory:
     component = spec.components.environment
     expected = "trackmaniarl.trackmania.environment:OpenPlanetEnvironmentFactory"
     if component is None or component.class_path != expected:
-        raise ValueError("record-demo requires the first-party TrackMania environment")
+        raise ValueError("command requires the first-party TrackMania environment")
     return OpenPlanetEnvironmentFactory(**component.kwargs, base_dir=config_path.parent)
 
 
@@ -669,23 +728,50 @@ def _build_geometry(args: argparse.Namespace) -> None:
 
 
 def _check_track_connection(args: argparse.Namespace) -> None:
-    """Verify that the installed OpenPlanet plugin is emitting compatible telemetry."""
+    """Verify the telemetry schema and local map-readiness session together."""
 
-    client = OpenPlanetClient(
-        args.host, args.port, field_count=args.field_count, timeout_s=args.timeout
-    )
+    client: OpenPlanetClient | None = None
     try:
-        frame = client.read()
-    except ConnectionError as error:
-        print(f"OpenPlanet telemetry check failed: {error}", file=sys.stderr)
-        raise SystemExit(1) from error
+        client = OpenPlanetClient(
+            args.host,
+            args.port,
+            field_count=DEFAULT_TELEMETRY_FIELD_COUNT,
+            timeout_s=args.timeout,
+        )
+        frames = [client.read() for _ in range(3)]
+        session = OpenPlanetSessionClient(args.host, args.session_port, timeout_s=args.timeout)
+        active = session.inspect_loaded_map()
+        expected_map_uid = active.map_uid
+        if args.config is not None:
+            configured = _trackmania_factory(args.config.resolve()).config.expected_map_uid
+            expected_map_uid = (configured or "").strip()
+            placeholder = expected_map_uid.startswith("REPLACE_") or (
+                expected_map_uid.startswith("<") and expected_map_uid.endswith(">")
+            )
+            if not expected_map_uid or placeholder:
+                raise ValueError(
+                    "config still contains an expected_map_uid placeholder; active map UID is "
+                    f"{active.map_uid!r}"
+                )
+            if active.map_uid != expected_map_uid:
+                raise ValueError(
+                    "active map UID does not match config: "
+                    f"expected {expected_map_uid!r}, got {active.map_uid!r}"
+                )
+        session.confirm_ready(expected_map_uid)
+    except (ConnectionError, TimeoutError, OSError, ValueError, RuntimeError) as error:
+        print(f"Trackmania/Openplanet check failed: {error}", file=sys.stderr)
+        raise SystemExit(1) from None
     finally:
-        client.close()
-    position = frame.values[4:7].tolist() if args.field_count >= 7 else None
-    finished = bool(frame.values[2]) if args.field_count >= 3 else "n/a"
-    race_time = float(frame.values[3]) if args.field_count >= 4 else "n/a"
+        if client is not None:
+            client.close()
+    frame = frames[-1]
+    position = frame.values[4:7].tolist()
+    finished = bool(frame.values[2])
+    race_time = float(frame.values[3])
     print(
-        f"OpenPlanet telemetry OK: {args.field_count} float32 fields; "
+        "Trackmania/Openplanet OK: telemetry_schema=33 float32; frames=3; "
+        f"session_protocol={active.protocol_version}; map_uid={active.map_uid!r}; ready=true; "
         f"position={position}; finished={finished}; race_time_ms={race_time}"
     )
 
@@ -725,7 +811,11 @@ def _benchmark(args: argparse.Namespace) -> None:
         )
         checkpoint = run.checkpoint_codec.load(args.checkpoint)
         learner_state = checkpoint.get("learner", checkpoint)
-        run.learner.load_state_dict(learner_state)
+        load_policy_state = getattr(run.learner, "load_policy_state_dict", None)
+        if callable(load_policy_state):
+            load_policy_state(learner_state)
+        else:
+            run.learner.load_state_dict(learner_state)
         set_checkpoint = getattr(run.evaluator, "set_checkpoint", None)
         if callable(set_checkpoint):
             set_checkpoint(args.checkpoint)
@@ -788,16 +878,44 @@ def _demo_benchmark(args: argparse.Namespace) -> None:
         spec = spec.model_copy(update={"evaluation": evaluation})
     if evaluation.target_median_s is None:
         raise ValueError("demo-benchmark requires evaluation.target_median_s")
+    environment_component = spec.components.environment
+    environment_kwargs = {} if environment_component is None else environment_component.kwargs
+    configured_environment = environment_kwargs.get("config", {})
+    open_loop_replay = not args.trajectory_tracking and not args.phase_locked
+    configured_interval = configured_environment.get("decision_interval_ms")
+    configured_action_lead_ms = float(
+        configured_environment.get("demonstration_action_lead_ms", 0.0)
+    )
+    effective_action_lead_ms = (
+        configured_action_lead_ms if args.action_lead_ms is None else float(args.action_lead_ms)
+    )
+    replay_interval_ms = (
+        float(configured_interval) if open_loop_replay and configured_interval is not None else None
+    )
+    replay_action_lead_ms = effective_action_lead_ms if open_loop_replay else 0.0
+    aggregate_replay = bool(
+        open_loop_replay and configured_environment.get("demonstration_control_aggregation", False)
+    )
     if not args.phase_locked:
         demonstration = load_demonstration(args.demo)
-        interval_ms = demonstration.decision_interval_ms
-        if args.trajectory_tracking or (
-            interval_ms is None and demonstration.action_repeat_frames == 1
+        interval_ms = (
+            replay_interval_ms
+            if open_loop_replay and replay_interval_ms is not None
+            else demonstration.decision_interval_ms
+        )
+        if aggregate_replay and interval_ms is None:
+            raise ValueError("aggregated demo replay requires environment decision_interval_ms")
+        if (
+            aggregate_replay
+            or args.trajectory_tracking
+            or (interval_ms is None and demonstration.action_repeat_frames == 1)
         ):
             validate_recording_quality(demonstration)
-            interval_ms = demonstration_timing_summary(demonstration)["interval_median_ms"]
+            if not aggregate_replay:
+                interval_ms = demonstration_timing_summary(demonstration)["interval_median_ms"]
         if interval_ms is not None:
-            spec = _with_environment_decision_interval(spec, interval_ms)
+            if not open_loop_replay or replay_interval_ms is None:
+                spec = _with_environment_decision_interval(spec, interval_ms)
             mode = "Trajectory tracking" if args.trajectory_tracking else "Open-loop replay"
             print(f"{mode} interval: {interval_ms:.3f} ms")
     run = resolve_run(spec, base_dir=Path(args.config).parent)
@@ -854,18 +972,27 @@ def _demo_benchmark(args: argparse.Namespace) -> None:
                 run.feature_pipeline,
                 tuple(action_ids),
                 environment_config.decision_interval_ms,
+                action_lead_ms=effective_action_lead_ms,
             )
         else:
             policy = DemonstrationReplayPolicy.from_path(
-                args.demo, action_ids, action_offset_ms=args.action_offset_ms
+                args.demo,
+                action_ids,
+                action_offset_ms=args.action_offset_ms,
+                decision_interval_ms=replay_interval_ms,
+                action_lead_ms=replay_action_lead_ms,
+                aggregate_controls=aggregate_replay,
             )
             print(
                 "Open-loop action timing: "
                 f"alignment={demonstration.control_alignment}, "
-                f"offset={args.action_offset_ms:+.1f} ms"
+                f"offset={args.action_offset_ms:+.1f} ms, "
+                f"lead={replay_action_lead_ms:+.1f} ms, "
+                f"aggregate_controls={aggregate_replay}"
             )
         run.evaluator.set_checkpoint(args.demo)
         metrics = dict(run.evaluator.evaluate(policy))
+        run.logger.log("eval/summary", metrics, step=0)
         artifact = json.loads((run.run_dir / "evaluation.json").read_text(encoding="utf-8"))
     finally:
         run.logger.close()
@@ -947,7 +1074,20 @@ def _trajectory_stitch(args: argparse.Namespace) -> None:
 
 
 def _trajectory_synthetic_recovery(args: argparse.Namespace) -> None:
-    spec = RunSpec.from_yaml(args.config.resolve())
+    config_path = args.config.resolve()
+    spec = RunSpec.from_yaml(config_path)
+    factory = _trackmania_factory(config_path)
+    environment_config = factory.config
+    geometry_path = environment_config.geometry_path
+    if geometry_path is None:
+        raise ValueError("trajectory-synthetic-recovery requires environment.geometry_path")
+    geometry = BoundaryGeometry(
+        geometry_path,
+        expected_map_uid=environment_config.expected_map_uid,
+    )
+    demonstration = load_demonstration(args.demo)
+    validate_recording_quality(demonstration)
+    validate_demonstration(demonstration, environment_config, geometry)
     dataset = generate_synthetic_recovery_from_path(
         args.demo,
         _compact_action_ids(spec),
@@ -955,6 +1095,8 @@ def _trajectory_synthetic_recovery(args: argparse.Namespace) -> None:
             sample_stride=args.sample_stride,
             action_lead_ms=args.action_lead_ms,
         ),
+        contract=_recovery_contract(environment_config, geometry),
+        aggregate_controls=environment_config.demonstration_control_aggregation,
     )
     output = dataset.save(args.output.resolve())
     print(
@@ -1233,6 +1375,19 @@ def _raw_q_values(model: Any, device: torch.device, observation: Any, learner: A
     return cast(torch.Tensor, values).squeeze(0).float().cpu()
 
 
+def _recovery_contract(
+    config: TrackmaniaEnvironmentConfig,
+    geometry: BoundaryGeometry,
+) -> RecoveryContract:
+    return RecoveryContract(
+        map_uid=geometry.map_uid,
+        geometry_sha256=geometry.sha256,
+        action_repeat_frames=config.action_repeat_frames,
+        decision_interval_ms=config.decision_interval_ms,
+        control_alignment="frame_start",
+    )
+
+
 def _bc_train(args: argparse.Namespace) -> None:
     from trackmaniarl.trackmania.imitation_learning import (
         augment_behavior_cloning_laps,
@@ -1255,16 +1410,23 @@ def _bc_train(args: argparse.Namespace) -> None:
             raise ValueError(
                 "model action_ids must exactly match environment.config.compact_action_ids"
             )
-        if bool(getattr(run.feature_pipeline, "include_control_inputs", True)):
-            raise ValueError(
-                "behavior cloning must exclude control inputs to prevent target leakage"
-            )
-        environment_config = spec.components.environment
-        assert environment_config is not None
-        action_repeat_frames = int(
-            environment_config.kwargs.get("config", {}).get("action_repeat_frames", 1)
+        include_control_inputs = bool(getattr(run.feature_pipeline, "include_control_inputs", True))
+        mask_current_control_inputs = bool(
+            getattr(run.feature_pipeline, "mask_current_control_inputs", False)
         )
-        decision_interval = environment_config.kwargs.get("config", {}).get("decision_interval_ms")
+        if include_control_inputs and not mask_current_control_inputs:
+            raise ValueError(
+                "behavior cloning control inputs require mask_current_control_inputs=true "
+                "to prevent target leakage"
+            )
+        environment_factory = run.environment_factory
+        if not isinstance(environment_factory, OpenPlanetEnvironmentFactory):
+            raise ValueError("behavior cloning requires OpenPlanetEnvironmentFactory")
+        environment_config = environment_factory.config
+        action_repeat_frames = environment_config.action_repeat_frames
+        decision_interval = environment_config.decision_interval_ms
+        action_lead_ms = environment_config.demonstration_action_lead_ms
+        aggregate_controls = environment_config.demonstration_control_aggregation
         laps = load_behavior_cloning_laps(
             paths,
             run.feature_pipeline,
@@ -1273,15 +1435,28 @@ def _bc_train(args: argparse.Namespace) -> None:
             expected_decision_interval_ms=(
                 None if decision_interval is None else float(decision_interval)
             ),
+            action_lead_ms=action_lead_ms,
+            aggregate_controls=aggregate_controls,
             previous_action_conditioning=bool(model.previous_action_conditioning),
         )
         train_laps, validation_laps = split_behavior_cloning_laps(laps, spec.seed)
         recovery_paths = tuple(Path(path).resolve() for path in getattr(args, "recovery", ()))
         if recovery_paths:
+            geometry = getattr(run.feature_pipeline, "geometry", None)
+            if not isinstance(geometry, BoundaryGeometry):
+                raise ValueError("behavior-cloning recovery requires a feature geometry")
+            source_hashes = frozenset(
+                RecoveryProvenance.from_demonstration(
+                    load_demonstration(path)
+                ).source_demonstration_sha256
+                for path in paths
+            )
             recovery_laps = load_behavior_cloning_recovery(
                 recovery_paths,
                 run.feature_pipeline,
                 action_ids,
+                expected_contract=_recovery_contract(environment_config, geometry),
+                expected_source_demonstration_sha256=source_hashes,
                 previous_action_conditioning=bool(model.previous_action_conditioning),
             )
             if len(recovery_laps) < 3:
@@ -1474,6 +1649,14 @@ def _dagger_collect(args: argparse.Namespace) -> None:
             np.asarray(labels, dtype=np.int64),
             np.asarray(episode_starts, dtype=np.bool_),
             tuple(action_ids),
+            provenance=RecoveryProvenance.from_demonstration(
+                teacher_demonstration,
+                contract=_recovery_contract(
+                    environment_config,
+                    run.feature_pipeline.geometry,
+                ),
+                source_checkpoint_sha256=_file_sha256(Path(args.checkpoint)),
+            ),
             sample_weights=np.asarray(sample_weights, dtype=np.float32),
             student_actions=np.asarray(student_actions, dtype=np.int64),
             interventions=np.asarray(interventions, dtype=np.bool_),
@@ -1591,7 +1774,7 @@ def _train_behavior_cloning(
     del train_observations, validation_observations
     weights = class_weights(
         train_labels,
-        learner.model.head.out_features,
+        learner.model.action_count,
         power=learner.class_weight_power,
     )
     generator = torch.Generator().manual_seed(run.spec.seed)
@@ -1713,7 +1896,7 @@ def _validate_behavior_cloning(
     weighted_correct = sample_weight_total = 0.0
     intervention_correct = intervention_total = 0
     disagreement_correct = disagreement_total = 0
-    action_count = run.learner.model.head.out_features
+    action_count = run.learner.model.action_count
     per_action_correct = torch.zeros(action_count, dtype=torch.long)
     per_action_count = torch.zeros(action_count, dtype=torch.long)
     for start in range(0, len(labels), run.spec.training.batch_size):
@@ -1813,7 +1996,24 @@ def _validate_behavior_cloning(
 def _bc_benchmark(args: argparse.Namespace) -> None:
     if args.trials < 1:
         raise ValueError("bc-benchmark --trials must be positive")
+    minimum_action_hold_steps = getattr(args, "minimum_action_hold_steps", None)
+    if minimum_action_hold_steps is not None and minimum_action_hold_steps < 1:
+        raise ValueError("bc-benchmark --minimum-action-hold-steps must be positive")
     spec = RunSpec.from_yaml(args.config)
+    if minimum_action_hold_steps is not None:
+        model_factory = spec.components.model_factory
+        if model_factory is None:
+            raise ValueError("bc-benchmark action hold override requires components.model_factory")
+        model_factory = model_factory.model_copy(
+            update={
+                "kwargs": {
+                    **model_factory.kwargs,
+                    "minimum_action_hold_steps": minimum_action_hold_steps,
+                }
+            }
+        )
+        components = spec.components.model_copy(update={"model_factory": model_factory})
+        spec = spec.model_copy(update={"components": components})
     if spec.evaluation is None or not spec.evaluation.maps:
         raise ValueError("bc-benchmark requires an evaluation suite with at least one map")
     suite = spec.evaluation.model_copy(update={"trials_per_map": args.trials})
@@ -1831,21 +2031,27 @@ def _bc_benchmark(args: argparse.Namespace) -> None:
         if callable(set_checkpoint):
             set_checkpoint(args.checkpoint)
         metrics = dict(run.evaluator.evaluate(run.learner.policy()))
+        run.logger.log("eval/summary", metrics, step=0)
         artifact = json.loads((run.run_dir / "evaluation.json").read_text(encoding="utf-8"))
     finally:
         run.logger.close()
     _print_benchmark_report(artifact["trials"], metrics)
-    _print_bc_rollout_gate(artifact["trials"], metrics, suite)
+    gate_passed = _print_bc_rollout_gate(artifact["trials"], metrics, suite)
+    if not gate_passed and getattr(args, "report_only", False):
+        print("BC rollout gate failed; --report-only keeps the diagnostic run successful")
+        return
+    if not gate_passed:
+        raise RuntimeError("behavior-cloning rollout failed the configured release gate")
 
 
 def _print_bc_rollout_gate(
     trials: list[dict[str, Any]], metrics: dict[str, float], suite: Any
-) -> None:
+) -> bool:
     completed = [trial for trial in trials if trial["finished"]]
     target_median_s = suite.target_median_s
     if target_median_s is None:
         print("BC rollout gate: no target_median_s configured")
-        return
+        return False
     required_finishes = ceil(suite.min_finish_rate * len(trials))
     faster_than_target = [
         trial for trial in completed if float(trial["finish_time_s"]) < target_median_s
@@ -1858,6 +2064,7 @@ def _print_bc_rollout_gate(
         f"finishes={len(completed)}/{len(trials)}, under_target={len(faster_than_target)}, "
         f"target={target_median_s:.3f}s, median={median:.3f}s"
     )
+    return full_success
 
 
 def _print_benchmark_report(trials: list[dict[str, Any]], metrics: dict[str, float]) -> None:
@@ -2139,6 +2346,16 @@ def entrypoint(argv: list[str] | None = None) -> None:
     bc_benchmark.add_argument("config", type=Path)
     bc_benchmark.add_argument("checkpoint", type=Path)
     bc_benchmark.add_argument("--trials", type=int, default=30)
+    bc_benchmark.add_argument(
+        "--report-only",
+        action="store_true",
+        help="report a failed rollout gate without returning a failing process exit code",
+    )
+    bc_benchmark.add_argument(
+        "--minimum-action-hold-steps",
+        type=int,
+        help="override the BC policy's minimum action duration for this benchmark",
+    )
     bc_benchmark.set_defaults(handler=_bc_benchmark)
     dagger = commands.add_parser(
         "dagger-collect",
@@ -2223,12 +2440,17 @@ def entrypoint(argv: list[str] | None = None) -> None:
     )
     geometry.set_defaults(handler=_build_geometry)
     check = track_commands.add_parser(
-        "check", help="verify that OpenPlanet is emitting one compatible telemetry frame"
+        "check", help="verify Openplanet telemetry, protocol, active map, and readiness"
     )
     check.add_argument("--host", default="127.0.0.1")
     check.add_argument("--port", type=int, default=9000)
-    check.add_argument("--field-count", type=int, default=DEFAULT_TELEMETRY_FIELD_COUNT)
+    check.add_argument("--session-port", type=int, default=9001)
     check.add_argument("--timeout", type=float, default=5.0)
+    check.add_argument(
+        "--config",
+        type=Path,
+        help="also require the active map UID to match a first-party run.yaml",
+    )
     check.set_defaults(handler=_check_track_connection)
     args = parser.parse_args(argv)
     args.handler(args)

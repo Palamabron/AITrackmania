@@ -1,0 +1,86 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="1040" viewBox="0 0 1200 1040">
+<defs><marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="context-stroke"/></marker><filter id="shadow" x="-20%" y="-20%" width="140%" height="140%"><feDropShadow dx="0" dy="2" stdDeviation="3" flood-opacity=".14"/></filter></defs>
+<rect width="100%" height="100%" fill="#ffffff"/>
+<text x="55" y="61" text-anchor="start" font-family="Inter,Arial,sans-serif" font-size="32" fill="#111827"><tspan x="55" dy="0">Checkpoint and resume cycle</tspan></text>
+<text x="55" y="99" text-anchor="start" font-family="Inter,Arial,sans-serif" font-size="18" fill="#64748b"><tspan x="55" dy="0">Resume is exact-state recovery, not warm-start: checkpoint identity and the remaining WAL must describe one</tspan><tspan x="55" dy="22.5">continuous durable history.</tspan></text>
+<rect x="40" y="145" width="1120" height="155" rx="14" fill="#dbeafe" fill-opacity=".35" stroke="#1864ab" stroke-width="1.5" stroke-dasharray="8 7"/>
+<text x="58" y="174" text-anchor="start" font-family="Inter,Arial,sans-serif" font-size="19" fill="#1864ab"><tspan x="58" dy="0">Immutable run identity</tspan></text>
+<rect x="40" y="335" width="360" height="485" rx="14" fill="#ede9fe" fill-opacity=".35" stroke="#7048e8" stroke-width="1.5" stroke-dasharray="8 7"/>
+<text x="58" y="364" text-anchor="start" font-family="Inter,Arial,sans-serif" font-size="19" fill="#7048e8"><tspan x="58" dy="0">Running attempt</tspan></text>
+<rect x="430" y="335" width="330" height="485" rx="14" fill="#ffedd5" fill-opacity=".35" stroke="#d97706" stroke-width="1.5" stroke-dasharray="8 7"/>
+<text x="448" y="364" text-anchor="start" font-family="Inter,Arial,sans-serif" font-size="19" fill="#d97706"><tspan x="448" dy="0">Durable persistence</tspan></text>
+<rect x="790" y="335" width="370" height="485" rx="14" fill="#dcfce7" fill-opacity=".35" stroke="#2b8a3e" stroke-width="1.5" stroke-dasharray="8 7"/>
+<text x="808" y="364" text-anchor="start" font-family="Inter,Arial,sans-serif" font-size="19" fill="#2b8a3e"><tspan x="808" dy="0">Resume gate</tspan></text>
+<polyline points="355,232.5 465,232.5" fill="none" stroke="#1864ab" stroke-width="2.5" marker-end="url(#arrow)"/>
+<rect x="322.0" y="192.5" width="176" height="25" rx="5" fill="#ffffff" fill-opacity=".92"/>
+<text x="410.0" y="209.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#1864ab"><tspan x="410.0" dy="0">fingerprint</tspan></text>
+<polyline points="735,232.5 850,232.5" fill="none" stroke="#c92a2a" stroke-width="2.5" marker-end="url(#arrow)"/>
+<rect x="704.5" y="192.5" width="176" height="25" rx="5" fill="#ffffff" fill-opacity=".92"/>
+<text x="792.5" y="209.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#c92a2a"><tspan x="792.5" dy="0">bind</tspan></text>
+<polyline points="985,275 985,315 55,315 55,455 75,455" fill="none" stroke="#2b8a3e" stroke-width="2.5" marker-end="url(#arrow)"/>
+<rect x="122" y="293" width="176" height="25" rx="5" fill="#ffffff" fill-opacity=".92"/>
+<text x="210.0" y="310" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#2b8a3e"><tspan x="210.0" dy="0">launch</tspan></text>
+<polyline points="1120,232 1175,232 1175,455 1120,455" fill="none" stroke="#2b8a3e" stroke-width="2.5" marker-end="url(#arrow)"/>
+<polyline points="365,455.0 465,455.0" fill="none" stroke="#d97706" stroke-width="2.5" marker-end="url(#arrow)"/>
+<rect x="327.0" y="415.0" width="176" height="25" rx="5" fill="#ffffff" fill-opacity=".92"/>
+<text x="415.0" y="432.0" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#d97706"><tspan x="415.0" dy="0">append</tspan></text>
+<polyline points="220,510 220,575" fill="none" stroke="#1864ab" stroke-width="2.5" marker-end="url(#arrow)"/>
+<rect x="212" y="533" width="176" height="25" rx="5" fill="#ffffff" fill-opacity=".92"/>
+<text x="300.0" y="550" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#1864ab"><tspan x="300.0" dy="0">checkpoint</tspan><tspan x="300.0" dy="22.5">barrier</tspan></text>
+<polyline points="365,625.0 465,625.0" fill="none" stroke="#1864ab" stroke-width="2.5" marker-end="url(#arrow)"/>
+<rect x="327.0" y="585.0" width="176" height="25" rx="5" fill="#ffffff" fill-opacity=".92"/>
+<text x="415.0" y="602.0" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#1864ab"><tspan x="415.0" dy="0">snapshot</tspan></text>
+<polyline points="595,675 595,720" fill="none" stroke="#d97706" stroke-width="2.5" marker-end="url(#arrow)"/>
+<polyline points="465,760 440,760 440,535 595,535 595,510" fill="none" stroke="#d97706" stroke-width="2.5" stroke-dasharray="8 7" marker-end="url(#arrow)"/>
+<rect x="477" y="513" width="176" height="25" rx="5" fill="#ffffff" fill-opacity=".92"/>
+<text x="565.0" y="530" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#d97706"><tspan x="565.0" dy="0">after save: prune</tspan><tspan x="565.0" dy="22.5">≤ frontier</tspan></text>
+<polyline points="120,510 120,720" fill="none" stroke="#c92a2a" stroke-width="2.5" stroke-dasharray="8 7" marker-end="url(#arrow)"/>
+<polyline points="725,455.0 830,455.0" fill="none" stroke="#d97706" stroke-width="2.5" marker-end="url(#arrow)"/>
+<rect x="689.5" y="415.0" width="176" height="25" rx="5" fill="#ffffff" fill-opacity=".92"/>
+<text x="777.5" y="432.0" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#d97706"><tspan x="777.5" dy="0">recover</tspan></text>
+<polyline points="725,760 775,760 775,455 830,455" fill="none" stroke="#1864ab" stroke-width="2.5" marker-end="url(#arrow)"/>
+<polyline points="975,510 975,575" fill="none" stroke="#2b8a3e" stroke-width="2.5" marker-end="url(#arrow)"/>
+<rect x="952" y="533" width="176" height="25" rx="5" fill="#ffffff" fill-opacity=".92"/>
+<text x="1040.0" y="550" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#2b8a3e"><tspan x="1040.0" dy="0">pass only</tspan></text>
+<polyline points="975,675 975,720" fill="none" stroke="#2b8a3e" stroke-width="2.5" marker-end="url(#arrow)"/>
+<rect x="80" y="190" width="275" height="85" rx="12" fill="#dbeafe" stroke="#1864ab" stroke-width="2.5" filter="url(#shadow)"/>
+<text x="217.5" y="217" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="20" fill="#111827"><tspan x="217.5" dy="0">RunSpec + manifest</tspan></text>
+<text x="217.5" y="245" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#475569"><tspan x="217.5" dy="0">architecture · contracts</tspan><tspan x="217.5" dy="22.5">· seeds</tspan></text>
+<rect x="465" y="190" width="270" height="85" rx="12" fill="#fee2e2" stroke="#c92a2a" stroke-width="2.5" filter="url(#shadow)"/>
+<text x="600.0" y="217" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="20" fill="#111827"><tspan x="600.0" dy="0">Persistence identity</tspan></text>
+<text x="600.0" y="245" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#475569"><tspan x="600.0" dy="0">run fingerprint ·</tspan><tspan x="600.0" dy="22.5">journal ID</tspan></text>
+<rect x="850" y="190" width="270" height="85" rx="12" fill="#dcfce7" stroke="#2b8a3e" stroke-width="2.5" filter="url(#shadow)"/>
+<text x="985.0" y="226.25" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="20" fill="#111827"><tspan x="985.0" dy="0">Start or resume</tspan></text>
+<text x="985.0" y="254.25" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#475569"><tspan x="985.0" dy="0">new attempt segment</tspan></text>
+<rect x="75" y="400" width="290" height="110" rx="12" fill="#ede9fe" stroke="#7048e8" stroke-width="2.5" filter="url(#shadow)"/>
+<text x="220.0" y="448.75" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="20" fill="#111827"><tspan x="220.0" dy="0">Learner + replay</tspan></text>
+<text x="220.0" y="476.75" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#475569"><tspan x="220.0" dy="0">replay · optimizer · RNG</tspan></text>
+<rect x="75" y="575" width="290" height="100" rx="12" fill="#dbeafe" stroke="#1864ab" stroke-width="2.5" filter="url(#shadow)"/>
+<text x="220.0" y="607.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="20" fill="#111827"><tspan x="220.0" dy="0">Coherent capture</tspan></text>
+<text x="220.0" y="635.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#475569"><tspan x="220.0" dy="0">state + applied WAL</tspan><tspan x="220.0" dy="22.5">frontier</tspan></text>
+<polygon points="220.0,720 340,760.0 220.0,800 100,760.0" fill="#fee2e2" stroke="#c92a2a" stroke-width="2.5" filter="url(#shadow)"/>
+<text x="220.0" y="753.75" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="20" fill="#111827"><tspan x="220.0" dy="0">Stop or crash</tspan></text>
+<text x="220.0" y="781.75" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#475569"><tspan x="220.0" dy="0">at any point</tspan></text>
+<rect x="465" y="400" width="260" height="110" rx="12" fill="#ffedd5" stroke="#d97706" stroke-width="2.5" filter="url(#shadow)"/>
+<text x="595.0" y="437.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="20" fill="#111827"><tspan x="595.0" dy="0">SQLite WAL</tspan></text>
+<text x="595.0" y="465.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#475569"><tspan x="595.0" dy="0">accepted rows beyond</tspan><tspan x="595.0" dy="22.5">checkpoint</tspan></text>
+<rect x="465" y="575" width="260" height="100" rx="12" fill="#ffedd5" stroke="#d97706" stroke-width="2.5" filter="url(#shadow)"/>
+<text x="595.0" y="607.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="20" fill="#111827"><tspan x="595.0" dy="0">Durable write</tspan></text>
+<text x="595.0" y="635.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#475569"><tspan x="595.0" dy="0">temporary → fsync →</tspan><tspan x="595.0" dy="22.5">replace</tspan></text>
+<rect x="465" y="720" width="260" height="80" rx="12" fill="#dbeafe" stroke="#1864ab" stroke-width="2.5" filter="url(#shadow)"/>
+<text x="595.0" y="747" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="20" fill="#111827"><tspan x="595.0" dy="0">Checkpoint 2.0</tspan></text>
+<text x="595.0" y="775" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#475569"><tspan x="595.0" dy="0">complete state +</tspan><tspan x="595.0" dy="22.5">identity + frontier</tspan></text>
+<rect x="830" y="400" width="290" height="110" rx="12" fill="#fee2e2" stroke="#c92a2a" stroke-width="2.5" filter="url(#shadow)"/>
+<text x="975.0" y="437.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="20" fill="#111827"><tspan x="975.0" dy="0">Validate recovery set</tspan></text>
+<text x="975.0" y="465.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#475569"><tspan x="975.0" dy="0">schema · fingerprint ·</tspan><tspan x="975.0" dy="22.5">journal · prune floor</tspan></text>
+<rect x="830" y="575" width="290" height="100" rx="12" fill="#dcfce7" stroke="#2b8a3e" stroke-width="2.5" filter="url(#shadow)"/>
+<text x="975.0" y="618.75" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="20" fill="#111827"><tspan x="975.0" dy="0">Restore exact state</tspan></text>
+<text x="975.0" y="646.75" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#475569"><tspan x="975.0" dy="0">replay WAL rows by ID</tspan></text>
+<rect x="830" y="720" width="290" height="80" rx="12" fill="#dcfce7" stroke="#2b8a3e" stroke-width="2.5" filter="url(#shadow)"/>
+<text x="975.0" y="753.75" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="20" fill="#111827"><tspan x="975.0" dy="0">Resumed attempt</tspan></text>
+<text x="975.0" y="781.75" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#475569"><tspan x="975.0" dy="0">new run segment</tspan></text>
+<rect x="80" y="875" width="1040" height="60" rx="10" fill="#fee2e2" stroke="#c92a2a" stroke-width="1.5"/>
+<text x="94" y="906" text-anchor="start" font-family="Inter,Arial,sans-serif" font-size="18" fill="#1f2937"><tspan x="94" dy="0">Fail closed: reject a foreign journal or a checkpoint frontier older than the journal&#x27;s durable prune</tspan><tspan x="94" dy="22.5">floor.</tspan></text>
+<rect x="80" y="955" width="1040" height="58" rx="10" fill="#f1f5f9" stroke="#475569" stroke-width="1.5"/>
+<text x="94" y="986" text-anchor="start" font-family="Inter,Arial,sans-serif" font-size="18" fill="#1f2937"><tspan x="94" dy="0">Warm-start copies reviewed model tensors only; it never restores replay, optimizer, RNG, counters or</tspan><tspan x="94" dy="22.5">WAL identity.</tspan></text>
+</svg>

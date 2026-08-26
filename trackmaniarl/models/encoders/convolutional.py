@@ -11,8 +11,8 @@ from torch import nn
 class ConvolutionalSensorEncoder(nn.Module):
     def __init__(self, channels: int, output_dim: int, hidden_dim: int = 128) -> None:
         super().__init__()
-        if min(channels, output_dim, hidden_dim) < 1:
-            raise ValueError("encoder dimensions must be positive")
+        if channels < 1 or output_dim < 1 or hidden_dim < 2:
+            raise ValueError("encoder dimensions must be positive and hidden_dim at least two")
         self.channels = channels
         self.output_dim = output_dim
         self.convolution = nn.Sequential(

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from itertools import pairwise
 from pathlib import Path
 from time import monotonic, sleep
 from typing import Protocol
@@ -13,6 +14,9 @@ import numpy as np
 from trackmaniarl.core.contracts import FeaturePipeline
 from trackmaniarl.core.data import Transition
 from trackmaniarl.trackmania.actions import (
+    BRAKE_TAP_DURATION_S,
+    BRAKE_TAP_SENTINEL,
+    BRAKE_TAP_TABLE_N_STEER,
     build_brake_tap_action_table,
     continuous_control_to_discrete_index,
     continuous_control_to_discrete_indices_batch,
@@ -202,7 +206,7 @@ def _control(frame: TelemetryFrame) -> np.ndarray:
         [
             np.clip(values[0], 0.0, 1.0),
             np.clip(values[1], 0.0, 1.0),
-            -np.clip(values[2], -1.0, 1.0),
+            np.clip(values[2], -1.0, 1.0),
         ],
         dtype=np.float32,
     )
@@ -544,7 +548,12 @@ def demonstration_transitions(
 ) -> list[Transition]:
     demo = load_demonstration(path)
     validate_demonstration(demo, config, geometry)
-    frames, actions = resample_demonstration(demo, config.decision_interval_ms)
+    frames, actions = resample_demonstration(
+        demo,
+        config.decision_interval_ms,
+        action_lead_ms=config.demonstration_action_lead_ms,
+        aggregate_controls=config.demonstration_control_aggregation,
+    )
     reward = _reward(config, geometry, demonstration_steps=len(actions))
     reset_pipeline = getattr(pipeline, "reset_episode", None)
     if callable(reset_pipeline):
@@ -599,17 +608,107 @@ def demonstration_transitions(
 
 
 def resample_demonstration(
-    demonstration: Demonstration, decision_interval_ms: float | None
+    demonstration: Demonstration,
+    decision_interval_ms: float | None,
+    *,
+    action_lead_ms: float = 0.0,
+    aggregate_controls: bool = False,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Select transitions on the physical decision-time grid used online."""
 
-    if decision_interval_ms is None:
-        return demonstration.frames, demonstration.actions
+    if not np.isfinite(action_lead_ms) or action_lead_ms < 0.0:
+        raise ValueError("demonstration action lead must be finite and non-negative")
     race_times = demonstration.frames[:, 3]
-    indices = [0]
-    while indices[-1] < len(demonstration.actions):
-        target = float(race_times[indices[-1]]) + decision_interval_ms
-        candidate = int(np.searchsorted(race_times, target, side="left"))
-        indices.append(min(max(candidate, indices[-1] + 1), len(demonstration.actions)))
+    indices = list(range(len(demonstration.frames)))
+    if decision_interval_ms is not None:
+        indices = [0]
+        while indices[-1] < len(demonstration.actions):
+            target = float(race_times[indices[-1]]) + decision_interval_ms
+            candidate = int(np.searchsorted(race_times, target, side="left"))
+            indices.append(min(max(candidate, indices[-1] + 1), len(demonstration.actions)))
     selected = np.asarray(indices, dtype=np.int64)
-    return demonstration.frames[selected], demonstration.actions[selected[:-1]]
+    if aggregate_controls and decision_interval_ms is not None:
+        actions = _aggregate_demonstration_controls(
+            demonstration,
+            race_times[selected] + action_lead_ms,
+        )
+        return demonstration.frames[selected], actions
+    action_times = race_times[selected[:-1]] + action_lead_ms
+    action_indices = np.searchsorted(race_times, action_times, side="left")
+    action_indices = np.clip(action_indices, 0, len(demonstration.actions) - 1)
+    return demonstration.frames[selected], demonstration.actions[action_indices]
+
+
+def _aggregate_demonstration_controls(
+    demonstration: Demonstration, window_boundaries_ms: np.ndarray
+) -> np.ndarray:
+    if demonstration.control_alignment != "frame_start":
+        raise ValueError("control aggregation requires frame_start demonstration controls")
+    race_times = demonstration.frames[:, 3].astype(np.float64)
+    actions = [
+        _quantize_control_window(
+            _integrate_control_window(
+                demonstration.controls,
+                race_times,
+                float(start),
+                float(stop),
+            ),
+            float(stop - start),
+        )
+        for start, stop in pairwise(window_boundaries_ms)
+    ]
+    return np.asarray(actions, dtype=np.int64)
+
+
+def _integrate_control_window(
+    controls: np.ndarray,
+    race_times_ms: np.ndarray,
+    start_ms: float,
+    stop_ms: float,
+) -> np.ndarray:
+    duration_ms = stop_ms - start_ms
+    if duration_ms <= 0.0:
+        raise ValueError("demonstration control window must have positive duration")
+    integral = np.zeros(3, dtype=np.float64)
+    cursor = start_ms
+    while cursor < stop_ms:
+        index = int(np.searchsorted(race_times_ms, cursor, side="right") - 1)
+        index = int(np.clip(index, 0, len(controls) - 1))
+        boundary = race_times_ms[index + 1] if index + 1 < len(race_times_ms) else stop_ms
+        segment_stop = min(stop_ms, max(cursor, float(boundary)))
+        if segment_stop == cursor:
+            segment_stop = stop_ms
+        overlap_ms = segment_stop - cursor
+        integral[[0, 2]] += controls[index, [0, 2]] * overlap_ms
+        integral[1] += _brake_overlap_ms(
+            float(controls[index, 1]),
+            float(race_times_ms[index]),
+            cursor,
+            segment_stop,
+        )
+        cursor = segment_stop
+    return (integral / duration_ms).astype(np.float32)
+
+
+def _brake_overlap_ms(
+    brake: float, start_ms: float, overlap_start: float, overlap_stop: float
+) -> float:
+    if brake != BRAKE_TAP_SENTINEL:
+        return float(np.clip(brake, 0.0, 1.0)) * (overlap_stop - overlap_start)
+    tap_stop = start_ms + BRAKE_TAP_DURATION_S * 1_000.0
+    return max(0.0, min(overlap_stop, tap_stop) - overlap_start)
+
+
+def _quantize_control_window(control: np.ndarray, duration_ms: float) -> int:
+    _, table = build_brake_tap_action_table()
+    steer_values = np.linspace(-1.0, 1.0, BRAKE_TAP_TABLE_N_STEER, dtype=np.float32)
+    steer = float(steer_values[np.argmin(np.abs(steer_values - control[2]))])
+    gas = float(control[0] >= 0.5)
+    brake_duties = np.asarray(
+        [0.0, BRAKE_TAP_DURATION_S * 1_000.0 / duration_ms, 1.0], dtype=np.float32
+    )
+    brake_values = (0.0, BRAKE_TAP_SENTINEL, 1.0)
+    brake = brake_values[int(np.argmin(np.abs(brake_duties - control[1])))]
+    return continuous_control_to_discrete_index(
+        np.asarray([gas, brake, steer], dtype=np.float32), table
+    )

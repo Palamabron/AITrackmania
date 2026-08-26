@@ -46,6 +46,18 @@ def _validate_geometry_points(points: np.ndarray) -> np.ndarray:
     return values
 
 
+def _validate_reward_line(points: np.ndarray) -> None:
+    segments = np.diff(points, axis=0)
+    lengths = np.linalg.norm(segments, axis=1)
+    if np.any(lengths <= 0.0):
+        raise ValueError("geometry reward line contains adjacent duplicate points")
+    directions = segments / lengths[:, None]
+    if len(directions) > 1 and np.any(
+        np.linalg.norm(directions[:-1] + directions[1:], axis=1) <= 1.0e-6
+    ):
+        raise ValueError("geometry reward line contains a zero-length local tangent")
+
+
 def _segment_lengths(points: np.ndarray) -> np.ndarray:
     return np.asarray(np.linalg.norm(np.diff(points, axis=0), axis=1), dtype=np.float64)
 
@@ -238,8 +250,8 @@ def build_geometry_asset(
 
     if not map_uid:
         raise ValueError("map_uid is required")
-    if spacing_m <= 0.0:
-        raise ValueError("spacing_m must be positive")
+    if not np.isfinite(spacing_m) or spacing_m <= 0.0:
+        raise ValueError("spacing_m must be finite and positive")
     if smooth_window < 1 or smooth_window % 2 == 0:
         raise ValueError("smooth_window must be a positive odd integer")
     if lookahead_points < 0:
@@ -317,7 +329,11 @@ class BoundaryGeometry:
                 else len(self.center)
             )
             self.recorded_count = int(recorded)
-        if self.version != GEOMETRY_ASSET_VERSION or self.spacing_m <= 0.0:
+        if (
+            self.version != GEOMETRY_ASSET_VERSION
+            or not np.isfinite(self.spacing_m)
+            or self.spacing_m <= 0.0
+        ):
             raise ValueError("unsupported or invalid geometry asset")
         if not (len(self.left) == len(self.center) == len(self.right)):
             raise ValueError("geometry asset boundaries must have equal lengths")
@@ -327,6 +343,7 @@ class BoundaryGeometry:
         center_length = float(np.linalg.norm(np.diff(self.center, axis=0), axis=1).sum())
         if float(np.median(widths)) <= 0.1 or center_length <= 0.1:
             raise ValueError("geometry asset contains degenerate boundaries or centerline")
+        _validate_reward_line(self.reward_center)
         if expected_map_uid is not None and self.map_uid != expected_map_uid:
             raise ValueError("geometry asset map UID does not match evaluation map")
         self.sha256 = file_sha256(self.path)
@@ -336,6 +353,7 @@ class BoundaryGeometry:
             self.right[recorded],
             self.center[recorded],
         )
+        _validate_reward_line(self._racing_line)
 
     @property
     def reward_center(self) -> np.ndarray:

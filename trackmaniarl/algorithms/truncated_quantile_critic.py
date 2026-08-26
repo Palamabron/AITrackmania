@@ -12,6 +12,7 @@ from torch import nn
 from trackmaniarl.algorithms._torch import (
     TorchLearnerBase,
     TorchPolicy,
+    evaluated_actor_state,
     polyak_update,
     weighted_mean,
 )
@@ -30,10 +31,25 @@ def quantile_huber_loss(predictions: torch.Tensor, targets: torch.Tensor) -> tor
     return (torch.abs(tau[None, :, None] - (delta.detach() < 0).float()) * huber).mean(dim=(1, 2))
 
 
+def _truncate_quantile_mixture(
+    quantiles: torch.Tensor,
+    *,
+    critic_count: int,
+    top_quantiles_to_drop_per_critic: int,
+) -> torch.Tensor:
+    drop_count = critic_count * top_quantiles_to_drop_per_critic
+    if not drop_count:
+        return quantiles
+    if quantiles.shape[1] <= drop_count:
+        raise ValueError("top_quantiles_to_drop_per_critic removes every target quantile")
+    return quantiles[:, :-drop_count]
+
+
 class TruncatedQuantileCritic(TorchLearnerBase):
     """TQC with global target truncation and direct quantile-regression loss."""
 
     accepted_model_contracts = frozenset({ModelContract.CONTINUOUS_QUANTILE_ACTOR_CRITIC})
+    supports_sequence_training = False
 
     def __init__(
         self,
@@ -45,7 +61,7 @@ class TruncatedQuantileCritic(TorchLearnerBase):
         entropy_coefficient: float = 0.2,
         target_entropy: float | None = None,
         learn_entropy_coefficient: bool = True,
-        top_quantiles_to_drop: int = 2,
+        top_quantiles_to_drop_per_critic: int = 2,
         device: str | None = None,
         execution: TorchExecutionConfig | Mapping[str, Any] | None = None,
         seed: int = 0,
@@ -59,14 +75,14 @@ class TruncatedQuantileCritic(TorchLearnerBase):
         )
         if not 0.0 < target_tau <= 1.0 or learning_rate <= 0.0 or entropy_coefficient <= 0.0:
             raise ValueError("target_tau, learning_rate, and entropy_coefficient must be positive")
-        if top_quantiles_to_drop < 0:
-            raise ValueError("top_quantiles_to_drop must be non-negative")
+        if top_quantiles_to_drop_per_critic < 0:
+            raise ValueError("top_quantiles_to_drop_per_critic must be non-negative")
         self.target_tau = target_tau
         self.learning_rate = learning_rate
         self.entropy_coefficient = entropy_coefficient
         self.target_entropy = target_entropy
         self.learn_entropy_coefficient = learn_entropy_coefficient
-        self.top_quantiles_to_drop = top_quantiles_to_drop
+        self.top_quantiles_to_drop_per_critic = top_quantiles_to_drop_per_critic
 
     def _setup_model(self) -> None:
         assert self.model is not None
@@ -132,10 +148,11 @@ class TruncatedQuantileCritic(TorchLearnerBase):
                 .sort(dim=1)
                 .values
             )
-            if self.top_quantiles_to_drop:
-                if target_quantiles.shape[1] <= self.top_quantiles_to_drop:
-                    raise ValueError("top_quantiles_to_drop removes every target quantile")
-                target_quantiles = target_quantiles[:, : -self.top_quantiles_to_drop]
+            target_quantiles = _truncate_quantile_mixture(
+                target_quantiles,
+                critic_count=len(target_critics),
+                top_quantiles_to_drop_per_critic=self.top_quantiles_to_drop_per_critic,
+            )
             targets = rewards[:, None] + discounts[:, None] * (
                 target_quantiles - alpha * next_log_probabilities[:, None]
             )
@@ -148,9 +165,9 @@ class TruncatedQuantileCritic(TorchLearnerBase):
         for critic in self.critics:
             critic.requires_grad_(False)
         policy_actions, log_probabilities = self.model.actor(observations)
-        policy_values = torch.stack(
-            [critic(observations, policy_actions).mean(dim=1) for critic in self.critics]
-        ).amin(dim=0)
+        policy_values = torch.cat(
+            [critic(observations, policy_actions) for critic in self.critics], dim=1
+        ).mean(dim=1)
         actor_loss = (alpha * log_probabilities - policy_values).mean()
         self._optimize(actor_loss, self.actor_optimizer)
         for critic in self.critics:
@@ -194,8 +211,17 @@ class TruncatedQuantileCritic(TorchLearnerBase):
             "critic_optimizer": self.critic_optimizer.state_dict(),
             "log_alpha": self.log_alpha.detach().cpu() if self.log_alpha is not None else None,
             "alpha_optimizer": self.alpha_optimizer.state_dict() if self.alpha_optimizer else None,
+            "scaler": self._scaler_state(),
             "rng": self._rng_state(),
         }
+
+    def state_dict_for_policy(self, policy_state: Mapping[str, Any]) -> Mapping[str, Any]:
+        assert self.model is not None
+        state = evaluated_actor_state(self.state_dict(), self.model, policy_state)
+        state["actor_optimizer"] = torch.optim.Adam(
+            self.model.actor.parameters(), lr=self.learning_rate
+        ).state_dict()
+        return state
 
     def load_state_dict(self, state: Mapping[str, Any]) -> None:
         assert self.model is not None
@@ -207,4 +233,5 @@ class TruncatedQuantileCritic(TorchLearnerBase):
             self.log_alpha.data.copy_(state["log_alpha"].to(self.device))
         if self.alpha_optimizer is not None and state.get("alpha_optimizer") is not None:
             self.alpha_optimizer.load_state_dict(state["alpha_optimizer"])
+        self._restore_scaler(state.get("scaler"))
         self._restore_rng(state.get("rng", {}))

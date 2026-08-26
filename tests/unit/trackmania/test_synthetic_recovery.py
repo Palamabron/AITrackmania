@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -10,15 +11,18 @@ from trackmaniarl.trackmania.actions import (
     continuous_control_to_discrete_index,
     select_brake_tap_actions,
 )
-from trackmaniarl.trackmania.demonstrations import Demonstration
+from trackmaniarl.trackmania.demonstrations import Demonstration, save_demonstration
 from trackmaniarl.trackmania.guidance import TrajectoryTrackingDemonstrationPolicy
 from trackmaniarl.trackmania.imitation_learning import (
     RECOVERY_DATASET_FORMAT,
+    RecoveryContract,
+    RecoveryProvenance,
     load_behavior_cloning_recovery,
 )
 from trackmaniarl.trackmania.synthetic_recovery import (
     SyntheticRecoveryConfig,
     generate_synthetic_recovery,
+    generate_synthetic_recovery_from_path,
 )
 
 ACTION_IDS = (0, 1, 3, 39, 72, 73, 75)
@@ -59,8 +63,7 @@ def test_synthetic_recovery_is_deterministic_and_keeps_monotonic_episodes() -> N
     assert len(first.frames) == 33
     assert np.array_equal(first.frames, second.frames)
     assert np.array_equal(first.labels, second.labels)
-    assert np.count_nonzero(first.episode_starts) == 11
-    assert np.flatnonzero(first.episode_starts).tolist() == list(range(0, 33, 3))
+    assert bool(np.all(first.episode_starts))
     assert np.count_nonzero(first.interventions) == 30
 
 
@@ -71,15 +74,15 @@ def test_synthetic_recovery_keeps_raw_frame_geometry_and_speed_consistent() -> N
         SyntheticRecoveryConfig(sample_stride=100),
     )
     episode_length = len(dataset.frames) // 11
-    reference, right_offset, left_heading, left_velocity = dataset.frames[
+    reference, left_offset, left_heading, left_velocity = dataset.frames[
         [0, episode_length, 2 * episode_length, 3 * episode_length]
     ]
 
     assert reference[4:17] == pytest.approx(_demonstration().frames[0, 4:17])
-    assert right_offset[6] == pytest.approx(0.55)
+    assert left_offset[6] == pytest.approx(-0.55)
     assert np.linalg.norm(left_heading[10:13]) == pytest.approx(1.0)
     assert np.dot(left_heading[10:13], left_heading[13:16]) == pytest.approx(0.0, abs=1e-6)
-    assert left_velocity[9] == pytest.approx(3.0)
+    assert left_velocity[9] == pytest.approx(-3.0)
     assert left_velocity[16] == pytest.approx(np.linalg.norm(left_velocity[7:10]))
 
 
@@ -128,7 +131,7 @@ class _Pipeline:
         return {"telemetry": torch.from_numpy(values[:26].copy())}
 
 
-def test_synthetic_recovery_explicit_save_uses_bc_recovery_v2(tmp_path: Path) -> None:
+def test_synthetic_recovery_explicit_save_uses_bc_recovery_v3(tmp_path: Path) -> None:
     dataset = generate_synthetic_recovery(
         _demonstration(),
         ACTION_IDS,
@@ -136,11 +139,49 @@ def test_synthetic_recovery_explicit_save_uses_bc_recovery_v2(tmp_path: Path) ->
     )
 
     path = dataset.save(tmp_path / "synthetic")
-    laps = load_behavior_cloning_recovery([path], _Pipeline(), ACTION_IDS)
+    laps = load_behavior_cloning_recovery(
+        [path],
+        _Pipeline(),
+        ACTION_IDS,
+        expected_contract=dataset.provenance.contract,
+        expected_source_demonstration_sha256=frozenset(
+            {dataset.provenance.source_demonstration_sha256}
+        ),
+    )
     with np.load(path, allow_pickle=False) as data:
         format_name = str(data["format"].item())
 
     assert path.exists()
     assert format_name == RECOVERY_DATASET_FORMAT
+    assert dataset.provenance.contract.map_uid == "map"
     assert len(laps) == len(dataset.frames)
     assert all(len(lap.labels) == 1 for lap in laps)
+
+
+def test_synthetic_recovery_aligns_native_demo_to_target_decision_interval(
+    tmp_path: Path,
+) -> None:
+    demonstration = replace(_demonstration(), decision_interval_ms=None)
+    source = save_demonstration(tmp_path / "native", demonstration)
+    contract = RecoveryContract(
+        map_uid="map",
+        geometry_sha256="a" * 64,
+        action_repeat_frames=1,
+        decision_interval_ms=20.0,
+        control_alignment="frame_start",
+    )
+
+    dataset = generate_synthetic_recovery_from_path(
+        source,
+        ACTION_IDS,
+        SyntheticRecoveryConfig(sample_stride=1),
+        contract=contract,
+    )
+
+    expected_source = RecoveryProvenance.from_demonstration(
+        demonstration,
+        contract=contract,
+    )
+    assert dataset.provenance == expected_source
+    assert dataset.frames[:3, 3].tolist() == [10.0, 30.0, 50.0]
+    assert bool(np.all(dataset.episode_starts))

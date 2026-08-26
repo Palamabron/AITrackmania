@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import random
 from collections.abc import Mapping, Sequence
 from copy import deepcopy
@@ -20,6 +21,7 @@ from trackmaniarl.algorithms.execution import (
     resolve_torch_execution,
 )
 from trackmaniarl.core.contracts import FeaturePipeline, ModelContract, ModelFactory, Policy
+from trackmaniarl.models.backbones import project_hyperspherical_weights
 from trackmaniarl.models.composite import FrameBatchAdapter
 from trackmaniarl.models.temporal import GruTemporalCore, IdentityTemporalCore
 from trackmaniarl.trackmania.actions import select_brake_tap_actions
@@ -29,10 +31,11 @@ from trackmaniarl.trackmania.demonstrations import (
     resample_demonstration,
     validate_recording_quality,
 )
-from trackmaniarl.trackmania.encoders import LidarSensorEncoder
+from trackmaniarl.trackmania.encoders import LidarSensorEncoder, LidarSimbaSensorEncoder
 
 RECOVERY_DATASET_FORMAT_V1 = "trackmaniarl-bc-recovery-v1"
-RECOVERY_DATASET_FORMAT = "trackmaniarl-bc-recovery-v2"
+RECOVERY_DATASET_FORMAT_V2 = "trackmaniarl-bc-recovery-v2"
+RECOVERY_DATASET_FORMAT = "trackmaniarl-bc-recovery-v3"
 SAMPLE_WEIGHT_KEY = "bc_sample_weight"
 STUDENT_ACTION_KEY = "bc_student_action"
 INTERVENTION_KEY = "bc_intervention"
@@ -64,6 +67,23 @@ class BehaviorCloningValidationBatch:
     student_disagreement_count: int
 
 
+class _FactorizedActionHead(nn.Module):
+    def __init__(self, input_dim: int, action_ids: tuple[int, ...]) -> None:
+        super().__init__()
+        canonical = torch.tensor(action_ids, dtype=torch.long)
+        self.steering = nn.Linear(input_dim, 13)
+        self.drive_mode = nn.Linear(input_dim, 6)
+        self.steering_indices: torch.Tensor
+        self.drive_mode_indices: torch.Tensor
+        self.register_buffer("steering_indices", canonical // 6, persistent=False)
+        self.register_buffer("drive_mode_indices", canonical % 6, persistent=False)
+
+    def forward(self, features: torch.Tensor) -> torch.Tensor:
+        steering = self.steering(features).index_select(-1, self.steering_indices)
+        drive_mode = self.drive_mode(features).index_select(-1, self.drive_mode_indices)
+        return cast(torch.Tensor, steering + drive_mode)
+
+
 class LidarBehaviorCloningModel(nn.Module):
     """Categorical policy over an explicit compact action set and frame history."""
 
@@ -84,6 +104,8 @@ class LidarBehaviorCloningModel(nn.Module):
         minimum_action_hold_steps: int = 1,
         switch_logit_margin: float = 0.0,
         masked_telemetry_indices: tuple[int, ...] = (),
+        simba_backbone: Mapping[str, Any] | None = None,
+        factorized_action_head: bool = False,
     ) -> None:
         super().__init__()
         self.action_ids = tuple(action_ids)
@@ -97,21 +119,33 @@ class LidarBehaviorCloningModel(nn.Module):
         self.previous_action_start = self.action_count
         self.minimum_action_hold_steps = minimum_action_hold_steps
         self.switch_logit_margin = switch_logit_margin
-        self.encoder = LidarSensorEncoder(
-            telemetry_dim=telemetry_dim,
-            spatial_bins=spatial_bins,
-            lidar_channels=lidar_channels,
-            telemetry_group_dims=telemetry_group_dims,
-            hidden_dim=encoder_hidden_dim,
-            output_dim=encoder_output_dim,
-            masked_telemetry_indices=masked_telemetry_indices,
-        )
-        self.temporal = (
-            IdentityTemporalCore(encoder_output_dim)
-            if history_length == 1
-            else GruTemporalCore(encoder_output_dim, encoder_output_dim)
-        )
-        self.burn_in = burn_in if history_length > 1 else 0
+        sensor: dict[str, Any] = {
+            "telemetry_dim": telemetry_dim,
+            "spatial_bins": spatial_bins,
+            "lidar_channels": lidar_channels,
+            "telemetry_group_dims": telemetry_group_dims,
+            "hidden_dim": encoder_hidden_dim,
+            "output_dim": encoder_output_dim,
+            "masked_telemetry_indices": masked_telemetry_indices,
+        }
+        self.encoder: LidarSensorEncoder | LidarSimbaSensorEncoder
+        self.temporal: IdentityTemporalCore | GruTemporalCore
+        self.feedforward_history = simba_backbone is not None
+        if self.feedforward_history:
+            if burn_in:
+                raise ValueError("feed-forward Simba history does not use burn-in")
+            assert simba_backbone is not None
+            self.encoder = LidarSimbaSensorEncoder(sensor, simba_backbone, history_length)
+            self.temporal = IdentityTemporalCore(self.encoder.output_dim)
+            self.burn_in = 0
+        else:
+            self.encoder = LidarSensorEncoder(**sensor)
+            self.temporal = (
+                IdentityTemporalCore(encoder_output_dim)
+                if history_length == 1
+                else GruTemporalCore(encoder_output_dim, encoder_output_dim)
+            )
+            self.burn_in = burn_in if history_length > 1 else 0
         self.previous_action_embedding = (
             nn.Embedding(self.action_count + 1, previous_action_embedding_dim)
             if previous_action_conditioning
@@ -120,7 +154,11 @@ class LidarBehaviorCloningModel(nn.Module):
         head_input_dim = self.encoder.output_dim + (
             previous_action_embedding_dim if previous_action_conditioning else 0
         )
-        self.head = nn.Linear(head_input_dim, self.action_count)
+        self.head: nn.Linear | _FactorizedActionHead = (
+            _FactorizedActionHead(head_input_dim, self.action_ids)
+            if factorized_action_head
+            else nn.Linear(head_input_dim, self.action_count)
+        )
 
     def initial_policy_state(self, device: torch.device) -> Any:
         return self.temporal.initial_state(1, device)
@@ -128,14 +166,21 @@ class LidarBehaviorCloningModel(nn.Module):
     def policy_logits(
         self, observation: Mapping[str, torch.Tensor], state: Any
     ) -> tuple[torch.Tensor, Any]:
+        if not self.feedforward_history and observation["lidar"].ndim == 4:
+            return self(observation), state
         frames = {key: observation[key] for key in ("lidar", "lidar_mask", "telemetry")}
-        batch = FrameBatchAdapter.flatten(frames, sequence=False)
-        features = self.encoder(cast(Any, batch.frames))
+        if self.feedforward_history:
+            features = self.encoder(frames)
+        else:
+            batch = FrameBatchAdapter.flatten(frames, sequence=False)
+            features = self.encoder(cast(Any, batch.frames))
         encoded, next_state = self.temporal.step(features, state)
         return self._logits(encoded, observation), next_state
 
     def forward(self, observation: Mapping[str, torch.Tensor]) -> torch.Tensor:
         frames = {key: observation[key] for key in ("lidar", "lidar_mask", "telemetry")}
+        if self.feedforward_history:
+            return self._logits(self.encoder(frames), observation)
         sequence = observation["lidar"].ndim == 4
         batch = FrameBatchAdapter.flatten(frames, sequence=sequence)
         features = batch.restore(self.encoder(cast(Any, batch.frames)))
@@ -177,6 +222,8 @@ class LidarBehaviorCloningModelFactory:
         minimum_action_hold_steps: int = 1,
         switch_logit_margin: float = 0.0,
         masked_telemetry_indices: tuple[int, ...] = (),
+        simba_backbone: Mapping[str, Any] | None = None,
+        factorized_action_head: bool = False,
     ) -> None:
         self.action_ids = tuple(action_ids)
         self.telemetry_dim = telemetry_dim
@@ -192,6 +239,8 @@ class LidarBehaviorCloningModelFactory:
         self.minimum_action_hold_steps = minimum_action_hold_steps
         self.switch_logit_margin = switch_logit_margin
         self.masked_telemetry_indices = masked_telemetry_indices
+        self.simba_backbone = dict(simba_backbone) if simba_backbone is not None else None
+        self.factorized_action_head = factorized_action_head
 
     def build(self) -> LidarBehaviorCloningModel:
         return LidarBehaviorCloningModel(
@@ -209,6 +258,8 @@ class LidarBehaviorCloningModelFactory:
             minimum_action_hold_steps=self.minimum_action_hold_steps,
             switch_logit_margin=self.switch_logit_margin,
             masked_telemetry_indices=self.masked_telemetry_indices,
+            simba_backbone=self.simba_backbone,
+            factorized_action_head=self.factorized_action_head,
         )
 
 
@@ -375,6 +426,7 @@ class BehaviorCloningLearner:
             self.model.parameters(), self.gradient_clip_norm
         )
         self.scaler.step(self.optimizer)
+        project_hyperspherical_weights(self.model)
         self.scaler.update()
         accuracy = (logits.argmax(dim=-1) == targets).float().mean()
         transition_mask = self._transition_mask(observations, targets)
@@ -556,11 +608,12 @@ class BehaviorCloningLearner:
 
     def _steering_loss(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
         steering = self._steering_classes(logits.device)
+        steering_bins = torch.unique(steering, sorted=True)
         grouped = []
-        for steering_class in (-1, 0, 1):
-            selected = logits[:, steering == steering_class]
+        for steering_bin in steering_bins:
+            selected = logits[:, steering == steering_bin]
             grouped.append(torch.logsumexp(selected, dim=-1) - np.log(selected.shape[-1]))
-        steering_targets = (steering[targets] + 1).long()
+        steering_targets = torch.searchsorted(steering_bins, steering[targets])
         return functional.cross_entropy(
             torch.stack(grouped, dim=-1), steering_targets, reduction="none"
         )
@@ -639,7 +692,8 @@ class BehaviorCloningLearner:
             raise RuntimeError("BehaviorCloningLearner.setup must run before reading actions")
         _, actions = select_brake_tap_actions(self.model.action_ids)
         action_array = np.asarray(actions, dtype=np.float32)
-        return torch.from_numpy(np.sign(action_array[:, 2]).astype(np.int64)).to(device)
+        steering_bins = np.rint((action_array[:, 2] + 1.0) * 6.0).astype(np.int64)
+        return torch.from_numpy(steering_bins).to(device)
 
     def _steering_transition_mask(
         self,
@@ -710,13 +764,19 @@ class BehaviorCloningLearner:
         return {f"validation/{key}": value for key, value in metrics.items()}
 
     def state_dict(self) -> Mapping[str, Any]:
-        if self.model is None or self.optimizer is None or self.scheduler is None:
+        if (
+            self.model is None
+            or self.optimizer is None
+            or self.scheduler is None
+            or self.scaler is None
+        ):
             raise RuntimeError("BehaviorCloningLearner.setup must run before checkpointing")
         return {
             "schema_version": "trackmaniarl-bc-checkpoint-v2",
             "model": self.model.state_dict(),
             "optimizer": self.optimizer.state_dict(),
             "scheduler": self.scheduler.state_dict(),
+            "scaler": self.scaler.state_dict(),
             "policy_action_ids": self.model.action_ids,
             "dataset_fingerprint": self.dataset_fingerprint,
             "rng": {
@@ -728,7 +788,12 @@ class BehaviorCloningLearner:
         }
 
     def load_state_dict(self, state: Mapping[str, Any]) -> None:
-        if self.model is None or self.optimizer is None or self.scheduler is None:
+        if (
+            self.model is None
+            or self.optimizer is None
+            or self.scheduler is None
+            or self.scaler is None
+        ):
             raise RuntimeError("BehaviorCloningLearner.setup must run before restoring")
         saved_action_ids = state.get("policy_action_ids")
         if saved_action_ids is not None and tuple(saved_action_ids) != self.model.action_ids:
@@ -745,6 +810,10 @@ class BehaviorCloningLearner:
         scheduler = state.get("scheduler")
         if scheduler is not None:
             self.scheduler.load_state_dict(scheduler)
+        scaler = state.get("scaler")
+        if not isinstance(scaler, Mapping):
+            raise ValueError("checkpoint is missing gradient scaler state")
+        self.scaler.load_state_dict(dict(scaler))
         rng = state.get("rng")
         if isinstance(rng, Mapping):
             random.setstate(rng["python"])
@@ -763,6 +832,88 @@ class BehaviorCloningLap:
     source_id: str = ""
 
 
+@dataclass(frozen=True, slots=True)
+class RecoveryContract:
+    map_uid: str
+    geometry_sha256: str
+    action_repeat_frames: int
+    decision_interval_ms: float | None
+    control_alignment: str
+
+    def __post_init__(self) -> None:
+        if not self.map_uid or not _is_sha256(self.geometry_sha256):
+            raise ValueError("recovery map and geometry identity are invalid")
+        if self.action_repeat_frames < 1:
+            raise ValueError("recovery action repeat must be positive")
+        if self.decision_interval_ms is not None and (
+            not np.isfinite(self.decision_interval_ms) or self.decision_interval_ms <= 0.0
+        ):
+            raise ValueError("recovery decision interval must be finite and positive")
+        if self.decision_interval_ms is not None and self.action_repeat_frames != 1:
+            raise ValueError("recovery decision interval requires action repeat one")
+        if self.control_alignment != "frame_start":
+            raise ValueError("recovery controls must use frame_start alignment")
+
+    @classmethod
+    def from_demonstration(cls, demonstration: Demonstration) -> RecoveryContract:
+        return cls(
+            demonstration.map_uid,
+            demonstration.geometry_sha256,
+            demonstration.action_repeat_frames,
+            demonstration.decision_interval_ms,
+            demonstration.control_alignment,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class RecoveryProvenance:
+    contract: RecoveryContract
+    source_demonstration_sha256: str
+    source_checkpoint_sha256: str | None = None
+
+    def __post_init__(self) -> None:
+        hashes = (self.source_demonstration_sha256, self.source_checkpoint_sha256)
+        if any(value is not None and not _is_sha256(value) for value in hashes):
+            raise ValueError("recovery source hashes must be SHA-256 digests")
+
+    @classmethod
+    def from_demonstration(
+        cls,
+        demonstration: Demonstration,
+        *,
+        contract: RecoveryContract | None = None,
+        source_checkpoint_sha256: str | None = None,
+    ) -> RecoveryProvenance:
+        return cls(
+            contract or RecoveryContract.from_demonstration(demonstration),
+            _demonstration_sha256(demonstration),
+            source_checkpoint_sha256,
+        )
+
+
+def _is_sha256(value: str) -> bool:
+    return len(value) == 64 and all(character in "0123456789abcdef" for character in value)
+
+
+def _demonstration_sha256(demonstration: Demonstration) -> str:
+    digest = hashlib.sha256()
+    metadata = (
+        demonstration.map_uid,
+        demonstration.geometry_sha256,
+        str(demonstration.action_repeat_frames),
+        str(demonstration.decision_interval_ms),
+        demonstration.control_alignment,
+        f"{demonstration.finish_time_s:.12g}",
+    )
+    digest.update("\0".join(metadata).encode())
+    for values in (demonstration.frames, demonstration.actions, demonstration.controls):
+        array = np.ascontiguousarray(values)
+        digest.update(str(array.dtype).encode())
+        digest.update(np.asarray(array.shape, dtype=np.int64).tobytes())
+        digest.update(array.tobytes())
+    return digest.hexdigest()
+
+
 def save_behavior_cloning_recovery(
     path: str | Path,
     frames: np.ndarray,
@@ -770,6 +921,7 @@ def save_behavior_cloning_recovery(
     episode_starts: np.ndarray,
     action_ids: tuple[int, ...],
     *,
+    provenance: RecoveryProvenance,
     sample_weights: np.ndarray | None = None,
     student_actions: np.ndarray | None = None,
     interventions: np.ndarray | None = None,
@@ -779,6 +931,8 @@ def save_behavior_cloning_recovery(
 
     if frames.ndim != 2 or frames.shape[1] != 33:
         raise ValueError("recovery frames must have shape (steps, 33)")
+    if not np.isfinite(frames).all():
+        raise ValueError("recovery frames must be finite")
     if labels.shape != (len(frames),) or episode_starts.shape != (len(frames),):
         raise ValueError("recovery labels and episode starts must match frames")
     if len(frames) < 1 or not bool(episode_starts[0]):
@@ -797,26 +951,23 @@ def save_behavior_cloning_recovery(
     if target.suffix.lower() != ".npz":
         target = target.with_suffix(".npz")
     target.parent.mkdir(parents=True, exist_ok=True)
-    metadata = (sample_weights, student_actions, interventions, state_errors)
     common = (
         frames.astype(np.float32, copy=False),
         labels.astype(np.int64, copy=False),
         episode_starts.astype(np.bool_, copy=False),
         np.asarray(action_ids, dtype=np.int64),
     )
-    if not any(value is not None for value in metadata):
-        np.savez_compressed(
-            target,
-            format=np.asarray(RECOVERY_DATASET_FORMAT_V1),
-            frames=common[0],
-            labels=common[1],
-            episode_starts=common[2],
-            action_ids=common[3],
-        )
-        return target
+    contract = provenance.contract
     np.savez_compressed(
         target,
         format=np.asarray(RECOVERY_DATASET_FORMAT),
+        map_uid=np.asarray(contract.map_uid),
+        geometry_sha256=np.asarray(contract.geometry_sha256),
+        action_repeat_frames=np.asarray(contract.action_repeat_frames, dtype=np.int32),
+        decision_interval_ms=np.asarray(contract.decision_interval_ms or 0.0, dtype=np.float64),
+        control_alignment=np.asarray(contract.control_alignment),
+        source_demonstration_sha256=np.asarray(provenance.source_demonstration_sha256),
+        source_checkpoint_sha256=np.asarray(provenance.source_checkpoint_sha256 or ""),
         frames=common[0],
         labels=common[1],
         episode_starts=common[2],
@@ -878,12 +1029,14 @@ def _validate_recovery_metadata(
 def _load_recovery_metadata(
     data: Any, sample_count: int, action_count: int
 ) -> dict[str, np.ndarray]:
-    weights = _optional_recovery_array(data, "sample_weight", np.float32, sample_count, 1.0)
-    students = _optional_recovery_array(
-        data, "student_action", np.int64, sample_count, action_count
-    )
-    interventions = _optional_recovery_array(data, "intervention", np.bool_, sample_count, False)
-    state_errors = _optional_recovery_array(data, "state_error", np.float32, sample_count, 0.0)
+    required = {"sample_weight", "student_action", "intervention", "state_error"}
+    missing = required - set(data.files)
+    if missing:
+        raise ValueError(f"recovery archive is missing metadata {sorted(missing)}")
+    weights = np.asarray(data["sample_weight"], dtype=np.float32)
+    students = np.asarray(data["student_action"], dtype=np.int64)
+    interventions = np.asarray(data["intervention"], dtype=np.bool_)
+    state_errors = np.asarray(data["state_error"], dtype=np.float32)
     _validate_recovery_metadata(
         sample_count,
         action_count,
@@ -898,18 +1051,6 @@ def _load_recovery_metadata(
         INTERVENTION_KEY: interventions,
         STATE_ERROR_KEY: state_errors,
     }
-
-
-def _optional_recovery_array(
-    data: Any,
-    key: str,
-    dtype: Any,
-    sample_count: int,
-    default: float | int | bool,
-) -> np.ndarray:
-    if key in data.files:
-        return np.asarray(data[key], dtype=dtype)
-    return np.full(sample_count, default, dtype=dtype)
 
 
 def _attach_recovery_metadata(
@@ -934,21 +1075,108 @@ def _attach_default_recovery_metadata(
     observation[STATE_ERROR_KEY] = torch.tensor(0.0)
 
 
+def _load_recovery_provenance(data: Any, path: Path) -> RecoveryProvenance:
+    required = {
+        "map_uid",
+        "geometry_sha256",
+        "action_repeat_frames",
+        "decision_interval_ms",
+        "control_alignment",
+        "source_demonstration_sha256",
+        "source_checkpoint_sha256",
+    }
+    missing = required - set(data.files)
+    if missing:
+        raise ValueError(f"recovery archive is missing provenance {sorted(missing)}: {path}")
+    raw_action_repeat = data["action_repeat_frames"].item()
+    if isinstance(raw_action_repeat, (bool, np.bool_)) or not isinstance(
+        raw_action_repeat, (int, np.integer)
+    ):
+        raise ValueError(f"recovery action repeat must be an integer: {path}")
+    interval_ms = float(data["decision_interval_ms"].item())
+    checkpoint_sha256 = str(data["source_checkpoint_sha256"].item()) or None
+    try:
+        contract = RecoveryContract(
+            map_uid=str(data["map_uid"].item()),
+            geometry_sha256=str(data["geometry_sha256"].item()),
+            action_repeat_frames=int(raw_action_repeat),
+            decision_interval_ms=interval_ms or None,
+            control_alignment=str(data["control_alignment"].item()),
+        )
+        return RecoveryProvenance(
+            contract,
+            str(data["source_demonstration_sha256"].item()),
+            checkpoint_sha256,
+        )
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"recovery archive has invalid provenance: {path}") from exc
+
+
+def _validate_recovery_contract(
+    actual: RecoveryContract,
+    expected: RecoveryContract,
+    path: Path,
+) -> None:
+    if actual.map_uid != expected.map_uid:
+        raise ValueError(f"recovery map UID does not match the training map: {path}")
+    if actual.geometry_sha256 != expected.geometry_sha256:
+        raise ValueError(f"recovery geometry does not match the feature geometry: {path}")
+    if actual.action_repeat_frames != expected.action_repeat_frames:
+        raise ValueError(f"recovery action repeat does not match the environment: {path}")
+    if actual.control_alignment != expected.control_alignment:
+        raise ValueError(f"recovery control alignment does not match the dataset: {path}")
+    actual_interval = actual.decision_interval_ms
+    expected_interval = expected.decision_interval_ms
+    if actual_interval is None and expected_interval is None:
+        return
+    if (
+        actual_interval is None
+        or expected_interval is None
+        or not np.isclose(actual_interval, expected_interval, rtol=0.0, atol=0.05)
+    ):
+        raise ValueError(f"recovery decision interval does not match the environment: {path}")
+
+
 def load_behavior_cloning_recovery(
     paths: Sequence[Path],
     pipeline: FeaturePipeline,
     action_ids: tuple[int, ...],
     *,
+    expected_contract: RecoveryContract,
+    expected_source_demonstration_sha256: frozenset[str],
     previous_action_conditioning: bool = False,
 ) -> list[BehaviorCloningLap]:
     """Rebuild feature histories for DAgger states and keep episodes separate."""
 
+    if not expected_source_demonstration_sha256 or any(
+        not _is_sha256(value) for value in expected_source_demonstration_sha256
+    ):
+        raise ValueError("expected recovery source hashes must be non-empty SHA-256 digests")
+    resolved_paths = tuple(path.resolve() for path in paths)
+    if len(set(resolved_paths)) != len(resolved_paths):
+        raise ValueError("behavior-cloning recovery paths must be unique")
     laps: list[BehaviorCloningLap] = []
-    for path in paths:
+    for path in resolved_paths:
         with np.load(path, allow_pickle=False) as data:
+            if "format" not in data.files:
+                raise ValueError(f"recovery archive is missing its format marker: {path}")
             format_name = str(data["format"].item())
-            if format_name not in {RECOVERY_DATASET_FORMAT_V1, RECOVERY_DATASET_FORMAT}:
+            if format_name in {RECOVERY_DATASET_FORMAT_V1, RECOVERY_DATASET_FORMAT_V2}:
+                raise ValueError(
+                    f"recovery archive predates map and timing provenance; regenerate it: {path}"
+                )
+            if format_name != RECOVERY_DATASET_FORMAT:
                 raise ValueError(f"unsupported behavior-cloning recovery format: {path}")
+            provenance = _load_recovery_provenance(data, path)
+            _validate_recovery_contract(provenance.contract, expected_contract, path)
+            if provenance.source_demonstration_sha256 not in expected_source_demonstration_sha256:
+                raise ValueError(
+                    f"recovery source demonstration is not present in --demo inputs: {path}"
+                )
+            required = {"action_ids", "frames", "labels", "episode_starts"}
+            missing = required - set(data.files)
+            if missing:
+                raise ValueError(f"recovery archive is missing data {sorted(missing)}: {path}")
             stored_ids = tuple(int(value) for value in data["action_ids"].tolist())
             if stored_ids != action_ids:
                 raise ValueError(f"recovery action IDs do not match the model: {path}")
@@ -958,6 +1186,8 @@ def load_behavior_cloning_recovery(
             metadata = _load_recovery_metadata(data, len(frames), len(action_ids))
         if frames.ndim != 2 or frames.shape[1] != 33:
             raise ValueError(f"recovery frames have an invalid shape: {path}")
+        if not np.isfinite(frames).all():
+            raise ValueError(f"recovery frames contain non-finite values: {path}")
         if labels.shape != (len(frames),) or starts.shape != (len(frames),):
             raise ValueError(f"recovery labels and episode starts do not match frames: {path}")
         if np.any(labels < 0) or np.any(labels >= len(action_ids)):
@@ -1010,6 +1240,8 @@ def load_behavior_cloning_laps(
     *,
     expected_action_repeat_frames: int | None = None,
     expected_decision_interval_ms: float | None = None,
+    action_lead_ms: float = 0.0,
+    aggregate_controls: bool = False,
     previous_action_conditioning: bool = False,
 ) -> list[BehaviorCloningLap]:
     """Convert full demonstration laps into compact supervised examples."""
@@ -1027,7 +1259,12 @@ def load_behavior_cloning_laps(
             expected_decision_interval_ms,
         )
         validate_recording_quality(demo)
-        frames, actions = resample_demonstration(demo, expected_decision_interval_ms)
+        frames, actions = resample_demonstration(
+            demo,
+            expected_decision_interval_ms,
+            action_lead_ms=action_lead_ms,
+            aggregate_controls=aggregate_controls,
+        )
         lap_weight = float(
             np.clip(
                 np.exp((best_finish_time_s - demo.finish_time_s) / ELITE_LAP_WEIGHT_TEMPERATURE_S),
@@ -1182,8 +1419,8 @@ def horizontal_flip_observation(
 
     lidar = observation["lidar"]
     telemetry = observation["telemetry"]
-    if lidar.shape[-2] != 8 or telemetry.shape[-1] != 46:
-        raise ValueError("horizontal flip requires the 8-channel, 46-feature BC observation")
+    if lidar.shape[-2] != 8 or telemetry.shape[-1] not in {46, 49}:
+        raise ValueError("horizontal flip requires the 8-channel, 46- or 49-feature observation")
     reflected_lidar = lidar.clone()
     reflected_lidar[..., 0, :] = -lidar[..., 2, :]
     reflected_lidar[..., 1, :] = lidar[..., 3, :]
@@ -1197,18 +1434,16 @@ def horizontal_flip_observation(
     reflected_telemetry[..., 11] = telemetry[..., 10]
     reflected_telemetry[..., 12] = telemetry[..., 13]
     reflected_telemetry[..., 13] = telemetry[..., 12]
-    reflected_telemetry[..., 18] = -telemetry[..., 18]
-    reflected_telemetry[..., 19] = -telemetry[..., 19]
-    reflected_telemetry[..., 22] = -telemetry[..., 22]
-    reflected_telemetry[..., 29] = -telemetry[..., 29]
-    reflected_telemetry[..., 31] = -telemetry[..., 31]
-    reflected_telemetry[..., 32] = -telemetry[..., 32]
-    reflected_telemetry[..., 34] = -telemetry[..., 36]
-    reflected_telemetry[..., 35] = telemetry[..., 37]
-    reflected_telemetry[..., 36] = -telemetry[..., 34]
-    reflected_telemetry[..., 37] = telemetry[..., 35]
-    reflected_telemetry[..., 39] = -telemetry[..., 39]
-    reflected_telemetry[..., 41] = -telemetry[..., 41]
+    offset = 3 if telemetry.shape[-1] == 49 else 0
+    if offset:
+        reflected_telemetry[..., 17] = -telemetry[..., 17]
+    lateral_indices = (18, 19, 22, 29, 31, 32, 39, 41)
+    for index in lateral_indices:
+        reflected_telemetry[..., index + offset] = -telemetry[..., index + offset]
+    reflected_telemetry[..., 34 + offset] = -telemetry[..., 36 + offset]
+    reflected_telemetry[..., 35 + offset] = telemetry[..., 37 + offset]
+    reflected_telemetry[..., 36 + offset] = -telemetry[..., 34 + offset]
+    reflected_telemetry[..., 37 + offset] = telemetry[..., 35 + offset]
     reflected = {key: value.clone() for key, value in observation.items()}
     reflected["lidar"] = reflected_lidar
     reflected["telemetry"] = reflected_telemetry
@@ -1248,10 +1483,13 @@ def class_weights(labels: torch.Tensor, action_count: int, *, power: float = 0.5
     if not 0.0 <= power <= 1.0:
         raise ValueError("class weight power must be in [0, 1]")
     counts = torch.bincount(labels, minlength=action_count).float()
-    if bool((counts == 0).any()):
-        raise ValueError("every compact action must appear in behavior cloning training laps")
-    weights = counts.pow(-power)
-    return (weights / weights.mean()).clamp(0.5, 3.0)
+    observed = counts > 0
+    if not bool(observed.any()):
+        raise ValueError("behavior cloning labels must not be empty")
+    weights = torch.ones_like(counts)
+    weights[observed] = counts[observed].pow(-power)
+    weights[observed] /= weights[observed].mean()
+    return weights.clamp(0.5, 3.0)
 
 
 def collate_behavior_cloning(

@@ -1,8 +1,12 @@
 from __future__ import annotations
 
-import numpy as np
+from threading import RLock
 
-from trackmaniarl.trackmania.control import KeyboardController
+import numpy as np
+import pytest
+
+from trackmaniarl.trackmania.actions import BRAKE_TAP_DURATION_S, BRAKE_TAP_SENTINEL
+from trackmaniarl.trackmania.control import GamepadController, KeyboardController
 
 
 def test_keyboard_controller_maps_recorded_steering_sign_to_keys() -> None:
@@ -48,3 +52,21 @@ def test_keyboard_controller_has_no_rumble_collision_signal() -> None:
     controller = KeyboardController(lambda _key, _pressed: None)
 
     assert controller.consume_collision() is False
+
+
+def test_gamepad_brake_tap_releases_synchronously(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    controller = object.__new__(GamepadController)
+    controller._tap_lock = RLock()
+    applied: list[np.ndarray] = []
+    delays: list[float] = []
+    monkeypatch.setattr(controller, "_apply", lambda action: applied.append(action.copy()))
+    monkeypatch.setattr("trackmaniarl.trackmania.control.sleep", delays.append)
+
+    controller.apply_discrete(np.asarray([1.0, BRAKE_TAP_SENTINEL, 0.5], dtype=np.float32))
+
+    assert delays == [BRAKE_TAP_DURATION_S]
+    assert len(applied) == 2
+    assert applied[0] == pytest.approx([1.0, 1.0, 0.5])
+    assert applied[1] == pytest.approx([1.0, 0.0, 0.5])

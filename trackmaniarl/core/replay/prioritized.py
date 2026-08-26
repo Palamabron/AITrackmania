@@ -21,6 +21,7 @@ from trackmaniarl.core.replay.batches import (
     _make_batch,
     _reshape_batch_sequences,
     _reshape_sequence_batch,
+    _sequence_target_observation_histories,
 )
 from trackmaniarl.core.replay.store import _IncrementalReplayStore, _is_demo, _is_incremental_store
 from trackmaniarl.core.replay.structures import _FenwickTree
@@ -30,6 +31,7 @@ class PrioritizedSampler:
     """Array-backed proportional PER with normalized importance weights."""
 
     thread_safe_prefetch = True
+    supports_sequence_sampling = True
 
     def __init__(
         self,
@@ -131,8 +133,18 @@ class PrioritizedSampler:
                     f"Need {request.batch_size} transitions, replay has {len(transition_ids)}"
                 )
             self._synchronize_fallback(transition_ids)
+            transitions = store.get(transition_ids)
+            elite_by_id = {
+                transition_id: (
+                    self.elite_time_s is not None
+                    and float(transition.info.get("sampling/projected_lap_time_s", float("inf")))
+                    <= self.elite_time_s
+                )
+                for transition_id, transition in zip(transition_ids, transitions, strict=True)
+            }
             scaled = [
                 self._fallback_priorities[transition_id] ** self.alpha
+                * (self.elite_priority_boost if elite_by_id[transition_id] else 1.0)
                 for transition_id in transition_ids
             ]
             total = sum(scaled)
@@ -147,7 +159,6 @@ class PrioritizedSampler:
                     (1.0 - self.uniform_mix) * probability + self.uniform_mix * uniform
                     for probability in probabilities
                 ]
-            transitions = store.get(transition_ids)
             demo_by_id = {
                 transition_id: _is_demo(transition.info)
                 for transition_id, transition in zip(transition_ids, transitions, strict=True)
@@ -175,7 +186,10 @@ class PrioritizedSampler:
             maximum = max(weights)
             demo_flags = tuple(demo_by_id[transition_id] for transition_id in chosen)
             expert_flags = tuple(expert_by_id[transition_id] for transition_id in chosen)
+            elite_flags = tuple(elite_by_id[transition_id] for transition_id in chosen)
             metadata = {
+                "replay/elite_active_fraction": sum(elite_by_id.values()) / len(transition_ids),
+                "replay/elite_sample_fraction": sum(elite_flags) / len(chosen),
                 "replay/demo_sample_fraction": sum(demo_flags) / len(chosen),
                 "replay/expert_demo_sample_fraction": sum(expert_flags) / len(chosen),
             }
@@ -331,16 +345,18 @@ class PrioritizedSampler:
             if any(len(history) != request.sequence_length for history in histories):
                 raise RuntimeError("prioritized sequence index is out of sync with replay")
             flattened = [transition_id for history in histories for transition_id in history]
-            next_histories = [
-                store.next_history_observations(
-                    transition_id,
-                    request.n_step,
-                    request.sequence_length,
-                )
-                for transition_id in transition_ids
+            horizon_ids = [
+                store.n_step_ids(transition_id, request.n_step) for transition_id in transition_ids
             ]
-            if any(len(history) != request.sequence_length for history in next_histories):
-                raise RuntimeError("prioritized next-history index is out of sync with replay")
+            if any(not horizon for horizon in horizon_ids):
+                raise RuntimeError("prioritized n-step index is out of sync with replay")
+            history_transitions = [store.get(history) for history in histories]
+            horizon_transitions = [store.get(horizon) for horizon in horizon_ids]
+            next_histories = _sequence_target_observation_histories(
+                history_transitions,
+                horizon_transitions,
+                request.sequence_length,
+            )
             batch = _make_batch(
                 store,
                 self.pipeline,
@@ -569,7 +585,8 @@ class PrioritizedSampler:
             self._non_expert_tree = _FenwickTree(capacity)
             self._non_expert_uniform_tree = _FenwickTree(capacity)
             for transition_id in store.eligible_transition_ids(n_step):
-                if len(store.history_ids(transition_id, sequence_length)) == sequence_length:
+                history = store.history_ids(transition_id, sequence_length)
+                if len(set(history)) == sequence_length:
                     self._activate(store, transition_id)
         else:
             for appended, evicted in changes:
@@ -579,7 +596,8 @@ class PrioritizedSampler:
                     if (
                         store.contains(candidate)
                         and store.is_n_step_eligible(candidate, n_step)
-                        and len(store.history_ids(candidate, sequence_length)) == sequence_length
+                        and len(set(store.history_ids(candidate, sequence_length)))
+                        == sequence_length
                     ):
                         self._activate(store, candidate)
                     else:

@@ -23,9 +23,33 @@ BRAKE_TAP_MATCH_PENALTY = 2.0
 class TrackmaniaActionSelector:
     """TrackMania-aware weighted and steering-neighbor exploration."""
 
-    def __init__(self, action_ids: tuple[int, ...] | None = None) -> None:
+    def __init__(
+        self,
+        action_ids: tuple[int, ...] | None = None,
+        *,
+        minimum_action_hold_steps: int = 1,
+        exploration_hold_steps: int = 1,
+        switch_q_margin: float = 0.0,
+        global_exploration_probability: float = 0.15,
+    ) -> None:
+        if min(minimum_action_hold_steps, exploration_hold_steps) < 1 or switch_q_margin < 0.0:
+            raise ValueError("action stabilization parameters are invalid")
+        if not 0.0 <= global_exploration_probability <= 1.0:
+            raise ValueError("global exploration probability must be inside [0, 1]")
         self.action_ids = action_ids
         self.weights = torch.from_numpy(select_brake_tap_exploration_weights(action_ids))
+        self.minimum_action_hold_steps = minimum_action_hold_steps
+        self.exploration_hold_steps = exploration_hold_steps
+        self.switch_q_margin = switch_q_margin
+        self.global_exploration_probability = global_exploration_probability
+        self._previous_action: int | None = None
+        self._hold_steps = 0
+        self._exploration_steps_remaining = 0
+
+    def reset_episode(self) -> None:
+        self._previous_action = None
+        self._hold_steps = 0
+        self._exploration_steps_remaining = 0
 
     def select(
         self,
@@ -35,11 +59,71 @@ class TrackmaniaActionSelector:
         deterministic: bool,
         epsilon: float,
     ) -> torch.Tensor:
-        if deterministic or not epsilon:
-            return greedy
-        explore = torch.rand(greedy.shape, device=greedy.device) < epsilon
-        random = self._exploration_action(q_values, greedy)
-        return torch.where(explore, random, greedy)
+        if self.exploration_hold_steps > 1:
+            return self._select_with_exploration_hold(
+                q_values,
+                greedy,
+                deterministic=deterministic,
+                epsilon=epsilon,
+            )
+        selected = greedy
+        if not deterministic and epsilon:
+            explore = torch.rand(greedy.shape, device=greedy.device) < epsilon
+            random = self._exploration_action(q_values, greedy)
+            selected = torch.where(explore, random, greedy)
+        return self._stabilize(q_values, selected)
+
+    def _select_with_exploration_hold(
+        self,
+        q_values: torch.Tensor,
+        greedy: torch.Tensor,
+        *,
+        deterministic: bool,
+        epsilon: float,
+    ) -> torch.Tensor:
+        if greedy.numel() != 1:
+            raise ValueError("exploration action holding requires a single-policy batch")
+        if self._exploration_steps_remaining:
+            if self._previous_action is None:
+                raise RuntimeError("exploration hold is missing its previous action")
+            self._exploration_steps_remaining -= 1
+            self._hold_steps += 1
+            return greedy.new_tensor([self._previous_action]).reshape(greedy.shape)
+        explore = bool(
+            not deterministic and epsilon and torch.rand((), device=greedy.device) < epsilon
+        )
+        if not explore:
+            return self._stabilize(q_values, greedy)
+        selected = self._exploration_action(q_values, greedy)
+        self._previous_action = int(selected.item())
+        self._hold_steps = 1
+        self._exploration_steps_remaining = self.exploration_hold_steps - 1
+        return selected
+
+    def _stabilize(self, q_values: torch.Tensor, selected: torch.Tensor) -> torch.Tensor:
+        if selected.numel() != 1:
+            if self.minimum_action_hold_steps > 1 or self.switch_q_margin:
+                raise ValueError("action stabilization requires a single-policy batch")
+            return selected
+        candidate = int(selected.item())
+        previous = self._previous_action
+        if previous is None:
+            self._previous_action = candidate
+            self._hold_steps = 1
+            return selected
+        if candidate == previous:
+            self._hold_steps += 1
+            return selected
+        advantage = float(q_values.reshape(-1, q_values.shape[-1])[0, candidate]) - float(
+            q_values.reshape(-1, q_values.shape[-1])[0, previous]
+        )
+        margin_blocks_switch = self.switch_q_margin > 0.0 and advantage < self.switch_q_margin
+        if self._hold_steps < self.minimum_action_hold_steps or margin_blocks_switch:
+            self._hold_steps += 1
+            return selected.new_tensor([previous]).reshape(selected.shape)
+        self._previous_action = candidate
+        self._hold_steps = 1
+        return selected
 
     def _exploration_action(self, q_values: torch.Tensor, greedy: torch.Tensor) -> torch.Tensor:
         weights = self.weights.to(q_values.device)
@@ -56,7 +140,9 @@ class TrackmaniaActionSelector:
         mode = greedy % modes_per_steering
         delta = torch.randint(-1, 2, greedy.shape, device=greedy.device, dtype=greedy.dtype)
         neighboring = (steering + delta).clamp(0, steering_bins - 1) * 6 + mode
-        change_mode = torch.rand(greedy.shape, device=greedy.device) < 0.15
+        change_mode = (
+            torch.rand(greedy.shape, device=greedy.device) < self.global_exploration_probability
+        )
         return torch.where(change_mode, global_action, neighboring).to(greedy.dtype)
 
 

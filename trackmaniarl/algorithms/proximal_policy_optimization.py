@@ -329,6 +329,7 @@ class ProximalPolicyOptimization(TorchLearnerBase):
             "observation_normalizer": self.observation_normalizer.state_dict(),
             "reward_normalizer": self.reward_normalizer.state_dict(),
             "processed_transitions": self.processed_transitions,
+            "scaler": self._scaler_state(),
             "rng": self._rng_state(),
         }
 
@@ -343,6 +344,7 @@ class ProximalPolicyOptimization(TorchLearnerBase):
             cast(Mapping[str, Any], state.get("reward_normalizer", {}))
         )
         self.processed_transitions = int(state.get("processed_transitions", 0))
+        self._restore_scaler(state.get("scaler"))
         self._restore_rng(cast(Mapping[str, Any], state.get("rng", {})))
 
     def _anneal_learning_rate(self) -> None:

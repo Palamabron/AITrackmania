@@ -12,6 +12,7 @@ from torch import nn
 from trackmaniarl.algorithms._torch import (
     TorchLearnerBase,
     TorchPolicy,
+    evaluated_actor_state,
     polyak_update,
     weighted_mean,
 )
@@ -24,6 +25,7 @@ class SoftActorCritic(TorchLearnerBase):
     """SAC v2 with explicit target semantics, optional temperature learning and PER feedback."""
 
     accepted_model_contracts = frozenset({ModelContract.CONTINUOUS_ACTOR_CRITIC})
+    supports_sequence_training = False
 
     def __init__(
         self,
@@ -160,8 +162,17 @@ class SoftActorCritic(TorchLearnerBase):
             "critic_optimizer": self.critic_optimizer.state_dict(),
             "log_alpha": self.log_alpha.detach().cpu() if self.log_alpha is not None else None,
             "alpha_optimizer": self.alpha_optimizer.state_dict() if self.alpha_optimizer else None,
+            "scaler": self._scaler_state(),
             "rng": self._rng_state(),
         }
+
+    def state_dict_for_policy(self, policy_state: Mapping[str, Any]) -> Mapping[str, Any]:
+        assert self.model is not None
+        state = evaluated_actor_state(self.state_dict(), self.model, policy_state)
+        state["actor_optimizer"] = torch.optim.Adam(
+            self.model.actor.parameters(), lr=self.learning_rate
+        ).state_dict()
+        return state
 
     def load_state_dict(self, state: Mapping[str, Any]) -> None:
         assert self.model is not None
@@ -173,4 +184,5 @@ class SoftActorCritic(TorchLearnerBase):
             self.log_alpha.data.copy_(state["log_alpha"].to(self.device))
         if self.alpha_optimizer is not None and state.get("alpha_optimizer") is not None:
             self.alpha_optimizer.load_state_dict(state["alpha_optimizer"])
+        self._restore_scaler(state.get("scaler"))
         self._restore_rng(state.get("rng", {}))

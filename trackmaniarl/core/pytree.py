@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
+from copy import deepcopy
 from numbers import Number
 from typing import Any
 
@@ -77,6 +78,19 @@ def tree_collate(values: Sequence[PyTree]) -> PyTree:
     if isinstance(first, Number):
         return torch.as_tensor(values)
     raise TypeError(f"Cannot collate unsupported PyTree leaf {type(first).__name__}")
+
+
+def tree_snapshot(value: PyTree) -> PyTree:
+    """Take ownership of mutable PyTree leaves at an asynchronous boundary."""
+
+    def snapshot(leaf: Any) -> Any:
+        if isinstance(leaf, torch.Tensor):
+            return leaf.detach().clone()
+        if isinstance(leaf, np.ndarray):
+            return np.array(leaf, copy=True, order="C")
+        return deepcopy(leaf)
+
+    return tree_map(snapshot, value)
 
 
 def sanitize_finite(value: PyTree) -> PyTree:

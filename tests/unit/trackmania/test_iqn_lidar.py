@@ -7,6 +7,7 @@ import socket
 import sys
 import threading
 from pathlib import Path
+from types import SimpleNamespace
 from typing import cast
 
 import numpy as np
@@ -19,6 +20,9 @@ from trackmaniarl.models.encoders import (
     TemporalMambaTrackGeometryEncoder,
     require_mamba_layer,
 )
+from trackmaniarl.models.encoders.track_geometry import _deterministic_adaptive_mean_pool
+from trackmaniarl.trackmania.encoders import LidarSimbaSensorEncoder
+from trackmaniarl.trackmania.environment import OpenPlanetEnvironment, _validated_live_map_uid
 from trackmaniarl.trackmania.features import LidarFeaturePipeline
 from trackmaniarl.trackmania.geometry import BoundaryGeometry, build_geometry_asset
 from trackmaniarl.trackmania.imitation_learning import LidarBehaviorCloningModel
@@ -37,6 +41,63 @@ class _FakeMamba(torch.nn.Module):
 
     def forward(self, values: torch.Tensor, **_: object) -> torch.Tensor:
         return cast(torch.Tensor, self.projection(values))
+
+
+@pytest.mark.parametrize("points", [89, 90, 91])
+def test_deterministic_spatial_pool_matches_adaptive_average(points: int) -> None:
+    values = torch.randn(3, 5, points)
+
+    pooled = _deterministic_adaptive_mean_pool(values, 12)
+
+    expected = torch.nn.functional.adaptive_avg_pool1d(values, 12)
+    torch.testing.assert_close(pooled, expected)
+
+
+def test_lidar_simba_encoder_is_feedforward_and_normalized() -> None:
+    encoder = LidarSimbaSensorEncoder(
+        sensor={
+            "telemetry_dim": 26,
+            "spatial_bins": 2,
+            "hidden_dim": 16,
+            "output_dim": 16,
+        },
+        backbone={"hidden_dim": 12, "block_count": 1, "expansion": 2},
+    )
+
+    output = encoder(
+        {
+            "lidar": torch.randn(3, 4, 16),
+            "lidar_mask": torch.ones(3, 16),
+            "telemetry": torch.randn(3, 26),
+        }
+    )
+
+    assert output.shape == (3, 12)
+    torch.testing.assert_close(output.norm(dim=-1), torch.ones(3))
+
+
+def test_lidar_simba_encoder_stacks_a_fixed_history_without_recurrence() -> None:
+    encoder = LidarSimbaSensorEncoder(
+        sensor={
+            "telemetry_dim": 26,
+            "spatial_bins": 2,
+            "hidden_dim": 16,
+            "output_dim": 16,
+        },
+        backbone={"hidden_dim": 12, "block_count": 1, "expansion": 2},
+        history_length=3,
+    )
+
+    output = encoder(
+        {
+            "lidar": torch.randn(2, 3, 4, 16),
+            "lidar_mask": torch.ones(2, 3, 16),
+            "telemetry": torch.randn(2, 3, 26),
+        }
+    )
+
+    assert output.shape == (2, 12)
+    torch.testing.assert_close(output.norm(dim=-1), torch.ones(2))
 
 
 def test_mamba_dependency_error_is_actionable(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -246,13 +307,47 @@ def test_lidar_pipeline_can_encode_velocity_in_the_local_car_frame(tmp_path: Pat
     assert prepared["telemetry"][4:7].tolist() == pytest.approx([0.125, 0.025, -0.0625])
 
 
+def test_lidar_can_mask_only_the_newest_control_inputs_in_history(tmp_path: Path) -> None:
+    pipeline = LidarFeaturePipeline(
+        _asset(tmp_path),
+        expected_map_uid="trackmaniarl-test",
+        history_length=2,
+        include_control_inputs=True,
+        mask_current_control_inputs=True,
+    )
+    first = np.zeros(33, dtype=np.float32)
+    first[10] = 1.0
+    first[30:33] = [-0.5, 1.0, 0.0]
+    second = first.copy()
+    second[3] = 10.0
+    second[30:33] = [0.75, 0.0, 1.0]
+
+    first_prepared = pipeline.transform_observation(first)
+    second_prepared = pipeline.transform_observation(second)
+
+    assert first_prepared["telemetry"].shape == (2, 20)
+    assert first_prepared["telemetry"][-1, 17:20].tolist() == [0.0, 0.0, 0.0]
+    assert second_prepared["telemetry"][0, 17:20].tolist() == [-0.5, 1.0, 0.0]
+    assert second_prepared["telemetry"][-1, 17:20].tolist() == [0.0, 0.0, 0.0]
+
+
+def test_lidar_rejects_control_masking_without_control_features(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="requires control inputs"):
+        LidarFeaturePipeline(
+            _asset(tmp_path),
+            include_control_inputs=False,
+            mask_current_control_inputs=True,
+        )
+
+
 def test_lidar_exposes_racing_line_pace_dynamics_and_finish_gate(tmp_path: Path) -> None:
     asset = _asset(tmp_path, lookahead_points=60)
     geometry = BoundaryGeometry(asset)
     frames = np.zeros((geometry.recorded_count, 33), dtype=np.float32)
     frames[:, 3] = np.linspace(0.0, 5_000.0, geometry.recorded_count)
     frames[:, 4:7] = geometry.racing_line
-    frames[:, 16] = np.linspace(20.0, 40.0, geometry.recorded_count)
+    frames[:, 16] = np.linspace(20_000.0, 40_000.0, geometry.recorded_count)
+    frames[-1, 2] = 1.0
     pace = tmp_path / "pace.npz"
     np.savez_compressed(
         pace,
@@ -292,6 +387,59 @@ def test_lidar_exposes_racing_line_pace_dynamics_and_finish_gate(tmp_path: Path)
     )
     batched = {key: value.unsqueeze(0) for key, value in prepared.items()}
     assert model.q_values(batched, quantile_count=8).shape == (1, 78)
+
+
+def test_lidar_guidance_channels_follow_the_expert_demo_without_changing_boundaries(
+    tmp_path: Path,
+) -> None:
+    asset = _asset(tmp_path, lookahead_points=4)
+    geometry = BoundaryGeometry(asset)
+    frames = np.zeros((geometry.recorded_count, 33), dtype=np.float32)
+    frames[:, 3] = np.linspace(0.0, 1_000.0, geometry.recorded_count)
+    frames[:, 4:7] = geometry.reward_center + np.asarray([0.0, 0.0, 2.0])
+    frames[-1, 2] = 1.0
+    pace = tmp_path / "shifted-pace.npz"
+    np.savez_compressed(
+        pace,
+        map_uid=np.asarray(geometry.map_uid),
+        geometry_sha256=np.asarray(geometry.sha256),
+        frames=frames,
+        finish_time_s=np.asarray(1.0),
+    )
+    baseline = LidarFeaturePipeline(
+        asset,
+        samples_per_side=5,
+        max_distance_m=10.0,
+        use_racing_line=True,
+        include_racing_line_channels=True,
+    )
+    guided = LidarFeaturePipeline(
+        asset,
+        samples_per_side=5,
+        max_distance_m=10.0,
+        use_racing_line=True,
+        pace_reference_path=pace,
+        include_racing_line_channels=True,
+    )
+    observation = np.zeros(33, dtype=np.float32)
+    observation[10] = 1.0
+
+    baseline_output = baseline.transform_observation(observation)
+    guided_output = guided.transform_observation(observation)
+
+    torch.testing.assert_close(guided_output["lidar"][:4], baseline_output["lidar"][:4])
+    assert baseline_output["lidar"][4].tolist() == pytest.approx([0.0] * 5)
+    assert guided_output["lidar"][4].tolist() == pytest.approx([-0.2] * 5)
+    assert np.allclose(guided._reference_line, geometry.racing_line)
+    guided.set_evaluation_map(
+        SimpleNamespace(geometry_path=asset, expected_map_uid="trackmaniarl-test")
+    )
+    reset_output = guided.transform_observation(observation)
+    assert reset_output["lidar"][4].tolist() == pytest.approx([-0.2] * 5)
+    assert np.allclose(
+        guided._lookahead_line[geometry.recorded_count :],
+        geometry.center[geometry.recorded_count :],
+    )
 
 
 def test_iqn_lidar_updates_and_handles_single_structured_observation(tmp_path: Path) -> None:
@@ -511,3 +659,55 @@ def test_session_protocol_verifies_preloaded_map_and_ready_state() -> None:
     assert client.confirm_ready("trackmaniarl-test").map_uid == "trackmaniarl-test"
     thread.join(timeout=1)
     assert commands == ["verify_loaded_map", "confirm_ready"]
+
+
+def test_live_map_preflight_rejects_placeholders_and_unbound_geometry() -> None:
+    with pytest.raises(ValueError, match="real expected_map_uid"):
+        _validated_live_map_uid("REPLACE_WITH_MAP_UID", None)
+    with pytest.raises(ValueError, match="real expected_map_uid"):
+        _validated_live_map_uid("<map-uid>", None)
+
+    geometry = SimpleNamespace(map_uid="trackmaniarl-test", map_sha256="")
+    with pytest.raises(ValueError, match="source map checksum"):
+        _validated_live_map_uid("trackmaniarl-test", geometry)
+
+
+def test_normal_environment_reset_verifies_map_and_readiness() -> None:
+    calls: list[tuple[str, str]] = []
+
+    class Session:
+        def verify_loaded_map(self, map_uid: str) -> None:
+            calls.append(("verify_loaded_map", map_uid))
+
+        def confirm_ready(self, map_uid: str) -> None:
+            calls.append(("confirm_ready", map_uid))
+
+    frames = iter(
+        (
+            SimpleNamespace(values=np.asarray([0.0, 0.0, 0.0, 100.0] + [0.0] * 29)),
+            SimpleNamespace(values=np.asarray([0.0, 0.0, 0.0, 1.0] + [0.0] * 29)),
+        )
+    )
+    environment = object.__new__(OpenPlanetEnvironment)
+    environment.config = SimpleNamespace(
+        reset_settle_s=0.0,
+        start_timeout_s=1.0,
+        start_poll_s=0.0,
+        control_backend="gamepad",
+        position_indices=(4, 5, 6),
+        velocity_indices=(10, 11, 12),
+    )
+    environment.evaluation_map = None
+    environment._expected_map_uid = "trackmaniarl-test"
+    environment._session = Session()
+    environment._finish_confirmation_pending = False
+    environment.client = SimpleNamespace(read=lambda: next(frames))
+    environment.controller = SimpleNamespace(reset=lambda: None)
+    environment.reward = SimpleNamespace(reset=lambda *args, **kwargs: None)
+
+    environment.reset()
+
+    assert calls == [
+        ("verify_loaded_map", "trackmaniarl-test"),
+        ("confirm_ready", "trackmaniarl-test"),
+    ]

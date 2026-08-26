@@ -1,0 +1,52 @@
+{
+  "title": "Demonstration timing: telemetry to latency-corrected action label",
+  "subtitle": "Labels are constructed on the same physical decision-time grid used online; lead and aggregation change the label, while offset is an open-loop diagnostic.",
+  "width": 1800,
+  "height": 1080,
+  "zones": [
+    {"id": "recorded", "label": "Recorded frame_start stream · irregular telemetry timestamps", "x": 45, "y": 130, "w": 1710, "h": 230, "color": "slate"},
+    {"id": "labeling", "label": "Decision-grid sample construction", "x": 45, "y": 390, "w": 1710, "h": 300, "color": "blue"},
+    {"id": "diagnostics", "label": "Evaluation paths", "x": 45, "y": 720, "w": 1710, "h": 210, "color": "orange"}
+  ],
+  "nodes": [
+    {"id": "frame-j", "label": "Telemetry F_j @ τ_j", "detail": "position · velocity · race timer", "x": 90, "y": 195, "w": 250, "h": 105, "color": "slate"},
+    {"id": "control-j", "label": "Control U_j", "detail": "held from τ_j", "x": 430, "y": 195, "w": 220, "h": 105, "color": "orange"},
+    {"id": "frame-next", "label": "Telemetry F_{j+1}", "detail": "next recorded timestamp", "x": 740, "y": 195, "w": 250, "h": 105, "color": "slate"},
+    {"id": "control-next", "label": "Control U_{j+1}", "detail": "held from τ_{j+1}", "x": 1080, "y": 195, "w": 220, "h": 105, "color": "orange"},
+    {"id": "later-frame", "label": "… later frames", "detail": "monotonic race-time axis", "x": 1390, "y": 195, "w": 250, "h": 105, "color": "slate"},
+
+    {"id": "decision-tick", "label": "Decision tick t_k", "detail": "next tick ≥ t_k + decision_interval_ms", "x": 80, "y": 485, "w": 220, "h": 110, "color": "blue"},
+    {"id": "observation", "label": "Observation x_k", "detail": "feature pipeline on selected telemetry", "x": 345, "y": 485, "w": 225, "h": 110, "color": "cyan"},
+    {"id": "lead-target", "label": "Shifted label time", "detail": "τlabel = t_k + action_lead_ms", "x": 615, "y": 485, "w": 240, "h": 110, "color": "purple"},
+    {"id": "aggregation-choice", "label": "Aggregate controls?", "detail": "config flag", "x": 905, "y": 475, "w": 220, "h": 130, "color": "orange", "shape": "diamond"},
+    {"id": "point-label", "label": "Point label", "detail": "first recorded action at or after τlabel", "x": 1180, "y": 420, "w": 245, "h": 105, "color": "green"},
+    {"id": "window-label", "label": "Window label", "detail": "integrate window\nthen quantize once", "x": 1180, "y": 555, "w": 245, "h": 110, "color": "green"},
+    {"id": "bc-sample", "label": "BC training sample", "detail": "x_k + discrete label\nonline cadence", "x": 1480, "y": 485, "w": 230, "h": 110, "color": "blue"},
+
+    {"id": "open-loop", "label": "Open-loop replay", "detail": "action selected by current race timer", "x": 110, "y": 775, "w": 285, "h": 105, "color": "orange"},
+    {"id": "offset", "label": "--action-offset-ms", "detail": "sweep replay timestamps to diagnose latency", "x": 515, "y": 775, "w": 285, "h": 105, "color": "red"},
+    {"id": "tracking", "label": "Trajectory tracking", "detail": "state-based feedback corrects lateral error", "x": 920, "y": 775, "w": 285, "h": 105, "color": "cyan"},
+    {"id": "closed-loop", "label": "Closed-loop benchmark", "detail": "finish · pace · interventions · failures", "x": 1325, "y": 775, "w": 285, "h": 105, "color": "purple"}
+  ],
+  "edges": [
+    {"id": "e-frame-control", "from": "frame-j", "to": "control-j", "label": "frame_start", "color": "slate"},
+    {"id": "e-control-next-frame", "from": "control-j", "to": "frame-next", "label": "held", "color": "orange"},
+    {"id": "e-next-frame-control", "from": "frame-next", "to": "control-next", "label": "new sample", "color": "slate"},
+    {"id": "e-control-later", "from": "control-next", "to": "later-frame", "color": "orange"},
+    {"id": "e-stream-grid", "from": "frame-j", "to": "decision-tick", "points": [[215,300],[215,390],[190,390],[190,485]], "color": "blue"},
+    {"id": "e-tick-observation", "from": "decision-tick", "to": "observation", "color": "blue"},
+    {"id": "e-observation-lead", "from": "observation", "to": "lead-target", "color": "cyan"},
+    {"id": "e-lead-choice", "from": "lead-target", "to": "aggregation-choice", "color": "purple"},
+    {"id": "e-choice-point", "from": "aggregation-choice", "to": "point-label", "points": [[1125,510],[1150,510],[1150,472],[1180,472]], "label": "false", "label_at": [1150,445], "color": "green"},
+    {"id": "e-choice-window", "from": "aggregation-choice", "to": "window-label", "points": [[1125,570],[1150,570],[1150,610],[1180,610]], "label": "true", "label_at": [1150,645], "color": "green"},
+    {"id": "e-point-sample", "from": "point-label", "to": "bc-sample", "points": [[1425,472],[1450,472],[1450,540],[1480,540]], "color": "green"},
+    {"id": "e-window-sample", "from": "window-label", "to": "bc-sample", "points": [[1425,610],[1450,610],[1450,540],[1480,540]], "color": "green"},
+    {"id": "e-open-offset", "from": "open-loop", "to": "offset", "label": "diagnose phase", "color": "orange"},
+    {"id": "e-offset-benchmark", "from": "offset", "to": "closed-loop", "points": [[800,827],[850,827],[850,950],[1467,950],[1467,880]], "label": "candidate offset", "label_at": [1120,950], "color": "red", "style": "dashed"},
+    {"id": "e-tracking-benchmark", "from": "tracking", "to": "closed-loop", "label": "feedback policy", "color": "cyan"}
+  ],
+  "notes": [
+    {"id": "aggregation-contract", "text": "Aggregation requires control_alignment=frame_start and integrates [t_k + lead, t_{k+1} + lead). Gas/steering use duration-weighted means; brake taps use overlap duration before quantization.", "x": 100, "y": 965, "w": 790, "h": 75, "color": "green"},
+    {"id": "offset-contract", "text": "--action-offset-ms shifts only open-loop replay timestamps for diagnosis. It does not rewrite the demonstration or replace closed-loop bc-benchmark.", "x": 910, "y": 965, "w": 790, "h": 75, "color": "red"}
+  ]
+}

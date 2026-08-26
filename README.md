@@ -2,8 +2,8 @@
 
 [![PyPI](https://img.shields.io/pypi/v/TrackmaniaRL?color=blue)](https://pypi.org/project/TrackmaniaRL/)
 [![Python](https://img.shields.io/pypi/pyversions/TrackmaniaRL?color=3776AB)](https://pypi.org/project/TrackmaniaRL/)
-[![CI](https://github.com/Palamabron/AITrackmania/actions/workflows/ci.yml/badge.svg)](https://github.com/Palamabron/AITrackmania/actions/workflows/ci.yml)
-[![License](https://img.shields.io/pypi/l/TrackmaniaRL?color=green)](https://github.com/Palamabron/AITrackmania/blob/main/LICENSE)
+[![CI](https://github.com/Palamabron/TrackmaniaRL/actions/workflows/ci.yml/badge.svg)](https://github.com/Palamabron/TrackmaniaRL/actions/workflows/ci.yml)
+[![License](https://img.shields.io/pypi/l/TrackmaniaRL?color=green)](https://github.com/Palamabron/TrackmaniaRL/blob/main/LICENSE)
 [![Status](https://img.shields.io/pypi/status/TrackmaniaRL?color=orange)](https://pypi.org/project/TrackmaniaRL/)
 
 TrackmaniaRL is a reinforcement-learning library for training agents in
@@ -11,9 +11,11 @@ Trackmania 2020. It combines ready-to-use algorithms, replay buffers, model
 families and Trackmania telemetry with explicit interfaces for replacing any
 component in an experiment.
 
-The current release is available on
-[PyPI](https://pypi.org/project/TrackmaniaRL/). TrackmaniaRL requires Python
-3.12 or newer.
+This checkout is the `2.0.0rc1` release candidate and requires Python 3.12 or
+newer. The [PyPI page](https://pypi.org/project/TrackmaniaRL/) reports the latest
+published package; if it still reports a 1.x version, use the
+[source setup](https://github.com/Palamabron/TrackmaniaRL/blob/main/readme/development.md#repository-setup)
+for the RunSpec 2.0 API documented here.
 
 ## What you get
 
@@ -37,28 +39,38 @@ component paths.
 | If you want to... | Start here |
 | --- | --- |
 | install the released library and create an agent | [Quick start](#install-and-create-an-agent) |
-| run this repository from source | [Development setup](https://github.com/Palamabron/AITrackmania/blob/main/readme/development.md#repository-setup) |
-| understand processes, data flow, security boundaries and package ownership | [Architecture and editable diagrams](https://github.com/Palamabron/AITrackmania/blob/main/readme/architecture.md) |
-| replace a learner, model, replay strategy or game adapter | [SDK and extension guide](https://github.com/Palamabron/AITrackmania/blob/main/readme/sdk.md) |
-| prepare Trackmania and OpenPlanet | [Trackmania workflow](https://github.com/Palamabron/AITrackmania/blob/main/readme/trackmania.md) |
-| record demonstrations, train BC and hand off to RL | [Imitation-learning workflow](https://github.com/Palamabron/AITrackmania/blob/main/readme/imitation-learning.md) |
-| report a security issue or review trust boundaries | [Security policy](https://github.com/Palamabron/AITrackmania/blob/main/SECURITY.md) |
+| run this repository from source | [Development setup](https://github.com/Palamabron/TrackmaniaRL/blob/main/readme/development.md#repository-setup) |
+| understand processes, data flow, security boundaries and package ownership | [Architecture and editable diagrams](https://github.com/Palamabron/TrackmaniaRL/blob/main/readme/architecture.md) |
+| configure RunSpec, Trackmania, evaluation or distributed execution | [Configuration reference](https://github.com/Palamabron/TrackmaniaRL/blob/main/readme/configuration.md) |
+| replace a learner, model, replay strategy or game adapter | [SDK and extension guide](https://github.com/Palamabron/TrackmaniaRL/blob/main/readme/sdk.md) |
+| choose an algorithm and verify its support contract | [Algorithm support matrix](https://github.com/Palamabron/TrackmaniaRL/blob/main/readme/algorithms.md) |
+| configure PER, n-step returns or recurrent replay | [Replay and sequence guide](https://github.com/Palamabron/TrackmaniaRL/blob/main/readme/replay-and-sequences.md) |
+| understand and tune every Trackmania reward component | [Reward reference](https://github.com/Palamabron/TrackmaniaRL/blob/main/readme/rewards.md) |
+| prepare Trackmania and OpenPlanet | [Trackmania workflow](https://github.com/Palamabron/TrackmaniaRL/blob/main/readme/trackmania.md) |
+| record demonstrations, train BC and hand off to RL | [Imitation-learning workflow](https://github.com/Palamabron/TrackmaniaRL/blob/main/readme/imitation-learning.md) |
+| migrate a 1.x run or checkpoint | [2.0 migration guide](https://github.com/Palamabron/TrackmaniaRL/blob/main/readme/migration-2.0.md) |
+| design a useful W&B workspace or diagnose a run | [Observability guide](https://github.com/Palamabron/TrackmaniaRL/blob/main/readme/observability.md) |
+| diagnose low GPU utilization or compare throughput | [Performance guide](https://github.com/Palamabron/TrackmaniaRL/blob/main/readme/performance.md) |
+| report a security issue or review trust boundaries | [Security policy](https://github.com/Palamabron/TrackmaniaRL/blob/main/SECURITY.md) |
 
 ## Install and create an agent
 
 Install the published CLI with [uv](https://docs.astral.sh/uv/):
 
 ```bash
-uv tool install trackmaniarl
+uv tool install "trackmaniarl==2.0.0rc1"
 trackmaniarl init my-trackmania-agent --template trackmania
 cd my-trackmania-agent
 uv sync
 uv run trackmaniarl validate run.yaml
 ```
 
-The `trackmania` template creates a commented, installable agent project with
-the Trackmania, algorithm, distributed and W&B extras declared for you. Omit
-`--template trackmania` to generate the smaller, game-free starter project.
+The `trackmania` template creates an installable agent project with a validated
+reference RunSpec and the Trackmania, algorithm and distributed extras declared
+for you. W&B remains
+opt-in: add the `wandb` extra and an explicit `WandbTracker` component only when
+you want remote logging. Omit `--template trackmania` to generate the smaller,
+game-free starter project.
 `trackmaniarl validate` checks imports, contracts and a synthetic learner update
 without starting the game or contacting an external tracker.
 
@@ -72,15 +84,17 @@ To add the SDK to an existing Python project instead, choose only the extras you
 need:
 
 ```bash
-uv add trackmaniarl
-uv add "trackmaniarl[algorithms,distributed]"
+uv add "trackmaniarl==2.0.0rc1"
+uv add "trackmaniarl[algorithms,distributed]==2.0.0rc1"
+uv add "trackmaniarl[all]==2.0.0rc1"
 ```
 
 | Extra | Adds |
 | --- | --- |
+| `all` | every optional integration and model dependency |
 | `algorithms` | TorchRL-based algorithm dependencies |
 | `trackmania` | Trackmania environment and Windows/Linux virtual-gamepad support |
-| `distributed` | authenticated gRPC rollouts, safetensors and compression |
+| `distributed` | authenticated gRPC rollouts and safetensors policy transfer |
 | `wandb` | Weights & Biases logging |
 | `explain` | Captum attribution helpers |
 | `orchestrator` | Gemini and Optuna experiment strategies |
@@ -89,11 +103,13 @@ uv add "trackmaniarl[algorithms,distributed]"
 
 ## Run Trackmania
 
-Live collection requires Trackmania 2020 on Windows, the bundled OpenPlanet
-plugin and a prepared map/geometry asset. Follow the
-[Trackmania workflow](https://github.com/Palamabron/AITrackmania/blob/main/readme/trackmania.md)
+Live collection requires Trackmania 2020 on Windows, Openplanet School Mode,
+the signed [**TrackmaniaRL Connect** (`SAC_GetData`)](https://openplanet.dev/plugin/sac_getdata)
+plugin installed through Plugin Manager, and a prepared map/geometry asset. The bundled source is a
+developer-reference snapshot, not the normal installation path. Follow the
+[Trackmania workflow](https://github.com/Palamabron/TrackmaniaRL/blob/main/readme/trackmania.md)
 or the concrete
-[OpenPlanet guide](https://github.com/Palamabron/AITrackmania/blob/main/trackmaniarl/project/openplanet/README.md)
+[OpenPlanet guide](https://github.com/Palamabron/TrackmaniaRL/blob/main/trackmaniarl/project/openplanet/README.md)
 before starting the game integration.
 
 The generated Trackmania project pins the patched
@@ -105,13 +121,15 @@ that source pin until the fix is included in an upstream vgamepad release.
 With Trackmania and the OpenPlanet plugin running:
 
 ```bash
-uv run trackmaniarl track check
+uv run trackmaniarl track check --config run.yaml
 uv run trackmaniarl smoke run.yaml --transitions 100
 uv run trackmaniarl train run.yaml
 ```
 
-The bounded smoke test uses the same asynchronous learner/actor path as
-training, verifies a live policy refresh and writes a checkpoint. Start a fresh
+The connection check validates three exact 33-field frames, session protocol 2,
+the active map UID and player readiness. The bounded smoke test uses the same
+asynchronous learner/actor path as training, verifies a live policy refresh and
+writes a checkpoint. Start a fresh
 run directory when the run API or immutable configuration changes; the current
 schema is RunSpec `2.0`.
 
@@ -124,12 +142,12 @@ Torch build.
 ## Runtime model
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/Palamabron/AITrackmania/main/docs/diagrams/runtime-architecture-preview.png" alt="TrackmaniaRL runtime architecture: configuration creates actors and learner; actors send durable rollouts to replay, and learner updates publish policy snapshots" width="900">
+  <img src="https://raw.githubusercontent.com/Palamabron/TrackmaniaRL/main/docs/diagrams/runtime-architecture-preview.png" alt="TrackmaniaRL runtime architecture: configuration creates actors and learner; actors send durable rollouts to replay, and learner updates publish policy snapshots" width="900">
 </p>
 
-The [architecture guide](https://github.com/Palamabron/AITrackmania/blob/main/readme/architecture.md)
+The [architecture guide](https://github.com/Palamabron/TrackmaniaRL/blob/main/readme/architecture.md)
 contains the full explanation and editable Excalidraw sources for the runtime,
-extension workflow and distributed security model.
+local/remote deployment, checkpoint recovery and Trackmania integration.
 
 `trackmaniarl train` starts a coordinator/learner and one local actor as
 independent, Windows-safe `spawn` processes. This is the off-policy runtime used
@@ -155,7 +173,7 @@ network in clear text:
 
 ```bash
 # Generate once, then put the value in an ignored .env on both machines.
-python -c "import secrets; print(secrets.token_urlsafe(32))"
+uv run python -c "import secrets; print(secrets.token_urlsafe(32))"
 
 # training machine
 uv run trackmaniarl learner run.yaml --bind 127.0.0.1:8787
@@ -175,14 +193,14 @@ the gRPC port directly; keep the listener on loopback and use SSH, WireGuard or
 another authenticated encrypted tunnel.
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/Palamabron/AITrackmania/main/docs/diagrams/distributed-security-preview.png" alt="Distributed security and durability: an actor spools rollouts, an encrypted tunnel reaches loopback gRPC, then token and contract checks precede WAL ingestion" width="900">
+  <img src="https://raw.githubusercontent.com/Palamabron/TrackmaniaRL/main/docs/diagrams/distributed-security-preview.png" alt="Distributed security and durability: an actor spools rollouts, an encrypted tunnel reaches loopback gRPC, then token and contract checks precede WAL ingestion" width="900">
 </p>
 
 Read this diagram from left to right. An actor persists a rollout before it is
 sent, the encrypted tunnel terminates at the learner's loopback listener, and
-the learner checks identity, run compatibility and payload limits before WAL
-ingestion. The lower control path carries refreshed policy state back to the
-actor. The [editable source](https://github.com/Palamabron/AITrackmania/blob/main/docs/diagrams/distributed-security.excalidraw)
+the learner checks identity, run compatibility and payload limits before the
+contiguous WAL/replay commit. Portable policy snapshots and checkpoints leave
+the shared learner runtime. The [editable source](https://github.com/Palamabron/TrackmaniaRL/blob/main/docs/diagrams/distributed-security.excalidraw)
 is available for architecture reviews.
 
 ## Components and extension API
@@ -198,23 +216,12 @@ components:
     class_path: trackmaniarl.models.factory:CompositeValueModelFactory
 ```
 
-### Extension workflow
-
-<p align="center">
-  <img src="https://raw.githubusercontent.com/Palamabron/AITrackmania/main/docs/diagrams/extension-workflow-preview.png" alt="TrackmaniaRL extension workflow: decide ownership, implement a public contract, configure explicitly and complete verification gates" width="900">
-</p>
-
 Start a new component in the generated extension project. Keep it there when
 it is project-specific; move it to the owning library package only when it is
 reusable and has passed deterministic contract, configuration and, where
-applicable, live Trackmania checks. The [editable workflow diagram](https://github.com/Palamabron/AITrackmania/blob/main/docs/diagrams/extension-workflow.excalidraw)
-shows the required gates before training and release.
-
-Read the workflow from left to right: first decide whether the component stays
-project-owned or has a reusable library owner, then implement one public core
-contract and expose it through an installable `module:attribute`, and finally
-run deterministic state, formatting, type, test and configuration gates. The
-Trackmania check and bounded smoke test apply only to game-facing components.
+applicable, live Trackmania checks. The [SDK guide](https://github.com/Palamabron/TrackmaniaRL/blob/main/readme/sdk.md)
+lists the contract and release gates; the Trackmania connection check and
+bounded smoke test apply only to game-facing components.
 
 The stable contracts in `trackmaniarl.core` include `Learner`,
 `OfflineSupervisedLearner`, `Policy`, `ModelFactory`, `ReplayStore`, `Sampler`,
@@ -227,16 +234,16 @@ and bounded compressed episode artifacts. Only the learner needs W&B
 credentials; `WANDB_API_KEY` can be supplied through the environment or project
 `.env`.
 
-See the [SDK guide](https://github.com/Palamabron/AITrackmania/blob/main/readme/sdk.md)
+See the [SDK guide](https://github.com/Palamabron/TrackmaniaRL/blob/main/readme/sdk.md)
 for the full component schema and a built-in run example. Release history is in
-the [changelog](https://github.com/Palamabron/AITrackmania/blob/main/CHANGELOG.md).
+the [changelog](https://github.com/Palamabron/TrackmaniaRL/blob/main/CHANGELOG.md).
 
 ## Development
 
 Clone the repository and install the development group:
 
 ```bash
-git clone https://github.com/Palamabron/AITrackmania.git
+git clone https://github.com/Palamabron/TrackmaniaRL.git
 cd AITrackmania
 uv sync --group dev
 uv run poe fmt
@@ -245,18 +252,18 @@ uv run poe test
 ```
 
 The commands are intentionally identical on Windows, Linux, WSL and CI. See
-[CONTRIBUTING.md](https://github.com/Palamabron/AITrackmania/blob/main/CONTRIBUTING.md)
-and [SECURITY.md](https://github.com/Palamabron/AITrackmania/blob/main/SECURITY.md)
+[CONTRIBUTING.md](https://github.com/Palamabron/TrackmaniaRL/blob/main/CONTRIBUTING.md)
+and [SECURITY.md](https://github.com/Palamabron/TrackmaniaRL/blob/main/SECURITY.md)
 before opening a contribution or reporting a vulnerability.
 
 For the repository layout, change workflow, test levels and rules for adding a
 public component, read the
-[development guide](https://github.com/Palamabron/AITrackmania/blob/main/readme/development.md).
+[development guide](https://github.com/Palamabron/TrackmaniaRL/blob/main/readme/development.md).
 
 ## Project status and attribution
 
 TrackmaniaRL is beta software. The project originated from TMRL and has since
 been substantially redesigned. It is not affiliated with or endorsed by
 Ubisoft, Nadeo or the TMRL maintainers. Trackmania is a trademark of
-Nadeo/Ubisoft. See [NOTICE](https://github.com/Palamabron/AITrackmania/blob/main/NOTICE)
+Nadeo/Ubisoft. See [NOTICE](https://github.com/Palamabron/TrackmaniaRL/blob/main/NOTICE)
 for attribution.

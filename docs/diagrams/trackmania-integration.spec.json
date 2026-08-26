@@ -1,0 +1,43 @@
+{
+  "title": "Trackmania and Openplanet integration",
+  "subtitle": "The signed plugin observes the game; TrackmaniaRL validates the session, builds features and controls the car through a separate local backend.",
+  "width": 1200,
+  "height": 1025,
+  "zones": [
+    {"id": "game-zone", "label": "Trackmania 2020 · School Mode", "x": 35, "y": 145, "w": 245, "h": 655, "color": "blue"},
+    {"id": "plugin-zone", "label": "Signed Openplanet plugin", "x": 310, "y": 145, "w": 280, "h": 655, "color": "orange"},
+    {"id": "adapter-zone", "label": "TrackmaniaRL adapter", "x": 620, "y": 145, "w": 330, "h": 655, "color": "green"},
+    {"id": "control-zone", "label": "Separate control path", "x": 980, "y": 145, "w": 185, "h": 655, "color": "purple"}
+  ],
+  "nodes": [
+    {"id": "active-map", "label": "Active map", "detail": "UID · player · readiness", "x": 60, "y": 220, "w": 195, "h": 105, "color": "blue"},
+    {"id": "vehicle", "label": "Vehicle state", "detail": "race · pose · controls", "x": 60, "y": 420, "w": 195, "h": 105, "color": "blue"},
+    {"id": "game-input", "label": "Game input", "detail": "steer · gas · brake", "x": 60, "y": 650, "w": 195, "h": 95, "color": "purple"},
+    {"id": "plugin", "label": "TrackmaniaRL Connect", "detail": "SAC_GetData · signed 2.4.0", "x": 340, "y": 220, "w": 220, "h": 105, "color": "orange"},
+    {"id": "telemetry", "label": "Telemetry :9000", "detail": "33 little-endian float32 per tick", "x": 340, "y": 420, "w": 220, "h": 105, "color": "orange"},
+    {"id": "session", "label": "Session :9001", "detail": "JSONL protocol 2 · map · ready", "x": 340, "y": 650, "w": 220, "h": 95, "color": "orange"},
+    {"id": "preflight", "label": "Live preflight", "detail": "schema · UID · readiness · hashes", "x": 660, "y": 220, "w": 250, "h": 105, "color": "red"},
+    {"id": "client", "label": "Telemetry client", "detail": "framing · value checks", "x": 660, "y": 420, "w": 250, "h": 105, "color": "green"},
+    {"id": "pipeline", "label": "Features + reward", "detail": "lidar · geometry · pace · safety", "x": 660, "y": 600, "w": 250, "h": 105, "color": "green"},
+    {"id": "transition", "label": "Transition", "detail": "contract IDs · policy version", "x": 660, "y": 710, "w": 250, "h": 80, "color": "cyan"},
+    {"id": "action", "label": "Policy action", "detail": "validated action table", "x": 995, "y": 300, "w": 155, "h": 105, "color": "purple"},
+    {"id": "controller", "label": "Controller", "detail": "vgamepad or keyboard", "x": 995, "y": 520, "w": 155, "h": 105, "color": "purple"}
+  ],
+  "edges": [
+    {"id": "e-map-plugin", "from": "active-map", "to": "plugin", "label": "inspect", "color": "blue"},
+    {"id": "e-vehicle-telemetry", "from": "vehicle", "to": "telemetry", "label": "observe", "color": "blue"},
+    {"id": "e-plugin-telemetry", "from": "plugin", "to": "telemetry", "points": [[450,325],[450,420]], "color": "orange"},
+    {"id": "e-plugin-session", "from": "plugin", "to": "session", "points": [[560,272],[585,272],[585,697],[560,697]], "color": "orange"},
+    {"id": "e-session-preflight", "from": "session", "to": "preflight", "points": [[560,697],[605,697],[605,272],[660,272]], "label": "verify", "label_at": [605,370], "color": "red"},
+    {"id": "e-telemetry-client", "from": "telemetry", "to": "client", "color": "orange"},
+    {"id": "e-preflight-pipeline", "from": "preflight", "to": "pipeline", "points": [[785,325],[785,600]], "label": "open gate", "label_at": [850,550], "color": "red"},
+    {"id": "e-client-pipeline", "from": "client", "to": "pipeline", "points": [[785,525],[785,600]], "color": "green"},
+    {"id": "e-pipeline-transition", "from": "pipeline", "to": "transition", "points": [[785,705],[785,710]], "color": "green"},
+    {"id": "e-action-controller", "from": "action", "to": "controller", "points": [[1072,405],[1072,520]], "color": "purple"},
+    {"id": "e-controller-input", "from": "controller", "to": "game-input", "points": [[1072,625],[1072,820],[20,820],[20,697],[60,697]], "label": "local input only", "label_at": [545,820], "color": "purple"}
+  ],
+  "notes": [
+    {"id": "plugin-limit", "text": "Plugin boundary: no track geometry, boundary extraction, map-file loader, controller, timestamp or version handshake.", "x": 75, "y": 855, "w": 1050, "h": 65, "color": "orange"},
+    {"id": "asset-rule", "text": "Exact BoundaryGeometry still comes from a map-bound, checksummed asset; Openplanet placement metadata is not an ordered drivable boundary.", "x": 75, "y": 940, "w": 1050, "h": 70, "color": "slate"}
+  ]
+}

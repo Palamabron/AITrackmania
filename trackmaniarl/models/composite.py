@@ -163,6 +163,38 @@ class CompositeValueModel(nn.Module):
         return dict(manifest()) if callable(manifest) else {}
 
     def architecture_fingerprint(self) -> str:
+        return self._architecture_fingerprint(
+            (
+                "input_dim",
+                "output_dim",
+                "feature_dim",
+                "action_count",
+                "quantile_count",
+                "train_quantile_count",
+                "target_quantile_count",
+                "evaluation_quantile_count",
+                "fraction_count",
+                "entropy_coefficient",
+                "d_state",
+                "d_conv",
+                "inner_dim",
+            )
+        )
+
+    def legacy_architecture_fingerprint(self) -> str:
+        return self._architecture_fingerprint(
+            (
+                "input_dim",
+                "output_dim",
+                "feature_dim",
+                "action_count",
+                "d_state",
+                "d_conv",
+                "inner_dim",
+            )
+        )
+
+    def _architecture_fingerprint(self, dimensions: tuple[str, ...]) -> str:
         modules = ("encoder", "temporal", "head", "strategy")
         architecture: dict[str, object] = {}
         for name in modules:
@@ -174,17 +206,7 @@ class CompositeValueModel(nn.Module):
                     for key, value in module.state_dict().items()
                 },
                 "dimensions": {
-                    key: getattr(module, key)
-                    for key in (
-                        "input_dim",
-                        "output_dim",
-                        "feature_dim",
-                        "action_count",
-                        "d_state",
-                        "d_conv",
-                        "inner_dim",
-                    )
-                    if hasattr(module, key)
+                    key: getattr(module, key) for key in dimensions if hasattr(module, key)
                 },
             }
         encoded = json.dumps(architecture, sort_keys=True, separators=(",", ":"))

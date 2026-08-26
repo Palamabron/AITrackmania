@@ -19,6 +19,37 @@ from trackmaniarl.core.replay import (
 )
 
 
+class _BasicReplayStore:
+    def __init__(self) -> None:
+        self.transitions: list[Transition] = []
+
+    def append(self, transition: Transition) -> int:
+        self.transitions.append(transition)
+        return len(self.transitions) - 1
+
+    def get(self, transition_ids: list[int]) -> list[Transition]:
+        return [self.transitions[transition_id] for transition_id in transition_ids]
+
+    def available_ids(self) -> list[int]:
+        return list(range(len(self.transitions)))
+
+    def contains(self, transition_id: int) -> bool:
+        return 0 <= transition_id < len(self.transitions)
+
+    def __len__(self) -> int:
+        return len(self.transitions)
+
+
+class _CountingSequenceStore(InMemoryReplayStore):
+    def __init__(self) -> None:
+        super().__init__()
+        self.available_ids_calls = 0
+
+    def available_ids(self) -> list[int]:
+        self.available_ids_calls += 1
+        return super().available_ids()
+
+
 def _store(*, episodes: int = 2, steps: int = 4, demos: int = 0) -> InMemoryReplayStore:
     store = InMemoryReplayStore()
     for episode in range(episodes):
@@ -71,12 +102,13 @@ def test_prioritized_prefetch_blocks_fifo_eviction_until_batch_is_materialized()
             self.sampling_started = threading.Event()
             self.release_sampling = threading.Event()
 
-        def n_step_ids(self, transition_id: int, n_step: int) -> list[int]:
-            result = super().n_step_ids(transition_id, n_step)
+        def materialize_n_step(
+            self, transition_ids: list[int], request: BatchRequest
+        ) -> tuple[list[Transition], list[float]]:
             if self.block_sampling:
                 self.sampling_started.set()
                 assert self.release_sampling.wait(timeout=2.0)
-            return result
+            return super().materialize_n_step(transition_ids, request)
 
     store = BlockingStore()
     store.append(
@@ -143,6 +175,121 @@ def test_sequence_sampler_never_crosses_episode_or_terminal_boundary() -> None:
     assert batch.rewards.shape == (2, 2)
     windows = [batch.transition_ids[index : index + 2] for index in range(0, 4, 2)]
     assert all(window[0] in {0, 1, 3, 4} and window[1] == window[0] + 1 for window in windows)
+
+
+def test_basic_sequence_sampler_builds_only_the_final_n_step_target() -> None:
+    store = _BasicReplayStore()
+    for step in range(5):
+        store.append(
+            Transition(
+                observation=float(step),
+                action=step % 3,
+                reward=float(step + 1),
+                next_observation=float(step + 1),
+                terminated=step == 4,
+                truncated=False,
+                episode_id="episode-0",
+                step=step,
+            )
+        )
+
+    batch = SequenceSampler(IdentityFeaturePipeline(), sequence_length=3, seed=4).sample(
+        store,
+        BatchRequest(batch_size=3, sequence_length=3, n_step=2, gamma=0.5),
+    )
+
+    assert batch.metadata["gamma"] == 0.5
+    assert batch.metadata["n_step"] == 2
+    assert batch.metadata["priority_transition_ids"] == tuple(
+        batch.transition_ids[index] for index in range(2, 9, 3)
+    )
+    for row in range(3):
+        window = batch.transition_ids[row * 3 : (row + 1) * 3]
+        final_id = window[-1]
+        horizon = list(range(final_id, min(final_id + 2, 5)))
+        expected_reward = sum(0.5**offset * (step + 1) for offset, step in enumerate(horizon))
+        expected_discount = 0.0 if horizon[-1] == 4 else 0.25
+        target_history = ([float(step) for step in window] + [float(step + 1) for step in horizon])[
+            -3:
+        ]
+
+        assert batch.rewards[row, :2].tolist() == pytest.approx(
+            [float(step + 1) for step in window[:2]]
+        )
+        assert float(batch.rewards[row, -1]) == pytest.approx(expected_reward)
+        assert batch.bootstrap_discounts[row, :2].tolist() == pytest.approx([0.5, 0.5])
+        assert float(batch.bootstrap_discounts[row, -1]) == pytest.approx(expected_discount)
+        assert batch.next_observations[row].tolist() == pytest.approx(target_history)
+
+
+def test_columnar_n_step_fast_path_is_limited_to_non_sequence_batches() -> None:
+    class CountingStore(InMemoryReplayStore):
+        def __init__(self) -> None:
+            super().__init__()
+            self.materialize_calls = 0
+
+        def materialize_n_step(
+            self, transition_ids: list[int], request: BatchRequest
+        ) -> tuple[list[Transition], list[float]]:
+            self.materialize_calls += 1
+            return super().materialize_n_step(transition_ids, request)
+
+    source = _store(episodes=2, steps=6)
+    store = CountingStore()
+    for transition in source.get(source.available_ids()):
+        store.append(transition)
+
+    UniformSampler(IdentityFeaturePipeline(), seed=0).sample(
+        store, BatchRequest(batch_size=4, n_step=3)
+    )
+    assert store.materialize_calls == 1
+
+    SequenceSampler(IdentityFeaturePipeline(), sequence_length=3, seed=0).sample(
+        store, BatchRequest(batch_size=2, sequence_length=3, n_step=2)
+    )
+    assert store.materialize_calls == 1
+
+
+def test_sequence_sampler_reuses_its_window_index_until_replay_changes() -> None:
+    source = _store(episodes=1, steps=8)
+    store = _CountingSequenceStore()
+    for transition in source.get(source.available_ids()):
+        store.append(transition)
+    sampler = SequenceSampler(IdentityFeaturePipeline(), sequence_length=3, seed=4)
+    request = BatchRequest(batch_size=2, sequence_length=3)
+
+    sampler.sample(store, request)
+    sampler.sample(store, request)
+
+    assert store.available_ids_calls == 1
+    store.append(
+        Transition(
+            observation=0.0,
+            action=0.0,
+            reward=1.0,
+            next_observation=1.0,
+            terminated=True,
+            truncated=False,
+            episode_id="episode-1",
+            step=0,
+        )
+    )
+    sampler.sample(store, request)
+    assert store.available_ids_calls == 2
+
+
+def test_sequence_sampler_rng_resume_is_independent_of_derived_window_cache() -> None:
+    store = _store(episodes=2, steps=8)
+    sampler = SequenceSampler(IdentityFeaturePipeline(), sequence_length=3, seed=4)
+    request = BatchRequest(batch_size=3, sequence_length=3)
+    sampler.sample(store, request)
+    state = sampler.state_dict()
+
+    expected = sampler.sample(store, request).transition_ids
+    restored = SequenceSampler(IdentityFeaturePipeline(), sequence_length=3, seed=999)
+    restored.load_state_dict(state)
+
+    assert restored.sample(store, request).transition_ids == expected
 
 
 def test_sequence_sampler_preserves_ppo_behavior_statistics() -> None:
@@ -235,9 +382,25 @@ def test_prioritized_sequence_builds_full_n_step_return_only_on_the_final_step()
     priority_ids = batch.metadata["priority_transition_ids"]
     expected = [1.0 if transition_id == 5 else 1.5 for transition_id in priority_ids]
     assert batch.rewards[:, -1].tolist() == pytest.approx(expected)
+    assert batch.metadata["gamma"] == 0.5
+    assert batch.metadata["n_step"] == 2
+    torch.testing.assert_close(
+        batch.bootstrap_discounts[:, :-1],
+        torch.full((2, 2), 0.5),
+    )
+    for row, transition_id in enumerate(priority_ids):
+        horizon = store.n_step_ids(transition_id, 2)
+        expected_discount = 0.0 if horizon[-1] == 5 else 0.25
+        histories = store.history_ids(transition_id, 3)
+        expected_next_history = (
+            [item.observation for item in store.get(histories)]
+            + [item.next_observation for item in store.get(horizon)]
+        )[-3:]
+        assert float(batch.bootstrap_discounts[row, -1]) == pytest.approx(expected_discount)
+        assert batch.next_observations[row].tolist() == pytest.approx(expected_next_history)
 
 
-def test_recurrent_history_left_pads_episode_start_like_the_actor() -> None:
+def test_prioritized_sequences_only_activate_actor_equivalent_full_histories() -> None:
     store = _store(episodes=1, steps=5)
 
     assert store.history_ids(0, 4) == [0, 0, 0, 0]
@@ -245,8 +408,12 @@ def test_recurrent_history_left_pads_episode_start_like_the_actor() -> None:
     assert store.next_history_observations(0, 2, 4) == [0.0, 0.0, 1.0, 2.0]
 
     sampler = PrioritizedSampler(IdentityFeaturePipeline(), seed=0)
-    sampler.sample(store, BatchRequest(batch_size=5, sequence_length=4))
-    assert sampler._active_count == 5
+    batch = sampler.sample(store, BatchRequest(batch_size=2, sequence_length=4))
+    assert sampler._active_count == 2
+    assert all(
+        len(set(store.history_ids(transition_id, 4))) == 4
+        for transition_id in batch.metadata["priority_transition_ids"]
+    )
 
 
 def test_prioritized_uniform_mix_preserves_low_priority_recovery_coverage() -> None:
@@ -297,6 +464,34 @@ def test_prioritized_sampler_boosts_elite_pace_without_retaining_sampling_metada
     assert sampler._tree.leaves[0] == pytest.approx(4.0)
     assert sampler._tree.leaves[2] == pytest.approx(1.0)
     assert store.get([0])[0].info == {}
+
+
+def test_prioritized_fallback_applies_elite_pace_boost() -> None:
+    store = _BasicReplayStore()
+    for transition_id in range(100):
+        store.append(
+            Transition(
+                observation=float(transition_id),
+                action=0,
+                reward=0.0,
+                next_observation=float(transition_id + 1),
+                terminated=True,
+                truncated=False,
+                info={"sampling/projected_lap_time_s": 40.0 if transition_id < 50 else 60.0},
+            )
+        )
+    sampler = PrioritizedSampler(
+        IdentityFeaturePipeline(),
+        alpha=1.0,
+        elite_time_s=45.0,
+        elite_priority_boost=100.0,
+        seed=3,
+    )
+
+    batch = sampler.sample(store, BatchRequest(batch_size=100))
+
+    assert batch.metadata["replay/elite_active_fraction"] == 0.5
+    assert batch.metadata["replay/elite_sample_fraction"] > 0.95
 
 
 def test_prioritized_sequence_sampler_enforces_exact_expert_demo_fraction() -> None:
@@ -495,6 +690,9 @@ def test_standard_samplers_do_not_materialize_the_full_replay_per_update() -> No
     class NoFullScanStore(InMemoryReplayStore):
         def available_ids(self) -> list[int]:
             raise AssertionError("standard replay sampling must use the incremental index")
+
+        def get(self, transition_ids: list[int]) -> list[Transition]:
+            raise AssertionError("non-sequence sampling must use columnar n-step materialization")
 
     store = NoFullScanStore()
     for step in range(16):

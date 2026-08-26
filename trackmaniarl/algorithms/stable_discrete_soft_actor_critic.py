@@ -1,4 +1,4 @@
-"""Discrete SAC learner with conservative double-Q targets."""
+"""SD-SAC-inspired discrete SAC with conservative double-Q targets."""
 
 from __future__ import annotations
 
@@ -10,7 +10,12 @@ from typing import Any
 import torch
 from torch import nn
 
-from trackmaniarl.algorithms._torch import TorchLearnerBase, weighted_mean
+from trackmaniarl.algorithms._torch import (
+    TorchLearnerBase,
+    evaluated_actor_state,
+    polyak_update,
+    weighted_mean,
+)
 from trackmaniarl.algorithms.execution import TorchExecutionConfig
 from trackmaniarl.core.contracts import ModelContract
 from trackmaniarl.core.data import PriorityUpdate, TrainingBatch
@@ -43,9 +48,10 @@ class _DiscretePolicy:
 
 
 class StableDiscreteSoftActorCritic(TorchLearnerBase):
-    """SD-SAC with double-average Q learning, Q-clip and entropy penalty."""
+    """Experimental SD-SAC-inspired learner using target-policy entropy anchoring."""
 
     accepted_model_contracts = frozenset({ModelContract.DISCRETE_ACTOR_CRITIC})
+    supports_sequence_training = False
 
     def __init__(
         self,
@@ -179,11 +185,7 @@ class StableDiscreteSoftActorCritic(TorchLearnerBase):
             alpha_loss = (self.log_alpha * (entropy.detach() - desired_entropy)).mean()
             assert self.alpha_optimizer is not None
             self._optimize(alpha_loss, self.alpha_optimizer)
-        with torch.no_grad():
-            for target, source in zip(
-                self.target_model.parameters(), self.model.parameters(), strict=True
-            ):
-                target.lerp_(source, self.target_tau)
+        polyak_update(self.model, self.target_model, self.target_tau)
         td_errors = (0.5 * (q1 + q2) - targets).detach().abs()
         return (
             {
@@ -208,8 +210,17 @@ class StableDiscreteSoftActorCritic(TorchLearnerBase):
             "critic_optimizer": self.critic_optimizer.state_dict(),
             "log_alpha": self.log_alpha.detach().cpu() if self.log_alpha is not None else None,
             "alpha_optimizer": self.alpha_optimizer.state_dict() if self.alpha_optimizer else None,
+            "scaler": self._scaler_state(),
             "rng": self._rng_state(),
         }
+
+    def state_dict_for_policy(self, policy_state: Mapping[str, Any]) -> Mapping[str, Any]:
+        assert self.model is not None
+        state = evaluated_actor_state(self.state_dict(), self.model, policy_state)
+        state["actor_optimizer"] = torch.optim.Adam(
+            self.model.actor.parameters(), lr=self.learning_rate
+        ).state_dict()
+        return state
 
     def load_state_dict(self, state: Mapping[str, Any]) -> None:
         assert self.model is not None
@@ -221,4 +232,5 @@ class StableDiscreteSoftActorCritic(TorchLearnerBase):
             self.log_alpha.data.copy_(state["log_alpha"].to(self.device))
         if self.alpha_optimizer is not None and state.get("alpha_optimizer") is not None:
             self.alpha_optimizer.load_state_dict(state["alpha_optimizer"])
+        self._restore_scaler(state.get("scaler"))
         self._restore_rng(state.get("rng", {}))

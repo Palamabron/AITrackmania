@@ -1,28 +1,88 @@
 # Changelog
 
-## Unreleased
+## 2.0.0rc1 - 2026-08-23
 
 - Require RunSpec API 2.0 and compose discrete value models from a frame-only
   encoder, temporal core, head and value strategy.
+- Make generated starter model initialization follow the declared run seed and
+  expose the composed discrete-value learner through the public built-in registry.
+  Generated projects now partition PyTorch CPU and CUDA indexes by platform so
+  a fresh `uv sync` resolves from both an editable checkout and a release wheel.
 - Add one `DiscreteValueLearner` for Standard Q, QR-DQN, IQN and FQF, including
   selected-action Double-DQN targets and an isolated FQF fraction optimizer.
 - Add portable Mamba selective scan with `auto`, `native` and Pure PyTorch
   backends sharing one checkpoint-compatible parameter layout.
 - Add checkpoint schema 2.0, architecture fingerprints, safe named-submodule
   warm-start reports and a legacy IQN warm-start mapper.
+- Persist AMP scaler state for every Torch learner, reject unsupported compile
+  and sequence configurations before training, and make composite priority
+  validation atomic with the optimizer update.
+- Make uniform and prioritized sequence replay share one raw-context/n-step
+  contract, cache valid sequence windows by replay revision and correct TQC and
+  upper-CVaR reduction semantics.
+- Make the authenticated SQLite WAL the ordered source of truth, bind
+  checkpoints to journal identity and a contiguous applied frontier, retain
+  conflict receipts after pruning and fsync durable state before deletion.
+- Snapshot mutable transition trees on ingest, make on-policy partial resumes
+  fail closed, honor final-checkpoint policy and stop evaluation only after
+  consecutive successful target batches.
 - Make behavior-cloning splits disjoint, seed model construction, aggregate
   weighted validation correctly, quality-gate recordings and support exact BC
   resume bound to an immutable dataset manifest.
 - Tensorize behavior-cloning data once, use the shared Torch execution policy,
   remove per-update CUDA transfer synchronization and reduce logging/replay
   bookkeeping overhead.
+- Remove speculative full-batch prefetch that regressed learner throughput;
+  the final paired RTX 4090 microbenchmark improved IQN updates/s by 1.28x for
+  the MLP fixture and 1.41x for the lidar fixture under the recorded noisy
+  workload, with the same direction in an interleaved repeat.
+- Fail Trackmania startup closed on telemetry, protocol, readiness, map UID and
+  geometry mismatches, and make actor startup failures terminate nonzero
+  instead of leaving the learner waiting indefinitely.
+- Add bounded asynchronous W&B projection with semantic axes and health events
+  while keeping the local JSONL stream authoritative.
 - Rename the public offline-learning package from the too-narrow
   `trackmaniarl.trackmania.behavior_cloning` to
   `trackmaniarl.trackmania.imitation_learning`; BC class and CLI names remain
   precise, while DAgger and recovery artifacts now have an accurate namespace.
 - Rewrite architecture, SDK, Trackmania, imitation-learning and development
   documentation for 2.0 and regenerate the editable runtime, model-composition,
-  imitation-learning, extension and distributed-security diagrams.
+  imitation-learning and local/remote deployment diagrams. Add explicit
+  Trackmania integration and checkpoint/resume diagrams; remove the decorative
+  extension-workflow diagram in favor of the concise SDK checklist.
+- Reject non-finite RunSpec values, malformed geometry and pace profiles,
+  backward reward clocks and physically unreachable progress jumps. Require the
+  built-in reward discount to equal `training.gamma`, report terminal and
+  time-attack reward components without double counting, and use the documented
+  OpenPlanet velocity conversion for pace and projected-velocity diagnostics.
+- Sample recurrent replay only from complete, unique, episode-local histories;
+  preserve n-step boundaries and elite weighting in both optimized and fallback
+  PER paths. Resume now snapshots replay and sampler state before asynchronous
+  checkpoint serialization.
+- Align generated online control and demonstration aggregation to a 50 ms,
+  repeat-one decision grid; support recurrent BC inference, make failed
+  closed-loop BC gates exit nonzero by default, bind stitched trajectories to
+  control alignment and limit BC-to-RL warm start to encoder/temporal modules.
+- Replace provenance-free BC recovery archives with fail-closed v3 artifacts
+  bound to map UID, geometry, timing, control alignment and a verified source
+  demonstration digest, with DAgger checkpoint hashes retained for audit;
+  legacy v1/v2 recovery files must be regenerated before training. Synthetic
+  counterfactual states are now episode-independent instead of pretending to
+  be a dynamically reachable sequence.
+- Route PPO through the local on-policy trainer, correct Trackmania TQC action
+  bounds, validate policy action masks and export evaluated actor state for SAC,
+  REDQ-SAC, TQC and stable-discrete-SAC-inspired learners.
+- Validate authenticated rollout semantics before WAL append. Actor spools now
+  fsync before atomic publication, recover orphaned temporary files, reject a
+  single chunk larger than the spool cap and retry only transient gRPC status
+  codes; permanent failures retain queued data and stop the actor loudly.
+- Apply the 32-character distributed-token minimum in every public runtime
+  entry point, keep the game-free starter free of controller dependencies and
+  make Zstandard a core checkpoint dependency.
+- Gate tagged publishing on formatting, Ruff, strict types and the full test
+  suite, then compare every packaged source file byte-for-byte with the release
+  checkout before upload. Package metadata and README links now use the
+  canonical `Palamabron/TrackmaniaRL` repository URL.
 
 ## 1.0.4 - 2026-08-19
 

@@ -19,6 +19,9 @@ runs the same roles as `trackmaniarl learner` and `trackmaniarl actor` through
 an encrypted tunnel. Actors collect continuously and spool rollouts durably.
 The learner authenticates chunks, commits them to WAL, ingests replay, samples
 batches, updates the model and publishes immutable policy tensor snapshots.
+Accepted rows are applied strictly by SQLite row ID. A checkpoint captures only
+the contiguous applied frontier; pruning happens after its durable write, so a
+later accepted row can never cause an earlier delayed row to disappear.
 
 PPO follows a separate, single-process on-policy lifecycle through
 `trackmaniarl.Trainer` and `OnPolicySequenceSampler`; it does not use the
@@ -123,6 +126,13 @@ perform a deterministic synthetic state round trip without starting the game.
 
 ## Persistence and compatibility
 
+<p align="center">
+  <img src="../docs/diagrams/checkpoint-resume-preview.svg" alt="Checkpoint identity, durable WAL frontier and exact resume gate" width="900">
+</p>
+
+[Editable source](../docs/diagrams/checkpoint-resume.excalidraw) ·
+[local preview](../docs/diagrams/checkpoint-resume-preview.html)
+
 The asynchronous off-policy checkpoint schema 2.0 separates online/target
 encoder, temporal, head and strategy state; main/strategy optimizers; objective
 state; counters, schedules and RNG; and resolved runtime metadata. Resume
@@ -170,19 +180,22 @@ WireGuard or equivalent encrypted tunnel.
 Distributed participants must match protocol version, architecture/run
 fingerprint, map UID, geometry hash and feature/action contracts.
 
-## Extension workflow
+## Trackmania integration boundary
 
 <p align="center">
-  <img src="../docs/diagrams/extension-workflow-preview.svg" alt="TrackmaniaRL extension workflow" width="900">
+  <img src="../docs/diagrams/trackmania-integration-preview.svg" alt="Trackmania, signed Openplanet plugin, TrackmaniaRL adapter and separate control path" width="900">
 </p>
 
-[Editable source](../docs/diagrams/extension-workflow.excalidraw) ·
-[local preview](../docs/diagrams/extension-workflow-preview.html)
+[Editable source](../docs/diagrams/trackmania-integration.excalidraw) ·
+[local preview](../docs/diagrams/trackmania-integration-preview.html)
 
-Keep application-specific components in the generated extension project.
-Promote reusable code into its owning library package only after deterministic
-contract, state/checkpoint round-trip and relevant live gates pass.
+The signed Openplanet plugin supplies the fixed telemetry and session protocols;
+it does not own control or exact track geometry. The adapter verifies schema,
+map UID, readiness and immutable geometry identity before collection. A
+map-bound, checksummed boundary asset remains the source of drivable geometry,
+while actions travel through the separate local gamepad or keyboard backend.
 
 See the [SDK guide](sdk.md), [development guide](development.md),
 [Trackmania workflow](trackmania.md) and
-[imitation-learning workflow](imitation-learning.md).
+[imitation-learning workflow](imitation-learning.md). For operations, use the
+[performance](performance.md) and [observability](observability.md) guides.

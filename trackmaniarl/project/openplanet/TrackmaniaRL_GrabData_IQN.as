@@ -1,10 +1,6 @@
-// TrackmaniaRL IQN + lidar OpenPlanet plugin, protocol version 2.
-//
-// Copy this file into OpenplanetNext\Scripts.  It serves the documented
-// 33-float telemetry stream on 127.0.0.1:9000 and a JSONL readiness channel on
-// 127.0.0.1:9001.  Load the configured local map manually before evaluation:
-// OpenPlanet exposes MapInfo.MapUid but has no documented API to safely load an
-// arbitrary .Map.Gbx from a plugin.
+// Developer reference snapshot of TrackmaniaRL Connect / SAC_GetData 2.4.0.
+// Normal users install the signed plugin through Openplanet's Plugin Manager.
+// It serves protocol 2 on 127.0.0.1:9000 (33 float32 values) and 9001 (JSONL).
 
 const uint TELEMETRY_PORT = 9000;
 const uint SESSION_PORT = 9001;

@@ -10,7 +10,7 @@ from time import monotonic, sleep
 import numpy as np
 
 DEFAULT_TELEMETRY_FIELD_COUNT = 33
-"""Number of float32 values emitted by the supported TrackmaniaRL_GrabData plugin."""
+"""Number of float32 values emitted by TrackmaniaRL Connect / SAC_GetData 2.4.0."""
 
 DEFAULT_POSITION_INDICES = (4, 5, 6)
 """``api.Position`` X/Y/Z offsets in the supported 33-field telemetry packet."""
@@ -95,9 +95,9 @@ class OpenPlanetClient:
                 raise TimeoutError(
                     "OpenPlanet accepted the telemetry connection but sent no complete "
                     f"{self._packet.size}-byte frame within {self.timeout_s:g}s. "
-                    "In OpenPlanet, disable every legacy TrackmaniaRL_GrabData plugin, keep only "
-                    "TrackmaniaRL_GrabData_IQN enabled, reload it, then enter the loaded map with "
-                    "a visible vehicle."
+                    "In Openplanet Plugin Manager, keep only the signed TrackmaniaRL Connect "
+                    "(SAC_GetData) 2.4.0 plugin enabled, enable School Mode, then enter the "
+                    "configured local map with a visible vehicle."
                 ) from error
             if not chunk:
                 self.close()
@@ -116,7 +116,7 @@ class OpenPlanetClient:
         return TelemetryFrame(values)
 
     def _validate_grab_data(self, values: np.ndarray) -> None:
-        """Apply domain checks for the supported 33-field TrackmaniaRL_GrabData schema."""
+        """Apply domain checks for the supported 33-field SAC_GetData schema."""
 
         if self.field_count != DEFAULT_TELEMETRY_FIELD_COUNT:
             return

@@ -2721,7 +2721,7 @@ wheels = [
 
 [[package]]
 name = "trackmaniarl"
-version = "1.0.4"
+version = "2.0.0rc1"
 source = { editable = "." }
 dependencies = [
     { name = "gymnasium" },
@@ -2732,6 +2732,7 @@ dependencies = [
     { name = "torch", version = "2.11.0+cu128", source = { registry = "https://download.pytorch.org/whl/cu128" }, marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
     { name = "torch", version = "2.13.0", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "sys_platform == 'darwin'" },
     { name = "torch", version = "2.13.0+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32'" },
+    { name = "zstandard" },
 ]
 
 [package.optional-dependencies]
@@ -2742,13 +2743,30 @@ algorithms = [
     { name = "pandas" },
     { name = "torchrl" },
 ]
-distributed = [
+all = [
+    { name = "captum" },
+    { name = "causal-conv1d", marker = "sys_platform == 'linux'" },
+    { name = "einops" },
+    { name = "google-genai" },
     { name = "grpcio" },
+    { name = "gymnasium" },
     { name = "libevdev", marker = "sys_platform == 'linux'" },
+    { name = "loguru" },
+    { name = "mamba-ssm", marker = "sys_platform == 'linux'" },
+    { name = "optuna" },
+    { name = "pandas" },
     { name = "protobuf" },
     { name = "safetensors" },
+    { name = "torchrl" },
+    { name = "torchvision", version = "0.26.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "torchvision", version = "0.28.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'linux' and sys_platform != 'win32'" },
     { name = "vgamepad", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
-    { name = "zstandard" },
+    { name = "wandb" },
+]
+distributed = [
+    { name = "grpcio" },
+    { name = "protobuf" },
+    { name = "safetensors" },
 ]
 explain = [
     { name = "captum" },
@@ -2793,41 +2811,55 @@ dev = [
     { name = "types-pyyaml" },
     { name = "vgamepad", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
     { name = "wandb" },
-    { name = "zstandard" },
 ]
 
 [package.metadata]
 requires-dist = [
+    { name = "captum", marker = "extra == 'all'", specifier = ">=0.7" },
     { name = "captum", marker = "extra == 'explain'", specifier = ">=0.7" },
+    { name = "causal-conv1d", marker = "sys_platform == 'linux' and extra == 'all'", specifier = ">=1.4" },
     { name = "causal-conv1d", marker = "sys_platform == 'linux' and extra == 'mamba'", specifier = ">=1.4" },
     { name = "einops", marker = "extra == 'algorithms'", specifier = ">=0.7" },
+    { name = "einops", marker = "extra == 'all'", specifier = ">=0.7" },
+    { name = "google-genai", marker = "extra == 'all'", specifier = ">=2.2.0" },
     { name = "google-genai", marker = "extra == 'orchestrator'", specifier = ">=2.2.0" },
+    { name = "grpcio", marker = "extra == 'all'", specifier = ">=1.66" },
     { name = "grpcio", marker = "extra == 'distributed'", specifier = ">=1.66" },
     { name = "gymnasium", specifier = ">=0.29" },
     { name = "gymnasium", marker = "extra == 'algorithms'", specifier = ">=0.29" },
+    { name = "gymnasium", marker = "extra == 'all'", specifier = ">=0.29" },
     { name = "gymnasium", marker = "extra == 'trackmania'", specifier = ">=0.29" },
-    { name = "libevdev", marker = "sys_platform == 'linux' and extra == 'distributed'", specifier = ">=0.13" },
+    { name = "libevdev", marker = "sys_platform == 'linux' and extra == 'all'", specifier = ">=0.13" },
     { name = "libevdev", marker = "sys_platform == 'linux' and extra == 'trackmania'", specifier = ">=0.13" },
     { name = "loguru", marker = "extra == 'algorithms'", specifier = ">=0.7" },
+    { name = "loguru", marker = "extra == 'all'", specifier = ">=0.7" },
+    { name = "mamba-ssm", marker = "sys_platform == 'linux' and extra == 'all'", specifier = ">=2.2" },
     { name = "mamba-ssm", marker = "sys_platform == 'linux' and extra == 'mamba'", specifier = ">=2.2" },
     { name = "numpy", specifier = ">=1.24" },
+    { name = "optuna", marker = "extra == 'all'", specifier = ">=3.0" },
     { name = "optuna", marker = "extra == 'orchestrator'", specifier = ">=3.0" },
     { name = "pandas", marker = "extra == 'algorithms'", specifier = ">=2.0" },
+    { name = "pandas", marker = "extra == 'all'", specifier = ">=2.0" },
+    { name = "protobuf", marker = "extra == 'all'", specifier = ">=5.27" },
     { name = "protobuf", marker = "extra == 'distributed'", specifier = ">=5.27" },
     { name = "pydantic", specifier = ">=2.0" },
     { name = "pyyaml", specifier = ">=6.0" },
+    { name = "safetensors", marker = "extra == 'all'", specifier = ">=0.4.5" },
     { name = "safetensors", marker = "extra == 'distributed'", specifier = ">=0.4.5" },
     { name = "tensordict", specifier = ">=0.6" },
     { name = "torch", marker = "sys_platform != 'linux' and sys_platform != 'win32'", specifier = ">=2.4", index = "https://download.pytorch.org/whl/cpu" },
     { name = "torch", marker = "sys_platform == 'linux' or sys_platform == 'win32'", specifier = ">=2.4", index = "https://download.pytorch.org/whl/cu128" },
     { name = "torchrl", marker = "extra == 'algorithms'", specifier = ">=0.11" },
+    { name = "torchrl", marker = "extra == 'all'", specifier = ">=0.11" },
+    { name = "torchvision", marker = "extra == 'all'", specifier = ">=0.15" },
     { name = "torchvision", marker = "extra == 'vision'", specifier = ">=0.15" },
-    { name = "vgamepad", marker = "(sys_platform == 'linux' and extra == 'distributed') or (sys_platform == 'win32' and extra == 'distributed')", git = "https://github.com/Palamabron/vgamepad?rev=5f3435df3f8a0e658feb58b207d9137cdb5183cd" },
+    { name = "vgamepad", marker = "(sys_platform == 'linux' and extra == 'all') or (sys_platform == 'win32' and extra == 'all')", git = "https://github.com/Palamabron/vgamepad?rev=5f3435df3f8a0e658feb58b207d9137cdb5183cd" },
     { name = "vgamepad", marker = "(sys_platform == 'linux' and extra == 'trackmania') or (sys_platform == 'win32' and extra == 'trackmania')", git = "https://github.com/Palamabron/vgamepad?rev=5f3435df3f8a0e658feb58b207d9137cdb5183cd" },
+    { name = "wandb", marker = "extra == 'all'", specifier = ">=0.15.8" },
     { name = "wandb", marker = "extra == 'wandb'", specifier = ">=0.15.8" },
-    { name = "zstandard", marker = "extra == 'distributed'", specifier = ">=0.23" },
+    { name = "zstandard", specifier = ">=0.23" },
 ]
-provides-extras = ["orchestrator", "algorithms", "trackmania", "wandb", "distributed", "explain", "vision", "mamba"]
+provides-extras = ["orchestrator", "algorithms", "trackmania", "wandb", "distributed", "explain", "vision", "mamba", "all"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -2848,7 +2880,6 @@ dev = [
     { name = "types-pyyaml" },
     { name = "vgamepad", marker = "sys_platform == 'linux' or sys_platform == 'win32'", git = "https://github.com/Palamabron/vgamepad?rev=5f3435df3f8a0e658feb58b207d9137cdb5183cd" },
     { name = "wandb", specifier = ">=0.15.8" },
-    { name = "zstandard", specifier = ">=0.23" },
 ]
 
 [[package]]

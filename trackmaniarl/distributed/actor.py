@@ -11,26 +11,30 @@ import threading
 import uuid
 from collections.abc import Mapping
 from dataclasses import replace
+from math import ceil
 from pathlib import Path
 from queue import Empty, Queue
 from time import monotonic
 from typing import Any
 
 import grpc
+import numpy as np
 import torch
 from google.protobuf.wrappers_pb2 import BytesValue
 
+from trackmaniarl.core.builtins import sync_checkpoint_path
 from trackmaniarl.core.contracts import ExploratoryPolicy, ReplicablePolicy
 from trackmaniarl.core.data import Transition
 from trackmaniarl.core.pytree import tree_map
 from trackmaniarl.core.runtime import _instantiate
-from trackmaniarl.core.spec import RunSpec
+from trackmaniarl.core.spec import ActorExecutionSpec, ComponentSpec, RunSpec
 from trackmaniarl.distributed.codec import WireCodec
 from trackmaniarl.distributed.protocol import (
     PROTOCOL_VERSION,
     auth_metadata,
     deserialize_message,
     grpc_method,
+    require_distributed_token,
     run_fingerprint,
     serialize_message,
     transition_to_wire,
@@ -45,6 +49,78 @@ _TELEMETRY_RETRY_INITIAL_S = 5.0
 _TELEMETRY_RETRY_MAX_S = 60.0
 _SPOOL_WAIT_POLL_S = 0.5
 _SPOOL_WAIT_WARN_S = 10.0
+_RETRYABLE_RPC_CODES = frozenset(
+    {
+        grpc.StatusCode.DEADLINE_EXCEEDED,
+        grpc.StatusCode.UNAVAILABLE,
+    }
+)
+
+
+class ActorRuntimeError(RuntimeError):
+    """Base class for failures that must terminate an actor process."""
+
+
+class ActorEnvironmentError(ActorRuntimeError):
+    """The actor could not restore its environment connection."""
+
+
+class ActorBackgroundError(ActorRuntimeError):
+    """A required actor background worker failed."""
+
+    def __init__(self, stage: str, cause: BaseException) -> None:
+        super().__init__(f"{stage} failed: {type(cause).__name__}: {cause}")
+        self.cause = cause
+
+
+def _is_retryable_rpc_error(exc: grpc.RpcError) -> bool:
+    return exc.code() in _RETRYABLE_RPC_CODES
+
+
+def _actor_learner_spec(
+    learner: ComponentSpec, override: ActorExecutionSpec | None
+) -> ComponentSpec:
+    if override is None:
+        return learner
+    kwargs = dict(learner.kwargs)
+    configured = kwargs.get("execution") or {}
+    if not isinstance(configured, Mapping):
+        raise TypeError("components.learner.kwargs.execution must be a mapping")
+    execution = dict(configured)
+    legacy_device = kwargs.pop("device", None)
+    if legacy_device is not None:
+        execution.setdefault("device", legacy_device)
+    execution.update(
+        device=override.device,
+        precision=override.precision,
+        compile=False,
+    )
+    kwargs["execution"] = execution
+    return learner.model_copy(update={"kwargs": kwargs})
+
+
+def _configure_actor_threads(override: ActorExecutionSpec | None) -> None:
+    if override is not None and override.torch_threads is not None:
+        torch.set_num_threads(override.torch_threads)
+
+
+class _InferenceTimingTracker:
+    def __init__(self) -> None:
+        self.total_s = 0.0
+        self.maximum_s = 0.0
+        self.samples = 0
+
+    def record(self, duration_s: float) -> None:
+        self.total_s += duration_s
+        self.maximum_s = max(self.maximum_s, duration_s)
+        self.samples += 1
+
+    def summary(self) -> dict[str, float]:
+        mean_s = self.total_s / self.samples if self.samples else 0.0
+        return {
+            "policy_inference_ms_mean": mean_s * 1_000.0,
+            "policy_inference_ms_max": self.maximum_s * 1_000.0,
+        }
 
 
 class _MarginTracker:
@@ -88,6 +164,7 @@ class _ControlUsageTracker:
         self.brake_taps = 0
         self.steer_abs_total = 0.0
         self.race_ms_total = 0.0
+        self.race_ms_values: list[float] = []
         self.samples = 0
 
     def record(self, info: Mapping[str, Any]) -> None:
@@ -97,7 +174,9 @@ class _ControlUsageTracker:
         self.brake_total += float(info["control_brake"])
         self.brake_taps += int(bool(info.get("control_brake_tap", False)))
         self.steer_abs_total += abs(float(info["control_steer"]))
-        self.race_ms_total += float(info.get("step_race_time_ms", 0.0))
+        race_ms = float(info.get("step_race_time_ms", 0.0))
+        self.race_ms_total += race_ms
+        self.race_ms_values.append(race_ms)
         self.samples += 1
 
     def summary(self) -> dict[str, float]:
@@ -108,13 +187,19 @@ class _ControlUsageTracker:
                 "control_brake_tap_fraction": 0.0,
                 "control_steer_abs_mean": 0.0,
                 "step_race_time_ms_mean": 0.0,
+                "step_race_time_ms_p99": 0.0,
+                "step_race_time_ms_max": 0.0,
             }
+        ordered = sorted(self.race_ms_values)
+        p99_index = ceil(0.99 * len(ordered)) - 1
         return {
             "control_gas_fraction": self.gas_total / self.samples,
             "control_brake_fraction": self.brake_total / self.samples,
             "control_brake_tap_fraction": self.brake_taps / self.samples,
             "control_steer_abs_mean": self.steer_abs_total / self.samples,
             "step_race_time_ms_mean": self.race_ms_total / self.samples,
+            "step_race_time_ms_p99": ordered[p99_index],
+            "step_race_time_ms_max": ordered[-1],
         }
 
 
@@ -188,12 +273,12 @@ class ActorRuntime:
         token: str,
         external_stop: Any | None = None,
     ) -> None:
+        self.token = require_distributed_token(token)
         self.config_path = config_path.resolve()
         self.base_dir = self.config_path.parent
         self.spec = RunSpec.from_yaml(self.config_path)
         self.target = target
         self.actor_id = actor_id or f"{socket.gethostname()}-{os.getpid()}"
-        self.token = token
         self.external_stop = external_stop
         self.session_id = uuid.uuid4().hex
         self.codec = WireCodec(self.spec.distributed.max_message_bytes)
@@ -218,12 +303,15 @@ class ActorRuntime:
             / "spool"
         )
         self.spool_dir.mkdir(parents=True, exist_ok=True)
+        self._recover_spool_temporaries()
         self._spool_lock = threading.Lock()
         self._spool_bytes_total = self._scan_spool_bytes()
         self.sequence = self._next_sequence()
-        self.client = _Client(target, token, self.codec)
+        self.client = _Client(target, self.token, self.codec)
         self._replica_learner: Any = None
         self._policy_ref: _PolicyReference | None = None
+        self._background_failure_lock = threading.Lock()
+        self._background_failure: ActorBackgroundError | None = None
 
     def run_forever(self) -> None:
         pipeline, environment_factory = self._components()
@@ -274,9 +362,11 @@ class ActorRuntime:
                 sender.join(timeout=max(0.0, sender_deadline - monotonic()))
             self.client.close()
             logger.info("Actor %s stopped: %s", self.actor_id, self.stop_reason)
+        self._raise_background_failure()
 
     def _components(self) -> tuple[Any, Any]:
         components = self.spec.components
+        _configure_actor_threads(self.spec.distributed.actor_execution)
         pipeline = _instantiate(components.feature_pipeline, base_dir=self.base_dir)
         if components.environment is None:
             raise ValueError("distributed actor requires components.environment")
@@ -284,8 +374,12 @@ class ActorRuntime:
         model_factory = (
             _instantiate(components.model_factory) if components.model_factory is not None else None
         )
-        self._replica_learner = _instantiate(
+        learner_spec = _actor_learner_spec(
             components.learner,
+            self.spec.distributed.actor_execution,
+        )
+        self._replica_learner = _instantiate(
+            learner_spec,
             seed=self._actor_seed(),
             model_factory=model_factory,
             base_dir=self.base_dir,
@@ -297,7 +391,21 @@ class ActorRuntime:
                 "model_factory": model_factory,
             }
         )
+        self._log_replica_execution()
         return pipeline, environment
+
+    def _log_replica_execution(self) -> None:
+        manifest = getattr(self._replica_learner, "execution_manifest", None)
+        if not callable(manifest):
+            return
+        execution = manifest()
+        logger.info(
+            "Actor %s policy replica execution: device=%s, precision=%s, compile=%s",
+            self.actor_id,
+            execution.get("torch_device", execution.get("requested_device", "unknown")),
+            execution.get("precision", execution.get("requested_precision", "unknown")),
+            execution.get("compile_effective", execution.get("compile_requested", False)),
+        )
 
     def _new_policy(self) -> ReplicablePolicy:
         policy = self._replica_learner.policy()
@@ -318,12 +426,7 @@ class ActorRuntime:
             try:
                 return self.client.call("Register", self._request_base())
             except grpc.RpcError as exc:
-                if exc.code() in {
-                    grpc.StatusCode.UNAUTHENTICATED,
-                    grpc.StatusCode.FAILED_PRECONDITION,
-                    grpc.StatusCode.INVALID_ARGUMENT,
-                    grpc.StatusCode.PERMISSION_DENIED,
-                }:
+                if not _is_retryable_rpc_error(exc):
                     raise RuntimeError(f"actor registration rejected: {exc.details()}") from exc
                 logger.info(
                     "Actor %s (pid=%d): learner not ready at %s; retrying...",
@@ -371,15 +474,18 @@ class ActorRuntime:
             self._reset_policy(policy)
             margins = _MarginTracker()
             controls = _ControlUsageTracker()
+            inference_timing = _InferenceTimingTracker()
             diagnostics = ProgressBinDiagnostics(_policy_action_count(policy), bin_count=20)
             try:
                 for step in range(self.spec.training.max_episode_steps):
+                    inference_started = monotonic()
                     sample = getattr(policy, "act_with_info", None)
                     if callable(sample):
                         action, policy_info = sample(prepared)
                     else:
                         action = policy.act(prepared)
                         policy_info = {}
+                    inference_timing.record(monotonic() - inference_started)
                     margins.record(policy, step)
                     next_observation, reward, terminated, truncated, info = environment.step(action)
                     if step == self.spec.training.max_episode_steps - 1 and not terminated:
@@ -434,7 +540,7 @@ class ActorRuntime:
             except (TimeoutError, ConnectionError) as exc:
                 logger.warning(
                     "Actor %s telemetry stalled mid-episode (%s: %s); closing the "
-                    "available rollout without bootstrap",
+                    "available rollout as a bootstrappable truncation",
                     self.actor_id,
                     type(exc).__name__,
                     exc,
@@ -443,8 +549,8 @@ class ActorRuntime:
                     last = transitions[-1]
                     transitions[-1] = replace(
                         last,
-                        terminated=True,
-                        truncated=False,
+                        terminated=False,
+                        truncated=True,
                         info={
                             **dict(last.info),
                             "termination_reason": "telemetry_interruption",
@@ -477,6 +583,7 @@ class ActorRuntime:
                 "policy_version": version,
                 **margins.summary(),
                 **controls.summary(),
+                **inference_timing.summary(),
                 **diagnostics.flat_summary(),
             }
             summaries.append(self._summary(total_reward, summary_info, step + 1))
@@ -510,6 +617,7 @@ class ActorRuntime:
                     if stop_on_failure:
                         self.stop_reason = reason
                         self.stop.set()
+                        raise ActorEnvironmentError(reason) from exc
                     else:
                         logger.warning("Actor %s evaluation %s", self.actor_id, reason)
                     return None
@@ -603,9 +711,12 @@ class ActorRuntime:
         final_info: Mapping[str, Any] = {}
         margins = _MarginTracker()
         controls = _ControlUsageTracker()
+        inference_timing = _InferenceTimingTracker()
         diagnostics = ProgressBinDiagnostics(_policy_action_count(policy), bin_count=20)
         for _step in range(self.spec.training.max_episode_steps):
+            inference_started = monotonic()
             action = policy.act(prepared, deterministic=True)
+            inference_timing.record(monotonic() - inference_started)
             margins.record(policy, _step)
             try:
                 observation, reward, terminated, truncated, info = environment.step(action)
@@ -661,6 +772,7 @@ class ActorRuntime:
                 "policy_version": version,
                 **margins.summary(),
                 **controls.summary(),
+                **inference_timing.summary(),
                 **diagnostics.flat_summary(),
             },
             _step + 1,
@@ -698,8 +810,15 @@ class ActorRuntime:
 
     @staticmethod
     def _snapshot_observation(observation: Any) -> Any:
+        def copy_leaf(value: Any) -> Any:
+            if isinstance(value, torch.Tensor):
+                return value.clone()
+            if isinstance(value, np.ndarray):
+                return value.copy()
+            return value
+
         return tree_map(
-            lambda value: value.clone() if isinstance(value, torch.Tensor) else value,
+            copy_leaf,
             observation,
         )
 
@@ -728,6 +847,10 @@ class ActorRuntime:
             "reward/pace": float(info.get("reward_pace", 0.0)),
             "pace/reference_time_s": float(info.get("reference_time_s", 0.0)),
             "pace/time_debt_s": float(info.get("time_debt_s", 0.0)),
+            "progress/nearest_distance_m": float(info.get("nearest_distance_m", 0.0)),
+            "progress/accepted_delta_m": float(info.get("accepted_progress_delta_m", 0.0)),
+            "progress/window_m": float(info.get("window_progress_m", 0.0)),
+            "progress/steps_since": float(info.get("steps_since_progress", 0.0)),
             "potential/progress": float(info.get("potential_progress", 0.0)),
             "velocity/projected_mps": float(info.get("projected_velocity_mps", 0.0)),
             "velocity/ratio": float(info.get("projected_velocity_ratio", 0.0)),
@@ -743,6 +866,10 @@ class ActorRuntime:
             "control/brake_tap_fraction": float(info.get("control_brake_tap_fraction", 0.0)),
             "control/steer_abs_mean": float(info.get("control_steer_abs_mean", 0.0)),
             "timing/step_race_ms_mean": float(info.get("step_race_time_ms_mean", 0.0)),
+            "timing/step_race_ms_p99": float(info.get("step_race_time_ms_p99", 0.0)),
+            "timing/step_race_ms_max": float(info.get("step_race_time_ms_max", 0.0)),
+            "timing/policy_inference_ms_mean": float(info.get("policy_inference_ms_mean", 0.0)),
+            "timing/policy_inference_ms_max": float(info.get("policy_inference_ms_max", 0.0)),
             "steps": transitions,
             "progress_pct": float(info.get("progress_pct", 0.0)),
             "progress_m": float(info.get("progress_m", 0.0)),
@@ -755,6 +882,7 @@ class ActorRuntime:
             "termination/no_progress": float(termination == "no_progress"),
             "termination/slow_progress": float(termination == "slow_progress"),
             "termination/off_track": float(termination == "off_track"),
+            "termination/time_limit": float(termination == "time_limit"),
             "termination/max_steps": float(termination == "max_steps"),
             "termination/telemetry_error": float(termination == "telemetry_error"),
             "telemetry/error": float(info.get("telemetry_error", 0.0)),
@@ -762,6 +890,18 @@ class ActorRuntime:
             "policy_version": int(info.get("policy_version", 0)),
             **{key: float(value) for key, value in info.items() if key.startswith("progress_bin/")},
         }
+
+    @staticmethod
+    def _persist_spool_payload(path: Path, payload: bytes) -> None:
+        temporary = path.with_suffix(".tmp")
+        with temporary.open("wb") as destination:
+            written = destination.write(payload)
+            if written != len(payload):
+                raise OSError(f"wrote {written} of {len(payload)} rollout bytes")
+            destination.flush()
+            os.fsync(destination.fileno())
+        os.replace(temporary, path)
+        sync_checkpoint_path(path)
 
     def _spool(
         self,
@@ -791,18 +931,19 @@ class ActorRuntime:
         if self.stop.is_set():
             return
         path = self.spool_dir / f"{self.sequence:020d}.rollout"
-        temporary = path.with_suffix(".tmp")
-        temporary.write_bytes(payload)
-        temporary.replace(path)
+        self._persist_spool_payload(path, payload)
         with self._spool_lock:
             self._spool_bytes_total += len(payload)
         self.sequence += 1
         self.queue.put(path)
 
     def _wait_for_spool_capacity(self, payload_bytes: int) -> None:
+        limit = self.spec.distributed.spool_max_bytes
+        if payload_bytes > limit:
+            raise ValueError(f"rollout payload is {payload_bytes} bytes; spool limit is {limit}")
         warned_at = float("-inf")
         while not self.stop.is_set():
-            if self._current_spool_bytes() + payload_bytes <= self.spec.distributed.spool_max_bytes:
+            if self._current_spool_bytes() + payload_bytes <= limit:
                 return
             if monotonic() - warned_at >= _SPOOL_WAIT_WARN_S:
                 logger.warning(
@@ -858,7 +999,9 @@ class ActorRuntime:
                     if response.get("reason") != "backpressure":
                         self.force_refresh.set()
                     self.stop.wait(0.1)
-                except grpc.RpcError:
+                except grpc.RpcError as exc:
+                    if not _is_retryable_rpc_error(exc):
+                        raise
                     if self.stop.wait(1.0):
                         break
             self.queue.task_done()
@@ -877,8 +1020,11 @@ class ActorRuntime:
                 self._refresh_policy()
                 self.force_refresh.clear()
                 refresh_at = monotonic() + self.spec.distributed.policy_refresh_s
-            except grpc.RpcError:
-                continue
+            except grpc.RpcError as exc:
+                if _is_retryable_rpc_error(exc):
+                    continue
+                self._stop_from_thread("policy refresh", exc)
+                return
             except Exception as exc:
                 self._stop_from_thread("policy refresh", exc)
                 return
@@ -921,16 +1067,29 @@ class ActorRuntime:
                 if response.get("stop"):
                     self.stop_reason = "learner requested stop"
                     self.stop.set()
-            except grpc.RpcError:
-                continue
+            except grpc.RpcError as exc:
+                if _is_retryable_rpc_error(exc):
+                    continue
+                self._stop_from_thread("heartbeat", exc)
+                return
             except Exception as exc:
                 self._stop_from_thread("heartbeat", exc)
                 return
 
     def _stop_from_thread(self, stage: str, exc: BaseException) -> None:
         logger.exception("Actor %s %s failed; stopping the actor", self.actor_id, stage)
-        self.stop_reason = f"{stage} failed: {type(exc).__name__}: {exc}"
+        failure = ActorBackgroundError(stage, exc)
+        with self._background_failure_lock:
+            if self._background_failure is None:
+                self._background_failure = failure
+                self.stop_reason = str(failure)
         self.stop.set()
+
+    def _raise_background_failure(self) -> None:
+        with self._background_failure_lock:
+            failure = self._background_failure
+        if failure is not None:
+            raise failure from failure.cause
 
     def _external_stop_loop(self) -> None:
         if self.external_stop is None:
@@ -948,9 +1107,59 @@ class ActorRuntime:
         with self._spool_lock:
             return self._spool_bytes_total
 
+    def _recover_spool_temporaries(self) -> None:
+        temporaries = sorted(
+            (path for path in self.spool_dir.glob("*.tmp") if path.stem.isdigit()),
+            key=lambda path: (int(path.stem), path.name),
+        )
+        occupied = {
+            int(path.stem) for path in self.spool_dir.glob("*.rollout") if path.stem.isdigit()
+        }
+        reserved = occupied | {int(path.stem) for path in temporaries}
+        next_sequence = max(reserved, default=-1) + 1
+        for temporary in temporaries:
+            if not self._valid_spool_temporary(temporary):
+                continue
+            sequence = int(temporary.stem)
+            if sequence in occupied:
+                sequence = next_sequence
+                next_sequence += 1
+            path = self.spool_dir / f"{sequence:020d}.rollout"
+            os.replace(temporary, path)
+            sync_checkpoint_path(path)
+            occupied.add(sequence)
+            logger.info("Recovered orphaned actor spool file %s", path.name)
+
+    def _valid_spool_temporary(self, path: Path) -> bool:
+        try:
+            size = path.stat().st_size
+            if size > self.codec.max_message_bytes:
+                raise ValueError(
+                    f"compressed payload is {size} bytes; limit is {self.codec.max_message_bytes}"
+                )
+            payload = path.read_bytes()
+            value = self.codec.decode(payload)
+        except Exception as exc:
+            logger.warning(
+                "Leaving invalid actor spool temporary %s in place: %s: %s",
+                path.name,
+                type(exc).__name__,
+                exc,
+            )
+            return False
+        if isinstance(value, Mapping):
+            return True
+        logger.warning("Leaving non-mapping actor spool temporary %s in place", path.name)
+        return False
+
     def _scan_spool_bytes(self) -> int:
         total = 0
-        for path in self.spool_dir.glob("*.rollout"):
+        paths = (
+            path
+            for path in self.spool_dir.iterdir()
+            if path.stem.isdigit() and path.suffix in {".rollout", ".tmp"}
+        )
+        for path in paths:
             try:
                 total += path.stat().st_size
             except FileNotFoundError:
@@ -959,7 +1168,9 @@ class ActorRuntime:
 
     def _next_sequence(self) -> int:
         existing = [
-            int(path.stem) for path in self.spool_dir.glob("*.rollout") if path.stem.isdigit()
+            int(path.stem)
+            for path in self.spool_dir.iterdir()
+            if path.stem.isdigit() and path.suffix in {".rollout", ".tmp"}
         ]
         return max(existing, default=-1) + 1
 

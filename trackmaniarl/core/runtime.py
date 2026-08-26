@@ -6,6 +6,7 @@ import importlib
 import inspect
 import random
 from dataclasses import dataclass
+from math import isclose
 from pathlib import Path
 from typing import Any
 
@@ -80,6 +81,63 @@ def _validate_model_contract(learner: object, model_factory: object | None) -> N
         )
 
 
+def _validate_training_contract(
+    spec: RunSpec,
+    learner: object,
+    sampler: object,
+    pipeline: object,
+) -> None:
+    sequence_length = spec.training.sequence_length
+    if sequence_length > 1 and getattr(learner, "supports_sequence_training", None) is False:
+        raise ValueError(
+            f"{type(learner).__name__} requires training.sequence_length=1; got {sequence_length}"
+        )
+    if sequence_length > 1 and getattr(sampler, "supports_sequence_sampling", None) is False:
+        raise ValueError(
+            f"{type(sampler).__name__} requires training.sequence_length=1; got {sequence_length}"
+        )
+    configured_length = getattr(sampler, "sequence_length", sequence_length)
+    if sequence_length > 1 and configured_length != sequence_length:
+        raise ValueError(
+            "training.sequence_length must match sampler sequence_length; "
+            f"got {sequence_length} and {configured_length}"
+        )
+    if sequence_length > 1 and spec.training.n_step >= sequence_length:
+        raise ValueError("training.n_step must be smaller than training.sequence_length")
+    burn_in = int(getattr(learner, "burn_in", 0))
+    if (sequence_length == 1 and burn_in) or burn_in >= sequence_length:
+        raise ValueError(
+            "learner burn_in must be zero for single-step replay and below sequence_length"
+        )
+    if sequence_length > 1 and int(getattr(pipeline, "history_length", 1)) > 1:
+        raise ValueError(
+            "training.sequence_length and feature history_length cannot both exceed one"
+        )
+    if getattr(learner, "on_policy", False) and spec.training.n_step != 1:
+        raise ValueError("on-policy training requires training.n_step=1")
+
+
+def _validate_reward_discount(spec: RunSpec, environment_factory: object | None) -> None:
+    if environment_factory is None or (
+        type(environment_factory).__module__ != "trackmaniarl.trackmania.environment"
+        or type(environment_factory).__name__ != "OpenPlanetEnvironmentFactory"
+    ):
+        return
+    factory: Any = environment_factory
+    reward_gamma = float(factory.config.reward_gamma)
+    if not isclose(spec.training.gamma, reward_gamma, rel_tol=0.0, abs_tol=1.0e-12):
+        raise ValueError(
+            "Potential-based reward shaping requires training.gamma to equal "
+            f"environment.config.reward_gamma; got {spec.training.gamma} and {reward_gamma}"
+        )
+
+
+def _validate_execution_contract(learner: object) -> None:
+    execution = getattr(learner, "execution", None)
+    if getattr(execution, "compile", False) and not getattr(learner, "supports_compile", False):
+        raise ValueError(f"{type(learner).__name__} does not support execution.compile")
+
+
 def _redact_config(value: Any) -> Any:
     if isinstance(value, dict):
         secret_tokens = ("key", "token", "secret", "password")
@@ -136,6 +194,7 @@ def resolve_run(spec: RunSpec, *, base_dir: str | Path = ".") -> ResolvedRun:
     environment_factory = None
     if spec.components.environment is not None:
         environment_factory = _instantiate(spec.components.environment, base_dir=project_dir)
+    _validate_reward_discount(spec, environment_factory)
     model_factory = None
     if spec.components.model_factory is not None:
         model_factory = _instantiate(spec.components.model_factory)
@@ -147,6 +206,8 @@ def resolve_run(spec: RunSpec, *, base_dir: str | Path = ".") -> ResolvedRun:
         model_factory=model_factory,
         base_dir=project_dir,
     )
+    _validate_training_contract(spec, learner, sampler, pipeline)
+    _validate_execution_contract(learner)
     logger = _instantiate(spec.components.logger, run_dir=run_dir, run_id=spec.run_id)
     if spec.components.additional_loggers:
         from trackmaniarl.core.builtins import CompositeRunLogger

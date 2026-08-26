@@ -8,7 +8,6 @@ from torch import nn
 from trackmaniarl.models.contracts import (
     AuxiliaryLoss,
     FractionLossContext,
-    RiskDistortion,
     RiskSpec,
     ValuePhase,
     ValueRepresentation,
@@ -58,10 +57,6 @@ class RandomQuantileStrategy(nn.Module):
     def expectation(
         self, values: torch.Tensor, support: ValueSupport, risk: RiskSpec
     ) -> torch.Tensor:
-        if risk.distortion is RiskDistortion.UPPER_CVAR:
-            weights = (support.points >= 1.0 - risk.alpha).to(values.dtype)
-            weights = weights / weights.sum(dim=-1, keepdim=True).clamp_min(1.0)
-            return (values * weights.unsqueeze(-1)).sum(dim=-2)
         return weighted_expectation(values, support, risk)
 
     def regression_loss(

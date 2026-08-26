@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "TrackmaniaRL"
-version = "1.0.4"
+version = "2.0.0rc1"
 description = "Reinforcement-learning library for training agents in Trackmania 2020"
 readme = "README.md"
 license = "MIT"
@@ -38,6 +38,7 @@ dependencies = [
     "tensordict>=0.6",
     "gymnasium>=0.29",
     "PyYAML>=6.0",
+    "zstandard>=0.23",
 ]
 
 [project.optional-dependencies]
@@ -64,9 +65,6 @@ distributed = [
     "grpcio>=1.66",
     "protobuf>=5.27",
     "safetensors>=0.4.5",
-    "zstandard>=0.23",
-    "libevdev>=0.13; sys_platform == 'linux'",
-    "vgamepad>=0.1.0; sys_platform == 'win32' or sys_platform == 'linux'",
 ]
 explain = [
     "captum>=0.7",
@@ -75,6 +73,25 @@ vision = [
     "torchvision>=0.15",
 ]
 mamba = [
+    "causal-conv1d>=1.4; sys_platform == 'linux'",
+    "mamba-ssm>=2.2; sys_platform == 'linux'",
+]
+all = [
+    "google-genai>=2.2.0",
+    "optuna>=3.0",
+    "einops>=0.7",
+    "gymnasium>=0.29",
+    "loguru>=0.7",
+    "pandas>=2.0",
+    "torchrl>=0.11",
+    "libevdev>=0.13; sys_platform == 'linux'",
+    "vgamepad>=0.1.0; sys_platform == 'win32' or sys_platform == 'linux'",
+    "wandb>=0.15.8",
+    "grpcio>=1.66",
+    "protobuf>=5.27",
+    "safetensors>=0.4.5",
+    "captum>=0.7",
+    "torchvision>=0.15",
     "causal-conv1d>=1.4; sys_platform == 'linux'",
     "mamba-ssm>=2.2; sys_platform == 'linux'",
 ]
@@ -122,7 +139,6 @@ dev = [
     "grpcio>=1.66",
     "protobuf>=5.27",
     "safetensors>=0.4.5",
-    "zstandard>=0.23",
     "libevdev>=0.13; sys_platform == 'linux'",
     "vgamepad>=0.1.0; sys_platform == 'win32' or sys_platform == 'linux'",
     "wandb>=0.15.8",
@@ -132,12 +148,12 @@ dev = [
 trackmaniarl = "trackmaniarl.__main__:entrypoint"
 
 [project.urls]
-Homepage = "https://github.com/Palamabron/AITrackmania"
-Repository = "https://github.com/Palamabron/AITrackmania"
-Documentation = "https://github.com/Palamabron/AITrackmania/tree/main/readme"
-Issues = "https://github.com/Palamabron/AITrackmania/issues"
-Changelog = "https://github.com/Palamabron/AITrackmania/blob/main/CHANGELOG.md"
-Security = "https://github.com/Palamabron/AITrackmania/blob/main/SECURITY.md"
+Homepage = "https://github.com/Palamabron/TrackmaniaRL"
+Repository = "https://github.com/Palamabron/TrackmaniaRL"
+Documentation = "https://github.com/Palamabron/TrackmaniaRL/tree/main/readme"
+Issues = "https://github.com/Palamabron/TrackmaniaRL/issues"
+Changelog = "https://github.com/Palamabron/TrackmaniaRL/blob/main/CHANGELOG.md"
+Security = "https://github.com/Palamabron/TrackmaniaRL/blob/main/SECURITY.md"
 
 [tool.setuptools.packages.find]
 where = ["."]
@@ -190,7 +206,6 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
-addopts = "--basetemp=.pytest-tmp"
 
 [tool.poe.tasks]
 fmt = [

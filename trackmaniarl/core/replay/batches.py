@@ -69,20 +69,36 @@ def _has_complete_n_step(
 ) -> bool:
     """Reject live replay tails, whose future rewards have not arrived yet."""
 
+    try:
+        _n_step_horizon(transition_id, available, request)
+    except RuntimeError:
+        return False
+    return True
+
+
+def _n_step_horizon(
+    transition_id: TransitionId,
+    available: Mapping[TransitionId, Transition],
+    request: BatchRequest,
+) -> list[Transition]:
+    """Resolve one complete episode-local horizon from a basic replay snapshot."""
+
     first = available[transition_id]
+    result: list[Transition] = []
     for offset in range(request.n_step):
         candidate = available.get(transition_id + offset)
         if candidate is None or candidate.episode_id != first.episode_id:
-            return False
+            raise RuntimeError(f"Transition {transition_id} has no complete n-step horizon")
         if (
             candidate.step is not None
             and first.step is not None
             and candidate.step != first.step + offset
         ):
-            return False
+            raise RuntimeError(f"Transition {transition_id} has a discontinuous n-step horizon")
+        result.append(candidate)
         if candidate.terminated or candidate.truncated:
-            return True
-    return True
+            break
+    return result
 
 
 def _reshape_sequence_batch(value: Any, batch_size: int, sequence_length: int) -> Any:
@@ -112,6 +128,31 @@ def _history_padding_masks(histories: list[list[TransitionId]]) -> torch.Tensor:
         if padding:
             masks[row, :padding] = False
     return masks
+
+
+def _sequence_target_observation_histories(
+    histories: list[list[Transition]],
+    horizons: list[list[Transition]],
+    sequence_length: int,
+) -> list[list[Any]]:
+    """Build actor-equivalent histories ending at each n-step bootstrap state."""
+
+    if len(histories) != len(horizons):
+        raise ValueError("sequence histories and bootstrap horizons must have equal length")
+    result: list[list[Any]] = []
+    for history, horizon in zip(histories, horizons, strict=True):
+        if len(history) != sequence_length or not horizon:
+            raise ValueError(
+                "sequence target history requires full context and a bootstrap horizon"
+            )
+        current = history[-1]
+        first = horizon[0]
+        if current.episode_id != first.episode_id or current.step != first.step:
+            raise ValueError("bootstrap horizon must begin at the final context transition")
+        observations = [transition.observation for transition in history]
+        observations.extend(transition.next_observation for transition in horizon)
+        result.append(observations[-sequence_length:])
+    return result
 
 
 def _reshape_batch_sequences(
@@ -159,30 +200,36 @@ def _make_batch(
     are recurrent context whose reward fields the learner never consumes.
     """
 
-    resolver = getattr(store, "n_step_ids", None)
-    requested_ids: list[TransitionId] = []
-    horizons: list[list[TransitionId]] = []
-    seen: set[TransitionId] = set()
-    for index, transition_id in enumerate(transition_ids):
-        needs_return = bootstrap_stride == 1 or index % bootstrap_stride == bootstrap_stride - 1
-        if not needs_return:
-            horizon = [transition_id]
-        elif callable(resolver):
-            horizon = cast(list[TransitionId], resolver(transition_id, request.n_step))
-        else:
-            horizon = [transition_id + offset for offset in range(request.n_step)]
-        horizons.append(horizon)
-        for candidate in horizon:
-            if candidate not in seen and store.contains(candidate):
-                seen.add(candidate)
-                requested_ids.append(candidate)
-    available = dict(zip(requested_ids, store.get(requested_ids), strict=True))
-    n_step = [
-        _n_step_transition(transition_id, available, request, horizon=horizon)
-        for transition_id, horizon in zip(transition_ids, horizons, strict=True)
-    ]
-    transitions = [item[0] for item in n_step]
-    discounts = [item[1] for item in n_step]
+    materializer = getattr(store, "materialize_n_step", None)
+    if bootstrap_stride == 1 and callable(materializer):
+        transitions, discounts = cast(
+            tuple[list[Transition], list[float]], materializer(transition_ids, request)
+        )
+    else:
+        resolver = getattr(store, "n_step_ids", None)
+        requested_ids: list[TransitionId] = []
+        horizons: list[list[TransitionId]] = []
+        seen: set[TransitionId] = set()
+        for index, transition_id in enumerate(transition_ids):
+            needs_return = bootstrap_stride == 1 or index % bootstrap_stride == bootstrap_stride - 1
+            if not needs_return:
+                horizon = [transition_id]
+            elif callable(resolver):
+                horizon = cast(list[TransitionId], resolver(transition_id, request.n_step))
+            else:
+                horizon = [transition_id + offset for offset in range(request.n_step)]
+            horizons.append(horizon)
+            for candidate in horizon:
+                if candidate not in seen and store.contains(candidate):
+                    seen.add(candidate)
+                    requested_ids.append(candidate)
+        available = dict(zip(requested_ids, store.get(requested_ids), strict=True))
+        n_step = [
+            _n_step_transition(transition_id, available, request, horizon=horizon)
+            for transition_id, horizon in zip(transition_ids, horizons, strict=True)
+        ]
+        transitions = [item[0] for item in n_step]
+        discounts = [item[1] for item in n_step]
     behavior = _behavior_metadata(transitions)
     data = pipeline.collate(transitions)
     standard = (

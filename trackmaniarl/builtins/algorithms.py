@@ -1,4 +1,4 @@
-"""Lazy catalogue of first-class TrackmaniaRL 1.0 learners."""
+"""Lazy catalogue of first-class TrackmaniaRL 2.0 learners."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ import importlib
 from typing import Any, cast
 
 _ALGORITHMS: dict[str, str] = {
+    "discrete_value": "trackmaniarl.algorithms.value_based:DiscreteValueLearner",
     "proximal_policy_optimization": (
         "trackmaniarl.algorithms.proximal_policy_optimization:ProximalPolicyOptimization"
     ),

@@ -48,6 +48,24 @@ def _redact(value: Any) -> Any:
     return value
 
 
+def _resume_equivalent_manifest(value: str) -> str:
+    manifest = json.loads(value)
+    manifest.pop("warm_start", None)
+    config = manifest.get("config")
+    if not isinstance(config, dict):
+        return value
+    components = config.get("components")
+    if not isinstance(components, dict):
+        return value
+    learner = components.get("learner")
+    if not isinstance(learner, dict):
+        return value
+    kwargs = learner.get("kwargs")
+    if isinstance(kwargs, dict):
+        kwargs.pop("model_initialization_checkpoint", None)
+    return json.dumps(manifest, indent=2, sort_keys=True, default=str)
+
+
 def _evaluation_assets(run: ResolvedRun) -> list[dict[str, str]]:
     if run.spec.evaluation is None:
         return []
@@ -130,7 +148,10 @@ def write_run_manifest(run: ResolvedRun) -> Path:
     target = run.run_dir / "manifest.json"
     candidate = json.dumps(manifest, indent=2, sort_keys=True, default=str)
     if target.exists():
-        if target.read_text(encoding="utf-8") != candidate:
+        existing = target.read_text(encoding="utf-8")
+        if existing != candidate and _resume_equivalent_manifest(
+            existing
+        ) != _resume_equivalent_manifest(candidate):
             message = (
                 "Immutable manifest already exists for run_id "
                 f"{run.spec.run_id!r}; choose a new run_id"

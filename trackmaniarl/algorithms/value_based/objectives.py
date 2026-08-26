@@ -14,6 +14,7 @@ class ValueObjectiveContext:
     actions: torch.Tensor
     valid: torch.Tensor
     metadata: dict[str, object]
+    action_mask: torch.Tensor | None = None
 
 
 class ValueObjective(Protocol):
@@ -38,11 +39,12 @@ class DemonstrationMarginObjective:
         demo = torch.as_tensor(
             flags, dtype=torch.bool, device=context.expected_values.device
         ).unsqueeze(1)
-        margins = torch.full_like(context.expected_values, self.margin).scatter(
+        expected = _masked_demo_values(context, demo)
+        margins = torch.full_like(expected, self.margin).scatter(
             -1, context.actions.unsqueeze(-1), 0.0
         )
-        expert = context.expected_values.gather(-1, context.actions.unsqueeze(-1)).squeeze(-1)
-        losses = (context.expected_values + margins).amax(dim=-1) - expert
+        expert = expected.gather(-1, context.actions.unsqueeze(-1)).squeeze(-1)
+        losses = (expected + margins).amax(dim=-1) - expert
         valid = context.valid & demo
         return self.weight * (losses * valid).sum() / valid.sum().clamp_min(1)
 
@@ -62,14 +64,24 @@ class DemonstrationCrossEntropyObjective:
         demo = torch.as_tensor(
             flags, dtype=torch.bool, device=context.expected_values.device
         ).unsqueeze(1)
+        expected = _masked_demo_values(context, demo)
         leading = context.actions.shape
         losses = torch.nn.functional.cross_entropy(
-            context.expected_values.reshape(-1, context.expected_values.shape[-1]),
+            expected.reshape(-1, expected.shape[-1]),
             context.actions.reshape(-1),
             reduction="none",
         ).reshape(leading)
         valid = context.valid & demo
         return self.weight * (losses * valid).sum() / valid.sum().clamp_min(1)
+
+
+def _masked_demo_values(context: ValueObjectiveContext, demo: torch.Tensor) -> torch.Tensor:
+    if context.action_mask is None:
+        return context.expected_values
+    allowed = context.action_mask[context.actions]
+    if torch.any(context.valid & demo & ~allowed):
+        raise ValueError("demonstration action is excluded by policy_action_ids")
+    return context.expected_values.masked_fill(~context.action_mask, -torch.inf)
 
 
 class PolicyAnchorObjective:

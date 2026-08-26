@@ -13,7 +13,35 @@ permissions:
   contents: read
 
 jobs:
+  gate:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v4
+        with:
+          python-version: "3.12"
+
+      - name: Install development dependencies
+        env:
+          UV_INDEX_PYTORCH_CUDA: https://download.pytorch.org/whl/cpu
+        run: uv sync --locked --group dev
+
+      - name: Verify formatting
+        run: uv run ruff format --check .
+
+      - name: Run Ruff
+        run: uv run ruff check .
+
+      - name: Run strict mypy
+        run: uv run mypy --strict trackmaniarl
+
+      - name: Run full test suite
+        run: uv run pytest
+
   publish:
+    needs: gate
     runs-on: ubuntu-latest
     environment: pypi
     permissions:

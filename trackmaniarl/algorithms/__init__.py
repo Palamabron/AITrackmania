@@ -1,4 +1,4 @@
-"""First-class TrackmaniaRL 1.0 off-policy learners."""
+"""First-class TrackmaniaRL 2.0 off-policy learners."""
 
 from trackmaniarl.algorithms.execution import ResolvedTorchExecution, TorchExecutionConfig
 from trackmaniarl.algorithms.implicit_quantile_q_learning import ImplicitQuantileQLearning

@@ -16,7 +16,7 @@ def _trackmaniarl_requirement(extras: str) -> str:
     try:
         installed_version = version("trackmaniarl")
     except PackageNotFoundError:
-        installed_version = "1.0.3"
+        installed_version = "2.0.0rc1"
     release = installed_version.split(".", maxsplit=2)
     major = int(release[0])
     minor = int(release[1])
@@ -67,22 +67,79 @@ def _uv_options(*, accelerator: bool) -> str:
     vgamepad_source = (
         'vgamepad = { git = "https://github.com/Palamabron/vgamepad", '
         'rev = "5f3435df3f8a0e658feb58b207d9137cdb5183cd" }\n'
-    )
-    torch_source = (
-        'torch = [{ index = "pytorch-cuda", marker = "sys_platform == \'win32\' or '
-        "sys_platform == 'linux'\" }]\n"
         if accelerator
         else ""
     )
+    torch_source = (
+        'torch = [\n  { index = "pytorch-cuda", marker = "sys_platform == \'win32\' or '
+        "sys_platform == 'linux'\" },\n"
+        '  { index = "pytorch-cpu", marker = "sys_platform != \'win32\' and '
+        "sys_platform != 'linux'\" },\n]\n"
+    )
     index = (
+        "\n[[tool.uv.index]]\n"
+        'name = "pytorch-cpu"\n'
+        'url = "https://download.pytorch.org/whl/cpu"\n'
+        "explicit = true\n"
         "\n[[tool.uv.index]]\n"
         'name = "pytorch-cuda"\n'
         'url = "https://download.pytorch.org/whl/cu128"\n'
         "explicit = true\n"
-        if accelerator
-        else ""
     )
     return f"\n[tool.uv.sources]\n{trackmaniarl_source}{vgamepad_source}{torch_source}{index}"
+
+
+def _project_readme(template: str) -> str:
+    commands = """# TrackmaniaRL project
+
+```powershell
+uv sync
+uv run trackmaniarl validate run.yaml
+uv run pytest
+```
+"""
+    if template == "starter":
+        return commands
+    return (
+        commands
+        + """
+## Live Trackmania setup
+
+1. In Openplanet's Plugin Manager, install the signed
+   [**TrackmaniaRL Connect**](https://openplanet.dev/plugin/sac_getdata) plugin
+   (`SAC_GetData`) version **2.4.0** and enable **School Mode**.
+2. Replace every `REPLACE_WITH_TEST_3_UID` value in `run.yaml`, record both
+   boundaries, and rebuild geometry with the configured local `.Map.Gbx`.
+3. Enter that map with a visible vehicle, then run:
+
+```powershell
+uv run trackmaniarl track check --config run.yaml
+uv run trackmaniarl smoke run.yaml --transitions 100
+```
+
+The `openplanet` directory is a developer-reference source snapshot, not a
+second plugin installation path. Do not run its loose script alongside the
+managed Plugin Manager installation.
+
+## Optional Weights & Biases logging
+
+The generated run writes local JSONL logs only. To opt in to W&B, add the extra
+and configure an additional logger explicitly:
+
+```powershell
+uv add "trackmaniarl[trackmania,algorithms,distributed,wandb]"
+```
+
+```yaml
+components:
+  additional_loggers:
+    - class_path: trackmaniarl.observability.trackers:WandbTracker
+      kwargs: {project: my-trackmania-agent}
+```
+
+Set `WANDB_API_KEY` in your private environment; never commit it.
+"""
+    )
 
 
 def _config(package: str) -> str:
@@ -195,6 +252,10 @@ class StarterMlpLearner:
 
     def setup(self, context: Mapping[str, Any]) -> None:
         torch.manual_seed(int(context["seed"]))
+        for module in self.network.modules():
+            if isinstance(module, nn.Linear):
+                module.reset_parameters()
+        self.optimizer = torch.optim.Adam(self.network.parameters(), lr=1e-3)
 
     def update(self, batch: SampleBatch) -> Mapping[str, float]:
         speeds = torch.tensor(
@@ -240,7 +301,7 @@ def create_project(directory: str | Path, package: str, *, template: str = "star
         raise ValueError("template must be 'starter' or 'trackmania'")
     pyproject = _pyproject(
         package.replace("_", "-"),
-        trackmaniarl_extras="[trackmania,algorithms,wandb,distributed]"
+        trackmaniarl_extras="[trackmania,algorithms,distributed]"
         if template == "trackmania"
         else "[distributed]",
         include_trackmania_tasks=template == "trackmania",
@@ -253,9 +314,10 @@ def create_project(directory: str | Path, package: str, *, template: str = "star
         encoding="utf-8",
     )
     (target / ".env-example").write_text(
-        "TRACKMANIARL_DISTRIBUTED_TOKEN=\nWANDB_API_KEY=\n",
+        "TRACKMANIARL_DISTRIBUTED_TOKEN=\n",
         encoding="utf-8",
     )
+    (target / "README.md").write_text(_project_readme(template), encoding="utf-8")
     config = _config(package) if template == "starter" else _trackmania_config()
     (target / "run.yaml").write_text(config, encoding="utf-8")
     if template == "trackmania":
@@ -279,24 +341,17 @@ def create_project(directory: str | Path, package: str, *, template: str = "star
         plugin_dir = target / "openplanet"
         plugin_dir.mkdir()
         plugin = files("trackmaniarl.project").joinpath("openplanet/TrackmaniaRL_GrabData_IQN.as")
-        (plugin_dir / "TrackmaniaRL_GrabData_IQN.as").write_text(
+        (plugin_dir / "SAC_GetData-2.4.0-reference.as").write_text(
             plugin.read_text(encoding="utf-8"), encoding="utf-8"
         )
         plugin_info = files("trackmaniarl.project").joinpath("openplanet/info.toml")
-        (plugin_dir / "info.toml").write_text(
+        (plugin_dir / "info.reference.toml").write_text(
             plugin_info.read_text(encoding="utf-8"), encoding="utf-8"
         )
         plugin_readme = files("trackmaniarl.project").joinpath("openplanet/README.md")
         (plugin_dir / "README.md").write_text(
             plugin_readme.read_text(encoding="utf-8"), encoding="utf-8"
         )
-    (target / "run.py").write_text(
-        "from trackmaniarl import RunSpec, Trainer, resolve_run\n\n"
-        "spec = RunSpec.from_yaml('run.yaml')\n"
-        "run = resolve_run(spec)\n"
-        "try:\n    Trainer(run).train()\nfinally:\n    run.logger.close()\n",
-        encoding="utf-8",
-    )
     (package_dir / "__init__.py").write_text("", encoding="utf-8")
     (package_dir / "components.py").write_text(COMPONENTS, encoding="utf-8")
     tests_dir = target / "tests"
@@ -338,7 +393,9 @@ components:
         geometry_path: assets/trackmaniarl-test.geometry.npz
         expected_map_uid: REPLACE_WITH_TEST_3_UID
         control_backend: gamepad
-        action_repeat_frames: 4
+        action_repeat_frames: 1
+        decision_interval_ms: 50.0
+        demonstration_control_aggregation: true
         slow_progress_window_steps: 300
         no_progress_steps: 600
         minimum_progress_per_window_m: 0.5

@@ -53,11 +53,20 @@ class DemonstrationReplayPolicy:
         action_ids: tuple[int, ...] | None = None,
         *,
         action_offset_ms: float = 0.0,
+        decision_interval_ms: float | None = None,
+        action_lead_ms: float = 0.0,
+        aggregate_controls: bool = False,
     ) -> DemonstrationReplayPolicy:
         demonstration = load_demonstration(path)
+        frames, actions = resample_demonstration(
+            demonstration,
+            decision_interval_ms,
+            action_lead_ms=action_lead_ms,
+            aggregate_controls=aggregate_controls,
+        )
         return cls(
-            demonstration.frames[:-1, 3],
-            demonstration.actions,
+            frames[:-1, 3],
+            actions,
             action_ids,
             action_offset_ms=action_offset_ms,
         )
@@ -100,6 +109,8 @@ class DemonstrationReplayPolicy:
 
 class TrajectoryTrackingDemonstrationPolicy:
     """Track a recorded world-space trajectory with expert feed-forward controls."""
+
+    requires_raw_observation = True
 
     def __init__(
         self,
@@ -277,11 +288,11 @@ class TrajectoryTrackingDemonstrationPolicy:
     def _steering(self, expert_steering: float, current: np.ndarray, index: int) -> float:
         reference = self.reference_frames[index]
         heading = self.reference_headings[index]
-        right = np.asarray([heading[2], 0.0, -heading[0]], dtype=np.float32)
+        right = np.asarray([-heading[2], 0.0, heading[0]], dtype=np.float32)
         current_heading = self._current_heading(current[10:13])
         preview_index = self._preview_index(index)
         preview_heading = self.reference_headings[preview_index]
-        preview_right = np.asarray([preview_heading[2], 0.0, -preview_heading[0]], dtype=np.float32)
+        preview_right = np.asarray([-preview_heading[2], 0.0, preview_heading[0]], dtype=np.float32)
         self.last_lateral_error_m = float(np.dot(current[4:7] - reference[4:7], right))
         self.last_heading_error = float(np.dot(current_heading, preview_right))
         self.last_lateral_velocity_error_mps = float(np.dot(current[7:10] - reference[7:10], right))
@@ -430,9 +441,15 @@ class PhaseLockedDemonstrationPolicy:
         pipeline: LidarFeaturePipeline,
         action_ids: tuple[int, ...],
         decision_interval_ms: float | None,
+        *,
+        action_lead_ms: float = 0.0,
     ) -> PhaseLockedDemonstrationPolicy:
         demonstration = load_demonstration(path)
-        frames, actions = resample_demonstration(demonstration, decision_interval_ms)
+        frames, actions = resample_demonstration(
+            demonstration,
+            decision_interval_ms,
+            action_lead_ms=action_lead_ms,
+        )
         pipeline.reset_episode()
         start = 17 + 3 * int(pipeline.include_control_inputs)
         features = [
@@ -459,7 +476,13 @@ class PhaseLockedDemonstrationPolicy:
 
     def _nearest_reference(self, current: np.ndarray) -> int:
         progress = self.reference_features[:, 1]
-        center = int(np.searchsorted(progress, current[1], side="left"))
+        center = int(
+            np.clip(
+                np.searchsorted(progress, current[1], side="left"),
+                0,
+                len(progress) - 1,
+            )
+        )
         start = max(self._reference_index - 16, center - 96, 0)
         stop = min(len(progress), max(self._reference_index + 97, center + 97))
         candidates = self.reference_features[start:stop]
@@ -474,7 +497,9 @@ class PhaseLockedDemonstrationPolicy:
                 len(self.reference_features) - 1,
             )
         )
-        return min(state_index, time_index)
+        time_floor = max(0, time_index - 16)
+        monotonic_floor = min(self._reference_index, time_index)
+        return max(min(state_index, time_index), time_floor, monotonic_floor)
 
     @staticmethod
     def _state_error(current: np.ndarray, reference: np.ndarray) -> float:

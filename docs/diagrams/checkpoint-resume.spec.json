@@ -1,0 +1,46 @@
+{
+  "title": "Checkpoint and resume cycle",
+  "subtitle": "Resume is exact-state recovery, not warm-start: checkpoint identity and the remaining WAL must describe one continuous durable history.",
+  "width": 1200,
+  "height": 1040,
+  "zones": [
+    {"id": "identity-zone", "label": "Immutable run identity", "x": 40, "y": 145, "w": 1120, "h": 155, "color": "blue"},
+    {"id": "running-zone", "label": "Running attempt", "x": 40, "y": 335, "w": 360, "h": 485, "color": "purple"},
+    {"id": "persistence-zone", "label": "Durable persistence", "x": 430, "y": 335, "w": 330, "h": 485, "color": "orange"},
+    {"id": "resume-zone", "label": "Resume gate", "x": 790, "y": 335, "w": 370, "h": 485, "color": "green"}
+  ],
+  "nodes": [
+    {"id": "config", "label": "RunSpec + manifest", "detail": "architecture · contracts · seeds", "x": 80, "y": 190, "w": 275, "h": 85, "color": "blue"},
+    {"id": "identity", "label": "Persistence identity", "detail": "run fingerprint · journal ID", "x": 465, "y": 190, "w": 270, "h": 85, "color": "red"},
+    {"id": "command", "label": "Start or resume", "detail": "new attempt segment", "x": 850, "y": 190, "w": 270, "h": 85, "color": "green"},
+    {"id": "running", "label": "Learner + replay", "detail": "replay · optimizer · RNG", "x": 75, "y": 400, "w": 290, "h": 110, "color": "purple"},
+    {"id": "capture", "label": "Coherent capture", "detail": "state + applied WAL frontier", "x": 75, "y": 575, "w": 290, "h": 100, "color": "blue"},
+    {"id": "interruption", "label": "Stop or crash", "detail": "at any point", "x": 100, "y": 720, "w": 240, "h": 80, "color": "red", "shape": "diamond"},
+    {"id": "wal", "label": "SQLite WAL", "detail": "accepted rows beyond checkpoint", "x": 465, "y": 400, "w": 260, "h": 110, "color": "orange"},
+    {"id": "durable-write", "label": "Durable write", "detail": "temporary → fsync → replace", "x": 465, "y": 575, "w": 260, "h": 100, "color": "orange"},
+    {"id": "checkpoint", "label": "Checkpoint 2.0", "detail": "complete state + identity + frontier", "x": 465, "y": 720, "w": 260, "h": 80, "color": "blue"},
+    {"id": "validate", "label": "Validate recovery set", "detail": "schema · fingerprint · journal · prune floor", "x": 830, "y": 400, "w": 290, "h": 110, "color": "red"},
+    {"id": "restore", "label": "Restore exact state", "detail": "replay WAL rows by ID", "x": 830, "y": 575, "w": 290, "h": 100, "color": "green"},
+    {"id": "attempt", "label": "Resumed attempt", "detail": "new run segment", "x": 830, "y": 720, "w": 290, "h": 80, "color": "green"}
+  ],
+  "edges": [
+    {"id": "e-config-identity", "from": "config", "to": "identity", "label": "fingerprint", "color": "blue"},
+    {"id": "e-identity-command", "from": "identity", "to": "command", "label": "bind", "color": "red"},
+    {"id": "e-command-running", "from": "command", "to": "running", "points": [[985,275],[985,315],[55,315],[55,455],[75,455]], "label": "launch", "label_at": [210,315], "color": "green"},
+    {"id": "e-command-validate", "from": "command", "to": "validate", "points": [[1120,232],[1175,232],[1175,455],[1120,455]], "color": "green"},
+    {"id": "e-running-wal", "from": "running", "to": "wal", "label": "append", "color": "orange"},
+    {"id": "e-running-capture", "from": "running", "to": "capture", "points": [[220,510],[220,575]], "label": "checkpoint barrier", "label_at": [300,555], "color": "blue"},
+    {"id": "e-capture-write", "from": "capture", "to": "durable-write", "label": "snapshot", "color": "blue"},
+    {"id": "e-write-checkpoint", "from": "durable-write", "to": "checkpoint", "points": [[595,675],[595,720]], "color": "orange"},
+    {"id": "e-checkpoint-wal", "from": "checkpoint", "to": "wal", "points": [[465,760],[440,760],[440,535],[595,535],[595,510]], "label": "after save: prune ≤ frontier", "label_at": [565,535], "color": "orange", "style": "dashed"},
+    {"id": "e-running-interruption", "from": "running", "to": "interruption", "points": [[120,510],[120,720]], "color": "red", "style": "dashed"},
+    {"id": "e-wal-validate", "from": "wal", "to": "validate", "label": "recover", "color": "orange"},
+    {"id": "e-checkpoint-validate", "from": "checkpoint", "to": "validate", "points": [[725,760],[775,760],[775,455],[830,455]], "color": "blue"},
+    {"id": "e-validate-restore", "from": "validate", "to": "restore", "points": [[975,510],[975,575]], "label": "pass only", "label_at": [1040,555], "color": "green"},
+    {"id": "e-restore-attempt", "from": "restore", "to": "attempt", "points": [[975,675],[975,720]], "color": "green"}
+  ],
+  "notes": [
+    {"id": "rollback-rule", "text": "Fail closed: reject a foreign journal or a checkpoint frontier older than the journal's durable prune floor.", "x": 80, "y": 875, "w": 1040, "h": 60, "color": "red"},
+    {"id": "warm-start-rule", "text": "Warm-start copies reviewed model tensors only; it never restores replay, optimizer, RNG, counters or WAL identity.", "x": 80, "y": 955, "w": 1040, "h": 58, "color": "slate"}
+  ]
+}

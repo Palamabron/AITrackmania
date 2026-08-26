@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, PositiveInt, field_validator, model_validator
@@ -16,7 +16,7 @@ DEFAULT_EVALUATION_TIME_BUCKETS_S: tuple[float, ...] = (40.0, 38.0, 36.0)
 class ComponentSpec(BaseModel):
     """A locally installed project component selected by import path."""
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, allow_inf_nan=False)
 
     class_path: str = Field(pattern=r"^[A-Za-z_]\w*(\.[A-Za-z_]\w*)*:[A-Za-z_]\w*$")
     kwargs: dict[str, Any] = Field(default_factory=dict)
@@ -25,7 +25,7 @@ class ComponentSpec(BaseModel):
 class ComponentsSpec(BaseModel):
     """The required components for a complete training run."""
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, allow_inf_nan=False)
 
     learner: ComponentSpec
     environment: ComponentSpec | None = None
@@ -50,7 +50,7 @@ class ComponentsSpec(BaseModel):
 class TrainingSpec(BaseModel):
     """Bounded off-policy training schedule executed by ``trackmaniarl train``."""
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, allow_inf_nan=False)
 
     total_transitions: PositiveInt = 10_000
     max_episode_steps: PositiveInt = 2_000
@@ -115,10 +115,20 @@ class TrainingSpec(BaseModel):
         return self.beta + fraction * (self.per_beta_final - self.beta)
 
 
+class ActorExecutionSpec(BaseModel):
+    """Optional execution override for the actor-local policy replica."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, allow_inf_nan=False)
+
+    device: Literal["auto", "cuda", "rocm", "mps", "cpu"] = "cpu"
+    precision: Literal["auto", "bfloat16", "float16", "float32"] = "float32"
+    torch_threads: PositiveInt | None = None
+
+
 class DistributedSpec(BaseModel):
     """Actor/learner exchange settings shared by local and remote runtimes."""
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, allow_inf_nan=False)
 
     port: int = Field(default=8787, ge=1, le=65535)
     rollout_chunk_transitions: PositiveInt = 128
@@ -136,6 +146,8 @@ class DistributedSpec(BaseModel):
     epsilon_start: float = Field(default=0.5, ge=0.0, le=1.0)
     epsilon_final: float = Field(default=0.05, ge=0.0, le=1.0)
     epsilon_decay_transitions: PositiveInt = 1_500_000
+    epsilon_decay_updates: PositiveInt | None = None
+    actor_execution: ActorExecutionSpec | None = None
     token_env: str = Field(default="TRACKMANIARL_DISTRIBUTED_TOKEN", min_length=1)
 
     @field_validator("epsilon_profiles")
@@ -149,7 +161,7 @@ class DistributedSpec(BaseModel):
 class EvaluationMapSpec(BaseModel):
     """Immutable local map and geometry asset used by TrackMania evaluation."""
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, allow_inf_nan=False)
 
     id: str = Field(min_length=1, pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
     map_path: Path
@@ -160,7 +172,7 @@ class EvaluationMapSpec(BaseModel):
 class EvaluationSuiteSpec(BaseModel):
     """Versioned local-map suite; game engine seeds are intentionally absent."""
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, allow_inf_nan=False)
 
     name: str = Field(min_length=1)
     version: str = Field(min_length=1)
@@ -202,24 +214,31 @@ class EvaluationSuiteSpec(BaseModel):
 class RunSpec(BaseModel):
     """All user-controlled configuration for one TrackMania RL run."""
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, allow_inf_nan=False)
 
-    api_version: str = "2.0"
+    api_version: Literal["2.0"]
     run_id: str = Field(min_length=1, pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
     seed: int = 0
-    artifacts_dir: Path = Path("artifacts")
+    artifacts_dir: Path = Field(default_factory=lambda: Path("artifacts"))
     components: ComponentsSpec
     training: TrainingSpec = Field(default_factory=TrainingSpec)
     distributed: DistributedSpec = Field(default_factory=DistributedSpec)
     evaluation: EvaluationSuiteSpec | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
-    @field_validator("api_version")
-    @classmethod
-    def _api_version(cls, value: str) -> str:
-        if value != "2.0":
-            raise ValueError("RunSpec api_version must be '2.0'")
-        return value
+    @model_validator(mode="after")
+    def _evaluation_schedule_is_active(self) -> RunSpec:
+        cadence = self.training.evaluate_every_episodes
+        stop_enabled = self.training.evaluation_stop_min_finish_rate is not None
+        if cadence is not None and self.components.evaluator is None:
+            raise ValueError("scheduled evaluation requires components.evaluator")
+        if stop_enabled and cadence is None:
+            raise ValueError("evaluation stop requires training.evaluate_every_episodes")
+        if stop_enabled and self.components.evaluator is None:
+            raise ValueError("evaluation stop requires components.evaluator")
+        if stop_enabled and self.evaluation is None:
+            raise ValueError("evaluation stop requires an evaluation suite")
+        return self
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> RunSpec:

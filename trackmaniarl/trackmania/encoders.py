@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import cast
+from typing import Any, cast
 
 import torch
 from torch import nn
 
+from trackmaniarl.models.backbones import SimbaV2Backbone
 from trackmaniarl.models.encoders.track_geometry import TrackGeometryEncoder
 from trackmaniarl.trackmania.features import LidarFeaturePipeline
 
@@ -138,3 +139,57 @@ class LidarSensorEncoder(nn.Module):
         nn.init.zeros_(output.weight)
         nn.init.zeros_(output.bias)
         return module
+
+
+class LidarSimbaSensorEncoder(nn.Module):
+    """A fixed lidar history followed by a feed-forward SimbaV2 backbone."""
+
+    def __init__(
+        self,
+        sensor: Mapping[str, Any],
+        backbone: Mapping[str, Any],
+        history_length: int = 1,
+    ) -> None:
+        super().__init__()
+        if history_length < 1:
+            raise ValueError("history_length must be positive")
+        self.history_length = history_length
+        self.sensor = LidarSensorEncoder(**sensor)
+        configured = dict(backbone)
+        hidden_dim = int(configured.pop("hidden_dim"))
+        self.backbone = SimbaV2Backbone(
+            input_dim=self.sensor.output_dim * history_length,
+            hidden_dim=hidden_dim,
+            **configured,
+        )
+        self.output_dim = hidden_dim
+
+    def forward(self, frames: Mapping[str, torch.Tensor]) -> torch.Tensor:
+        if self.history_length == 1:
+            return cast(torch.Tensor, self.backbone(self.sensor(frames)))
+        lidar = frames.get("lidar")
+        mask = frames.get("lidar_mask")
+        telemetry = frames.get("telemetry")
+        if lidar is None or mask is None or telemetry is None:
+            raise ValueError("lidar history requires lidar, lidar_mask, and telemetry tensors")
+        if (
+            lidar.ndim != 4
+            or mask.ndim != 3
+            or telemetry.ndim != 3
+            or lidar.shape[:2] != (lidar.shape[0], self.history_length)
+            or mask.shape[:2] != lidar.shape[:2]
+            or telemetry.shape[:2] != lidar.shape[:2]
+        ):
+            raise ValueError(
+                "lidar history must have shapes [batch, history, channels, points], "
+                "[batch, history, points], and [batch, history, telemetry]"
+            )
+        batch = lidar.shape[0]
+        flattened = {
+            "lidar": lidar.reshape(batch * self.history_length, *lidar.shape[2:]),
+            "lidar_mask": mask.reshape(batch * self.history_length, *mask.shape[2:]),
+            "telemetry": telemetry.reshape(batch * self.history_length, telemetry.shape[-1]),
+        }
+        encoded_frames = self.sensor(flattened).reshape(batch, self.history_length, -1)
+        encoded = encoded_frames.flip(1).reshape(batch, -1)
+        return cast(torch.Tensor, self.backbone(encoded))

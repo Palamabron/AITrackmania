@@ -1,0 +1,34 @@
+api_version: "2.0"
+run_id: docs-builtin-smoke
+seed: 7
+artifacts_dir: artifacts
+
+components:
+  learner:
+    class_path: trackmaniarl.core.builtins:SmokeLearner
+  replay_store:
+    class_path: trackmaniarl.core.replay:InMemoryReplayStore
+    kwargs:
+      capacity: 256
+  sampler:
+    class_path: trackmaniarl.core.replay:UniformSampler
+  feature_pipeline:
+    class_path: trackmaniarl.core.builtins:IdentityFeaturePipeline
+
+training:
+  total_transitions: 32
+  max_episode_steps: 16
+  batch_size: 4
+  sequence_length: 1
+  n_step: 1
+  gamma: 0.99
+  warmup_transitions: 4
+  updates_per_transition: 1.0
+  checkpoint_interval_updates: 16
+
+distributed:
+  rollout_chunk_transitions: 16
+  rollout_flush_s: 2.0
+  policy_refresh_s: 5.0
+  heartbeat_s: 5.0
+  actor_timeout_s: 20.0

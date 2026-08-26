@@ -6,7 +6,7 @@ Requirements are Git, Python 3.12 or newer and
 [uv](https://docs.astral.sh/uv/). From a clone:
 
 ```bash
-git clone https://github.com/Palamabron/AITrackmania.git
+git clone https://github.com/Palamabron/TrackmaniaRL.git
 cd AITrackmania
 uv sync --group dev
 uv run trackmaniarl --help
@@ -59,13 +59,6 @@ library boundary. Generated projects and their artifacts are ignored source-tree
 state, not release contents.
 
 ## Change workflow
-
-<p align="center">
-  <img src="../docs/diagrams/extension-workflow-preview.svg" alt="TrackmaniaRL extension ownership, contract and promotion gates" width="900">
-</p>
-
-[Editable diagram](../docs/diagrams/extension-workflow.excalidraw) ·
-[local preview](../docs/diagrams/extension-workflow-preview.html)
 
 1. Decide whether the behavior is reusable library code or application-specific
    experiment code. Prefer the generated agent project for the latter.
@@ -129,7 +122,7 @@ new default.
 | --- | --- | --- |
 | configuration | `uv run trackmaniarl validate run.yaml` | imports components and performs a synthetic update without the game |
 | unit/integration | `uv run poe test` | deterministic core, algorithm and fake distributed behavior |
-| game connection | `uv run trackmaniarl track check` | verifies one compatible OpenPlanet telemetry frame |
+| game connection | `uv run trackmaniarl track check --config run.yaml` | verifies three 33-field frames, session protocol, active UID and readiness |
 | bounded live gate | `uv run trackmaniarl smoke run.yaml --transitions 100` | real actor/learner path, policy refresh and checkpoint |
 | training | `uv run trackmaniarl train run.yaml` | full configured run |
 

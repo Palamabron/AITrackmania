@@ -5,7 +5,7 @@ include LICENSE
 include NOTICE
 include SECURITY.md
 recursive-include readme *.md
-recursive-include docs/diagrams *.md *.excalidraw *.svg *.png *.html
+recursive-include docs/diagrams *.md *.spec.json *.py *.excalidraw *.svg *.png *.html
 recursive-include scripts *.py
 recursive-include tests *.py
 recursive-include trackmaniarl/project/openplanet *.as *.md *.toml

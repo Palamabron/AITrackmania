@@ -16,7 +16,8 @@ import numpy as np
 import torch
 
 from trackmaniarl.core.contracts import ReplayStore
-from trackmaniarl.core.data import Transition, TransitionId
+from trackmaniarl.core.data import BatchRequest, Transition, TransitionId
+from trackmaniarl.core.pytree import tree_snapshot
 
 
 class _IncrementalReplayStore(Protocol):
@@ -41,6 +42,8 @@ class _IncrementalReplayStore(Protocol):
     def affected_n_step_starts(
         self, transition_id: TransitionId, n_step: int
     ) -> list[TransitionId]: ...
+
+    def n_step_ids(self, transition_id: TransitionId, n_step: int) -> list[TransitionId]: ...
 
     def history_ids(
         self, transition_id: TransitionId, sequence_length: int
@@ -69,6 +72,8 @@ def _is_incremental_store(store: ReplayStore) -> TypeGuard[_IncrementalReplaySto
             "eligible_transition_ids",
             "is_n_step_eligible",
             "affected_n_step_starts",
+            "n_step_ids",
+            "history_ids",
             "sampling_transaction",
         )
     ) and isinstance(getattr(store, "capacity", None), int)
@@ -261,7 +266,7 @@ class InMemoryReplayStore:
         self._steps[slot] = transition.step if transition.step is not None else -1
         self._previous_ids[slot] = previous_id
         self._next_ids[slot] = -1
-        transition_info = dict(transition.info)
+        transition_info = cast(dict[str, Any], tree_snapshot(dict(transition.info)))
         self._sampling_pace[slot] = float(
             transition_info.pop("sampling/projected_lap_time_s", np.inf)
         )
@@ -270,7 +275,7 @@ class InMemoryReplayStore:
         self._demo_count += int(is_demo)
         if episode_code >= 0:
             self._episode_refcounts[episode_code] = self._episode_refcounts.get(episode_code, 0) + 1
-        self._next_overrides[transition_id] = transition.next_observation
+        self._next_overrides[transition_id] = tree_snapshot(transition.next_observation)
         if transition_info:
             self._info[transition_id] = transition_info
         self._link_previous(previous_id, transition_id, transition.observation)
@@ -333,7 +338,14 @@ class InMemoryReplayStore:
     def _previous_transition(self, transition: Transition, episode_code: int) -> TransitionId:
         if episode_code < 0 or transition.step is None:
             candidate = self._next_index - 1
-            return candidate if self.contains(candidate) else -1
+            if not self.contains(candidate):
+                return -1
+            slot = candidate % self.capacity
+            if self._terminated[slot] or self._truncated[slot]:
+                return -1
+            if int(self._episode_codes[slot]) != episode_code:
+                return -1
+            return candidate
         steps = self._episode_steps.setdefault(episode_code, {})
         existing = self._episode_step(steps, transition.step)
         if existing >= 0:
@@ -388,8 +400,15 @@ class InMemoryReplayStore:
         if previous_id < 0 or not self.contains(previous_id):
             return
         previous_slot = previous_id % self.capacity
+        transition_slot = transition_id % self.capacity
+        if (
+            self._terminated[previous_slot]
+            or self._truncated[previous_slot]
+            or self._episode_codes[previous_slot] != self._episode_codes[transition_slot]
+        ):
+            return
         self._next_ids[previous_slot] = transition_id
-        self._previous_ids[transition_id % self.capacity] = previous_id
+        self._previous_ids[transition_slot] = previous_id
         previous_next = self._next_overrides.get(previous_id)
         if (
             transition_id > previous_id
@@ -425,29 +444,102 @@ class InMemoryReplayStore:
                 raise KeyError(f"Replay transitions no longer available: {missing[:3]}")
             return [self._transition(transition_id) for transition_id in transition_ids]
 
+    def materialize_n_step(
+        self, transition_ids: list[TransitionId], request: BatchRequest
+    ) -> tuple[list[Transition], list[float]]:
+        """Aggregate n-step targets while reading only their endpoint observations."""
+
+        with self._lock:
+            missing = [
+                transition_id
+                for transition_id in transition_ids
+                if not self.contains(transition_id)
+            ]
+            if missing:
+                raise KeyError(f"Replay transitions no longer available: {missing[:3]}")
+            materialized = [
+                self._materialize_n_step_locked(transition_id, request)
+                for transition_id in transition_ids
+            ]
+        return [item[0] for item in materialized], [item[1] for item in materialized]
+
+    def _materialize_n_step_locked(
+        self, transition_id: TransitionId, request: BatchRequest
+    ) -> tuple[Transition, float]:
+        assert self._observations is not None
+        assert self._actions is not None
+        first_slot = transition_id % self.capacity
+        first_episode_code = int(self._episode_codes[first_slot])
+        first_step = int(self._steps[first_slot])
+        current_id = transition_id
+        final_id = transition_id
+        reward = 0.0
+        discount = 1.0
+        effective_steps = 0
+        terminated = False
+        truncated = False
+        for offset in range(request.n_step):
+            if not self.contains(current_id):
+                break
+            current_slot = current_id % self.capacity
+            if int(self._episode_codes[current_slot]) != first_episode_code:
+                break
+            current_step = int(self._steps[current_slot])
+            if first_step >= 0 and current_step >= 0 and current_step != first_step + offset:
+                break
+            final_id = current_id
+            reward += discount * float(self._rewards[current_slot])
+            effective_steps += 1
+            terminated = bool(self._terminated[current_slot])
+            truncated = bool(self._truncated[current_slot])
+            if terminated or truncated:
+                break
+            discount *= request.gamma
+            current_id = int(self._next_ids[current_slot])
+        if effective_steps == 0:
+            raise RuntimeError(f"Transition {transition_id} is no longer available")
+        final_slot = final_id % self.capacity
+        transition = Transition(
+            observation=tree_snapshot(self._observations.read(first_slot)),
+            action=tree_snapshot(self._actions.read(first_slot)),
+            reward=reward,
+            next_observation=tree_snapshot(self._next_observation(final_id, final_slot)),
+            terminated=terminated,
+            truncated=truncated,
+            info=self._info.get(transition_id, {}),
+            episode_id=self._episode_names.get(first_episode_code),
+            step=first_step if first_step >= 0 else None,
+        )
+        bootstrap_discount = 0.0 if terminated else request.gamma**effective_steps
+        return transition, bootstrap_discount
+
     def _transition(self, transition_id: TransitionId) -> Transition:
         assert self._observations is not None
         assert self._actions is not None
         slot = transition_id % self.capacity
-        next_observation = self._next_overrides.get(transition_id)
-        if next_observation is None:
-            next_id = int(self._next_ids[slot])
-            if not self.contains(next_id):
-                raise RuntimeError(f"Transition {transition_id} has no next observation")
-            next_observation = self._observations.read(next_id % self.capacity)
         episode_code = int(self._episode_codes[slot])
         step = int(self._steps[slot])
         return Transition(
             observation=self._observations.read(slot),
             action=self._actions.read(slot),
             reward=float(self._rewards[slot]),
-            next_observation=next_observation,
+            next_observation=self._next_observation(transition_id, slot),
             terminated=bool(self._terminated[slot]),
             truncated=bool(self._truncated[slot]),
             info=self._info.get(transition_id, {}),
             episode_id=self._episode_names.get(episode_code),
             step=step if step >= 0 else None,
         )
+
+    def _next_observation(self, transition_id: TransitionId, slot: int) -> Any:
+        assert self._observations is not None
+        next_observation = self._next_overrides.get(transition_id)
+        if next_observation is not None:
+            return next_observation
+        next_id = int(self._next_ids[slot])
+        if not self.contains(next_id):
+            raise RuntimeError(f"Transition {transition_id} has no next observation")
+        return self._observations.read(next_id % self.capacity)
 
     def available_ids(self) -> list[TransitionId]:
         with self._lock:

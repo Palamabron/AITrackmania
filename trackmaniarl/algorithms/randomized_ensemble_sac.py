@@ -12,6 +12,7 @@ from torch import nn
 from trackmaniarl.algorithms._torch import (
     TorchLearnerBase,
     TorchPolicy,
+    evaluated_actor_state,
     polyak_update,
     weighted_mean,
 )
@@ -24,6 +25,7 @@ class RandomizedEnsembleSAC(TorchLearnerBase):
     """REDQ-SAC with a random target subset and an explicit policy-update interval."""
 
     accepted_model_contracts = frozenset({ModelContract.ENSEMBLE_ACTOR_CRITIC})
+    supports_sequence_training = False
 
     def __init__(
         self,
@@ -143,8 +145,17 @@ class RandomizedEnsembleSAC(TorchLearnerBase):
             "critic_optimizer": self.critic_optimizer.state_dict(),
             "update_count": self.update_count,
             "target_rng": self._target_rng.get_state(),
+            "scaler": self._scaler_state(),
             "rng": self._rng_state(),
         }
+
+    def state_dict_for_policy(self, policy_state: Mapping[str, Any]) -> Mapping[str, Any]:
+        assert self.model is not None
+        state = evaluated_actor_state(self.state_dict(), self.model, policy_state)
+        state["actor_optimizer"] = torch.optim.Adam(
+            self.model.actor.parameters(), lr=self.learning_rate
+        ).state_dict()
+        return state
 
     def load_state_dict(self, state: Mapping[str, Any]) -> None:
         assert self.model is not None
@@ -155,4 +166,5 @@ class RandomizedEnsembleSAC(TorchLearnerBase):
         self.update_count = int(state["update_count"])
         if state.get("target_rng") is not None:
             self._target_rng.set_state(state["target_rng"])
+        self._restore_scaler(state.get("scaler"))
         self._restore_rng(state.get("rng", {}))

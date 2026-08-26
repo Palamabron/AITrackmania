@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import logging
 import os
-from collections.abc import Callable, Mapping
-from concurrent.futures import Future, ThreadPoolExecutor
+from collections.abc import Callable, Iterator, Mapping
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import suppress
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -16,20 +17,24 @@ from time import monotonic, perf_counter, sleep
 from typing import Any, cast
 
 import grpc
+import numpy as np
+import torch
 from google.protobuf.wrappers_pb2 import BytesValue
 
+from trackmaniarl.core.builtins import sync_checkpoint_path
 from trackmaniarl.core.contracts import ReplicablePolicy
 from trackmaniarl.core.data import BatchRequest, TrainingBatch
 from trackmaniarl.core.runtime import ResolvedRun, prepare_run, resolve_run
 from trackmaniarl.core.spec import DEFAULT_EVALUATION_TIME_BUCKETS_S, RunSpec
 from trackmaniarl.core.training import TrainingResult
 from trackmaniarl.distributed.codec import WireCodec
-from trackmaniarl.distributed.journal import RolloutJournal
+from trackmaniarl.distributed.journal import JournalPayloadConflictError, RolloutJournal
 from trackmaniarl.distributed.protocol import (
     PROTOCOL_VERSION,
     SERVICE,
     authenticate,
     deserialize_message,
+    require_distributed_token,
     require_loopback_bind,
     run_fingerprint,
     serialize_message,
@@ -67,7 +72,7 @@ class _Counters:
     evaluation_bucket_finishes: dict[str, int] = field(default_factory=dict)
     updates: int = 0
     update_credit: float = 0.0
-    journal_watermark: int = 0
+    journal_applied_frontier: int = 0
     policy_version: int = 0
     actor_sequences: dict[str, int] = field(default_factory=dict)
 
@@ -86,42 +91,29 @@ class _PreparedBatch:
 
 
 class _BatchPrefetcher:
+    """Checkpoint-safe batch source without speculative sampler or transfer state."""
+
     def __init__(self, run: ResolvedRun) -> None:
         self.run = run
-        self.prepare = getattr(run.learner, "prepare_batch", None)
-        self.enabled = bool(getattr(run.sampler, "thread_safe_prefetch", False))
-        self.executor = (
-            ThreadPoolExecutor(max_workers=1, thread_name_prefix="trackmaniarl-batch-prefetch")
-            if self.enabled
-            else None
-        )
-        self.pending: Future[_PreparedBatch] | None = None
 
     def next(self, request: BatchRequest) -> tuple[TrainingBatch, float, float]:
-        waited_at = perf_counter()
-        prepared = self.pending.result() if self.pending is not None else self._prepare(request)
-        wait_s = perf_counter() - waited_at
-        if self.executor is not None:
-            self.pending = self.executor.submit(self._prepare, request)
-        return prepared.batch, prepared.preparation_s, wait_s
+        prepared = self._prepare(request)
+        return prepared.batch, prepared.preparation_s, 0.0
 
     def _prepare(self, request: BatchRequest) -> _PreparedBatch:
         started = perf_counter()
         batch = self.run.sampler.sample(self.run.replay_store, request)
-        if callable(self.prepare):
-            batch = self.prepare(batch)
         return _PreparedBatch(batch, perf_counter() - started)
 
     def close(self) -> None:
-        if self.executor is not None:
-            self.executor.shutdown(wait=True, cancel_futures=True)
+        return
 
 
 class _MetricAccumulator:
     def __init__(self) -> None:
         self.values: dict[str, float] = {}
+        self.counts: dict[str, int] = {}
         self.maximums: dict[str, float] = {}
-        self.count = 0
 
     def add(self, metrics: Mapping[str, float]) -> None:
         for key, value in metrics.items():
@@ -130,16 +122,16 @@ class _MetricAccumulator:
                 self.maximums[key] = max(self.maximums.get(key, numeric), numeric)
             else:
                 self.values[key] = self.values.get(key, 0.0) + numeric
-        self.count += 1
+                self.counts[key] = self.counts.get(key, 0) + 1
 
     def flush(self) -> dict[str, float]:
-        if self.count == 0:
+        if not self.values and not self.maximums:
             return {}
-        output = {key: value / self.count for key, value in self.values.items()}
+        output = {key: value / self.counts[key] for key, value in self.values.items()}
         output.update(self.maximums)
         self.values.clear()
+        self.counts.clear()
         self.maximums.clear()
-        self.count = 0
         return output
 
 
@@ -156,24 +148,33 @@ class _AsyncCheckpointWriter:
         state: Mapping[str, Any],
         path: Path,
         on_saved: Callable[[], None] | None = None,
+        on_failed: Callable[[BaseException], None] | None = None,
     ) -> None:
         self.wait()
-        self.pending = self.executor.submit(self._save, state, path, on_saved)
+        self.pending = self.executor.submit(self._save, state, path, on_saved, on_failed)
 
     def _save(
         self,
         state: Mapping[str, Any],
         path: Path,
         on_saved: Callable[[], None] | None,
+        on_failed: Callable[[BaseException], None] | None,
     ) -> None:
-        self.codec.save(state, path)
-        if on_saved is not None:
-            on_saved()
+        try:
+            self.codec.save(state, path)
+            sync_checkpoint_path(path)
+            if on_saved is not None:
+                on_saved()
+        except BaseException as exc:
+            if on_failed is not None:
+                on_failed(exc)
+            raise
 
     def wait(self) -> None:
-        if self.pending is not None:
-            self.pending.result()
-            self.pending = None
+        pending = self.pending
+        self.pending = None
+        if pending is not None:
+            pending.result()
 
     def close(self) -> None:
         self.wait()
@@ -195,6 +196,7 @@ class Coordinator:
         external_stop: Any | None = None,
         demo_paths: tuple[Path, ...] = (),
     ) -> None:
+        self.token = require_distributed_token(token)
         if getattr(run.learner, "on_policy", False):
             raise ValueError(
                 "Distributed training does not support on-policy learners; "
@@ -202,7 +204,6 @@ class Coordinator:
             )
         self.run = run
         self.bind = require_loopback_bind(bind)
-        self.token = token
         self.fingerprint = fingerprint
         self.resume_checkpoint = resume_checkpoint
         self.reset_replay = reset_replay
@@ -224,7 +225,8 @@ class Coordinator:
         self._evaluation_due: set[str] = set()
         self._last_ingest_at = monotonic()
         self._started_at = monotonic()
-        self._rollouts: Queue[_PendingRollout] = Queue(maxsize=_ROLLOUT_QUEUE_MAXSIZE)
+        self._rollouts: Queue[object] = Queue(maxsize=_ROLLOUT_QUEUE_MAXSIZE)
+        self._journal_enqueued_at: dict[int, float] = {}
         evaluation = getattr(run.spec, "evaluation", None)
         self._time_buckets = (
             evaluation.time_buckets_s
@@ -239,12 +241,23 @@ class Coordinator:
         self._last_metric_transitions = 0
         self._best_evaluation: tuple[float, float, float] | None = None
         self._evaluation_policy_states: dict[int, Mapping[str, Any]] = {}
-        self._consecutive_evaluation_failures = 0
+        self._consecutive_evaluation_passes = 0
         self._evaluation_stop_reason: str | None = None
         self._recovering = False
         self._checkpoint_writer = _AsyncCheckpointWriter(run.checkpoint_codec)
 
     def run_forever(self) -> TrainingResult:
+        try:
+            return self._run_forever()
+        except KeyboardInterrupt:
+            raise
+        except BaseException as exc:
+            self._log_run_failure("distributed_training", exc)
+            raise
+        finally:
+            self._close_runtime()
+
+    def _run_forever(self) -> TrainingResult:
         self._prepare_training()
         if self.resume_checkpoint is not None:
             logger.info("Restoring checkpoint: %s", self.resume_checkpoint)
@@ -260,7 +273,7 @@ class Coordinator:
                 self.counters.transitions,
                 self.counters.updates,
             )
-        elif self.journal.has_rows():
+        elif self.journal.has_history():
             raise RuntimeError(
                 f"run_id {self.run.spec.run_id!r} has prior rollout data in "
                 f"{self.journal.path}; resume with --checkpoint or choose a new run_id"
@@ -294,43 +307,64 @@ class Coordinator:
                 self._checkpoints.append(self._checkpoint())
             self._checkpoint_writer.wait()
             raise
-        finally:
-            if self._server is not None:
-                self._server.stop(grace=2).wait(timeout=5)
-            if self._rpc_executor is not None:
-                self._rpc_executor.shutdown(wait=True, cancel_futures=True)
-            self._checkpoint_writer.close()
-            self.journal.close()
 
     def run_offline_pretraining(self) -> TrainingResult:
         """Train only from configured demonstrations without opening the actor server."""
+
+        try:
+            return self._run_offline_pretraining()
+        except KeyboardInterrupt:
+            raise
+        except BaseException as exc:
+            self._log_run_failure("offline_pretraining", exc)
+            raise
+        finally:
+            self._close_runtime()
+
+    def _run_offline_pretraining(self) -> TrainingResult:
 
         if self.run.spec.training.offline_pretrain_updates == 0:
             raise ValueError("offline pretraining requires offline_pretrain_updates > 0")
         if not self.demo_paths:
             raise ValueError("offline pretraining requires at least one demonstration")
         checkpoints: list[Path] = []
-        try:
-            self._prepare_training()
-            if self.journal.has_rows():
-                raise RuntimeError(
-                    f"run_id {self.run.spec.run_id!r} has prior rollout data in "
-                    f"{self.journal.path}; choose a new run_id"
-                )
-            self._import_demonstrations()
-            self._offline_pretrain()
-            checkpoints.append(self._checkpoint())
-            self._checkpoint_writer.wait()
-            return TrainingResult(
-                self.counters.episodes,
-                self.counters.transitions,
-                self.counters.updates,
-                tuple(checkpoints),
-                None,
+        self._prepare_training()
+        if self.journal.has_history():
+            raise RuntimeError(
+                f"run_id {self.run.spec.run_id!r} has prior rollout data in "
+                f"{self.journal.path}; choose a new run_id"
             )
-        finally:
-            self._checkpoint_writer.close()
-            self.journal.close()
+        self._import_demonstrations()
+        self._offline_pretrain()
+        if self.run.spec.training.save_final_checkpoint:
+            checkpoints.append(self._checkpoint())
+        self._checkpoint_writer.wait()
+        return TrainingResult(
+            self.counters.episodes,
+            self.counters.transitions,
+            self.counters.updates,
+            tuple(checkpoints),
+            None,
+        )
+
+    def _log_run_failure(self, phase: str, exc: BaseException) -> None:
+        self.run.logger.log(
+            "run/failure",
+            {
+                "phase": phase,
+                "exception_type": type(exc).__name__,
+                "message": str(exc),
+            },
+            step=self.counters.updates,
+        )
+
+    def _close_runtime(self) -> None:
+        if self._server is not None:
+            self._server.stop(grace=2).wait(timeout=5)
+        if self._rpc_executor is not None:
+            self._rpc_executor.shutdown(wait=True, cancel_futures=True)
+        self._checkpoint_writer.close()
+        self.journal.close()
 
     def _prepare_training(self) -> None:
         self.run.learner.setup(
@@ -485,6 +519,54 @@ class Coordinator:
     def _response(self, value: Mapping[str, Any]) -> BytesValue:
         return BytesValue(value=self.codec.encode(value))
 
+    def _log_rollout_rejected(
+        self,
+        value: Mapping[str, Any],
+        reason: str,
+        **details: object,
+    ) -> None:
+        self.run.logger.log(
+            "distributed/rollout_rejected",
+            {
+                "actor_id": str(value["actor_id"]),
+                "session_id": str(value["session_id"]),
+                "sequence": int(value["sequence"]),
+                "reason": reason,
+                **details,
+            },
+            step=self.counters.updates,
+        )
+
+    def _log_wal_error(self, operation: str, exc: BaseException) -> None:
+        self.run.logger.log(
+            "distributed/wal_error",
+            {
+                "operation": operation,
+                "exception_type": type(exc).__name__,
+                "message": str(exc),
+                "journal_path": str(self.journal.path),
+                "journal_applied_frontier": self.counters.journal_applied_frontier,
+            },
+            step=self.counters.updates,
+        )
+
+    def _journal_rows(self, watermark: int, operation: str) -> Iterator[tuple[int, bytes]]:
+        try:
+            yield from self.journal.rows_after(watermark)
+        except Exception as exc:
+            self._log_wal_error(operation, exc)
+            raise
+
+    def _decode_journal_payload(self, payload: bytes, operation: str) -> Mapping[str, Any]:
+        try:
+            value = self.codec.decode(payload)
+            if not isinstance(value, Mapping):
+                raise ValueError("journal chunk must decode to a mapping")
+        except Exception as exc:
+            self._log_wal_error(operation, exc)
+            raise
+        return value
+
     def _register(self, request: BytesValue, context: grpc.ServicerContext[Any, Any]) -> BytesValue:
         value = self._request(request, context)
         actor_id = str(value["actor_id"])
@@ -515,11 +597,22 @@ class Coordinator:
 
     def _submit(self, request: BytesValue, context: grpc.ServicerContext[Any, Any]) -> BytesValue:
         value = self._request(request, context)
+        try:
+            _validate_submit_payload(value, self.codec)
+        except (KeyError, TypeError, ValueError) as exc:
+            context.abort(grpc.StatusCode.INVALID_ARGUMENT, f"invalid rollout payload: {exc}")
+            raise AssertionError("gRPC abort returned") from exc
         policy_version = int(value["policy_version"])
         with self._lock:
             lag = max(0, self.counters.updates - policy_version)
             stop = self._should_stop()
-        if lag > self.run.spec.distributed.hard_policy_lag_updates:
+        if value["transitions"] and lag > self.run.spec.distributed.hard_policy_lag_updates:
+            self._log_rollout_rejected(
+                value,
+                "hard_policy_lag",
+                policy_lag_updates=lag,
+                hard_policy_lag_updates=self.run.spec.distributed.hard_policy_lag_updates,
+            )
             return self._response(
                 {
                     "accepted": False,
@@ -528,21 +621,27 @@ class Coordinator:
                     "stop": stop,
                 }
             )
-        if self._rollouts.full():
-            return self._response({"accepted": False, "reason": "backpressure", "stop": stop})
         session_id = str(value["session_id"])
         sequence = int(value["sequence"])
-        row_id, inserted = self.journal.append(session_id, sequence, request.value)
+        try:
+            row_id, inserted = self.journal.append(session_id, sequence, request.value)
+        except JournalPayloadConflictError as exc:
+            self._log_rollout_rejected(value, "payload_conflict")
+            context.abort(grpc.StatusCode.FAILED_PRECONDITION, str(exc))
+            raise AssertionError("gRPC abort returned") from exc
+        except Exception as exc:
+            self._log_wal_error("append", exc)
+            raise
         if inserted:
-            try:
-                self._rollouts.put_nowait(_PendingRollout(value, row_id, monotonic()))
-            except Full:
-                self.journal.discard(session_id, sequence)
-                return self._response({"accepted": False, "reason": "backpressure", "stop": stop})
+            # SQLite is the durable queue. A missed wake-up is harmless because
+            # the learner polls the ordered journal on every loop iteration.
+            with suppress(Full):
+                self._rollouts.put_nowait((row_id, monotonic()))
         with self._lock:
             actor_id = str(value["actor_id"])
-            evaluate = actor_id in self._evaluation_due
-            self._evaluation_due.discard(actor_id)
+            evaluate = actor_id in self._evaluation_due and self.counters.policy_version > 0
+            if evaluate:
+                self._evaluation_due.discard(actor_id)
             evaluation_version = self.counters.policy_version
             evaluation_snapshot = self._policy_payload if evaluate else b""
             if evaluate:
@@ -604,11 +703,19 @@ class Coordinator:
 
     def _epsilon(self, profile: int) -> float:
         spec = self.run.spec.distributed
-        fraction = min(1.0, self.counters.transitions / spec.epsilon_decay_transitions)
+        schedule_progress = (
+            self.counters.transitions
+            if spec.epsilon_decay_updates is None
+            else self.counters.updates
+        )
+        schedule_length = spec.epsilon_decay_updates or spec.epsilon_decay_transitions
+        fraction = min(1.0, schedule_progress / schedule_length)
         scheduled = spec.epsilon_start + fraction * (spec.epsilon_final - spec.epsilon_start)
         return scheduled * spec.epsilon_profiles[profile]
 
     def _ingest(self, value: Mapping[str, Any], row_id: int) -> None:
+        if row_id <= self.counters.journal_applied_frontier:
+            raise ValueError("journal rows must be ingested in strictly increasing order")
         transitions = [transition_from_wire(item) for item in value["transitions"]]
         now = monotonic()
         elapsed = max(now - self._last_ingest_at, 1e-6)
@@ -626,7 +733,6 @@ class Coordinator:
             self.counters.update_credit
             + newly_trainable * self.run.spec.training.updates_per_transition,
         )
-        self.counters.journal_watermark = max(self.counters.journal_watermark, row_id)
         session_id = str(value["session_id"])
         self.counters.actor_sequences[session_id] = max(
             self.counters.actor_sequences.get(session_id, -1),
@@ -688,6 +794,7 @@ class Coordinator:
                     },
                     step=self.counters.updates,
                 )
+        self.counters.journal_applied_frontier = row_id
         if evaluations and not self._recovering:
             self._finish_evaluation_batch(evaluations)
         if not self._recovering:
@@ -720,10 +827,10 @@ class Coordinator:
             replay_info["is_demo"] = bool(
                 info.get("is_demo", False) or info.get("source") == "demo"
             )
-        progress = float(info.get("progress_pct", 0.0))
-        race_time_s = float(info.get("race_time_ms", 0.0)) / 1_000.0
-        if progress >= 10.0 and race_time_s > 0.0:
-            replay_info["sampling/projected_lap_time_s"] = race_time_s * 100.0 / progress
+        if "sampling/projected_lap_time_s" in info:
+            replay_info["sampling/projected_lap_time_s"] = float(
+                info["sampling/projected_lap_time_s"]
+            )
         return replay_info
 
     def _log_episode(self, value: Mapping[str, Any], summary: Mapping[str, Any]) -> None:
@@ -793,14 +900,14 @@ class Coordinator:
                     and len(self.run.replay_store) >= ready
                     and self.counters.update_credit >= 1.0
                 )
-                or not self._rollouts.empty()
+                or self.journal.has_rows_after(self.counters.journal_applied_frontier)
             ):
                 did_update = False
                 self._check_actor_timeouts()
                 # Ingest the whole backlog every iteration: a standing queue
                 # would otherwise train the learner on minutes-old transitions
                 # and inflate the measured actor policy lag by the queue delay.
-                self._drain_rollouts(max(1, self._rollouts.qsize()))
+                self._drain_rollouts(_ROLLOUT_QUEUE_MAXSIZE)
                 if self._evaluation_stop_reason is not None:
                     break
                 if (
@@ -856,13 +963,28 @@ class Coordinator:
     def _drain_rollouts(self, limit: int) -> None:
         for _ in range(limit):
             try:
-                pending = self._rollouts.get_nowait()
+                wake = self._rollouts.get_nowait()
             except Empty:
-                return
-            value = dict(pending.value)
-            value["_enqueued_at"] = pending.enqueued_at
-            self._ingest(value, pending.row_id)
+                break
+            if (
+                isinstance(wake, tuple)
+                and len(wake) == 2
+                and isinstance(wake[0], int)
+                and wake[0] > self.counters.journal_applied_frontier
+            ):
+                self._journal_enqueued_at[wake[0]] = float(wake[1])
             self._rollouts.task_done()
+        frontier = self.counters.journal_applied_frontier
+        rows = self._journal_rows(frontier, "drain")
+        for applied, (row_id, payload) in enumerate(rows, start=1):
+            value = self._decode_journal_payload(payload, "drain_decode")
+            queued_at = self._journal_enqueued_at.pop(row_id, None)
+            materialized = dict(value)
+            if queued_at is not None:
+                materialized["_enqueued_at"] = queued_at
+            self._ingest(materialized, row_id)
+            if applied >= limit:
+                return
 
     def _finish_evaluation_batch(self, summaries: list[dict[str, Any]]) -> None:
         stats = _evaluation_batch_stats(summaries, self._time_buckets)
@@ -895,18 +1017,18 @@ class Coordinator:
         required_batches = getattr(training, "evaluation_stop_consecutive_batches", None)
         if required_finish_rate is None or maximum_median_s is None or required_batches is None:
             return
-        failed = (
-            stats["finish_rate"] < required_finish_rate
-            or stats["finish_time_median_s"] > maximum_median_s
+        passed = (
+            stats["finish_rate"] >= required_finish_rate
+            and stats["finish_time_median_s"] <= maximum_median_s
         )
-        self._consecutive_evaluation_failures = (
-            self._consecutive_evaluation_failures + 1 if failed else 0
+        self._consecutive_evaluation_passes = (
+            self._consecutive_evaluation_passes + 1 if passed else 0
         )
-        if self._consecutive_evaluation_failures < required_batches:
+        if self._consecutive_evaluation_passes < required_batches:
             return
         self._evaluation_stop_reason = (
-            "evaluation gate failed "
-            f"{self._consecutive_evaluation_failures} consecutive times: "
+            "evaluation target passed "
+            f"{self._consecutive_evaluation_passes} consecutive times: "
             f"finish_rate={stats['finish_rate']:.3f}, "
             f"median_finish_time_s={stats['finish_time_median_s']:.3f}"
         )
@@ -914,13 +1036,13 @@ class Coordinator:
             "train/early_stop",
             {
                 "reason": self._evaluation_stop_reason,
-                "consecutive_failures": self._consecutive_evaluation_failures,
+                "consecutive_passes": self._consecutive_evaluation_passes,
                 "finish_rate": stats["finish_rate"],
                 "median_finish_time_s": stats["finish_time_median_s"],
             },
             step=self.counters.updates,
         )
-        logger.warning("Stopping training: %s", self._evaluation_stop_reason)
+        logger.info("Stopping training: %s", self._evaluation_stop_reason)
 
     def _record_best_evaluation(
         self,
@@ -989,13 +1111,14 @@ class Coordinator:
             "cumulative_transitions_per_s": self.counters.transitions
             / max(now - self._started_at, 1e-6),
             "target_updates_per_s": target_updates_per_s,
-            "update_throughput_ratio": updates_per_s / max(target_updates_per_s, 1e-6),
             "update_backlog_s": self.counters.update_credit / max(updates_per_s, 1e-6),
             "episodes": self.counters.episodes,
             "finish_rate": self.counters.finishes / max(1, self.counters.episodes),
             "per_beta": self.run.spec.training.replay_beta(self.counters.transitions),
             "timing/logging_s": self._last_logging_s,
         }
+        if target_updates_per_s > 0.0:
+            payload["update_throughput_ratio"] = updates_per_s / target_updates_per_s
         execution = getattr(self.run.learner, "execution_manifest", None)
         if callable(execution):
             payload["execution"] = dict(execution())
@@ -1103,10 +1226,12 @@ class Coordinator:
             learner_state = exact_state(policy_state)
         state = {
             "schema_version": "2.0",
+            "journal_contract_version": 2,
             "journal_id": self.journal.identity,
+            "run_fingerprint": self.fingerprint,
             "learner": _snapshot_value(learner_state),
-            "replay_store": _state_dict(self.run.replay_store),
-            "sampler": _state_dict(self.run.sampler),
+            "replay_store": _snapshot_value(_state_dict(self.run.replay_store)),
+            "sampler": _snapshot_value(_state_dict(self.run.sampler)),
             "distributed": {
                 "transitions": self.counters.transitions,
                 "episodes": self.counters.episodes,
@@ -1117,14 +1242,49 @@ class Coordinator:
                 "evaluation_bucket_finishes": dict(self.counters.evaluation_bucket_finishes),
                 "updates": self.counters.updates,
                 "update_credit": self.counters.update_credit,
-                "journal_watermark": self.counters.journal_watermark,
+                "journal_applied_frontier": self.counters.journal_applied_frontier,
                 "policy_version": self.counters.policy_version,
                 "actor_sequences": dict(self.counters.actor_sequences),
             },
             "evaluated_policy_version": policy_version,
         }
-        watermark = self.counters.journal_watermark
-        self._checkpoint_writer.submit(state, path, lambda: self.journal.prune(watermark))
+        applied_frontier = self.counters.journal_applied_frontier
+        checkpoint_update = self.counters.updates
+
+        def saved() -> None:
+            try:
+                self.journal.prune(applied_frontier)
+            except Exception as exc:
+                self._log_wal_error("prune", exc)
+                raise
+            self.run.logger.log(
+                "train/checkpoint_completed",
+                {
+                    "path": str(path),
+                    "journal_applied_frontier": applied_frontier,
+                    "duration_s": perf_counter() - checkpoint_started,
+                },
+                step=checkpoint_update,
+            )
+
+        def failed(exc: BaseException) -> None:
+            self.run.logger.log(
+                "train/checkpoint_failed",
+                {
+                    "path": str(path),
+                    "journal_applied_frontier": applied_frontier,
+                    "exception_type": type(exc).__name__,
+                    "message": str(exc),
+                },
+                step=checkpoint_update,
+            )
+
+        self._checkpoint_writer.submit(
+            state,
+            path,
+            saved,
+            failed,
+        )
         self.run.logger.log(
             "train/checkpoint",
             {
@@ -1145,43 +1305,64 @@ class Coordinator:
         state = self.run.checkpoint_codec.load(path)
         if state.get("schema_version") != "2.0":
             raise ValueError("async runtime only resumes distributed checkpoint schema 2.0")
-        if reset_replay and self.journal.has_rows():
+        if reset_replay and self.journal.has_history():
             raise RuntimeError(
                 f"cannot reset replay while {self.journal.path} contains rollout data; "
                 "choose a new run_id so stale journal rows cannot enter a later resume"
             )
-        self.run.learner.load_state_dict(state["learner"])
         if reset_replay:
+            self.run.learner.load_state_dict(state["learner"])
             self.counters = _Counters()
             return
-        distributed = state["distributed"]
+        if state.get("journal_contract_version") != 2:
+            raise ValueError(
+                "distributed checkpoint predates the contiguous WAL frontier contract; "
+                "resume with --reset-replay or use a new run"
+            )
+        if state.get("run_fingerprint") != self.fingerprint:
+            raise ValueError("distributed checkpoint run fingerprint mismatch")
+        distributed = dict(state["distributed"])
+        if "journal_applied_frontier" not in distributed:
+            raise ValueError("distributed checkpoint has no contiguous journal applied frontier")
+        frontier = int(distributed["journal_applied_frontier"])
+        try:
+            self.journal.validate_checkpoint(state.get("journal_id"), frontier)
+        except Exception as exc:
+            self._log_wal_error("checkpoint_validation", exc)
+            raise
+        self.run.learner.load_state_dict(state["learner"])
         self.counters = _Counters(**distributed)
         self.counters.update_credit = min(
             self.counters.update_credit,
             float(self.run.spec.distributed.max_update_credit),
         )
-        checkpoint_journal_id = state.get("journal_id")
-        if checkpoint_journal_id != self.journal.identity:
-            self.counters.journal_watermark = 0
         _load_state_dict(self.run.replay_store, state["replay_store"])
         _load_state_dict(self.run.sampler, state["sampler"])
-        self._recover_journal(self.counters.journal_watermark)
+        self._recover_journal(self.counters.journal_applied_frontier)
 
     def _recover_journal(self, watermark: int) -> None:
         self._recovering = True
+        recovered_rows = 0
+        recovered_transitions = 0
         try:
-            for row_id, payload in self.journal.rows_after(watermark):
-                value = self.codec.decode(payload)
-                if not isinstance(value, Mapping):
-                    raise ValueError("journal chunk must decode to a mapping")
-                session_id = str(value["session_id"])
-                sequence = int(value["sequence"])
-                if sequence <= self.counters.actor_sequences.get(session_id, -1):
-                    self.counters.journal_watermark = max(self.counters.journal_watermark, row_id)
-                    continue
+            for row_id, payload in self._journal_rows(watermark, "recovery"):
+                value = self._decode_journal_payload(payload, "recovery_decode")
                 self._ingest(value, row_id)
+                recovered_rows += 1
+                recovered_transitions += len(value["transitions"])
         finally:
             self._recovering = False
+        if recovered_rows:
+            self.run.logger.log(
+                "distributed/wal_recovery",
+                {
+                    "rows": recovered_rows,
+                    "transitions": recovered_transitions,
+                    "from_frontier": watermark,
+                    "to_frontier": self.counters.journal_applied_frontier,
+                },
+                step=self.counters.updates,
+            )
 
     def _log_execution(self) -> None:
         execution = getattr(self.run.learner, "execution_manifest", None)
@@ -1256,6 +1437,18 @@ def _evaluation_batch_stats(
             int(float(item.get("collision/count", 0.0)) > 0.0) for item in summaries
         )
         / trials,
+        "control_brake_fraction_mean": fmean(
+            float(item.get("control/brake_fraction", 0.0)) for item in summaries
+        ),
+        "control_brake_tap_fraction_mean": fmean(
+            float(item.get("control/brake_tap_fraction", 0.0)) for item in summaries
+        ),
+        "control_gas_fraction_mean": fmean(
+            float(item.get("control/gas_fraction", 0.0)) for item in summaries
+        ),
+        "control_steer_abs_mean": fmean(
+            float(item.get("control/steer_abs_mean", 0.0)) for item in summaries
+        ),
         "off_track_rate": sum(
             int(str(item.get("termination", "")) == "off_track") for item in summaries
         )
@@ -1300,6 +1493,212 @@ def _progress_bin_metrics(summary: Mapping[str, Any]) -> dict[str, float]:
 def _state_dict(component: object) -> Mapping[str, object] | None:
     method = getattr(component, "state_dict", None)
     return cast(Mapping[str, object], method()) if callable(method) else None
+
+
+def _validate_submit_payload(value: Mapping[str, Any], codec: WireCodec) -> None:
+    actor_id = _required_nonempty_string(value, "actor_id")
+    session_id = _required_nonempty_string(value, "session_id")
+    del actor_id, session_id
+    _required_integer(value, "sequence", minimum=0)
+    _required_integer(value, "policy_version", minimum=-1)
+    transitions = _required_list(value, "transitions")
+    episodes = _required_list(value, "episodes")
+    evaluations = _optional_list(value, "evaluations")
+    for item in transitions:
+        _validate_wire_transition(item)
+    for summary in episodes:
+        _validate_episode_summary(summary)
+    for summary in evaluations:
+        _validate_evaluation_summary(summary)
+    snapshot = value.get("evaluation_snapshot", b"")
+    if not isinstance(snapshot, bytes):
+        raise TypeError("evaluation_snapshot must be bytes")
+    if snapshot:
+        if not evaluations:
+            raise ValueError("evaluation_snapshot requires evaluations")
+        policy_state = codec.decode(snapshot)
+        if not isinstance(policy_state, Mapping):
+            raise TypeError("evaluation_snapshot must decode to a mapping")
+        versions = {
+            _required_integer(summary, "policy_version", minimum=0) for summary in evaluations
+        }
+        if len(versions) != 1:
+            raise ValueError("evaluation_snapshot cannot cover mixed policy versions")
+        _validate_finite_tree(policy_state, "evaluation_snapshot")
+
+
+def _validate_wire_transition(value: object) -> None:
+    if not isinstance(value, Mapping):
+        raise TypeError("transitions must contain mappings")
+    required = {
+        "observation",
+        "action",
+        "reward",
+        "next_observation",
+        "terminated",
+        "truncated",
+        "info",
+        "episode_id",
+        "step",
+    }
+    missing = required - value.keys()
+    if missing:
+        raise ValueError(f"transition is missing {sorted(missing)}")
+    if not isinstance(value["terminated"], bool) or not isinstance(value["truncated"], bool):
+        raise TypeError("transition terminal flags must be booleans")
+    if not isinstance(value["info"], Mapping):
+        raise TypeError("transition info must be a mapping")
+    episode_id = value["episode_id"]
+    if episode_id is not None and (not isinstance(episode_id, str) or not episode_id):
+        raise TypeError("transition episode_id must be a non-empty string or null")
+    step = value["step"]
+    if step is not None and (isinstance(step, bool) or not isinstance(step, int) or step < 0):
+        raise TypeError("transition step must be a non-negative integer or null")
+    _validate_numeric_tree(value["observation"], "transition observation")
+    _validate_numeric_tree(value["action"], "transition action")
+    _validate_numeric_tree(value["next_observation"], "transition next_observation")
+    _validate_finite_number(value["reward"], "transition reward")
+    projected = value["info"].get("sampling/projected_lap_time_s")
+    if projected is not None:
+        _validate_finite_number(projected, "projected lap time")
+    transition_from_wire(value)
+
+
+def _validate_episode_summary(value: object) -> None:
+    if not isinstance(value, Mapping):
+        raise TypeError("episodes must contain mappings")
+    numeric = {
+        "finish_time_s",
+        "progress_pct",
+        "return",
+        "reward/time",
+        "reward/pace",
+        "reward/pbrs",
+        "reward/progress",
+        "reward/projected_velocity",
+        "reward/projected_speed",
+        "reward/steering_delta",
+        "reward/collision",
+        "collision/count",
+        "collision/detected_count",
+        "reward/terminal",
+        "velocity/ratio_mean",
+        "velocity/ratio_max",
+        "steps",
+        "race_time_s",
+        "exploration_epsilon",
+    }
+    missing = ({"finished", "termination"} | numeric) - value.keys()
+    if missing:
+        raise ValueError(f"episode summary is missing {sorted(missing)}")
+    _validate_binary_flag(value["finished"], "episode finished")
+    if not isinstance(value["termination"], str):
+        raise TypeError("episode termination must be a string")
+    for key in numeric:
+        _validate_finite_number(value[key], f"episode {key}")
+    _validate_finite_tree(value, "episode summary")
+
+
+def _validate_evaluation_summary(value: object) -> None:
+    if not isinstance(value, Mapping):
+        raise TypeError("evaluations must contain mappings")
+    _validate_binary_flag(value.get("finished"), "evaluation finished")
+    _validate_finite_number(value.get("finish_time_s"), "evaluation finish_time_s")
+    if "policy_version" in value:
+        _required_integer(value, "policy_version", minimum=0)
+    _validate_finite_tree(value, "evaluation summary")
+
+
+def _required_list(value: Mapping[str, Any], key: str) -> list[Any]:
+    result = value[key]
+    if not isinstance(result, list):
+        raise TypeError(f"{key} must be a list")
+    return result
+
+
+def _optional_list(value: Mapping[str, Any], key: str) -> list[Any]:
+    result = value.get(key, [])
+    if not isinstance(result, list):
+        raise TypeError(f"{key} must be a list")
+    return result
+
+
+def _required_nonempty_string(value: Mapping[str, Any], key: str) -> str:
+    result = value[key]
+    if not isinstance(result, str) or not result:
+        raise TypeError(f"{key} must be a non-empty string")
+    return result
+
+
+def _required_integer(value: Mapping[str, Any], key: str, *, minimum: int) -> int:
+    result = value[key]
+    if isinstance(result, bool) or not isinstance(result, int) or result < minimum:
+        raise TypeError(f"{key} must be an integer >= {minimum}")
+    return int(result)
+
+
+def _validate_numeric_tree(value: Any, name: str) -> None:
+    if isinstance(value, Mapping):
+        for item in value.values():
+            _validate_numeric_tree(item, name)
+        return
+    if isinstance(value, (tuple, list)):
+        for item in value:
+            _validate_numeric_tree(item, name)
+        return
+    if isinstance(value, torch.Tensor):
+        if value.dtype == torch.bool:
+            return
+        if not bool(torch.isfinite(value).all()):
+            raise ValueError(f"{name} contains non-finite values")
+        return
+    if isinstance(value, np.ndarray):
+        if value.dtype == np.bool_:
+            return
+        if not bool(np.isfinite(value).all()):
+            raise ValueError(f"{name} contains non-finite values")
+        return
+    if isinstance(value, (bool, np.bool_)):
+        return
+    if isinstance(value, (int, float, np.number)):
+        _validate_finite_number(value, name)
+        return
+    raise TypeError(f"{name} contains unsupported {type(value).__name__}")
+
+
+def _validate_finite_tree(value: Any, name: str) -> None:
+    if isinstance(value, Mapping):
+        for item in value.values():
+            _validate_finite_tree(item, name)
+        return
+    if isinstance(value, (tuple, list)):
+        for item in value:
+            _validate_finite_tree(item, name)
+        return
+    if isinstance(value, (torch.Tensor, np.ndarray, bool, int, float, np.number)):
+        _validate_numeric_tree(value, name)
+        return
+    if value is not None and not isinstance(value, (str, bytes)):
+        raise TypeError(f"{name} contains unsupported {type(value).__name__}")
+
+
+def _validate_finite_number(value: Any, name: str) -> None:
+    if isinstance(value, bool):
+        raise TypeError(f"{name} must be numeric")
+    try:
+        scalar = float(value)
+    except (TypeError, ValueError) as exc:
+        raise TypeError(f"{name} must be numeric") from exc
+    if not np.isfinite(scalar):
+        raise ValueError(f"{name} must be finite")
+
+
+def _validate_binary_flag(value: Any, name: str) -> None:
+    if isinstance(value, (bool, np.bool_)):
+        return
+    _validate_finite_number(value, name)
+    if float(value) not in {0.0, 1.0}:
+        raise ValueError(f"{name} must be boolean or numeric zero/one")
 
 
 def _load_state_dict(component: object, state: object) -> None:

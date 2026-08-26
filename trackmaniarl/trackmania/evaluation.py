@@ -135,7 +135,10 @@ class TrackmaniaEvaluator:
             prepared = self.feature_pipeline.transform_observation(observation)
             for _ in range(self.max_episode_steps):
                 action_started = perf_counter()
-                action = policy.act(prepared, deterministic=True)
+                policy_observation = (
+                    observation if getattr(policy, "requires_raw_observation", False) else prepared
+                )
+                action = policy.act(policy_observation, deterministic=True)
                 action_latency_ms += (perf_counter() - action_started) * 1_000.0
                 observation, reward, terminated, truncated, info = environment.step(action)
                 diagnostics.record(

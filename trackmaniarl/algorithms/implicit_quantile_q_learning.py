@@ -235,6 +235,7 @@ class ImplicitQuantileQLearning(TorchLearnerBase):
     """Distributional Double-DQN with IQN fractions and hard/soft target updates."""
 
     accepted_model_contracts = frozenset({ModelContract.DISCRETE_QUANTILE})
+    supports_compile = True
 
     def __init__(
         self,
@@ -269,6 +270,18 @@ class ImplicitQuantileQLearning(TorchLearnerBase):
         seed: int = 0,
     ) -> None:
         super().__init__(model, model_factory=model_factory, execution=execution, seed=seed)
+        if (
+            learning_rate <= 0.0
+            or min(
+                train_quantile_count,
+                target_quantile_count,
+                evaluation_quantile_count,
+            )
+            < 1
+            or target_update_interval < 1
+            or gradient_clip_norm <= 0.0
+        ):
+            raise ValueError("IQN optimizer, quantile counts, and target interval must be positive")
         self.learning_rate = learning_rate
         self.train_quantile_count = train_quantile_count
         self.target_quantile_count = target_quantile_count
@@ -1074,6 +1087,7 @@ class ImplicitQuantileQLearning(TorchLearnerBase):
             "target_model": self.target_model.state_dict(),
             "optimizer": self.optimizer.state_dict(),
             "update_count": self.update_count,
+            "scaler": self._scaler_state(),
             "rng": self._rng_state(),
             "policy_action_ids": self.policy_action_ids,
             **self._policy_anchor_state(),
@@ -1092,6 +1106,7 @@ class ImplicitQuantileQLearning(TorchLearnerBase):
             "target_model": deepcopy(dict(policy_state)),
             "optimizer": fresh_optimizer.state_dict(),
             "update_count": self.update_count,
+            "scaler": self._scaler_state(),
             "rng": self._rng_state(),
             "policy_action_ids": self.policy_action_ids,
             **self._policy_anchor_state(),
@@ -1105,6 +1120,7 @@ class ImplicitQuantileQLearning(TorchLearnerBase):
         for parameter_group in self.optimizer.param_groups:
             parameter_group["lr"] = self.learning_rate
         self.update_count = int(state["update_count"])
+        self._restore_scaler(state.get("scaler"))
         self._restore_rng(state.get("rng", {}))
         self._restore_policy_anchor(state)
 
