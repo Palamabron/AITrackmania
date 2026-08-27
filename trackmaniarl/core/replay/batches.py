@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from typing import Any, cast
 
 import torch
@@ -11,40 +11,8 @@ import torch
 from trackmaniarl.core.contracts import ReplayStore
 from trackmaniarl.core.data import BatchRequest, TrainingBatch, Transition, TransitionId
 from trackmaniarl.core.pytree import tree_collate, tree_map
-
-
-def _is_contiguous_episode(indices: list[TransitionId], transitions: list[Transition]) -> bool:
-    episode_id = transitions[0].episode_id
-    if episode_id is None:
-        return False
-    for previous_index, current_index, previous, current in zip(
-        indices[:-1], indices[1:], transitions[:-1], transitions[1:], strict=True
-    ):
-        if current.episode_id != episode_id or current_index != previous_index + 1:
-            return False
-        if previous.step is not None and current.step != previous.step + 1:
-            return False
-        if previous.terminated or previous.truncated:
-            return False
-    return True
-
-
-def _is_contiguous_rollout(indices: list[TransitionId], transitions: list[Transition]) -> bool:
-    for previous_index, current_index, previous, current in zip(
-        indices[:-1], indices[1:], transitions[:-1], transitions[1:], strict=True
-    ):
-        if current_index != previous_index + 1:
-            return False
-        same_episode = current.episode_id == previous.episode_id
-        if same_episode and previous.step is not None and current.step != previous.step + 1:
-            return False
-        if same_episode and (previous.terminated or previous.truncated):
-            return False
-        if not same_episode and not (previous.terminated or previous.truncated):
-            return False
-        if not same_episode and current.step not in {0, None}:
-            return False
-    return True
+from trackmaniarl.core.replay.batch_metadata import _behavior_metadata
+from trackmaniarl.core.replay.n_step import _n_step_transition, _NStepInput
 
 
 def _eligible_n_step_ids(store: ReplayStore, request: BatchRequest) -> list[TransitionId]:
@@ -83,22 +51,33 @@ def _n_step_horizon(
 ) -> list[Transition]:
     """Resolve one complete episode-local horizon from a basic replay snapshot."""
 
-    first = available[transition_id]
+    start = _HorizonStart(transition_id, available[transition_id])
     result: list[Transition] = []
     for offset in range(request.n_step):
         candidate = available.get(transition_id + offset)
-        if candidate is None or candidate.episode_id != first.episode_id:
-            raise RuntimeError(f"Transition {transition_id} has no complete n-step horizon")
-        if (
-            candidate.step is not None
-            and first.step is not None
-            and candidate.step != first.step + offset
-        ):
-            raise RuntimeError(f"Transition {transition_id} has a discontinuous n-step horizon")
+        candidate = _validated_horizon_candidate(start, candidate, offset)
         result.append(candidate)
         if candidate.terminated or candidate.truncated:
             break
     return result
+
+
+@dataclass(frozen=True, slots=True)
+class _HorizonStart:
+    transition_id: TransitionId
+    transition: Transition
+
+
+def _validated_horizon_candidate(
+    start: _HorizonStart, candidate: Transition | None, offset: int
+) -> Transition:
+    if candidate is None or candidate.episode_id != start.transition.episode_id:
+        raise RuntimeError(f"Transition {start.transition_id} has no complete n-step horizon")
+    if candidate.step is None or start.transition.step is None:
+        return candidate
+    if candidate.step != start.transition.step + offset:
+        raise RuntimeError(f"Transition {start.transition_id} has a discontinuous n-step horizon")
+    return candidate
 
 
 def _reshape_sequence_batch(value: Any, batch_size: int, sequence_length: int) -> Any:
@@ -139,29 +118,36 @@ def _sequence_target_observation_histories(
 
     if len(histories) != len(horizons):
         raise ValueError("sequence histories and bootstrap horizons must have equal length")
-    result: list[list[Any]] = []
-    for history, horizon in zip(histories, horizons, strict=True):
-        if len(history) != sequence_length or not horizon:
-            raise ValueError(
-                "sequence target history requires full context and a bootstrap horizon"
-            )
-        current = history[-1]
-        first = horizon[0]
-        if current.episode_id != first.episode_id or current.step != first.step:
-            raise ValueError("bootstrap horizon must begin at the final context transition")
-        observations = [transition.observation for transition in history]
-        observations.extend(transition.next_observation for transition in horizon)
-        result.append(observations[-sequence_length:])
-    return result
+    return [
+        _sequence_target_history(history, horizon, sequence_length)
+        for history, horizon in zip(histories, horizons, strict=True)
+    ]
 
 
-def _reshape_batch_sequences(
-    batch: TrainingBatch,
-    batch_size: int,
-    sequence_length: int,
-    *,
-    masks: torch.Tensor | None = None,
-) -> TrainingBatch:
+def _sequence_target_history(
+    history: list[Transition], horizon: list[Transition], sequence_length: int
+) -> list[Any]:
+    if len(history) != sequence_length or not horizon:
+        raise ValueError("sequence target history requires full context and a bootstrap horizon")
+    current = history[-1]
+    first = horizon[0]
+    if current.episode_id != first.episode_id or current.step != first.step:
+        raise ValueError("bootstrap horizon must begin at the final context transition")
+    observations = [transition.observation for transition in history]
+    observations.extend(transition.next_observation for transition in horizon)
+    return observations[-sequence_length:]
+
+
+@dataclass(frozen=True, slots=True)
+class _SequenceBatchLayout:
+    batch_size: int
+    sequence_length: int
+    masks: torch.Tensor | None = None
+
+
+def _reshape_batch_sequences(batch: TrainingBatch, layout: _SequenceBatchLayout) -> TrainingBatch:
+    batch_size = layout.batch_size
+    sequence_length = layout.sequence_length
     return replace(
         batch,
         data=_reshape_sequence_batch(batch.data, batch_size, sequence_length),
@@ -176,189 +162,173 @@ def _reshape_batch_sequences(
         bootstrap_discounts=_reshape_sequence_batch(
             batch.bootstrap_discounts, batch_size, sequence_length
         ),
-        masks=masks
-        if masks is not None
-        else torch.ones((batch_size, sequence_length), dtype=torch.bool),
+        masks=_sequence_masks(layout),
     )
 
 
-def _make_batch(
-    store: ReplayStore,
-    pipeline: Any,
-    transition_ids: list[TransitionId],
-    request: BatchRequest,
-    *,
-    importance_weights: tuple[float, ...] | None = None,
-    masks: Any = None,
-    metadata: Mapping[str, Any] | None = None,
-    bootstrap_stride: int = 1,
-) -> TrainingBatch:
-    """Build a batch whose n-step returns are derived from replay order, not batch order.
+def _sequence_masks(layout: _SequenceBatchLayout) -> torch.Tensor:
+    if layout.masks is not None:
+        return layout.masks
+    return torch.ones((layout.batch_size, layout.sequence_length), dtype=torch.bool)
 
-    With ``bootstrap_stride > 1`` the ids form contiguous groups of that length and
-    only the last id of each group receives a full n-step return; the earlier ids
-    are recurrent context whose reward fields the learner never consumes.
-    """
 
-    materializer = getattr(store, "materialize_n_step", None)
-    if bootstrap_stride == 1 and callable(materializer):
+@dataclass(frozen=True, slots=True)
+class _BatchBuild:
+    store: ReplayStore
+    pipeline: Any
+    transition_ids: list[TransitionId]
+    request: BatchRequest
+    importance_weights: tuple[float, ...] | None = None
+    masks: Any = None
+    metadata: Mapping[str, Any] | None = None
+    bootstrap_stride: int = 1
+
+
+@dataclass(frozen=True, slots=True)
+class _MaterializedBatch:
+    transitions: list[Transition]
+    discounts: list[float]
+
+
+@dataclass(frozen=True, slots=True)
+class _BatchAssembly:
+    build: _BatchBuild
+    materialized: _MaterializedBatch
+    standard: Mapping[str, Any] | None
+    data: Any
+
+
+def _make_batch(build: _BatchBuild) -> TrainingBatch:
+    return _build_batch(build)
+
+
+def _build_batch(build: _BatchBuild) -> TrainingBatch:
+    materialized = _materialize_batch(build)
+    collated = build.pipeline.collate(materialized.transitions)
+    standard = _standard_collation(collated)
+    data = _batch_data(collated, standard)
+    return _training_batch(_BatchAssembly(build, materialized, standard, data))
+
+
+def _materialize_batch(build: _BatchBuild) -> _MaterializedBatch:
+    materializer = getattr(build.store, "materialize_n_step", None)
+    if build.bootstrap_stride == 1 and callable(materializer):
         transitions, discounts = cast(
-            tuple[list[Transition], list[float]], materializer(transition_ids, request)
+            tuple[list[Transition], list[float]],
+            materializer(build.transition_ids, build.request),
         )
-    else:
-        resolver = getattr(store, "n_step_ids", None)
-        requested_ids: list[TransitionId] = []
-        horizons: list[list[TransitionId]] = []
-        seen: set[TransitionId] = set()
-        for index, transition_id in enumerate(transition_ids):
-            needs_return = bootstrap_stride == 1 or index % bootstrap_stride == bootstrap_stride - 1
-            if not needs_return:
-                horizon = [transition_id]
-            elif callable(resolver):
-                horizon = cast(list[TransitionId], resolver(transition_id, request.n_step))
-            else:
-                horizon = [transition_id + offset for offset in range(request.n_step)]
-            horizons.append(horizon)
-            for candidate in horizon:
-                if candidate not in seen and store.contains(candidate):
-                    seen.add(candidate)
-                    requested_ids.append(candidate)
-        available = dict(zip(requested_ids, store.get(requested_ids), strict=True))
-        n_step = [
-            _n_step_transition(transition_id, available, request, horizon=horizon)
-            for transition_id, horizon in zip(transition_ids, horizons, strict=True)
-        ]
-        transitions = [item[0] for item in n_step]
-        discounts = [item[1] for item in n_step]
-    behavior = _behavior_metadata(transitions)
-    data = pipeline.collate(transitions)
-    standard = (
-        data
-        if isinstance(data, Mapping)
-        and data.get("_trackmaniarl_batch_collated") is True
-        and {
-            "observations",
-            "actions",
-            "rewards",
-            "next_observations",
-            "terminated",
-            "truncated",
-        }.issubset(data)
-        else None
-    )
-    batch_data = (
-        {
-            key: value
-            for key, value in standard.items()
-            if key
-            not in {
-                "_trackmaniarl_batch_collated",
-                "observations",
-                "actions",
-                "rewards",
-                "next_observations",
-                "terminated",
-                "truncated",
-            }
-        }
-        if standard is not None
-        else data
-    )
-    return TrainingBatch(
-        data=batch_data,
-        observations=standard["observations"]
-        if standard is not None
-        else tree_collate([item.observation for item in transitions]),
-        actions=standard["actions"]
-        if standard is not None
-        else tree_collate([item.action for item in transitions]),
-        rewards=standard["rewards"]
-        if standard is not None
-        else tree_collate([item.reward for item in transitions]),
-        next_observations=standard["next_observations"]
-        if standard is not None
-        else tree_collate([item.next_observation for item in transitions]),
-        terminated=standard["terminated"]
-        if standard is not None
-        else tree_collate([item.terminated for item in transitions]),
-        truncated=standard["truncated"]
-        if standard is not None
-        else tree_collate([item.truncated for item in transitions]),
-        bootstrap_discounts=tree_collate(discounts),
-        transition_ids=transition_ids,
-        importance_weights=tree_collate(importance_weights)
-        if importance_weights is not None
-        else None,
-        masks=masks,
-        metadata={**dict(metadata or {}), **behavior},
+        return _MaterializedBatch(transitions, discounts)
+    return _materialize_from_snapshot(build)
+
+
+def _materialize_from_snapshot(build: _BatchBuild) -> _MaterializedBatch:
+    horizons, requested_ids = _requested_horizons(build)
+    available = dict(zip(requested_ids, build.store.get(requested_ids), strict=True))
+    n_step = [
+        _n_step_transition(_NStepInput(item, available, build.request, horizon))
+        for item, horizon in zip(build.transition_ids, horizons, strict=True)
+    ]
+    return _MaterializedBatch(
+        [item[0] for item in n_step],
+        [item[1] for item in n_step],
     )
 
 
-def _behavior_metadata(transitions: list[Transition]) -> dict[str, torch.Tensor]:
-    keys = {
-        "behavior_log_probabilities": "_trackmaniarl_behavior_log_probability",
-        "behavior_values": "_trackmaniarl_behavior_value",
-        "behavior_latent_actions": "_trackmaniarl_behavior_latent_action",
-    }
-    result: dict[str, torch.Tensor] = {}
-    for output_key, info_key in keys.items():
-        values = [transition.info.get(info_key) for transition in transitions]
-        if all(value is not None for value in values):
-            result[output_key] = torch.stack(
-                [torch.as_tensor(value, dtype=torch.float32) for value in values]
-            )
-    return result
+def _requested_horizons(
+    build: _BatchBuild,
+) -> tuple[list[list[TransitionId]], list[TransitionId]]:
+    horizons = [
+        _selection_horizon(build, index, item) for index, item in enumerate(build.transition_ids)
+    ]
+    requested_ids: list[TransitionId] = []
+    seen: set[TransitionId] = set()
+    for horizon in horizons:
+        for candidate in horizon:
+            if candidate not in seen and build.store.contains(candidate):
+                seen.add(candidate)
+                requested_ids.append(candidate)
+    return horizons, requested_ids
 
 
-def _n_step_transition(
-    transition_id: TransitionId,
-    available: Mapping[TransitionId, Transition],
-    request: BatchRequest,
-    *,
-    horizon: list[TransitionId] | None = None,
-) -> tuple[Transition, float]:
-    """Return the episode-safe discounted n-step transition beginning at ``transition_id``."""
+def _selection_horizon(
+    build: _BatchBuild, index: int, transition_id: TransitionId
+) -> list[TransitionId]:
+    needs_return = (
+        build.bootstrap_stride == 1 or index % build.bootstrap_stride == build.bootstrap_stride - 1
+    )
+    if not needs_return:
+        return [transition_id]
+    resolver = getattr(build.store, "n_step_ids", None)
+    if callable(resolver):
+        return cast(list[TransitionId], resolver(transition_id, build.request.n_step))
+    return [transition_id + offset for offset in range(build.request.n_step)]
 
-    first = available[transition_id]
-    current = first
-    reward = 0.0
-    discount = 1.0
-    effective_steps = 0
-    terminated = False
-    truncated = False
-    ordered_ids = horizon or [transition_id + offset for offset in range(request.n_step)]
-    for offset, current_id in enumerate(ordered_ids):
-        candidate = available.get(current_id)
-        if candidate is None or candidate.episode_id != first.episode_id:
-            break
-        if (
-            candidate.step is not None
-            and first.step is not None
-            and candidate.step != first.step + offset
-        ):
-            break
-        current = candidate
-        reward += discount * candidate.reward
-        effective_steps += 1
-        terminated = candidate.terminated
-        truncated = candidate.truncated
-        if terminated or truncated:
-            break
-        discount *= request.gamma
-    if effective_steps == 0:
-        raise RuntimeError(f"Transition {transition_id} is no longer available")
-    bootstrap_discount = 0.0 if terminated else request.gamma**effective_steps
-    return (
-        Transition(
-            observation=first.observation,
-            action=first.action,
-            reward=reward,
-            next_observation=current.next_observation,
-            terminated=terminated,
-            truncated=truncated,
-            info=first.info,
-            episode_id=first.episode_id,
-            step=first.step,
+
+_STANDARD_BATCH_FIELDS = frozenset(
+    {"observations", "actions", "rewards", "next_observations", "terminated", "truncated"}
+)
+
+
+def _standard_collation(data: Any) -> Mapping[str, Any] | None:
+    if not isinstance(data, Mapping):
+        return None
+    if data.get("_trackmaniarl_batch_collated") is not True:
+        return None
+    return data if _STANDARD_BATCH_FIELDS.issubset(data) else None
+
+
+def _batch_data(data: Any, standard: Mapping[str, Any] | None) -> Any:
+    if standard is None:
+        return data
+    excluded = _STANDARD_BATCH_FIELDS | {"_trackmaniarl_batch_collated"}
+    return {key: value for key, value in standard.items() if key not in excluded}
+
+
+def _batch_field(standard: Mapping[str, Any] | None, name: str, values: list[Any]) -> Any:
+    return standard[name] if standard is not None else tree_collate(values)
+
+
+@dataclass(frozen=True, slots=True)
+class _CollatedFields:
+    observations: Any
+    actions: Any
+    rewards: Any
+    next_observations: Any
+    terminated: Any
+    truncated: Any
+
+
+def _collated_fields(
+    standard: Mapping[str, Any] | None, transitions: list[Transition]
+) -> _CollatedFields:
+    return _CollatedFields(
+        _batch_field(standard, "observations", [item.observation for item in transitions]),
+        _batch_field(standard, "actions", [item.action for item in transitions]),
+        _batch_field(standard, "rewards", [item.reward for item in transitions]),
+        _batch_field(
+            standard, "next_observations", [item.next_observation for item in transitions]
         ),
-        bootstrap_discount,
+        _batch_field(standard, "terminated", [item.terminated for item in transitions]),
+        _batch_field(standard, "truncated", [item.truncated for item in transitions]),
+    )
+
+
+def _training_batch(assembly: _BatchAssembly) -> TrainingBatch:
+    build = assembly.build
+    transitions = assembly.materialized.transitions
+    fields = _collated_fields(assembly.standard, transitions)
+    weights = tree_collate(build.importance_weights) if build.importance_weights else None
+    return TrainingBatch(
+        data=assembly.data,
+        observations=fields.observations,
+        actions=fields.actions,
+        rewards=fields.rewards,
+        next_observations=fields.next_observations,
+        terminated=fields.terminated,
+        truncated=fields.truncated,
+        bootstrap_discounts=tree_collate(assembly.materialized.discounts),
+        transition_ids=build.transition_ids,
+        importance_weights=weights,
+        masks=build.masks,
+        metadata={**dict(build.metadata or {}), **_behavior_metadata(transitions)},
     )

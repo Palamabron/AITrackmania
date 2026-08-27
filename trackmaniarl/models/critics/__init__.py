@@ -3,13 +3,13 @@
 from trackmaniarl.models.critics.value import (
     ContinuousQCritic,
     ContinuousValueCritic,
-    DiscreteQuantileNetwork,
     QuantileCritic,
+    QuantileCriticConfig,
 )
 
 __all__ = [
     "ContinuousQCritic",
     "ContinuousValueCritic",
-    "DiscreteQuantileNetwork",
     "QuantileCritic",
+    "QuantileCriticConfig",
 ]

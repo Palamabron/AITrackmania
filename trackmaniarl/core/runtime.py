@@ -14,17 +14,16 @@ from trackmaniarl.core.contracts import (
     CheckpointCodec,
     EnvironmentFactory,
     Evaluator,
+    EvaluatorRuntimeRequest,
     FeaturePipeline,
     Learner,
     ModelContract,
     ModelFactory,
-    OfflineSupervisedLearner,
     ReplayStore,
     RunLogger,
     Sampler,
 )
-from trackmaniarl.core.data import BatchRequest, Transition
-from trackmaniarl.core.spec import ComponentSpec, RunSpec
+from trackmaniarl.core.spec import ComponentSpec, EvaluationMapSpec, RunSpec
 
 
 def import_symbol(path: str) -> Any:
@@ -81,40 +80,59 @@ def _validate_model_contract(learner: object, model_factory: object | None) -> N
         )
 
 
-def _validate_training_contract(
-    spec: RunSpec,
-    learner: object,
-    sampler: object,
-    pipeline: object,
-) -> None:
+@dataclass(frozen=True, slots=True)
+class _TrainingComponents:
+    learner: object
+    sampler: object
+    pipeline: object
+
+
+def _validate_training_contract(spec: RunSpec, components: _TrainingComponents) -> None:
+    _validate_sequence_contract(spec, components)
+    _validate_burn_in(spec, components.learner)
+    _validate_history_contract(spec, components.pipeline)
+    if getattr(components.learner, "on_policy", False) and spec.training.n_step != 1:
+        raise ValueError("on-policy training requires training.n_step=1")
+
+
+def _validate_sequence_contract(spec: RunSpec, components: _TrainingComponents) -> None:
     sequence_length = spec.training.sequence_length
-    if sequence_length > 1 and getattr(learner, "supports_sequence_training", None) is False:
-        raise ValueError(
-            f"{type(learner).__name__} requires training.sequence_length=1; got {sequence_length}"
-        )
-    if sequence_length > 1 and getattr(sampler, "supports_sequence_sampling", None) is False:
-        raise ValueError(
-            f"{type(sampler).__name__} requires training.sequence_length=1; got {sequence_length}"
-        )
+    if sequence_length == 1:
+        return
+    sampler = components.sampler
+    _validate_sequence_support(components.learner, "supports_sequence_training", sequence_length)
+    _validate_sequence_support(sampler, "supports_sequence_sampling", sequence_length)
     configured_length = getattr(sampler, "sequence_length", sequence_length)
-    if sequence_length > 1 and configured_length != sequence_length:
+    if configured_length != sequence_length:
         raise ValueError(
             "training.sequence_length must match sampler sequence_length; "
             f"got {sequence_length} and {configured_length}"
         )
-    if sequence_length > 1 and spec.training.n_step >= sequence_length:
+    if spec.training.n_step >= sequence_length:
         raise ValueError("training.n_step must be smaller than training.sequence_length")
+
+
+def _validate_sequence_support(component: object, attribute: str, sequence_length: int) -> None:
+    if getattr(component, attribute, None) is False:
+        raise ValueError(
+            f"{type(component).__name__} requires training.sequence_length=1; got {sequence_length}"
+        )
+
+
+def _validate_burn_in(spec: RunSpec, learner: object) -> None:
+    sequence_length = spec.training.sequence_length
     burn_in = int(getattr(learner, "burn_in", 0))
     if (sequence_length == 1 and burn_in) or burn_in >= sequence_length:
         raise ValueError(
             "learner burn_in must be zero for single-step replay and below sequence_length"
         )
-    if sequence_length > 1 and int(getattr(pipeline, "history_length", 1)) > 1:
+
+
+def _validate_history_contract(spec: RunSpec, pipeline: object) -> None:
+    if spec.training.sequence_length > 1 and int(getattr(pipeline, "history_length", 1)) > 1:
         raise ValueError(
             "training.sequence_length and feature history_length cannot both exceed one"
         )
-    if getattr(learner, "on_policy", False) and spec.training.n_step != 1:
-        raise ValueError("on-policy training requires training.n_step=1")
 
 
 def _validate_reward_discount(spec: RunSpec, environment_factory: object | None) -> None:
@@ -130,12 +148,6 @@ def _validate_reward_discount(spec: RunSpec, environment_factory: object | None)
             "Potential-based reward shaping requires training.gamma to equal "
             f"environment.config.reward_gamma; got {spec.training.gamma} and {reward_gamma}"
         )
-
-
-def _validate_execution_contract(learner: object) -> None:
-    execution = getattr(learner, "execution", None)
-    if getattr(execution, "compile", False) and not getattr(learner, "supports_compile", False):
-        raise ValueError(f"{type(learner).__name__} does not support execution.compile")
 
 
 def _redact_config(value: Any) -> Any:
@@ -170,100 +182,130 @@ class ResolvedRun:
 
 
 def resolve_run(spec: RunSpec, *, base_dir: str | Path = ".") -> ResolvedRun:
-    """Instantiate and validate a run without importing the legacy configuration tree."""
-
     project_dir = Path(base_dir)
-    if spec.evaluation is not None:
-        maps = tuple(
-            item.model_copy(
-                update={
-                    "map_path": item.map_path
-                    if item.map_path.is_absolute()
-                    else (project_dir / item.map_path).resolve(),
-                    "geometry_path": item.geometry_path
-                    if item.geometry_path.is_absolute()
-                    else (project_dir / item.geometry_path).resolve(),
-                }
-            )
-            for item in spec.evaluation.maps
-        )
-        suite = spec.evaluation.model_copy(update={"maps": maps})
-        spec = spec.model_copy(update={"evaluation": suite})
-    run_dir = project_dir / spec.artifacts_dir / spec.run_id
-    pipeline = _instantiate(spec.components.feature_pipeline, base_dir=project_dir)
-    environment_factory = None
-    if spec.components.environment is not None:
-        environment_factory = _instantiate(spec.components.environment, base_dir=project_dir)
-    _validate_reward_discount(spec, environment_factory)
-    model_factory = None
-    if spec.components.model_factory is not None:
-        model_factory = _instantiate(spec.components.model_factory)
-    store = _instantiate(spec.components.replay_store)
-    sampler = _instantiate(spec.components.sampler, pipeline=pipeline, seed=spec.seed)
-    learner = _instantiate(
-        spec.components.learner,
-        seed=spec.seed,
-        model_factory=model_factory,
-        base_dir=project_dir,
+    return _RunResolver(_resolve_evaluation_paths(spec, project_dir), project_dir).resolve()
+
+
+def _resolve_evaluation_paths(spec: RunSpec, project_dir: Path) -> RunSpec:
+    if spec.evaluation is None:
+        return spec
+    maps = tuple(_resolve_evaluation_map(item, project_dir) for item in spec.evaluation.maps)
+    suite = spec.evaluation.model_copy(update={"maps": maps})
+    return spec.model_copy(update={"evaluation": suite})
+
+
+def _resolve_evaluation_map(item: EvaluationMapSpec, project_dir: Path) -> EvaluationMapSpec:
+    return item.model_copy(
+        update={
+            "map_path": _project_path(item.map_path, project_dir),
+            "geometry_path": _project_path(item.geometry_path, project_dir),
+        }
     )
-    _validate_training_contract(spec, learner, sampler, pipeline)
-    _validate_execution_contract(learner)
-    logger = _instantiate(spec.components.logger, run_dir=run_dir, run_id=spec.run_id)
-    if spec.components.additional_loggers:
+
+
+def _project_path(path: Path, project_dir: Path) -> Path:
+    return path if path.is_absolute() else (project_dir / path).resolve()
+
+
+class _RunResolver:
+    def __init__(self, spec: RunSpec, project_dir: Path) -> None:
+        self.spec = spec
+        self.project_dir = project_dir
+        self.run_dir = project_dir / spec.artifacts_dir / spec.run_id
+        self.pipeline = _instantiate(spec.components.feature_pipeline, base_dir=project_dir)
+        self.environment_factory = self._instantiate_environment()
+        _validate_reward_discount(spec, self.environment_factory)
+        self.model_factory = self._instantiate_model_factory()
+        self.replay_store = _instantiate(spec.components.replay_store)
+        self.sampler = _instantiate(spec.components.sampler, pipeline=self.pipeline, seed=spec.seed)
+        self.learner = self._instantiate_learner()
+        components = _TrainingComponents(self.learner, self.sampler, self.pipeline)
+        _validate_training_contract(spec, components)
+        self.logger = self._instantiate_logger()
+        self.checkpoint_codec = _instantiate(spec.components.checkpoint_codec)
+        self.evaluator = self._instantiate_evaluator()
+
+    def _instantiate_environment(self) -> Any | None:
+        component = self.spec.components.environment
+        return None if component is None else _instantiate(component, base_dir=self.project_dir)
+
+    def _instantiate_model_factory(self) -> Any | None:
+        component = self.spec.components.model_factory
+        return None if component is None else _instantiate(component)
+
+    def _instantiate_learner(self) -> Any:
+        return _instantiate(
+            self.spec.components.learner,
+            seed=self.spec.seed,
+            model_factory=self.model_factory,
+            base_dir=self.project_dir,
+        )
+
+    def _instantiate_logger(self) -> Any:
+        logger = _instantiate(
+            self.spec.components.logger, run_dir=self.run_dir, run_id=self.spec.run_id
+        )
+        if not self.spec.components.additional_loggers:
+            return logger
         from trackmaniarl.core.builtins import CompositeRunLogger
 
-        logger = CompositeRunLogger(
-            logger,
-            *(
-                _instantiate(
-                    item,
-                    run_dir=run_dir,
-                    run_id=spec.run_id,
-                    config=_redact_config(spec.model_dump(mode="json")),
-                )
-                for item in spec.components.additional_loggers
-            ),
+        additional = tuple(
+            self._instantiate_additional_logger(item)
+            for item in self.spec.components.additional_loggers
         )
-    codec = _instantiate(spec.components.checkpoint_codec)
-    evaluator = None
-    if spec.components.evaluator is not None:
-        evaluator = _instantiate(
-            spec.components.evaluator,
-            suite=spec.evaluation,
-            environment_factory=environment_factory,
-            feature_pipeline=pipeline,
-            max_episode_steps=spec.training.max_episode_steps,
-            run_dir=run_dir,
+        return CompositeRunLogger(logger, *additional)
+
+    def _instantiate_additional_logger(self, component: ComponentSpec) -> Any:
+        return _instantiate(
+            component,
+            run_dir=self.run_dir,
+            run_id=self.spec.run_id,
+            config=_redact_config(self.spec.model_dump(mode="json")),
         )
 
-    _require("feature_pipeline", pipeline, FeaturePipeline)
-    if environment_factory is not None:
-        _require("environment", environment_factory, EnvironmentFactory)
-    _require("replay_store", store, ReplayStore)
-    _require("sampler", sampler, Sampler)
-    _require("learner", learner, Learner)
-    if model_factory is not None:
-        _require("model_factory", model_factory, ModelFactory)
-    _validate_model_contract(learner, model_factory)
-    _require("logger", logger, RunLogger)
-    _require("checkpoint_codec", codec, CheckpointCodec)
-    if evaluator is not None:
-        _require("evaluator", evaluator, Evaluator)
+    def _instantiate_evaluator(self) -> Any | None:
+        component = self.spec.components.evaluator
+        if component is None:
+            return None
+        request = EvaluatorRuntimeRequest(
+            self.spec.evaluation,
+            self.environment_factory,
+            self.pipeline,
+            self.spec.training.max_episode_steps,
+            self.run_dir,
+        )
+        return _instantiate(component, request=request)
 
-    resolved = ResolvedRun(
-        spec=spec,
-        run_dir=run_dir,
-        learner=learner,
-        environment_factory=environment_factory,
-        model_factory=model_factory,
-        replay_store=store,
-        sampler=sampler,
-        feature_pipeline=pipeline,
-        logger=logger,
-        checkpoint_codec=codec,
-        evaluator=evaluator,
-    )
-    return resolved
+    def _validate(self) -> None:
+        _require("feature_pipeline", self.pipeline, FeaturePipeline)
+        if self.environment_factory is not None:
+            _require("environment", self.environment_factory, EnvironmentFactory)
+        _require("replay_store", self.replay_store, ReplayStore)
+        _require("sampler", self.sampler, Sampler)
+        _require("learner", self.learner, Learner)
+        if self.model_factory is not None:
+            _require("model_factory", self.model_factory, ModelFactory)
+        _validate_model_contract(self.learner, self.model_factory)
+        _require("logger", self.logger, RunLogger)
+        _require("checkpoint_codec", self.checkpoint_codec, CheckpointCodec)
+        if self.evaluator is not None:
+            _require("evaluator", self.evaluator, Evaluator)
+
+    def resolve(self) -> ResolvedRun:
+        self._validate()
+        return ResolvedRun(
+            spec=self.spec,
+            run_dir=self.run_dir,
+            learner=self.learner,
+            environment_factory=self.environment_factory,
+            model_factory=self.model_factory,
+            replay_store=self.replay_store,
+            sampler=self.sampler,
+            feature_pipeline=self.pipeline,
+            logger=self.logger,
+            checkpoint_codec=self.checkpoint_codec,
+            evaluator=self.evaluator,
+        )
 
 
 def prepare_run(run: ResolvedRun) -> None:
@@ -284,59 +326,6 @@ def prepare_run(run: ResolvedRun) -> None:
 def validate_resolved_run(run: ResolvedRun) -> dict[str, float]:
     """Execute a deterministic no-game smoke update for ``trackmaniarl validate``."""
 
-    prepare_run(run)
-    run.learner.setup(
-        {"seed": run.spec.seed, "run_dir": run.run_dir, "model_factory": run.model_factory}
-    )
-    request = run.spec.training.batch_request()
-    if getattr(run.learner, "on_policy", False):
-        request = BatchRequest(
-            batch_size=1,
-            sequence_length=max(2, request.sequence_length),
-            gamma=request.gamma,
-        )
-    transition_count = max(8, request.batch_size + request.sequence_length - 1)
-    synthetic = getattr(run.feature_pipeline, "synthetic_observation", None)
-    policy = run.learner.policy()
-    for step in range(transition_count):
-        raw_observation = synthetic() if callable(synthetic) else {"speed": float(step)}
-        observation = run.feature_pipeline.transform_observation(raw_observation)
-        is_demo = step < transition_count // 2
-        sample = getattr(policy, "act_with_info", None)
-        if callable(sample):
-            action, policy_info = sample(observation, deterministic=True)
-        else:
-            action = policy.act(observation, deterministic=True)
-            policy_info = {}
-        run.replay_store.append(
-            Transition(
-                observation=observation,
-                action=action,
-                reward=float(step),
-                next_observation=observation,
-                terminated=step == transition_count - 1,
-                truncated=False,
-                info={
-                    "is_demo": is_demo,
-                    "sampling/projected_lap_time_s": 1.0 if is_demo else float("inf"),
-                    **policy_info,
-                },
-                episode_id="validation",
-                step=step,
-            )
-        )
-    batch = run.sampler.sample(run.replay_store, request)
-    update = (
-        run.learner.validation_update(batch)
-        if isinstance(run.learner, OfflineSupervisedLearner)
-        else run.learner.update(batch)
-    )
-    metrics, priority_update = update if isinstance(update, tuple) else (update, None)
-    if priority_update is not None:
-        run.sampler.update_priorities(priority_update)
-    output = {key: float(value) for key, value in metrics.items()}
-    run.logger.log("validation/update", output, step=1)
-    checkpoint = run.run_dir / "checkpoints" / "validation.json"
-    run.checkpoint_codec.save(run.learner.state_dict(), checkpoint)
-    run.learner.load_state_dict(run.checkpoint_codec.load(checkpoint))
-    return output
+    from trackmaniarl.core.runtime_validation import validate_resolved_run as validate
+
+    return validate(run)

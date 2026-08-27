@@ -7,9 +7,7 @@ The paper links identify the closest primary reference.
 
 For new discrete-value work, use
 `trackmaniarl.algorithms.value_based:DiscreteValueLearner`. Scalar Q, QR-DQN,
-IQN, and FQF are model compositions trained by that one learner. The older
-`ImplicitQuantileQLearning` class remains public for existing configurations,
-but it is not the recommended foundation for new experiments.
+IQN, and FQF are model compositions trained by that one learner.
 
 The YAML blocks below are deliberately labelled **fragments**. Merge the shown
 keys into a complete RunSpec 2.0 file; keep the environment, evaluator, map,
@@ -35,7 +33,6 @@ the fragment replaces them. See the [configuration guide](configuration.md),
 | Behavior cloning (BC) | Public Trackmania offline-supervised lifecycle, `BehaviorCloningLearner` | Compact discrete categorical policy; offline demonstrations/recovery data | No RL replay or WAL; deterministic lap/episode split and contiguous feature histories | Local `bc-train`; closed-loop `bc-benchmark` | `bc-latest.pt` exact resume; `bc-best-validation.pt` promotion candidate; compatible encoder/temporal tensors can warm-start unified RL |
 | DAgger | Public `dagger-collect` data-collection workflow, not a learner | Student compact discrete BC policy plus trajectory-tracking teacher | Writes weighted recovery `.npz`; feed it back to BC with `--recovery` | Local live Trackmania only | Starts from a BC checkpoint; output is a dataset, not a resumable optimizer checkpoint |
 | DQfD-style objectives | Opt-in `DemonstrationMarginObjective` and `DemonstrationCrossEntropyObjective` inside `DiscreteValueLearner`; **not full DQfD** | Discrete off-policy TD plus demo-only auxiliary losses; offline pretraining is available | Demo-aware replay flags; PER supports sequences, `DemoMixSampler` is single-step | Offline pretrain, then local or distributed off-policy RL | Unified v2 exact resume; objectives are part of the checkpoint contract |
-| Legacy IQN | Public compatibility learner `ImplicitQuantileQLearning`; built-in key `implicit_quantile_q_learning` | Discrete Double-DQN/IQN with integrated demo and policy-anchor options | Uniform, PER, or compatible contiguous sequence sampling | Local and distributed | Exact class-specific resume and specialized BC/model initialization; no unified v2 architecture fingerprint |
 
 “Distributed” in the table means the off-policy learner exposes a replicable
 policy and can use `trackmaniarl learner`/`trackmaniarl actor`. Every machine
@@ -64,7 +61,7 @@ same RunSpec fingerprint and action/feature contracts.
   incorrectly configured custom actor.
 - A complete local or distributed resume restores replay and sampler state for
   off-policy runs. `--model-initialization-checkpoint` is a warm start, not a
-  resume, and is implemented only by the unified value learner and legacy IQN.
+  resume, and is implemented by the unified value learner.
 
 ## Unified discrete value family
 
@@ -452,10 +449,10 @@ components:
       learn_entropy_coefficient: true
   model_factory:
     class_path: trackmaniarl.trackmania.baseline:TelemetryTqcModelFactory
-    kwargs: {input_dim: 33, action_dim: 3, hidden_dim: 256, quantiles: 25, critics: 5}
+    kwargs:
+      config: {input_dim: 33, action_dim: 3, hidden_dim: 256, quantiles: 25, critics: 5}
   feature_pipeline:
     class_path: trackmaniarl.trackmania.features:TelemetryFeaturePipeline
-    kwargs: {field_count: 33}
   sampler:
     class_path: trackmaniarl.core.replay:PrioritizedSampler
 training:
@@ -494,8 +491,8 @@ resume restarts at a recorded episode boundary. There is no partial warm start.
 Key knobs are clip epsilons, `gae_lambda`, entropy/value coefficients, update
 epochs, minibatch size, `target_kl`, normalization clips, and gradient norm.
 Monitor `loss/policy`, `loss/value`, `state/entropy`, `state/approx_kl`,
-`state/clip_fraction`, `state/early_stop`, and `state/learning_rate`. Legacy
-replay without behavior metadata, a non-on-policy sampler, partial/invalid
+`state/clip_fraction`, `state/early_stop`, and `state/learning_rate`. Replay
+without behavior metadata, a non-on-policy sampler, partial/invalid
 rollouts, or non-divisible transition budgets fail explicitly.
 
 **YAML fragment — local telemetry PPO:**
@@ -520,7 +517,6 @@ components:
     class_path: trackmaniarl.core.replay:OnPolicySequenceSampler
   feature_pipeline:
     class_path: trackmaniarl.trackmania.features:TelemetryFeaturePipeline
-    kwargs: {field_count: 33}
 training:
   total_transitions: 8192
   batch_size: 1
@@ -779,74 +775,6 @@ continue from the checkpoint path printed by that command with
 
 **Primary paper:** [Deep Q-learning from Demonstrations](https://arxiv.org/abs/1704.03732).
 
-## Legacy compatibility learner
-
-### ImplicitQuantileQLearning
-
-**Status and intuition.** `ImplicitQuantileQLearning` remains public and in the
-built-in registry for existing 2.0 configurations and checkpoints. It is a
-separate monolithic IQN learner with integrated Double-DQN targets, epsilon
-schedule, demo margin/cross-entropy weighting, optional policy anchoring,
-risk distortion, compilation support, and specialized BC/model initialization.
-New implementations should prefer the unified `DiscreteValueLearner` plus an
-implicit head, random-quantile strategy, and explicit objectives.
-
-**Contract.** `DISCRETE_QUANTILE`; discrete global action indices. It works
-with `LidarIqnModelFactory` or another model exposing IQN forward/Q-value
-methods. Online off-policy training supports uniform/PER and single-step input;
-sequence batches work only when the model exposes per-step encoding. Local and
-distributed execution are supported.
-
-**State, parameters, metrics, and failures.** Resume restores model, target,
-optimizer, update count, scaler, RNG, and policy-anchor state; the checkpoint
-also records `policy_action_ids`.
-It does not use the unified v2 module architecture fingerprint. Its
-`model_initialization_checkpoint` can perform legacy tensor matching/expansion
-and a specialized BC categorical-head transfer; this is not the generic named
-submodule warm-start report. Key parameters include three quantile counts,
-target hard/soft update settings, epsilon schedule, demo weights, anchor
-settings, action mask, risk distortion, value rescaling, and gradient clip.
-Metrics include `loss/iqn`, `loss/total`, detailed demo/anchor losses and demo
-accuracy, Q/target/TD/gradient diagnostics, action-mask diagnostics, replay
-metrics, and timing. Model-specific sequence support, legacy name mapping,
-action-head compatibility, and anchor checkpoint shape are common failure
-points.
-
-**YAML fragment — legacy IQN compatibility:**
-
-```yaml
-components:
-  learner:
-    class_path: trackmaniarl.algorithms.implicit_quantile_q_learning:ImplicitQuantileQLearning
-    kwargs:
-      learning_rate: 1.0e-4
-      train_quantile_count: 64
-      target_quantile_count: 64
-      evaluation_quantile_count: 32
-      target_tau: 0.005
-      exploration_epsilon: 0.1
-  model_factory:
-    class_path: trackmaniarl.trackmania.iqn:LidarIqnModelFactory
-    kwargs: {cosine_count: 64, history_length: 1}
-  feature_pipeline:
-    class_path: trackmaniarl.trackmania.features:LidarFeaturePipeline
-    kwargs:
-      geometry_path: assets/trackmaniarl-test.geometry.npz
-      expected_map_uid: REPLACE_WITH_TEST_3_UID
-  sampler:
-    class_path: trackmaniarl.core.replay:PrioritizedSampler
-training:
-  sequence_length: 1
-  n_step: 3
-  gamma: 0.995
-  beta: 0.4
-```
-
-**Command:** `uv run trackmaniarl validate run.yaml`, then
-`uv run trackmaniarl train run.yaml`.
-
-**Primary paper:** [Implicit Quantile Networks for Distributional Reinforcement Learning](https://arxiv.org/abs/1806.06923).
-
 ## Choosing a starting point
 
 - Start with the generated unified IQN configuration for discrete Trackmania
@@ -861,5 +789,3 @@ training:
 - Use BC as an initialization/data-quality tool, then require closed-loop
   benchmarking. Add DAgger recovery or DQfD-style objectives only for a measured
   distribution-shift problem.
-- Keep legacy IQN only when its integrated initialization/anchor behavior or an
-  existing checkpoint requires it.

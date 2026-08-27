@@ -5,12 +5,13 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 from copy import deepcopy
 from numbers import Number
-from typing import Any
+from typing import Any, Literal
 
 import numpy as np
 import torch
 
 type PyTree = Any
+type DeviceTransferMode = Literal["blocking", "non_blocking"]
 
 
 def tree_map(function: Callable[[Any], Any], value: PyTree) -> PyTree:
@@ -29,13 +30,13 @@ def tree_to_device(
     value: PyTree,
     device: torch.device | str,
     *,
-    non_blocking: bool = False,
+    mode: DeviceTransferMode = "blocking",
 ) -> PyTree:
     """Move a tensor PyTree to ``device`` without silently coercing unsupported leaves."""
 
     def move(leaf: Any) -> Any:
         if isinstance(leaf, torch.Tensor):
-            return leaf.to(device, non_blocking=non_blocking)
+            return leaf.to(device, non_blocking=mode == "non_blocking")
         if isinstance(leaf, (bool, int, float, str, type(None))):
             return leaf
         raise TypeError(
@@ -53,31 +54,48 @@ def tree_collate(values: Sequence[PyTree]) -> PyTree:
         raise ValueError("Cannot collate an empty PyTree sequence")
     first = values[0]
     if isinstance(first, torch.Tensor):
-        if not all(isinstance(value, torch.Tensor) for value in values):
-            raise TypeError("Cannot collate mixed tensor and non-tensor leaves")
-        return torch.stack(list(values))
+        return _collate_tensors(values)
     if isinstance(first, np.ndarray):
-        if not all(isinstance(value, np.ndarray) for value in values):
-            raise TypeError("Cannot collate mixed ndarray and non-ndarray leaves")
-        return torch.as_tensor(np.stack(list(values)))
+        return _collate_arrays(values)
     if isinstance(first, tuple):
-        if not all(isinstance(value, tuple) and len(value) == len(first) for value in values):
-            raise TypeError("Cannot collate tuples with different structures")
-        return tuple(
-            tree_collate([value[index] for value in values]) for index in range(len(first))
-        )
+        return _collate_sequence(values, first, tuple)
     if isinstance(first, list):
-        if not all(isinstance(value, list) and len(value) == len(first) for value in values):
-            raise TypeError("Cannot collate lists with different structures")
-        return [tree_collate([value[index] for value in values]) for index in range(len(first))]
+        return _collate_sequence(values, first, list)
     if isinstance(first, Mapping):
-        keys = tuple(first)
-        if not all(isinstance(value, Mapping) and tuple(value) == keys for value in values):
-            raise TypeError("Cannot collate mappings with different keys or key order")
-        return {key: tree_collate([value[key] for value in values]) for key in keys}
+        return _collate_mapping(values, first)
     if isinstance(first, Number):
         return torch.as_tensor(values)
     raise TypeError(f"Cannot collate unsupported PyTree leaf {type(first).__name__}")
+
+
+def _collate_tensors(values: Sequence[PyTree]) -> torch.Tensor:
+    if not all(isinstance(value, torch.Tensor) for value in values):
+        raise TypeError("Cannot collate mixed tensor and non-tensor leaves")
+    return torch.stack(list(values))
+
+
+def _collate_arrays(values: Sequence[PyTree]) -> torch.Tensor:
+    if not all(isinstance(value, np.ndarray) for value in values):
+        raise TypeError("Cannot collate mixed ndarray and non-ndarray leaves")
+    return torch.as_tensor(np.stack(list(values)))
+
+
+def _collate_sequence(
+    values: Sequence[PyTree],
+    first: Sequence[PyTree],
+    container: type[list[Any]] | type[tuple[Any, ...]],
+) -> PyTree:
+    if not all(isinstance(value, container) and len(value) == len(first) for value in values):
+        raise TypeError(f"Cannot collate {container.__name__}s with different structures")
+    collated = [tree_collate([value[index] for value in values]) for index in range(len(first))]
+    return tuple(collated) if container is tuple else collated
+
+
+def _collate_mapping(values: Sequence[PyTree], first: Mapping[Any, Any]) -> PyTree:
+    keys = tuple(first)
+    if not all(isinstance(value, Mapping) and tuple(value) == keys for value in values):
+        raise TypeError("Cannot collate mappings with different keys or key order")
+    return {key: tree_collate([value[key] for value in values]) for key in keys}
 
 
 def tree_snapshot(value: PyTree) -> PyTree:

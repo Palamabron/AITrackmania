@@ -46,15 +46,7 @@ orchestrator = [
     "google-genai>=2.2.0",
     "optuna>=3.0",
 ]
-algorithms = [
-    "einops>=0.7",
-    "gymnasium>=0.29",
-    "loguru>=0.7",
-    "pandas>=2.0",
-    "torchrl>=0.11",
-]
 trackmania = [
-    "gymnasium>=0.29",
     "libevdev>=0.13; sys_platform == 'linux'",
     "vgamepad>=0.1.0; sys_platform == 'win32' or sys_platform == 'linux'",
 ]
@@ -66,12 +58,6 @@ distributed = [
     "protobuf>=5.27",
     "safetensors>=0.4.5",
 ]
-explain = [
-    "captum>=0.7",
-]
-vision = [
-    "torchvision>=0.15",
-]
 mamba = [
     "causal-conv1d>=1.4; sys_platform == 'linux'",
     "mamba-ssm>=2.2; sys_platform == 'linux'",
@@ -79,19 +65,12 @@ mamba = [
 all = [
     "google-genai>=2.2.0",
     "optuna>=3.0",
-    "einops>=0.7",
-    "gymnasium>=0.29",
-    "loguru>=0.7",
-    "pandas>=2.0",
-    "torchrl>=0.11",
     "libevdev>=0.13; sys_platform == 'linux'",
     "vgamepad>=0.1.0; sys_platform == 'win32' or sys_platform == 'linux'",
     "wandb>=0.15.8",
     "grpcio>=1.66",
     "protobuf>=5.27",
     "safetensors>=0.4.5",
-    "captum>=0.7",
-    "torchvision>=0.15",
     "causal-conv1d>=1.4; sys_platform == 'linux'",
     "mamba-ssm>=2.2; sys_platform == 'linux'",
 ]
@@ -125,16 +104,10 @@ explicit = true
 
 [dependency-groups]
 dev = [
-    "einops>=0.7",
-    "gymnasium>=0.29",
-    "loguru>=0.7",
     "mypy>=1.8",
-    "pandas>=2.0",
     "poethepoet>=0.36",
-    "pyinstrument",
     "ruff>=0.4",
     "pytest>=7.0",
-    "torchrl>=0.11",
     "types-PyYAML",
     "grpcio>=1.66",
     "protobuf>=5.27",
@@ -142,6 +115,8 @@ dev = [
     "libevdev>=0.13; sys_platform == 'linux'",
     "vgamepad>=0.1.0; sys_platform == 'win32' or sys_platform == 'linux'",
     "wandb>=0.15.8",
+    "matplotlib>=3.10.8",
+    "plotly>=7.0.0",
 ]
 
 [project.scripts]
@@ -189,17 +164,26 @@ select = [
     "W",    # pycodestyle warnings
     "UP",   # pyupgrade
     "B",    # flake8-bugbear (common bug patterns)
+    "ANN",  # require annotations on every function signature
     "SIM",  # flake8-simplify (simplifiable constructs)
     "RUF",  # ruff-specific rules
     "C4",   # flake8-comprehensions (unnecessary list/dict/set calls)
     "PT",   # flake8-pytest-style (test files)
+    "TID",  # enforce absolute imports
+    "FBT001",  # reject boolean positional parameters
+    "FBT002",  # reject boolean default parameters
+    "PLR0913", # cap caller-visible arguments
 ]
 ignore = [
+    "ANN401",  # Any is required at dynamic plugin and PyTree boundaries
     "N999",  # allow PascalCase module names (e.g. trackmaniarl/custom/models/Sophy.py)
     "N812",  # allow F for torch.nn.functional (PyTorch convention)
 ]
 # RUF022 (__all__ sort) defaults to "unsafe"; allow it under `ruff check --fix` / `uv run poe fmt`.
 extend-safe-fixes = ["RUF022"]
+
+[tool.ruff.lint.pylint]
+max-args = 3
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -226,8 +210,6 @@ check_untyped_defs = true
 
 [[tool.mypy.overrides]]
 module = [
-    "captum",
-    "captum.*",
     "google",
     "google.*",
     "grpc",

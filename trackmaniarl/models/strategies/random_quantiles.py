@@ -14,6 +14,8 @@ from trackmaniarl.models.contracts import (
     ValueSupport,
 )
 from trackmaniarl.models.strategies._common import (
+    SupportSampling,
+    UniformSupportSpec,
     quantile_huber_loss,
     uniform_support,
     weighted_expectation,
@@ -47,12 +49,10 @@ class RandomQuantileStrategy(nn.Module):
             ValuePhase.TARGET: self.target_quantile_count,
             ValuePhase.EVALUATE: self.evaluation_quantile_count,
         }[phase]
-        return uniform_support(
-            features,
-            count,
-            random=phase is not ValuePhase.EVALUATE,
-            generator=generator,
+        sampling = (
+            SupportSampling.MIDPOINTS if phase is ValuePhase.EVALUATE else SupportSampling.RANDOM
         )
+        return uniform_support(features, UniformSupportSpec(count, sampling, generator))
 
     def expectation(
         self, values: torch.Tensor, support: ValueSupport, risk: RiskSpec

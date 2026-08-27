@@ -17,6 +17,7 @@ import grpc
 from google.protobuf.wrappers_pb2 import BytesValue
 
 from trackmaniarl.core.data import Transition
+from trackmaniarl.core.spec import RunSpec
 
 PROTOCOL_VERSION = "1"
 SERVICE = "trackmaniarl.Distributed"
@@ -55,13 +56,13 @@ def transition_from_wire(value: Mapping[str, Any]) -> Transition:
     return Transition(
         observation=value["observation"],
         action=value["action"],
-        reward=float(value["reward"]),
+        reward=value["reward"],
         next_observation=value["next_observation"],
-        terminated=bool(value["terminated"]),
-        truncated=bool(value["truncated"]),
+        terminated=value["terminated"],
+        truncated=value["truncated"],
         info=value["info"],
         episode_id=value["episode_id"],
-        step=int(value["step"]),
+        step=value["step"],
     )
 
 
@@ -96,54 +97,54 @@ def require_loopback_bind(bind: str) -> str:
     return bind
 
 
-def run_fingerprint(spec: Any, base_dir: Path) -> str:
-    config = spec.model_dump(mode="json")
-    config.pop("run_id", None)
-    config.pop("artifacts_dir", None)
-    components = config.get("components", {})
-    components.pop("logger", None)
-    components.pop("additional_loggers", None)
-    component_manifest: list[dict[str, Any]] = []
-    config["components"] = _semantic_component_tree(components, component_manifest)
-    config["component_manifest"] = sorted(
-        component_manifest,
-        key=lambda item: json.dumps(item, sort_keys=True, separators=(",", ":")),
-    )
-    if any(
-        str(item["resolved_symbol"]).partition(":")[0].startswith("trackmaniarl.trackmania")
-        for item in component_manifest
-    ):
+def run_fingerprint(spec: RunSpec, base_dir: Path) -> str:
+    config, manifest = _fingerprint_config(spec)
+    config["components"] = _semantic_component_tree(config["components"], manifest)
+    config["component_manifest"] = sorted(manifest, key=_canonical_sort_key)
+    if _uses_trackmania(manifest):
         config["builtin_contracts"] = _trackmania_contracts()
     config = _hash_geometry_paths(config, base_dir)
-    evaluation = config.get("evaluation")
-    maps = evaluation.get("maps", []) if isinstance(evaluation, dict) else []
-    for map_spec in maps:
-        map_spec.pop("map_path", None)
+    _remove_evaluation_map_paths(config)
     canonical = json.dumps(config, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode()).hexdigest()
 
 
+def _fingerprint_config(spec: RunSpec) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    config = spec.model_dump(mode="json")
+    config.pop("run_id")
+    config.pop("artifacts_dir")
+    components = config["components"]
+    components.pop("logger")
+    components.pop("additional_loggers")
+    config["components"] = components
+    return config, []
+
+
+def _canonical_sort_key(value: Any) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"))
+
+
+def _uses_trackmania(manifest: list[dict[str, Any]]) -> bool:
+    return any(
+        str(item["resolved_symbol"]).partition(":")[0].startswith("trackmaniarl.trackmania")
+        for item in manifest
+    )
+
+
+def _remove_evaluation_map_paths(config: dict[str, Any]) -> None:
+    evaluation = config["evaluation"]
+    if evaluation is None:
+        return
+    if not isinstance(evaluation, dict):
+        raise TypeError("evaluation fingerprint state must be a mapping")
+    maps = evaluation["maps"]
+    for map_spec in maps:
+        map_spec.pop("map_path")
+
+
 def _semantic_component_tree(value: Any, manifest: list[dict[str, Any]]) -> Any:
     if isinstance(value, dict):
-        class_path = value.get("class_path")
-        if isinstance(class_path, str):
-            symbol = _resolved_symbol(class_path)
-            provided = value.get("kwargs", {})
-            if not isinstance(provided, Mapping):
-                raise TypeError(f"Component {class_path!r} kwargs must be a mapping")
-            parameters = _semantic_parameters(symbol, provided)
-            parameters = _semantic_component_tree(parameters, manifest)
-            implementation = _component_implementation(symbol)
-            manifest.append(
-                {
-                    "class_path": class_path,
-                    "resolved_symbol": implementation["resolved_symbol"],
-                    "source_sha256": implementation["source_sha256"],
-                    "parameters": parameters,
-                }
-            )
-            return {"class_path": class_path, "kwargs": parameters}
-        return {str(key): _semantic_component_tree(item, manifest) for key, item in value.items()}
+        return _semantic_mapping(value, manifest)
     if isinstance(value, (list, tuple)):
         return [_semantic_component_tree(item, manifest) for item in value]
     if isinstance(value, Path):
@@ -151,10 +152,43 @@ def _semantic_component_tree(value: Any, manifest: list[dict[str, Any]]) -> Any:
     if isinstance(value, Enum):
         return _semantic_component_tree(value.value, manifest)
     if isinstance(value, (set, frozenset)):
-        normalized = [_semantic_component_tree(item, manifest) for item in value]
-        return sorted(normalized, key=lambda item: json.dumps(item, sort_keys=True, default=str))
+        return _semantic_set(value, manifest)
     if value is None or isinstance(value, (str, int, float, bool)):
         return value
+    return _semantic_object(value, manifest)
+
+
+def _semantic_mapping(value: dict[Any, Any], manifest: list[dict[str, Any]]) -> Any:
+    class_path = value.get("class_path")
+    if not isinstance(class_path, str):
+        return {str(key): _semantic_component_tree(item, manifest) for key, item in value.items()}
+    symbol = _resolved_symbol(class_path)
+    provided = value["kwargs"]
+    if not isinstance(provided, Mapping):
+        raise TypeError(f"Component {class_path!r} kwargs must be a mapping")
+    parameters = _semantic_component_tree(_semantic_parameters(symbol, provided), manifest)
+    implementation = _component_implementation(symbol)
+    manifest.append(_component_manifest_entry(class_path, implementation, parameters))
+    return {"class_path": class_path, "kwargs": parameters}
+
+
+def _component_manifest_entry(
+    class_path: str, implementation: Mapping[str, Any], parameters: Any
+) -> dict[str, Any]:
+    return {
+        "class_path": class_path,
+        "resolved_symbol": implementation["resolved_symbol"],
+        "source_sha256": implementation["source_sha256"],
+        "parameters": parameters,
+    }
+
+
+def _semantic_set(value: set[Any] | frozenset[Any], manifest: list[dict[str, Any]]) -> list[Any]:
+    normalized = [_semantic_component_tree(item, manifest) for item in value]
+    return sorted(normalized, key=lambda item: json.dumps(item, sort_keys=True, default=str))
+
+
+def _semantic_object(value: Any, manifest: list[dict[str, Any]]) -> Any:
     dump = getattr(value, "model_dump", None)
     if callable(dump):
         return _semantic_component_tree(dump(mode="json"), manifest)

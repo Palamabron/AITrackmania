@@ -50,7 +50,7 @@ components:
 
 Each learner consumes a `TrainingBatch` with explicit n-step bootstrap discounts,
 termination/truncation flags, PER weights and monotonic transition IDs. This lets
-a user replace one component at a time without an adapter to a legacy runtime.
+a user replace one component at a time without extra runtime adapters.
 
 Set `training.n_step`, `training.gamma`, `training.sequence_length`, and optional
 `training.beta` in `run.yaml`; the local trainer forwards these values in every
@@ -218,10 +218,11 @@ off-policy runtime:
 - resume requires schema 2.0, the exact architecture fingerprint, all online
   and target components, optimizers, objectives, counters, schedules and RNG;
 - warm-start loads only named submodules and always produces a match report;
-- name, shape and dtype match by default;
-- zero matches, ambiguity and missing required tensors are errors;
-- overlapping slices require explicit `shape_policy: overlap`;
-- IQN 1.x import is warm-start only, never a 2.0 resume.
+- only exact name, shape and dtype matches are copied;
+- zero matches and missing required tensors are errors;
+- prefix remapping and partial-shape copying are unsupported;
+- pre-2.0 checkpoints are rejected; warm-start accepts current compressed
+  checkpoints only.
 
 The local on-policy `Trainer` used by PPO persists a separate schema 1.0 state
 containing its learner, replay store, sampler and counters. Do not pass that

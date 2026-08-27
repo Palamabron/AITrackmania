@@ -135,7 +135,7 @@ not a sandbox for untrusted projects.
 
 ## Release checklist
 
-Run the quality gate, build both distributions and inspect their contents:
+Before creating a tag, run the local quality gate and inspect both distributions:
 
 ```bash
 uv run poe fmt
@@ -145,7 +145,72 @@ uv build
 uv run python scripts/check_distribution.py
 ```
 
-Then verify a clean installation of the wheel, the generated project, the
-Windows Trackmania smoke test and at least one checkpoint resume. Update the
-changelog for user-visible behavior and the security policy/audit when a trust
-boundary changes.
+The tag workflow repeats the source gate on Ubuntu and Windows. Ubuntu uses the
+lock file without an index override. On Windows, CI installs every locked
+dependency except the CUDA Torch wheel, then installs the exact CPU-only Torch
+version without changing the other locked packages; all later project commands
+disable automatic synchronization. It then builds exactly once on Ubuntu. The resulting
+wheel and source archive, `SHA256SUMS` and SPDX 2.3 JSON SBOM are uploaded
+together as the single `release-dist` artifact. Ubuntu and Windows download and
+verify that artifact, including its checksums, wheel CLI and generated-project
+resolution. Only after both verifiers pass does the final job attach and locally
+verify GitHub SLSA provenance and SBOM attestations, create and locally verify
+PEP 740 publish attestations, and publish the same wheel and source-archive
+bytes to PyPI. The publish job must not check out the repository or rebuild the
+package.
+
+All release actions are pinned to full commit SHAs, checkout credentials remain
+disabled and the publish job receives only read-only repository metadata plus
+the OIDC and attestation write permissions it needs. Update those pins and the
+concrete uv/Syft versions as an explicit, reviewed maintenance change.
+
+After release, independently download each PyPI distribution and verify both
+GitHub predicates and the PyPI-hosted publish attestation. Substitute the exact
+repository, release commit and distribution filename:
+
+```bash
+gh attestation verify "$ARTIFACT" --repo "$REPOSITORY" --signer-workflow "$REPOSITORY/.github/workflows/release.yml" --source-digest "$COMMIT"
+gh attestation verify "$ARTIFACT" --repo "$REPOSITORY" --signer-workflow "$REPOSITORY/.github/workflows/release.yml" --source-digest "$COMMIT" --predicate-type https://spdx.dev/Document/v2.3
+uvx --from pypi-attestations==0.0.30 pypi-attestations verify pypi --repository "https://github.com/$REPOSITORY" "pypi:<distribution-filename>"
+```
+
+### Four-hour Windows soak evidence
+
+Run this gate on a real Windows TrackMania host with the first-party
+`OpenPlanetEnvironmentFactory`, the signed plugin in School Mode and the map UID
+and geometry used by deterministic evaluation. Do not substitute fake actors or
+the bounded smoke test.
+
+1. Start a normal local run and keep the same code revision and `run_id` for the
+   whole soak. Wait for a `train/checkpoint_completed` event before stopping it
+   gracefully.
+2. Resume that exact run with `uv run trackmaniarl resume run.yaml
+   artifacts/<run-id>/checkpoints/<checkpoint>.pt`. Continue until a newer
+   checkpoint completes, then stop the learner and actor. The sum of `elapsed_s`
+   maxima across all process segments, excluding time between processes, must
+   be at least four hours.
+3. Run `uv run trackmaniarl benchmark run.yaml
+   artifacts/<run-id>/checkpoints/<newer-checkpoint>.pt`. The configured release
+   thresholds must pass and the resulting `evaluation.json` must contain no
+   trial with a `telemetry_error` or `controller_error`.
+4. Stop every TrackManiaRL process completely. Never run the verifier against
+   an active artifact directory, because it hashes evidence, benchmark and
+   checkpoint files.
+5. Run `uv run python scripts/verify_soak.py artifacts/<run-id>` and retain the
+   generated `artifacts/<run-id>/soak-report.json` with the release evidence.
+
+The verifier fails closed on malformed inputs and checks the immutable manifest,
+per-attempt Windows environment snapshots and complete JSONL event stream. Its
+report binds the run, process segments, accepted 64-character run fingerprint,
+stable actor IDs and fresh session IDs;
+adds the observed runtime; proves the resumed policy version against a completed
+checkpoint; records monotonic transition and WAL checkpoint frontiers; hashes
+the resume and post-resume checkpoint artifacts; binds the final benchmark and
+its artifact hash to the post-resume checkpoint SHA-256; checks every benchmark
+trial for controller/telemetry errors; and requires no runtime, transport,
+telemetry or checkpoint failure events. It never loads checkpoint contents or
+starts, stops or connects to TrackMania.
+
+Finally, verify a clean wheel installation and update the changelog for
+user-visible behavior and the security policy/audit when a trust boundary
+changes.

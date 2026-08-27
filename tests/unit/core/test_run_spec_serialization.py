@@ -3,11 +3,66 @@
 from __future__ import annotations
 
 import warnings
+from dataclasses import dataclass
+from pathlib import Path
 
 import pytest
 from pydantic import BaseModel, ValidationError
 
 from trackmaniarl.core.spec import DistributedSpec, EvaluationSuiteSpec, RunSpec, TrainingSpec
+
+
+@dataclass(frozen=True, slots=True)
+class _EvaluationStopCase:
+    training: dict[str, object]
+    components: dict[str, object]
+    evaluation: dict[str, object] | None
+    message: str
+
+
+_NON_FINITE_CASES: tuple[tuple[type[BaseModel], dict[str, object]], ...] = (
+    (TrainingSpec, {"updates_per_transition": float("inf")}),
+    (DistributedSpec, {"heartbeat_s": float("inf")}),
+    (
+        EvaluationSuiteSpec,
+        {"name": "suite", "version": "1", "time_buckets_s": [1.0, float("inf")]},
+    ),
+)
+
+_EVALUATION_STOP_CASES = (
+    _EvaluationStopCase(
+        {
+            "evaluation_stop_min_finish_rate": 0.9,
+            "evaluation_stop_median_s": 40.0,
+            "evaluation_stop_consecutive_batches": 2,
+        },
+        {},
+        None,
+        "evaluate_every_episodes",
+    ),
+    _EvaluationStopCase(
+        {
+            "evaluate_every_episodes": 1,
+            "evaluation_stop_min_finish_rate": 0.9,
+            "evaluation_stop_median_s": 40.0,
+            "evaluation_stop_consecutive_batches": 2,
+        },
+        {},
+        None,
+        "components.evaluator",
+    ),
+    _EvaluationStopCase(
+        {
+            "evaluate_every_episodes": 1,
+            "evaluation_stop_min_finish_rate": 0.9,
+            "evaluation_stop_median_s": 40.0,
+            "evaluation_stop_consecutive_batches": 2,
+        },
+        {"evaluator": {"class_path": "trackmaniarl.trackmania.evaluation:TrackmaniaEvaluator"}},
+        None,
+        "evaluation suite",
+    ),
+)
 
 
 def _run_payload() -> dict[str, object]:
@@ -24,7 +79,7 @@ def _run_payload() -> dict[str, object]:
     }
 
 
-def test_run_spec_is_frozen_and_round_trips_through_yaml(tmp_path) -> None:
+def test_run_spec_is_frozen_and_round_trips_through_yaml(tmp_path: Path) -> None:
     spec = RunSpec.model_validate({"api_version": "2.0", **_run_payload()})
     path = tmp_path / "run.yaml"
     path.write_text(spec.to_yaml(), encoding="utf-8")
@@ -65,73 +120,17 @@ def test_actor_execution_override_is_explicit_and_structured() -> None:
     assert distributed.actor_execution.torch_threads == 2
 
 
-@pytest.mark.parametrize(
-    ("model", "payload"),
-    [
-        (TrainingSpec, {"updates_per_transition": float("inf")}),
-        (DistributedSpec, {"heartbeat_s": float("inf")}),
-        (
-            EvaluationSuiteSpec,
-            {"name": "suite", "version": "1", "time_buckets_s": [1.0, float("inf")]},
-        ),
-    ],
-)
-def test_public_numeric_specs_reject_non_finite_values(
-    model: type[BaseModel], payload: dict[str, object]
-) -> None:
-    with pytest.raises(ValidationError, match="finite"):
-        model.model_validate(payload)
+def test_public_numeric_specs_reject_non_finite_values() -> None:
+    for model, payload in _NON_FINITE_CASES:
+        with pytest.raises(ValidationError, match="finite"):
+            model.model_validate(payload)
 
 
-@pytest.mark.parametrize(
-    ("training", "components", "evaluation", "message"),
-    [
-        (
-            {
-                "evaluation_stop_min_finish_rate": 0.9,
-                "evaluation_stop_median_s": 40.0,
-                "evaluation_stop_consecutive_batches": 2,
-            },
-            {},
-            None,
-            "evaluate_every_episodes",
-        ),
-        (
-            {
-                "evaluate_every_episodes": 1,
-                "evaluation_stop_min_finish_rate": 0.9,
-                "evaluation_stop_median_s": 40.0,
-                "evaluation_stop_consecutive_batches": 2,
-            },
-            {},
-            None,
-            "components.evaluator",
-        ),
-        (
-            {
-                "evaluate_every_episodes": 1,
-                "evaluation_stop_min_finish_rate": 0.9,
-                "evaluation_stop_median_s": 40.0,
-                "evaluation_stop_consecutive_batches": 2,
-            },
-            {"evaluator": {"class_path": "trackmaniarl.core.builtins:NullEvaluator"}},
-            None,
-            "evaluation suite",
-        ),
-    ],
-)
-def test_evaluation_stop_requires_an_active_evaluation_path(
-    training: dict[str, object],
-    components: dict[str, object],
-    evaluation: dict[str, object] | None,
-    message: str,
-) -> None:
-    payload = {"api_version": "2.0", **_run_payload(), "training": training}
-    component_payload = payload["components"]
-    assert isinstance(component_payload, dict)
-    payload["components"] = {**component_payload, **components}
-    if evaluation is not None:
-        payload["evaluation"] = evaluation
-
-    with pytest.raises(ValidationError, match=message):
-        RunSpec.model_validate(payload)
+def test_evaluation_stop_requires_an_active_evaluation_path() -> None:
+    for case in _EVALUATION_STOP_CASES:
+        payload = {"api_version": "2.0", **_run_payload(), "training": case.training}
+        components = payload["components"]
+        assert isinstance(components, dict)
+        payload["components"] = {**components, **case.components}
+        with pytest.raises(ValidationError, match=case.message):
+            RunSpec.model_validate(payload)

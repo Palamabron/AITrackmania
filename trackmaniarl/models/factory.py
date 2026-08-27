@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import importlib
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, TypedDict, Unpack
 
 from torch import nn
 
 from trackmaniarl.core.contracts import ModelContract
 from trackmaniarl.core.spec import ComponentSpec
-from trackmaniarl.models.composite import CompositeValueModel
+from trackmaniarl.models.composite import CompositeModules, CompositeValueModel
 
 
 def _component(value: ComponentSpec | Mapping[str, Any]) -> nn.Module:
@@ -22,25 +22,28 @@ def _component(value: ComponentSpec | Mapping[str, Any]) -> nn.Module:
     return component
 
 
+class _FactoryKwargs(TypedDict):
+    encoder: ComponentSpec | Mapping[str, Any]
+    temporal: ComponentSpec | Mapping[str, Any]
+    head: ComponentSpec | Mapping[str, Any]
+    strategy: ComponentSpec | Mapping[str, Any]
+
+
 class CompositeValueModelFactory:
     model_contract = ModelContract.DISCRETE_VALUE
 
-    def __init__(
-        self,
-        encoder: ComponentSpec | Mapping[str, Any],
-        temporal: ComponentSpec | Mapping[str, Any],
-        head: ComponentSpec | Mapping[str, Any],
-        strategy: ComponentSpec | Mapping[str, Any],
-    ) -> None:
-        self.encoder = ComponentSpec.model_validate(encoder)
-        self.temporal = ComponentSpec.model_validate(temporal)
-        self.head = ComponentSpec.model_validate(head)
-        self.strategy = ComponentSpec.model_validate(strategy)
+    def __init__(self, **kwargs: Unpack[_FactoryKwargs]) -> None:
+        self.encoder = ComponentSpec.model_validate(kwargs["encoder"])
+        self.temporal = ComponentSpec.model_validate(kwargs["temporal"])
+        self.head = ComponentSpec.model_validate(kwargs["head"])
+        self.strategy = ComponentSpec.model_validate(kwargs["strategy"])
 
     def build(self) -> CompositeValueModel:
         return CompositeValueModel(
-            _component(self.encoder),
-            _component(self.temporal),
-            _component(self.head),
-            _component(self.strategy),
+            CompositeModules(
+                _component(self.encoder),
+                _component(self.temporal),
+                _component(self.head),
+                _component(self.strategy),
+            )
         )

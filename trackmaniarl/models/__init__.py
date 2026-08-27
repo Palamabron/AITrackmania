@@ -1,6 +1,11 @@
 """Composable TrackmaniaRL neural-network building blocks."""
 
-from trackmaniarl.models.actors import CategoricalActor, GaussianActor, PpoGaussianActor
+from trackmaniarl.models.actors import (
+    CategoricalActor,
+    GaussianActor,
+    GaussianActorConfig,
+    PpoGaussianActor,
+)
 from trackmaniarl.models.backbones import (
     HypersphericalLinear,
     SimbaV2Backbone,
@@ -11,8 +16,8 @@ from trackmaniarl.models.composite import CompositeValueModel, FrameBatchAdapter
 from trackmaniarl.models.critics import (
     ContinuousQCritic,
     ContinuousValueCritic,
-    DiscreteQuantileNetwork,
     QuantileCritic,
+    QuantileCriticConfig,
 )
 from trackmaniarl.models.encoders import (
     ObservationEncoder,
@@ -27,13 +32,14 @@ __all__ = [
     "CompositeValueModelFactory",
     "ContinuousQCritic",
     "ContinuousValueCritic",
-    "DiscreteQuantileNetwork",
     "FrameBatchAdapter",
     "GaussianActor",
+    "GaussianActorConfig",
     "HypersphericalLinear",
     "ObservationEncoder",
     "PpoGaussianActor",
     "QuantileCritic",
+    "QuantileCriticConfig",
     "SimbaV2Backbone",
     "SimbaV2Block",
     "TemporalMambaTrackGeometryEncoder",

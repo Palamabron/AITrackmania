@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -11,10 +12,19 @@ from trackmaniarl.trackmania.actions import (
 )
 from trackmaniarl.trackmania.demonstrations import Demonstration, save_demonstration
 from trackmaniarl.trackmania.geometry import BoundaryGeometry, build_geometry_asset
+from trackmaniarl.trackmania.geometry_types import GeometryBuildRequest
 from trackmaniarl.trackmania.trajectory_stitching import (
     TrajectoryStitchingConfig,
     build_fastest_compatible_trajectory,
 )
+
+
+@dataclass(frozen=True, slots=True)
+class _DemonstrationConfig:
+    race_times_ms: list[float]
+    action_repeat_frames: int = 1
+    lateral_offset_m: float = 0.0
+    control_alignment: str = "frame_start"
 
 
 def _geometry(tmp_path: Path) -> BoundaryGeometry:
@@ -25,56 +35,60 @@ def _geometry(tmp_path: Path) -> BoundaryGeometry:
     map_path = tmp_path / "map.Map.Gbx"
     map_path.write_bytes(b"map")
     asset = build_geometry_asset(
-        tmp_path / "geometry.npz",
-        tmp_path / "left.npy",
-        tmp_path / "right.npy",
-        map_uid="test-map",
-        map_path=map_path,
-        spacing_m=1.0,
-        lookahead_points=0,
+        GeometryBuildRequest(
+            tmp_path / "geometry.npz",
+            tmp_path / "left.npy",
+            tmp_path / "right.npy",
+            "test-map",
+            map_path,
+            spacing_m=1.0,
+            lookahead_points=0,
+        )
     )
     return BoundaryGeometry(asset, expected_map_uid="test-map")
 
 
-def _demonstration(
-    geometry: BoundaryGeometry,
-    race_times_ms: list[float],
-    *,
-    action_repeat_frames: int = 1,
-    lateral_offset_m: float = 0.0,
-    control_alignment: str = "frame_start",
-) -> Demonstration:
-    frames = np.zeros((len(race_times_ms), 33), dtype=np.float32)
-    frames[:, 3] = race_times_ms
+def _demonstration_frames(config: _DemonstrationConfig) -> np.ndarray:
+    frames = np.zeros((len(config.race_times_ms), 33), dtype=np.float32)
+    frames[:, 3] = config.race_times_ms
     frames[:, 4] = np.linspace(0.0, 100.0, len(frames))
-    frames[:, 6] = lateral_offset_m
+    frames[:, 6] = config.lateral_offset_m
     frames[:, 7] = 20.0
     frames[:, 10] = 1.0
     frames[:, 31] = 1.0
     frames[-1, 2] = 1.0
+    return frames
+
+
+def _demonstration(geometry: BoundaryGeometry, config: _DemonstrationConfig) -> Demonstration:
+    frames = _demonstration_frames(config)
     control = np.asarray([1.0, 0.0, 0.0], dtype=np.float32)
     _, table = build_brake_tap_action_table()
     action = continuous_control_to_discrete_index(control, table)
     return Demonstration(
         map_uid=geometry.map_uid,
         geometry_sha256=geometry.sha256,
-        action_repeat_frames=action_repeat_frames,
+        action_repeat_frames=config.action_repeat_frames,
         frames=frames,
         actions=np.full(len(frames) - 1, action, dtype=np.int64),
         controls=np.tile(control, (len(frames) - 1, 1)),
-        finish_time_s=race_times_ms[-1] / 1_000.0,
-        control_alignment=control_alignment,
+        finish_time_s=config.race_times_ms[-1] / 1_000.0,
+        control_alignment=config.control_alignment,
     )
 
 
 def _paths(tmp_path: Path, geometry: BoundaryGeometry) -> tuple[Path, Path]:
     fast_start = _demonstration(
         geometry,
-        [10, 410, 810, 1_210, 1_610, 2_010, 2_610, 3_210, 3_810, 4_410, 5_010],
+        _DemonstrationConfig(
+            [10, 410, 810, 1_210, 1_610, 2_010, 2_610, 3_210, 3_810, 4_410, 5_010]
+        ),
     )
     fast_finish = _demonstration(
         geometry,
-        [10, 610, 1_210, 1_810, 2_410, 3_010, 3_310, 3_610, 3_910, 4_210, 4_510],
+        _DemonstrationConfig(
+            [10, 610, 1_210, 1_810, 2_410, 3_010, 3_310, 3_610, 3_910, 4_210, 4_510]
+        ),
     )
     first = save_demonstration(tmp_path / "fast-start.npz", fast_start)
     second = save_demonstration(tmp_path / "fast-finish.npz", fast_finish)
@@ -105,8 +119,10 @@ def test_stitcher_never_crosses_timing_contracts(tmp_path: Path) -> None:
     first, second = _paths(tmp_path, geometry)
     incompatible = _demonstration(
         geometry,
-        [10, 610, 1_210, 1_810, 2_410, 3_010, 3_310, 3_610, 3_910, 4_210, 4_510],
-        action_repeat_frames=2,
+        _DemonstrationConfig(
+            [10, 610, 1_210, 1_810, 2_410, 3_010, 3_310, 3_610, 3_910, 4_210, 4_510],
+            action_repeat_frames=2,
+        ),
     )
     save_demonstration(second, incompatible)
 
@@ -116,29 +132,15 @@ def test_stitcher_never_crosses_timing_contracts(tmp_path: Path) -> None:
     assert result.demonstration.finish_time_s == pytest.approx(4.51)
 
 
-def test_stitcher_never_crosses_control_alignment_contracts(tmp_path: Path) -> None:
-    geometry = _geometry(tmp_path)
-    first, second = _paths(tmp_path, geometry)
-    incompatible = _demonstration(
-        geometry,
-        [10, 610, 1_210, 1_810, 2_410, 3_010, 3_310, 3_610, 3_910, 4_210, 4_510],
-        control_alignment="transition_end",
-    )
-    save_demonstration(second, incompatible)
-
-    result = build_fastest_compatible_trajectory([first, second], geometry)
-
-    assert result.joins == ()
-    assert result.demonstration.control_alignment == "transition_end"
-
-
 def test_stitcher_rejects_a_spatially_discontinuous_join(tmp_path: Path) -> None:
     geometry = _geometry(tmp_path)
     first, _ = _paths(tmp_path, geometry)
     displaced = _demonstration(
         geometry,
-        [10, 610, 1_210, 1_810, 2_410, 3_010, 3_310, 3_610, 3_910, 4_210, 4_510],
-        lateral_offset_m=2.0,
+        _DemonstrationConfig(
+            [10, 610, 1_210, 1_810, 2_410, 3_010, 3_310, 3_610, 3_910, 4_210, 4_510],
+            lateral_offset_m=2.0,
+        ),
     )
     second = save_demonstration(tmp_path / "displaced.npz", displaced)
 

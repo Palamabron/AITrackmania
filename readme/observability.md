@@ -73,6 +73,9 @@ payload, including per-progress-bin diagnostics, remains in local JSONL.
 | `evaluation/projected_velocity_ratio_mean` | ratio per batch | Detect systematic under-speed or an invalid pace reference. |
 | `evaluation/q_margin_start_mean` | value units per batch | Track confidence at the common start state; a scale jump without outcome gain can indicate value drift. |
 | `evaluation/policy_version` | update index per batch | Binds results to the exact evaluated snapshot. |
+| `evaluation/action_latency_ms` | milliseconds per policy step | Measures only `policy.act`; it is not physical controller-to-engine latency. |
+| `evaluation/controller_apply_ms`, `evaluation/telemetry_wait_ms` | milliseconds per step | Splits the local controller backend call from the subsequent wait for an accepted telemetry frame. Neither is an engine acknowledgement. |
+| `evaluation/telemetry_skipped_frames_total`, `evaluation/telemetry_skipped_frames_mean`, `evaluation/telemetry_skipped_frames_max`, `evaluation/telemetry_steps_with_skipped_frames_fraction` | frames and fraction per batch | Quantifies complete OpenPlanet frames discarded by latest-frame draining; trailing packet fragments are not counted. |
 | `episode/return` | reward per episode | Training signal only; compare with evaluation rather than optimizing the chart in isolation. |
 | `episode/progress_pct`, `episode/progress_m` | percent and metres per episode | Shows whether failures move farther along the track. |
 | `episode/duration_s`, `episode/race_time_s`, `episode/finish_time_s` | seconds per episode | Diagnose stalls and pace. `finish_time_s` is meaningful only when `episode/finished=1`. |
@@ -83,7 +86,13 @@ payload, including per-progress-bin diagnostics, remains in local JSONL.
 | `episode/q_margin_mean`, `episode/q_margin_min`, `episode/q_margin_start_mean` | value units per episode | Detect ambiguous action choice and collapsing value separation. |
 | `episode/velocity_ratio_mean` | ratio per episode | Compares projected velocity with the configured reference. |
 | `episode/timing_policy_inference_ms_mean`, `episode/timing_policy_inference_ms_max` | milliseconds per episode | Actor latency; sustained maxima near the environment tick budget make collection actor-bound. |
+| `episode/controller_apply_ms_mean`, `episode/controller_apply_ms_max`, `episode/telemetry_wait_ms_mean`, `episode/telemetry_wait_ms_max` | milliseconds per episode | Separates time inside the controller backend from time waiting for the accepted telemetry frame. |
+| `episode/telemetry_skipped_frames_total`, `episode/telemetry_skipped_frames_mean`, `episode/telemetry_skipped_frames_max`, `episode/telemetry_steps_with_skipped_frames_fraction` | frames and fraction per episode | Detects producer/consumer cadence mismatch without treating a partial network packet as a dropped frame. |
 | `episode/telemetry_error` | count/fraction per episode | Non-zero means integration health must be fixed before evaluating policy quality. |
+
+A true apply-to-engine measurement would require a new signed OpenPlanet
+protocol carrying command sequence IDs, timestamps and an acknowledgement.
+Current timing metrics deliberately make no such claim.
 
 ### Learner and replay
 
@@ -93,7 +102,7 @@ payload, including per-progress-bin diagnostics, remains in local JSONL.
 | `learner/gradients_norm`, `learner/gradient_norm`, `learner/gradient_norm_max` | L2 norm per window | Detect explosions or vanishing gradients relative to the run's own baseline. |
 | `learner/gradients_fraction_norm` | L2 norm per FQF window | Confirms the fraction proposal network receives an isolated gradient. |
 | `learner/gradients_adaptive_ema_norm`, `learner/gradients_adaptive_coefficient`, `learner/gradients_adaptive_clipped` | norm, multiplier and 0/1 per window | Shows AdaptiveGradientClipper state; persistent clipping near 1 needs learning-rate or objective inspection. |
-| `learner/gradient_clipped_fraction`, `learner/gradient_clip_coefficient` | fraction and multiplier per window | Quantifies fixed or legacy clipping rather than merely reporting a threshold. |
+| `learner/gradient_clipped_fraction`, `learner/gradient_clip_coefficient` | fraction and multiplier per window | Quantifies fixed clipping rather than merely reporting a threshold. |
 | `learner/td_abs_mean`, `learner/td_abs_max` | value units per window | Drives PER and exposes isolated extreme targets. |
 | `learner/q_selected_mean`, `learner/q_selected_max`, `learner/q_selected_abs_max`, `learner/q_selected_std_mean` | value units per window | Detects value-scale drift and loss of distributional spread. |
 | `learner/target_mean`, `learner/target_abs_max`, `learner/target_std_mean` | value units per window | Separates target instability from online-network instability. |
@@ -121,6 +130,7 @@ payload, including per-progress-bin diagnostics, remains in local JSONL.
 | `health/active_actors`, `health/spool_bytes` | count and bytes per window | No active actor or monotonically growing spool is a collection/transport incident. |
 | `health/actor_timeouts`, `health/max_heartbeat_age_s` | cumulative count and seconds per incident | Compare age with `heartbeat_s` and `actor_timeout_s`. |
 | `health/rollouts_rejected`, `health/wal_errors`, `health/wal_recoveries` | cumulative counts per incident | Any increase requires reason-coded local-event inspection before trusting the run. |
+| `health/wal_pending_rows`, `health/wal_pending_payload_bytes`, `health/wal_receipt_rows`, `health/wal_database_bytes`, `health/wal_bytes` | rows and bytes per metrics window | Shows unconsumed rollout pressure, durable idempotency receipts, the SQLite database size and its separate `-wal` file size. Size is observed rather than capped. |
 | `health/checkpoints_queued`, `health/checkpoints_completed`, `health/checkpoint_failures` | cumulative counts per event | A queued checkpoint without completion is not a durable recovery point. |
 | `health/tracker_dropped_events`, `health/tracker_worker_errors` | cumulative counts per window | Non-zero means W&B is incomplete; local JSONL remains authoritative. |
 | `health/run_failures` | cumulative count per incident | Marks the W&B attempt failed and closes it with non-zero exit status. |

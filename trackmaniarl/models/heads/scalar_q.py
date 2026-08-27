@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from enum import StrEnum
 from typing import cast
 
 import torch
@@ -10,17 +11,27 @@ from torch import nn
 from trackmaniarl.models.contracts import ValueRepresentation, ValueSupport
 
 
+class ScalarQMode(StrEnum):
+    STANDARD = "standard"
+    DUELING = "dueling"
+
+
 class ScalarQHead(nn.Module):
     representation = ValueRepresentation.SCALAR
 
-    def __init__(self, feature_dim: int, action_count: int, *, dueling: bool = False) -> None:
+    def __init__(
+        self,
+        feature_dim: int,
+        action_count: int,
+        mode: ScalarQMode = ScalarQMode.STANDARD,
+    ) -> None:
         super().__init__()
         if feature_dim < 1 or action_count < 1:
             raise ValueError("head dimensions must be positive")
         self.feature_dim = feature_dim
         self.action_count = action_count
         self.advantage = nn.Linear(feature_dim, action_count)
-        self.value = nn.Linear(feature_dim, 1) if dueling else None
+        self.value = nn.Linear(feature_dim, 1) if mode is ScalarQMode.DUELING else None
 
     def evaluate_all(self, features: torch.Tensor, support: ValueSupport) -> torch.Tensor:
         del support

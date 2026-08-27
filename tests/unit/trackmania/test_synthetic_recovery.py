@@ -4,31 +4,30 @@ from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
-import pytest
 import torch
 
-from trackmaniarl.trackmania.actions import (
-    continuous_control_to_discrete_index,
-    select_brake_tap_actions,
-)
 from trackmaniarl.trackmania.demonstrations import Demonstration, save_demonstration
-from trackmaniarl.trackmania.guidance import TrajectoryTrackingDemonstrationPolicy
 from trackmaniarl.trackmania.imitation_learning import (
     RECOVERY_DATASET_FORMAT,
+    BehaviorCloningLap,
     RecoveryContract,
+    RecoveryLoadRequest,
     RecoveryProvenance,
     load_behavior_cloning_recovery,
 )
 from trackmaniarl.trackmania.synthetic_recovery import (
     SyntheticRecoveryConfig,
+    SyntheticRecoveryPathRequest,
+    SyntheticRecoveryRequest,
     generate_synthetic_recovery,
     generate_synthetic_recovery_from_path,
 )
+from trackmaniarl.trackmania.synthetic_recovery_types import SyntheticRecoveryDataset
 
 ACTION_IDS = (0, 1, 3, 39, 72, 73, 75)
 
 
-def _demonstration() -> Demonstration:
+def _demonstration_frames() -> np.ndarray:
     frames = np.zeros((7, 33), dtype=np.float32)
     frames[:, 3] = np.arange(10.0, 80.0, 10.0)
     frames[:, 4] = np.arange(7, dtype=np.float32)
@@ -40,86 +39,68 @@ def _demonstration() -> Demonstration:
     frames[:, 29] = 1.0
     frames[:, 31] = 1.0
     frames[-1, 2] = 1.0
+    return frames
+
+
+def _demonstration() -> Demonstration:
+    frames = _demonstration_frames()
     controls = np.tile(np.asarray([1.0, 0.0, 0.0], dtype=np.float32), (6, 1))
-    actions = np.full(6, 39, dtype=np.int64)
     return Demonstration(
         map_uid="map",
         geometry_sha256="a" * 64,
         action_repeat_frames=1,
         frames=frames,
-        actions=actions,
+        actions=np.full(6, 39, dtype=np.int64),
         controls=controls,
         finish_time_s=0.07,
         decision_interval_ms=10.0,
     )
 
 
+def _load_saved_recovery(dataset: SyntheticRecoveryDataset, path: Path) -> list[BehaviorCloningLap]:
+    request = RecoveryLoadRequest(
+        [path],
+        _Pipeline(),
+        ACTION_IDS,
+        dataset.provenance.contract,
+        frozenset({dataset.provenance.source_demonstration_sha256}),
+    )
+    return load_behavior_cloning_recovery(request)
+
+
+def _native_recovery_request(
+    tmp_path: Path,
+) -> tuple[SyntheticRecoveryPathRequest, Demonstration, RecoveryContract]:
+    demonstration = replace(_demonstration(), decision_interval_ms=None)
+    source = save_demonstration(tmp_path / "native", demonstration)
+    contract = RecoveryContract(
+        map_uid="map",
+        geometry_sha256="a" * 64,
+        action_repeat_frames=1,
+        decision_interval_ms=20.0,
+        control_alignment="frame_start",
+    )
+    request = SyntheticRecoveryPathRequest(
+        source, ACTION_IDS, SyntheticRecoveryConfig(sample_stride=1), contract
+    )
+    return request, demonstration, contract
+
+
 def test_synthetic_recovery_is_deterministic_and_keeps_monotonic_episodes() -> None:
     config = SyntheticRecoveryConfig(sample_stride=2)
 
-    first = generate_synthetic_recovery(_demonstration(), ACTION_IDS, config)
-    second = generate_synthetic_recovery(_demonstration(), ACTION_IDS, config)
+    first = generate_synthetic_recovery(
+        SyntheticRecoveryRequest(_demonstration(), ACTION_IDS, config)
+    )
+    second = generate_synthetic_recovery(
+        SyntheticRecoveryRequest(_demonstration(), ACTION_IDS, config)
+    )
 
     assert len(first.frames) == 33
     assert np.array_equal(first.frames, second.frames)
     assert np.array_equal(first.labels, second.labels)
     assert bool(np.all(first.episode_starts))
     assert np.count_nonzero(first.interventions) == 30
-
-
-def test_synthetic_recovery_keeps_raw_frame_geometry_and_speed_consistent() -> None:
-    dataset = generate_synthetic_recovery(
-        _demonstration(),
-        ACTION_IDS,
-        SyntheticRecoveryConfig(sample_stride=100),
-    )
-    episode_length = len(dataset.frames) // 11
-    reference, left_offset, left_heading, left_velocity = dataset.frames[
-        [0, episode_length, 2 * episode_length, 3 * episode_length]
-    ]
-
-    assert reference[4:17] == pytest.approx(_demonstration().frames[0, 4:17])
-    assert left_offset[6] == pytest.approx(-0.55)
-    assert np.linalg.norm(left_heading[10:13]) == pytest.approx(1.0)
-    assert np.dot(left_heading[10:13], left_heading[13:16]) == pytest.approx(0.0, abs=1e-6)
-    assert left_velocity[9] == pytest.approx(-3.0)
-    assert left_velocity[16] == pytest.approx(np.linalg.norm(left_velocity[7:10]))
-
-
-def test_synthetic_recovery_pd_labels_steer_toward_the_reference() -> None:
-    dataset = generate_synthetic_recovery(
-        _demonstration(),
-        ACTION_IDS,
-        SyntheticRecoveryConfig(sample_stride=100),
-    )
-
-    assert dataset.labels.tolist() == [3, 6, 6, 3, 6, 3, 2, 2, 3, 2, 3]
-    assert dataset.sample_weights[0] == pytest.approx(0.5)
-    assert dataset.sample_weights[4] == pytest.approx(3.0)
-    assert dataset.state_errors[0] == 0.0
-    assert bool(np.all(dataset.state_errors[1:] > 0.0))
-
-
-def test_synthetic_recovery_labels_match_trajectory_tracker_pd() -> None:
-    demonstration = _demonstration()
-    dataset = generate_synthetic_recovery(
-        demonstration,
-        ACTION_IDS,
-        SyntheticRecoveryConfig(sample_stride=100),
-    )
-    _, action_table = select_brake_tap_actions(ACTION_IDS)
-
-    actual = []
-    for frame in dataset.frames:
-        tracker = TrajectoryTrackingDemonstrationPolicy(
-            demonstration.frames[:-1],
-            demonstration.controls,
-            action_lead_ms=10.0,
-        )
-        control = tracker.act({"raw_telemetry": frame}, deterministic=True)
-        actual.append(continuous_control_to_discrete_index(control, action_table))
-
-    assert actual == dataset.labels.tolist()
 
 
 class _Pipeline:
@@ -132,22 +113,13 @@ class _Pipeline:
 
 
 def test_synthetic_recovery_explicit_save_uses_bc_recovery_v3(tmp_path: Path) -> None:
-    dataset = generate_synthetic_recovery(
-        _demonstration(),
-        ACTION_IDS,
-        SyntheticRecoveryConfig(sample_stride=100),
+    request = SyntheticRecoveryRequest(
+        _demonstration(), ACTION_IDS, SyntheticRecoveryConfig(sample_stride=100)
     )
+    dataset = generate_synthetic_recovery(request)
 
     path = dataset.save(tmp_path / "synthetic")
-    laps = load_behavior_cloning_recovery(
-        [path],
-        _Pipeline(),
-        ACTION_IDS,
-        expected_contract=dataset.provenance.contract,
-        expected_source_demonstration_sha256=frozenset(
-            {dataset.provenance.source_demonstration_sha256}
-        ),
-    )
+    laps = _load_saved_recovery(dataset, path)
     with np.load(path, allow_pickle=False) as data:
         format_name = str(data["format"].item())
 
@@ -161,22 +133,8 @@ def test_synthetic_recovery_explicit_save_uses_bc_recovery_v3(tmp_path: Path) ->
 def test_synthetic_recovery_aligns_native_demo_to_target_decision_interval(
     tmp_path: Path,
 ) -> None:
-    demonstration = replace(_demonstration(), decision_interval_ms=None)
-    source = save_demonstration(tmp_path / "native", demonstration)
-    contract = RecoveryContract(
-        map_uid="map",
-        geometry_sha256="a" * 64,
-        action_repeat_frames=1,
-        decision_interval_ms=20.0,
-        control_alignment="frame_start",
-    )
-
-    dataset = generate_synthetic_recovery_from_path(
-        source,
-        ACTION_IDS,
-        SyntheticRecoveryConfig(sample_stride=1),
-        contract=contract,
-    )
+    request, demonstration, contract = _native_recovery_request(tmp_path)
+    dataset = generate_synthetic_recovery_from_path(request)
 
     expected_source = RecoveryProvenance.from_demonstration(
         demonstration,

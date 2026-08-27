@@ -1,31 +1,29 @@
-"""Single-process trainer for local on-policy and off-policy runs.
-
-Workers and remote servers can use the same contracts later; this trainer owns
-the local lifecycle so a project can train and debug without hidden processes.
-"""
+"""Single-process trainer for local on-policy and off-policy runs."""
 
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from trackmaniarl.core.collector import EpisodeCollector, FixedStepRolloutCollector
-from trackmaniarl.core.data import BatchRequest, PriorityUpdate
-from trackmaniarl.core.runtime import ResolvedRun, prepare_run
-from trackmaniarl.observability.artifacts import AsyncEpisodeWriter
+from trackmaniarl.core.data import PriorityUpdate
+from trackmaniarl.core.runtime import ResolvedRun
+from trackmaniarl.core.training_loop import run_training
+from trackmaniarl.core.training_support import (
+    TrainingCounters,
+    _load_state_dict,
+    _state_dict,
+)
+from trackmaniarl.core.training_support import (
+    TrainingResult as TrainingResult,
+)
+from trackmaniarl.core.training_support import episode_metrics as _extract_episode_metrics
 
-
-@dataclass(frozen=True, slots=True)
-class TrainingResult:
-    """Counters returned by a completed bounded training run."""
-
-    episodes: int
-    transitions: int
-    updates: int
-    checkpoints: tuple[Path, ...]
-    evaluation: Mapping[str, float] | None
+_CHECKPOINT_SCHEMA_VERSION = "1.0"
+_CHECKPOINT_KEYS = frozenset({"schema_version", "learner", "replay_store", "sampler", "counters"})
+_COUNTER_KEYS = frozenset(
+    {"transitions", "updates", "episodes", "fractional_updates", "next_episode_index"}
+)
 
 
 class Trainer:
@@ -38,262 +36,24 @@ class Trainer:
         self.environment_factory = run.environment_factory
         self.resume_checkpoint = Path(resume_checkpoint) if resume_checkpoint is not None else None
         self.on_policy = bool(getattr(run.learner, "on_policy", False))
-        if self.on_policy and not getattr(run.sampler, "on_policy_rollouts", False):
+        self._validate_on_policy_run()
+
+    def _validate_on_policy_run(self) -> None:
+        if self.on_policy and not getattr(self.run.sampler, "on_policy_rollouts", False):
             raise ValueError("On-policy learners require OnPolicySequenceSampler")
-        if (
-            self.on_policy
-            and run.spec.training.total_transitions % run.spec.training.sequence_length
-        ):
+        training = self.run.spec.training
+        if self.on_policy and training.total_transitions % training.sequence_length:
             raise ValueError("On-policy total_transitions must be divisible by sequence_length")
 
     def train(self) -> TrainingResult:
-        spec = self.run.spec.training
-        self.run.learner.setup(
-            {
-                "seed": self.run.spec.seed,
-                "run_dir": self.run.run_dir,
-                "model_factory": self.run.model_factory,
-                "total_transitions": spec.total_transitions,
-            }
-        )
-        prepare_run(self.run)
-        print(
-            f"Training started: run_id={self.run.spec.run_id}, "
-            f"target_transitions={spec.total_transitions}, artifacts={self.run.run_dir}",
-            flush=True,
-        )
-        writer = AsyncEpisodeWriter(
-            self.run.run_dir / "episodes", max_artifacts=spec.max_episode_artifacts
-        )
-        checkpoints: list[Path] = []
-        transitions = 0
-        updates = 0
-        episodes = 0
-        next_episode_index = 0
-        fractional_updates = 0.0
-        evaluation: Mapping[str, float] | None = None
-        if self.resume_checkpoint is not None:
-            state = self.run.checkpoint_codec.load(self.resume_checkpoint)
-            counters = self._restore_checkpoint(state)
-            transitions = int(counters["transitions"])
-            updates = int(counters["updates"])
-            episodes = int(counters["episodes"])
-            next_episode_index = int(counters.get("next_episode_index", episodes))
-            fractional_updates = float(counters["fractional_updates"])
-            self._log(
-                "train/resumed",
-                {"checkpoint": str(self.resume_checkpoint)},
-                transitions,
-                updates,
-                episodes,
-            )
-        rollout_environment: Any | None = None
-        rollout_collector: FixedStepRolloutCollector | None = None
-        if self.on_policy:
-            reset_environment_state = getattr(self.run.learner, "reset_environment_state", None)
-            if callable(reset_environment_state):
-                reset_environment_state()
-            rollout_environment = self.environment_factory.create(seed=self.run.spec.seed)
-            rollout_collector = FixedStepRolloutCollector(
-                self.run.replay_store,
-                self.run.feature_pipeline,
-                self.run.learner.policy(),
-                rollout_environment,
-                max_episode_steps=spec.max_episode_steps,
-                seed=self.run.spec.seed,
-                start_episode_index=next_episode_index,
-            )
-        try:
-            while transitions < spec.total_transitions:
-                previous_transitions = transitions
-                previous_episodes = episodes
-                remaining = spec.total_transitions - transitions
-                if rollout_collector is not None:
-                    rollout_collector.set_policy(self.run.learner.policy())
-                    result = rollout_collector.collect(
-                        min(spec.sequence_length, remaining),
-                        rollout_id=f"rollout-{updates:08d}",
-                    )
-                else:
-                    environment = self.environment_factory.create(
-                        seed=self.run.spec.seed + episodes
-                    )
-                    collector = EpisodeCollector(
-                        self.run.replay_store, self.run.feature_pipeline, self.run.learner.policy()
-                    )
-                    try:
-                        result = collector.collect(
-                            environment,
-                            episode_id=f"episode-{episodes:08d}",
-                            max_steps=min(spec.max_episode_steps, remaining),
-                        )
-                    finally:
-                        close = getattr(environment, "close", None)
-                        if callable(close):
-                            close()
-                writer.submit(result.artifact)
-                transitions += result.transitions
-                episodes += result.completed_episodes
-                if result.transitions == 0:
-                    raise RuntimeError(
-                        "Environment returned an empty episode; refusing to spin forever"
-                    )
-                self._log(
-                    "train/episode",
-                    {
-                        "reward": result.total_reward,
-                        "transitions": result.transitions,
-                        "replay_size": len(self.run.replay_store),
-                        "termination": result.artifact.metadata.get("termination", "unknown"),
-                        **self._episode_metrics(result),
-                    },
-                    transitions,
-                    updates,
-                    episodes,
-                )
-                if result.completed_episodes:
-                    termination = result.artifact.metadata.get("termination", "unknown")
-                    episode_metrics = self._episode_metrics(result)
-                    print(
-                        f"Episode {episodes}: progress={episode_metrics['progress_pct']:.1f}%, "
-                        f"reward={result.total_reward:.3f}, "
-                        f"time={episode_metrics['episode_elapsed_s']:.2f}s, "
-                        f"race={episode_metrics['race_time_s']:.2f}s, termination={termination}; "
-                        f"transitions={transitions}/{spec.total_transitions}, updates={updates}",
-                        flush=True,
-                    )
-                sample_footprint = spec.batch_size * spec.sequence_length + spec.n_step - 1
-                ready = 1 if self.on_policy else max(spec.warmup_transitions, sample_footprint)
-                # Warm-up gathers data only.  Do not build an update debt that
-                # would turn the first trainable episode into a large burst.
-                newly_trainable = max(0, transitions - ready) - max(0, previous_transitions - ready)
-                fractional_updates += (
-                    1.0 if self.on_policy else newly_trainable * spec.updates_per_transition
-                )
-                while len(self.run.replay_store) >= ready and fractional_updates >= 1:
-                    request = (
-                        BatchRequest(
-                            batch_size=1,
-                            sequence_length=result.transitions,
-                            gamma=spec.gamma,
-                        )
-                        if self.on_policy
-                        else spec.batch_request(beta=spec.replay_beta(transitions))
-                    )
-                    batch = self.run.sampler.sample(
-                        self.run.replay_store,
-                        request,
-                    )
-                    update = self.run.learner.update(batch)
-                    metrics, priorities = update if isinstance(update, tuple) else (update, None)
-                    if priorities is not None:
-                        self._update_priorities(priorities)
-                    updates += 1
-                    fractional_updates -= 1
-                    self._log(
-                        "train/update",
-                        {**metrics, "replay_size": len(self.run.replay_store)},
-                        transitions,
-                        updates,
-                        episodes,
-                    )
-                    if (
-                        spec.checkpoint_interval_updates is not None
-                        and updates % spec.checkpoint_interval_updates == 0
-                    ):
-                        checkpoints.append(
-                            self._checkpoint(transitions, updates, episodes, fractional_updates)
-                        )
-                    if updates == 1 or updates % 100 == 0:
-                        print(
-                            f"Training progress: transitions={transitions}/"
-                            f"{spec.total_transitions}, "
-                            f"updates={updates}, loss={metrics.get('loss/iqn', 'n/a')}",
-                            flush=True,
-                        )
-                if (
-                    self.run.evaluator is not None
-                    and spec.evaluate_every_episodes is not None
-                    and episodes // spec.evaluate_every_episodes
-                    > previous_episodes // spec.evaluate_every_episodes
-                    and transitions < spec.total_transitions
-                ):
-                    self._checkpoint_for_evaluation(
-                        checkpoints, transitions, updates, episodes, fractional_updates
-                    )
-                    evaluation = self.run.evaluator.evaluate(self.run.learner.policy())
-                    self._log("eval/suite", evaluation, transitions, updates, episodes)
-            if self.run.spec.training.save_final_checkpoint:
-                final_checkpoint = self._checkpoint(
-                    transitions, updates, episodes, fractional_updates
-                )
-                if not checkpoints or checkpoints[-1] != final_checkpoint:
-                    checkpoints.append(final_checkpoint)
-            if self.run.evaluator is not None:
-                # Release artifacts must name the checkpoint that produced them.
-                # A periodic evaluation can otherwise leave evaluation.json pointing
-                # to a stale policy after subsequent training updates.
-                self._set_evaluation_checkpoint(checkpoints)
-                evaluation = self.run.evaluator.evaluate(self.run.learner.policy())
-                self._log("eval/suite", evaluation, transitions, updates, episodes)
-            print(
-                f"Training finished: transitions={transitions}, updates={updates}, "
-                f"episodes={episodes}",
-                flush=True,
-            )
-            return TrainingResult(episodes, transitions, updates, tuple(checkpoints), evaluation)
-        except KeyboardInterrupt as exc:
-            if spec.save_final_checkpoint:
-                interrupted_checkpoint = self._checkpoint(
-                    transitions, updates, episodes, fractional_updates
-                )
-                if not checkpoints or checkpoints[-1] != interrupted_checkpoint:
-                    checkpoints.append(interrupted_checkpoint)
-            self._log(
-                "run/interrupted",
-                {"exception_type": type(exc).__name__, "message": str(exc)},
-                transitions,
-                updates,
-                episodes,
-            )
-            raise
-        except BaseException as exc:
-            self._log(
-                "run/failure",
-                {"exception_type": type(exc).__name__, "message": str(exc)},
-                transitions,
-                updates,
-                episodes,
-            )
-            raise
-        finally:
-            if rollout_environment is not None:
-                close = getattr(rollout_environment, "close", None)
-                if callable(close):
-                    close()
-            writer.close()
+        return run_training(self)
 
     def _update_priorities(self, update: PriorityUpdate) -> None:
         self.run.sampler.update_priorities(update)
 
     @staticmethod
     def _episode_metrics(result: Any) -> dict[str, float]:
-        """Extract the final, user-facing telemetry summary from an episode."""
-
-        if not result.artifact.telemetry:
-            return {
-                "progress_pct": 0.0,
-                "progress_m": 0.0,
-                "episode_elapsed_s": 0.0,
-                "race_time_s": 0.0,
-            }
-        final = result.artifact.telemetry[-1]
-        return {
-            "progress_pct": float(final.get("progress_pct", 0.0)),
-            "progress_m": float(final.get("progress_m", 0.0)),
-            "episode_elapsed_s": float(final.get("episode_elapsed_s", 0.0)),
-            "race_time_s": float(final.get("race_time_ms", 0.0)) / 1_000.0,
-        }
+        return _extract_episode_metrics(result)
 
     def _set_evaluation_checkpoint(self, checkpoints: list[Path]) -> None:
         if not checkpoints or self.run.evaluator is None:
@@ -303,80 +63,109 @@ class Trainer:
             setter(checkpoints[-1])
 
     def _checkpoint_for_evaluation(
-        self,
-        checkpoints: list[Path],
-        transitions: int,
-        updates: int,
-        episodes: int,
-        fractional_updates: float,
+        self, checkpoints: list[Path], counters: TrainingCounters
     ) -> None:
-        """Persist the current learner before attaching it to an evaluation artifact."""
-
-        expected = self.run.run_dir / "checkpoints" / f"update-{updates:08d}.pt"
+        expected = self._checkpoint_path(counters.updates)
         if not checkpoints or checkpoints[-1] != expected:
-            checkpoints.append(self._checkpoint(transitions, updates, episodes, fractional_updates))
+            checkpoints.append(self._write_checkpoint(counters))
         self._set_evaluation_checkpoint(checkpoints)
 
-    def _checkpoint(
-        self, transitions: int, update: int, episodes: int, fractional_updates: float
-    ) -> Path:
-        path = self.run.run_dir / "checkpoints" / f"update-{update:08d}.pt"
-        next_episode_index = self._next_episode_index(episodes)
-        state = {
-            "schema_version": "1.0",
-            "learner": self.run.learner.state_dict(),
-            "replay_store": None if self.on_policy else _state_dict(self.run.replay_store),
-            "sampler": None if self.on_policy else _state_dict(self.run.sampler),
-            "counters": {
-                "transitions": transitions,
-                "updates": update,
-                "episodes": episodes,
-                "fractional_updates": fractional_updates,
-                "next_episode_index": next_episode_index,
-            },
-        }
-        self._log("train/checkpoint", {"path": str(path)}, transitions, update, episodes)
+    def _write_checkpoint(self, counters: TrainingCounters) -> Path:
+        path = self._checkpoint_path(counters.updates)
+        state = self._checkpoint_state(counters)
+        self._log("train/checkpoint", {"path": str(path)}, counters)
         try:
             self.run.checkpoint_codec.save(state, path)
         except BaseException as exc:
-            self._log(
-                "train/checkpoint_failed",
-                {
-                    "path": str(path),
-                    "exception_type": type(exc).__name__,
-                    "message": str(exc),
-                },
-                transitions,
-                update,
-                episodes,
-            )
+            self._log_checkpoint_failure(path, exc, counters)
             raise
-        self._log("train/checkpoint_completed", {"path": str(path)}, transitions, update, episodes)
-        print(f"Checkpoint saved: {path}", flush=True)
+        self._checkpoint_completed(path, counters)
         return path
 
+    def _checkpoint_state(self, counters: TrainingCounters) -> dict[str, Any]:
+        stored = TrainingCounters(
+            counters.transitions,
+            counters.updates,
+            counters.episodes,
+            counters.next_episode_index,
+            counters.fractional_updates,
+        )
+        stored.next_episode_index = self._next_episode_index(counters.episodes)
+        return {
+            "schema_version": _CHECKPOINT_SCHEMA_VERSION,
+            "learner": self.run.learner.state_dict(),
+            "replay_store": None if self.on_policy else _state_dict(self.run.replay_store),
+            "sampler": None if self.on_policy else _state_dict(self.run.sampler),
+            "counters": stored.as_mapping(),
+        }
+
+    def _log_checkpoint_failure(
+        self, path: Path, exc: BaseException, counters: TrainingCounters
+    ) -> None:
+        self._log(
+            "train/checkpoint_failed",
+            {"path": str(path), "exception_type": type(exc).__name__, "message": str(exc)},
+            counters,
+        )
+
+    def _checkpoint_completed(self, path: Path, counters: TrainingCounters) -> None:
+        self._log("train/checkpoint_completed", {"path": str(path)}, counters)
+        print(f"Checkpoint saved: {path}", flush=True)
+
+    def _checkpoint_path(self, update: int) -> Path:
+        return self.run.run_dir / "checkpoints" / f"update-{update:08d}.pt"
+
     def _restore_checkpoint(self, state: Mapping[str, Any]) -> Mapping[str, Any]:
-        if state.get("schema_version") != "1.0":
-            raise ValueError("Unsupported training checkpoint schema")
-        learner_state = state.get("learner")
-        if not isinstance(learner_state, Mapping):
-            raise ValueError("Training checkpoint is missing learner state")
-        counters = state.get("counters")
-        if not isinstance(counters, Mapping):
-            raise ValueError("Training checkpoint is missing counters")
-        required_counters = {"transitions", "updates", "episodes", "fractional_updates"}
-        if required_counters - counters.keys():
-            raise ValueError("Training checkpoint has incomplete counters")
-        if self.on_policy and "next_episode_index" not in counters:
-            raise ValueError(
-                "on-policy checkpoint predates restart-safe episode boundaries; "
-                "start a new run instead of restoring partial replay"
-            )
+        learner_state, counters = self._validated_checkpoint(state)
         self.run.learner.load_state_dict(learner_state)
         if not self.on_policy:
-            _load_state_dict(self.run.replay_store, state.get("replay_store"))
-            _load_state_dict(self.run.sampler, state.get("sampler"))
+            _load_state_dict(self.run.replay_store, state["replay_store"])
+            _load_state_dict(self.run.sampler, state["sampler"])
         return counters
+
+    def _validated_checkpoint(
+        self, state: Mapping[str, Any]
+    ) -> tuple[Mapping[str, Any], Mapping[str, Any]]:
+        self._validate_checkpoint_keys(state)
+        if state["schema_version"] != _CHECKPOINT_SCHEMA_VERSION:
+            raise ValueError("Unsupported training checkpoint schema")
+        learner_state = state["learner"]
+        counters = state["counters"]
+        if not isinstance(learner_state, Mapping):
+            raise ValueError("Training checkpoint is missing learner state")
+        if not isinstance(counters, Mapping):
+            raise ValueError("Training checkpoint is missing counters")
+        self._validate_replay_state(state)
+        self._validate_checkpoint_counters(counters)
+        return learner_state, counters
+
+    @staticmethod
+    def _validate_checkpoint_keys(state: Mapping[str, Any]) -> None:
+        missing = _CHECKPOINT_KEYS - state.keys()
+        unexpected = state.keys() - _CHECKPOINT_KEYS
+        if missing or unexpected:
+            raise ValueError(
+                f"Training checkpoint keys differ: missing={sorted(missing)}, "
+                f"unexpected={sorted(unexpected)}"
+            )
+
+    def _validate_replay_state(self, state: Mapping[str, Any]) -> None:
+        required = {"replay_store", "sampler"}
+        missing = required - state.keys()
+        if missing:
+            names = ", ".join(sorted(missing))
+            raise ValueError(f"Training checkpoint is missing: {names}")
+        if not self.on_policy and any(state[name] is None for name in required):
+            raise ValueError("Off-policy checkpoint is missing replay or sampler state")
+
+    def _validate_checkpoint_counters(self, counters: Mapping[str, Any]) -> None:
+        missing = _COUNTER_KEYS - counters.keys()
+        unexpected = counters.keys() - _COUNTER_KEYS
+        if missing or unexpected:
+            raise ValueError(
+                f"Training checkpoint counter keys differ: missing={sorted(missing)}, "
+                f"unexpected={sorted(unexpected)}"
+            )
 
     def _next_episode_index(self, completed_episodes: int) -> int:
         if not self.on_policy:
@@ -387,35 +176,10 @@ class Trainer:
         latest = self.run.replay_store.get([transition_ids[-1]])[0]
         return completed_episodes + int(not latest.terminated and not latest.truncated)
 
-    def _log(
-        self,
-        event: str,
-        payload: Mapping[str, object],
-        transitions: int,
-        updates: int,
-        episodes: int,
-    ) -> None:
-        self.run.logger.log(
-            event,
-            {
-                **payload,
-                "counters": {"transitions": transitions, "updates": updates, "episodes": episodes},
-            },
-            step=updates,
-        )
-
-
-def _state_dict(component: object) -> Mapping[str, object] | None:
-    method = getattr(component, "state_dict", None)
-    return method() if callable(method) else None
-
-
-def _load_state_dict(component: object, state: object) -> None:
-    if state is None:
-        return
-    method = getattr(component, "load_state_dict", None)
-    if not callable(method):
-        raise TypeError(
-            f"{type(component).__name__} cannot resume because it has no load_state_dict()"
-        )
-    method(state)
+    def _log(self, event: str, payload: Mapping[str, object], counters: TrainingCounters) -> None:
+        values = {
+            "transitions": counters.transitions,
+            "updates": counters.updates,
+            "episodes": counters.episodes,
+        }
+        self.run.logger.log(event, {**payload, "counters": values}, step=counters.updates)

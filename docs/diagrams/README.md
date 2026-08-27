@@ -13,7 +13,7 @@ by the repository renderer. After editing a spec, deterministically regenerate
 the editable scene, SVG and HTML preview with:
 
 ```bash
-uv run python docs/diagrams/render.py
+uv run python -m docs.diagrams.render
 ```
 
 The renderer intentionally does not depend on a platform-specific SVG

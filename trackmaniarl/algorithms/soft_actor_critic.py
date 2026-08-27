@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from copy import deepcopy
-from typing import Any
+from dataclasses import dataclass
+from typing import Any, Unpack, cast
 
 import torch
 from torch import nn
@@ -16,9 +17,34 @@ from trackmaniarl.algorithms._torch import (
     polyak_update,
     weighted_mean,
 )
-from trackmaniarl.algorithms.execution import TorchExecutionConfig
+from trackmaniarl.algorithms.sac_config import SACConfig, SACOptions
+from trackmaniarl.algorithms.sac_support import (
+    EntropyConfig,
+    EntropyRestoreTarget,
+    SACBatch,
+    alpha_value,
+    continuous_batch,
+    entropy_state,
+    freeze_modules,
+    restore_entropy_state,
+    unfreeze_modules,
+)
 from trackmaniarl.core.contracts import ModelContract
 from trackmaniarl.core.data import PriorityUpdate, TrainingBatch
+
+
+@dataclass(frozen=True, slots=True)
+class _CriticStep:
+    loss: torch.Tensor
+    td_error: torch.Tensor
+
+
+@dataclass(frozen=True, slots=True)
+class _SACUpdate:
+    critic: _CriticStep
+    actor_loss: torch.Tensor
+    alpha_loss: torch.Tensor
+    alpha: torch.Tensor
 
 
 class SoftActorCritic(TorchLearnerBase):
@@ -30,40 +56,42 @@ class SoftActorCritic(TorchLearnerBase):
     def __init__(
         self,
         model: nn.Module | None = None,
-        *,
-        model_factory: Any | None = None,
-        target_tau: float = 0.005,
-        learning_rate: float = 3e-4,
-        entropy_coefficient: float = 0.2,
-        target_entropy: float | None = None,
-        learn_entropy_coefficient: bool = True,
-        device: str | None = None,
-        execution: TorchExecutionConfig | Mapping[str, Any] | None = None,
-        seed: int = 0,
+        **options: Unpack[SACOptions],
     ) -> None:
+        config = SACConfig(**options)
         super().__init__(
             model,
-            model_factory=model_factory,
-            device=device,
-            execution=execution,
-            seed=seed,
+            model_factory=config.model_factory,
+            execution=config.execution,
+            seed=config.seed,
         )
-        if not 0.0 < target_tau <= 1.0 or learning_rate <= 0.0 or entropy_coefficient <= 0.0:
-            raise ValueError("target_tau, learning_rate, and entropy_coefficient must be positive")
-        self.target_tau = target_tau
-        self.learning_rate = learning_rate
-        self.initial_entropy_coefficient = entropy_coefficient
-        self.target_entropy = target_entropy
-        self.learn_entropy_coefficient = learn_entropy_coefficient
+        config.validate()
+        self.target_tau = config.target_tau
+        self.learning_rate = config.learning_rate
+        self.initial_entropy_coefficient = config.entropy_coefficient
+        self.target_entropy = config.target_entropy
+        self.entropy_mode = "learned" if config.learn_entropy_coefficient else "fixed"
 
     def _setup_model(self) -> None:
+        assert self.model is not None
+        self._validate_model()
+        self.target_model = deepcopy(self.model).to(self.device).eval()
+        for parameter in self.target_model.parameters():
+            parameter.requires_grad_(False)
+        self._setup_optimizers()
+        config = EntropyConfig(
+            self.initial_entropy_coefficient, self.learning_rate, self.entropy_mode
+        )
+        self.log_alpha, self.alpha_optimizer = entropy_state(config, self.device)
+
+    def _validate_model(self) -> None:
         assert self.model is not None
         for name in ("actor", "q1", "q2"):
             if not hasattr(self.model, name):
                 raise TypeError(f"SAC model is missing required component {name!r}")
-        self.target_model = deepcopy(self.model).to(self.device).eval()
-        for parameter in self.target_model.parameters():
-            parameter.requires_grad_(False)
+
+    def _setup_optimizers(self) -> None:
+        assert self.model is not None
         self.actor_optimizer = torch.optim.Adam(
             self.model.actor.parameters(), lr=self.learning_rate
         )
@@ -71,18 +99,6 @@ class SoftActorCritic(TorchLearnerBase):
             list(self.model.q1.parameters()) + list(self.model.q2.parameters()),
             lr=self.learning_rate,
         )
-        self.log_alpha: torch.Tensor | None
-        self.alpha_optimizer: torch.optim.Optimizer | None
-        if self.learn_entropy_coefficient:
-            self.log_alpha = (
-                torch.tensor(self.initial_entropy_coefficient, device=self.device)
-                .log()
-                .requires_grad_()
-            )
-            self.alpha_optimizer = torch.optim.Adam([self.log_alpha], lr=self.learning_rate)
-        else:
-            self.log_alpha = None
-            self.alpha_optimizer = None
 
     def update(self, batch: TrainingBatch) -> tuple[Mapping[str, float], PriorityUpdate]:
         with self.autocast():
@@ -90,64 +106,74 @@ class SoftActorCritic(TorchLearnerBase):
 
     def _update(self, batch: TrainingBatch) -> tuple[Mapping[str, float], PriorityUpdate]:
         assert self.model is not None
-        batch = self._batch(batch)
-        observations = self._tensor(batch.observations, "observations")
-        actions = self._tensor(batch.actions, "actions").float()
-        rewards = self._tensor(batch.rewards, "rewards").float().reshape(-1)
-        next_observations = self._tensor(batch.next_observations, "next_observations")
-        discounts = (
-            self._tensor(batch.bootstrap_discounts, "bootstrap_discounts").float().reshape(-1)
-        )
-        weights = (
-            batch.importance_weights if isinstance(batch.importance_weights, torch.Tensor) else None
-        )
-        alpha = (
-            self.log_alpha.detach().exp()
-            if self.log_alpha is not None
-            else torch.tensor(self.initial_entropy_coefficient, device=self.device)
-        )
-        with torch.no_grad():
-            next_actions, next_log_probabilities = self.model.actor(next_observations)
-            next_values = torch.minimum(
-                self.target_model.q1(next_observations, next_actions),
-                self.target_model.q2(next_observations, next_actions),
-            )
-            targets = rewards + discounts * (next_values - alpha * next_log_probabilities)
-        q1 = self.model.q1(observations, actions)
-        q2 = self.model.q2(observations, actions)
+        prepared = continuous_batch(self._batch(batch))
+        alpha = alpha_value(self.log_alpha, self.initial_entropy_coefficient, self.device)
+        critic = self._critic_step(prepared, alpha)
+        self._optimize(critic.loss, self.critic_optimizer)
+        actor_loss, log_probabilities = self._actor_step(prepared, alpha)
+        alpha_loss = self._entropy_loss(prepared.actions, log_probabilities)
+        polyak_update(self.model, self.target_model, self.target_tau)
+        return self._update_result(prepared, _SACUpdate(critic, actor_loss, alpha_loss, alpha))
+
+    def _critic_step(self, batch: SACBatch, alpha: torch.Tensor) -> _CriticStep:
+        targets = self._critic_targets(batch, alpha)
+        q1 = self.model.q1(batch.observations, batch.actions)
+        q2 = self.model.q2(batch.observations, batch.actions)
         td_error = (0.5 * (q1 + q2) - targets).detach().abs()
-        critic_loss = weighted_mean((q1 - targets).square() + (q2 - targets).square(), weights)
-        self._optimize(critic_loss, self.critic_optimizer)
-        for critic in (self.model.q1, self.model.q2):
-            critic.requires_grad_(False)
-        policy_actions, log_probabilities = self.model.actor(observations)
+        losses = (q1 - targets).square() + (q2 - targets).square()
+        return _CriticStep(weighted_mean(losses, batch.weights), td_error)
+
+    def _critic_targets(self, batch: SACBatch, alpha: torch.Tensor) -> torch.Tensor:
+        with torch.no_grad():
+            next_actions, next_log_probabilities = self.model.actor(batch.next_observations)
+            next_values = torch.minimum(
+                self.target_model.q1(batch.next_observations, next_actions),
+                self.target_model.q2(batch.next_observations, next_actions),
+            )
+            result = batch.rewards + batch.discounts * (
+                next_values - alpha * next_log_probabilities
+            )
+            return cast(torch.Tensor, result)
+
+    def _actor_step(
+        self, batch: SACBatch, alpha: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        critics = (self.model.q1, self.model.q2)
+        freeze_modules(critics)
+        policy_actions, log_probabilities = self.model.actor(batch.observations)
         policy_values = torch.minimum(
-            self.model.q1(observations, policy_actions), self.model.q2(observations, policy_actions)
+            self.model.q1(batch.observations, policy_actions),
+            self.model.q2(batch.observations, policy_actions),
         )
         actor_loss = (alpha * log_probabilities - policy_values).mean()
         self._optimize(actor_loss, self.actor_optimizer)
-        for critic in (self.model.q1, self.model.q2):
-            critic.requires_grad_(True)
+        unfreeze_modules(critics)
+        return actor_loss, log_probabilities
+
+    def _entropy_loss(self, actions: torch.Tensor, log_probabilities: torch.Tensor) -> torch.Tensor:
         alpha_loss = torch.zeros((), device=self.device)
-        if self.log_alpha is not None:
-            target_entropy = (
-                self.target_entropy
-                if self.target_entropy is not None
-                else -float(actions.shape[-1])
-            )
-            alpha_loss = -(self.log_alpha * (log_probabilities.detach() + target_entropy)).mean()
-            assert self.alpha_optimizer is not None
-            self._optimize(alpha_loss, self.alpha_optimizer)
-        polyak_update(self.model, self.target_model, self.target_tau)
-        return (
-            {
-                "loss/actor": float(actor_loss.item()),
-                "loss/critic": float(critic_loss.item()),
-                "loss/entropy": float(alpha_loss.item()),
-                "state/alpha": float(alpha.item()),
-            },
-            PriorityUpdate(batch.transition_ids, td_error.detach().cpu().tolist()),
+        if self.log_alpha is None:
+            return alpha_loss
+        target = (
+            self.target_entropy if self.target_entropy is not None else -float(actions.shape[-1])
         )
+        alpha_loss = -(self.log_alpha * (log_probabilities.detach() + target)).mean()
+        assert self.alpha_optimizer is not None
+        self._optimize(alpha_loss, self.alpha_optimizer)
+        return alpha_loss
+
+    @staticmethod
+    def _update_result(
+        batch: SACBatch, update: _SACUpdate
+    ) -> tuple[Mapping[str, float], PriorityUpdate]:
+        metrics = {
+            "loss/actor": float(update.actor_loss.item()),
+            "loss/critic": float(update.critic.loss.item()),
+            "loss/entropy": float(update.alpha_loss.item()),
+            "state/alpha": float(update.alpha.item()),
+        }
+        priorities = update.critic.td_error.detach().cpu().tolist()
+        return metrics, PriorityUpdate(batch.source.transition_ids, priorities)
 
     def policy(self) -> TorchPolicy:
         assert self.model is not None
@@ -180,9 +206,7 @@ class SoftActorCritic(TorchLearnerBase):
         self.target_model.load_state_dict(state["target_model"])
         self.actor_optimizer.load_state_dict(state["actor_optimizer"])
         self.critic_optimizer.load_state_dict(state["critic_optimizer"])
-        if self.log_alpha is not None and state.get("log_alpha") is not None:
-            self.log_alpha.data.copy_(state["log_alpha"].to(self.device))
-        if self.alpha_optimizer is not None and state.get("alpha_optimizer") is not None:
-            self.alpha_optimizer.load_state_dict(state["alpha_optimizer"])
-        self._restore_scaler(state.get("scaler"))
-        self._restore_rng(state.get("rng", {}))
+        entropy = EntropyRestoreTarget(self.log_alpha, self.alpha_optimizer, self.device)
+        restore_entropy_state(entropy, state)
+        self._restore_scaler(state["scaler"])
+        self._restore_rng(state["rng"])

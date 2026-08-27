@@ -88,8 +88,6 @@ authority.
 - Non-blocking CUDA transfer is used only after pinning and on the learner's
   transfer stream. A second generic prefetch/copy layer is deliberately not
   enabled.
-- `execution.compile: true` is supported only by the legacy IQN learner. Other
-  learners reject it during resolution instead of silently ignoring it.
 - CUDA graphs are not a supported runtime contract. Random IQN/FQF supports,
   PER feedback, dynamic PyTrees and checkpoint/evaluation control flow require
   a dedicated fixed-shape design before graphs can be safe.

@@ -69,10 +69,10 @@ replay, sampler and runtime counters. A checkpoint older than the journal's
 durable prune frontier is rejected; rollback cannot guess at already-pruned
 rollouts.
 
-A 1.x IQN checkpoint is a warm-start input only. Configure named submodules and
-review the generated tensor match report. Never pass it to `resume`, and never
-silently overlap-copy a changed shape unless the experiment explicitly chooses
-the `overlap` shape policy.
+A 1.x IQN checkpoint is not a valid resume or warm-start input. Establish a new
+2.0 baseline, then use current compressed checkpoints for named-submodule
+warm-starts. Review the generated tensor match report; only tensors with exact
+names, shapes and dtypes are copied.
 
 Local PPO checkpoints resume at an episode boundary. Environment and recurrent
 actor state are not serializable, so partial on-policy replay is deliberately

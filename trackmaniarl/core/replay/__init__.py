@@ -3,7 +3,7 @@
 from trackmaniarl.core.replay.batches import (
     _make_batch as _make_batch,
 )
-from trackmaniarl.core.replay.batches import (
+from trackmaniarl.core.replay.n_step import (
     _n_step_transition as _n_step_transition,
 )
 from trackmaniarl.core.replay.prioritized import PrioritizedSampler

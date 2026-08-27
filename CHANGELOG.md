@@ -12,11 +12,12 @@
   selected-action Double-DQN targets and an isolated FQF fraction optimizer.
 - Add portable Mamba selective scan with `auto`, `native` and Pure PyTorch
   backends sharing one checkpoint-compatible parameter layout.
-- Add checkpoint schema 2.0, architecture fingerprints, safe named-submodule
-  warm-start reports and a legacy IQN warm-start mapper.
-- Persist AMP scaler state for every Torch learner, reject unsupported compile
-  and sequence configurations before training, and make composite priority
-  validation atomic with the optimizer update.
+- Add checkpoint schema 2.0, architecture fingerprints and safe
+  named-submodule warm-start reports. The unified `DiscreteValueLearner` is the
+  sole scalar Q, QR-DQN, IQN and FQF training path.
+- Persist AMP scaler state for every Torch learner, reject unsupported sequence
+  configurations before training, and make composite priority validation
+  atomic with the optimizer update.
 - Make uniform and prioritized sequence replay share one raw-context/n-step
   contract, cache valid sequence windows by replay revision and correct TQC and
   upper-CVaR reduction semantics.
@@ -63,12 +64,11 @@
   repeat-one decision grid; support recurrent BC inference, make failed
   closed-loop BC gates exit nonzero by default, bind stitched trajectories to
   control alignment and limit BC-to-RL warm start to encoder/temporal modules.
-- Replace provenance-free BC recovery archives with fail-closed v3 artifacts
-  bound to map UID, geometry, timing, control alignment and a verified source
-  demonstration digest, with DAgger checkpoint hashes retained for audit;
-  legacy v1/v2 recovery files must be regenerated before training. Synthetic
-  counterfactual states are now episode-independent instead of pretending to
-  be a dynamically reachable sequence.
+- Require BC recovery artifacts bound to map UID, geometry, timing, control
+  alignment and a verified source demonstration digest, with DAgger checkpoint
+  hashes retained for audit. Synthetic counterfactual states are now
+  episode-independent instead of pretending to be a dynamically reachable
+  sequence.
 - Route PPO through the local on-policy trainer, correct Trackmania TQC action
   bounds, validate policy action masks and export evaluated actor state for SAC,
   REDQ-SAC, TQC and stable-discrete-SAC-inspired learners.

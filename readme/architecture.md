@@ -144,10 +144,11 @@ The single-process `Trainer` used by PPO has its own schema 1.0 checkpoint with
 learner, replay, sampler and local counters. It is resumed through `Trainer` and
 is not interchangeable with a distributed schema 2.0 checkpoint.
 
-Warm-start is deliberately weaker than resume. It loads named submodules,
-matches name/shape/dtype, reports every match and mismatch, fails on zero or
-ambiguous matches, and requires explicit `shape_policy: overlap` for slice
-copying. Legacy IQN 1.x checkpoints are warm-start inputs only.
+Warm-start is deliberately weaker than resume. It loads selected named
+submodules, copies only exact name/shape/dtype matches, reports every match and
+mismatch, and fails on zero matches or missing required tensors. Prefix
+remapping and partial-shape copying are unsupported. Pre-2.0 checkpoints are
+rejected instead of being translated implicitly.
 
 BC checkpoints use their own v2 schema and bind to an immutable dataset
 fingerprint. `bc-best-validation.pt` is a policy candidate;

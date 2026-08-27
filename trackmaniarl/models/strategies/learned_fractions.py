@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import torch
 from torch import nn
 
@@ -14,6 +16,13 @@ from trackmaniarl.models.contracts import (
     ValueSupport,
 )
 from trackmaniarl.models.strategies._common import quantile_huber_loss, weighted_expectation
+
+
+@dataclass(frozen=True, slots=True)
+class _FractionLoss:
+    loss: torch.Tensor
+    entropy: torch.Tensor
+    gradient: torch.Tensor
 
 
 class LearnedFractionStrategy(nn.Module):
@@ -72,6 +81,15 @@ class LearnedFractionStrategy(nn.Module):
         entropy = context.support.entropy
         if boundaries is None or entropy is None:
             raise ValueError("FQF auxiliary loss requires boundaries and entropy")
+        summary = self._fraction_loss(context, boundaries, entropy)
+        return AuxiliaryLoss(summary.loss, self._fraction_metrics(context, summary))
+
+    def _fraction_loss(
+        self,
+        context: FractionLossContext,
+        boundaries: torch.Tensor,
+        entropy: torch.Tensor,
+    ) -> _FractionLoss:
         internal = boundaries[..., 1:-1]
         boundary_values = context.boundary_values.detach().float()
         midpoint_values = context.midpoint_values.detach().float()
@@ -82,14 +100,19 @@ class LearnedFractionStrategy(nn.Module):
         else:
             valid = context.valid.to(per_position.dtype)
             loss = (per_position * valid).sum() / valid.sum().clamp_min(1.0)
+        return _FractionLoss(loss, entropy, gradient)
+
+    @staticmethod
+    def _fraction_metrics(
+        context: FractionLossContext, summary: _FractionLoss
+    ) -> dict[str, torch.Tensor]:
         masses = context.support.weights.detach()
-        metrics = {
-            "loss/fraction": loss.detach(),
-            "fraction/entropy": entropy.detach().mean(),
-            "fraction/effective_count": entropy.detach().exp().mean(),
+        return {
+            "loss/fraction": summary.loss.detach(),
+            "fraction/entropy": summary.entropy.detach().mean(),
+            "fraction/effective_count": summary.entropy.detach().exp().mean(),
             "fraction/min_mass": masses.amin(),
             "fraction/max_mass": masses.amax(),
-            "fraction/wasserstein_gradient_mean": gradient.detach().abs().mean(),
-            "fraction/wasserstein_gradient_max": gradient.detach().abs().amax(),
+            "fraction/wasserstein_gradient_mean": summary.gradient.detach().abs().mean(),
+            "fraction/wasserstein_gradient_max": summary.gradient.detach().abs().amax(),
         }
-        return AuxiliaryLoss(loss, metrics)

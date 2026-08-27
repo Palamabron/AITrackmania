@@ -21,6 +21,8 @@ disclosure. Security fixes target the current `2.0` release-candidate line.
 - `run.yaml` is trusted executable configuration. Component paths import and
   instantiate Python objects; `validate`, `train`, `learner` and `actor` must
   only receive configurations and extension packages from trusted sources.
+  `inspect-config` safely parses and lists every `class_path` without importing
+  it, but it is an inspection aid rather than a sandbox or signature check.
 - Checkpoints are data, but should still come from a trusted run. The default
   codec uses PyTorch `weights_only=True`; it rejects payloads requiring
   executable pickle globals. A custom `CheckpointCodec` defines its own trust
@@ -40,6 +42,9 @@ disclosure. Security fixes target the current `2.0` release-candidate line.
   internet-facing API. Use the signed TrackmaniaRL Connect plugin from Plugin
   Manager in School Mode; the local session protocol cannot attest the plugin
   package's signature or installed version.
+- The `trackmania` extra installs `vgamepad`. Its normal installer may install
+  or repair the system ViGEmBus driver. Set `VGAMEPAD_SKIP_VIGEMBUS_INSTALL=true`
+  to skip that installer only when a compatible driver is already provisioned.
 
 Never commit `.env`, API keys, distributed tokens, raw telemetry containing
 personal data, or private checkpoints. Run manifests redact keys whose names

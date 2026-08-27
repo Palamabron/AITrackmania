@@ -12,10 +12,29 @@ from typing import Any
 import numpy as np
 import torch
 import zstandard
+from safetensors import SafetensorError
 from safetensors.torch import load as load_tensors
 from safetensors.torch import save as save_tensors
 
 _HEADER = struct.Struct(">I")
+_DECODE_ERRORS = (
+    AttributeError,
+    IndexError,
+    KeyError,
+    RecursionError,
+    TypeError,
+    UnicodeError,
+    ValueError,
+    SafetensorError,
+)
+
+
+class WirePayloadTooLargeError(ValueError):
+    """The wire payload exceeds the configured transport limit."""
+
+
+class WirePayloadFormatError(ValueError):
+    """The wire payload cannot be decoded as the supported safe format."""
 
 
 class WireCodec:
@@ -33,29 +52,38 @@ class WireCodec:
         tensor_data = save_tensors(tensors) if tensors else b""
         raw = _HEADER.pack(len(metadata)) + metadata + tensor_data
         if len(raw) > self.max_message_bytes:
-            raise ValueError(
+            raise WirePayloadTooLargeError(
                 f"encoded message is {len(raw)} bytes before compression; "
                 f"limit is {self.max_message_bytes}"
             )
         compressed = zstandard.ZstdCompressor(level=3).compress(raw)
         if len(compressed) > self.max_message_bytes:
-            raise ValueError(
+            raise WirePayloadTooLargeError(
                 f"encoded message is {len(compressed)} bytes; limit is {self.max_message_bytes}"
             )
         return compressed
 
     def decode(self, payload: bytes) -> Any:
         if len(payload) > self.max_message_bytes:
-            raise ValueError(
+            raise WirePayloadTooLargeError(
                 f"received message is {len(payload)} bytes; limit is {self.max_message_bytes}"
             )
+        raw = self._decompress(payload)
+        if len(raw) > self.max_message_bytes:
+            raise WirePayloadTooLargeError("wire payload exceeds the decompressed size limit")
+        try:
+            return self._decode_raw(raw)
+        except _DECODE_ERRORS as exc:
+            raise WirePayloadFormatError("wire payload is invalid") from exc
+
+    def _decompress(self, payload: bytes) -> bytes:
         try:
             with zstandard.ZstdDecompressor().stream_reader(BytesIO(payload)) as reader:
-                raw = reader.read(self.max_message_bytes + 1)
+                return reader.read(self.max_message_bytes + 1)
         except zstandard.ZstdError as exc:
-            raise ValueError("wire payload is invalid") from exc
-        if len(raw) > self.max_message_bytes:
-            raise ValueError("wire payload exceeds the decompressed size limit")
+            raise WirePayloadFormatError("wire payload is invalid") from exc
+
+    def _decode_raw(self, raw: bytes) -> Any:
         if len(raw) < _HEADER.size:
             raise ValueError("wire payload is truncated")
         metadata_size = _HEADER.unpack(raw[: _HEADER.size])[0]
@@ -67,25 +95,41 @@ class WireCodec:
         return self._decode_node(manifest, tensors)
 
     def _encode_node(self, value: Any, tensors: dict[str, torch.Tensor]) -> Any:
+        if isinstance(value, (torch.Tensor, np.ndarray)):
+            return self._encode_array(value, tensors)
+        if isinstance(value, Mapping):
+            return self._encode_mapping(value, tensors)
+        if isinstance(value, (tuple, list)):
+            return self._encode_sequence(value, tensors)
+        return self._encode_scalar(value)
+
+    @staticmethod
+    def _encode_array(
+        value: torch.Tensor | np.ndarray, tensors: dict[str, torch.Tensor]
+    ) -> dict[str, str]:
+        name = f"tensor_{len(tensors)}"
         if isinstance(value, torch.Tensor):
-            name = f"tensor_{len(tensors)}"
             tensors[name] = value.detach().cpu().contiguous()
             return {"kind": "tensor", "name": name}
-        if isinstance(value, np.ndarray):
-            name = f"tensor_{len(tensors)}"
-            tensors[name] = torch.from_numpy(np.ascontiguousarray(value))
-            return {"kind": "ndarray", "name": name}
-        if isinstance(value, Mapping):
-            if any(not isinstance(key, str) for key in value):
-                raise TypeError("wire mappings require string keys")
-            return {
-                "kind": "mapping",
-                "items": {key: self._encode_node(item, tensors) for key, item in value.items()},
-            }
-        if isinstance(value, tuple):
-            return {"kind": "tuple", "items": [self._encode_node(item, tensors) for item in value]}
-        if isinstance(value, list):
-            return {"kind": "list", "items": [self._encode_node(item, tensors) for item in value]}
+        tensors[name] = torch.from_numpy(np.ascontiguousarray(value))
+        return {"kind": "ndarray", "name": name}
+
+    def _encode_mapping(
+        self, value: Mapping[Any, Any], tensors: dict[str, torch.Tensor]
+    ) -> dict[str, Any]:
+        if any(not isinstance(key, str) for key in value):
+            raise TypeError("wire mappings require string keys")
+        items = {key: self._encode_node(item, tensors) for key, item in value.items()}
+        return {"kind": "mapping", "items": items}
+
+    def _encode_sequence(
+        self, value: tuple[Any, ...] | list[Any], tensors: dict[str, torch.Tensor]
+    ) -> dict[str, Any]:
+        kind = "tuple" if isinstance(value, tuple) else "list"
+        return {"kind": kind, "items": [self._encode_node(item, tensors) for item in value]}
+
+    @staticmethod
+    def _encode_scalar(value: Any) -> dict[str, Any]:
         if value is None or isinstance(value, (bool, int, float, str)):
             return {"kind": "scalar", "value": value}
         if isinstance(value, bytes):

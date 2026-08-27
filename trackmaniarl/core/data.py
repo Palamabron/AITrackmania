@@ -38,7 +38,6 @@ class BatchRequest:
     batch_size: int
     sequence_length: int = 1
     beta: float | None = None
-    source: str | None = None
     n_step: int = 1
     gamma: float = 0.99
 
@@ -72,21 +71,6 @@ class TrainingBatch:
     masks: PyTree | None = None
     metadata: Mapping[str, Any] = field(default_factory=dict)
 
-    @property
-    def indices(self) -> Sequence[TransitionId]:
-        """Compatibility spelling for integrations that have not adopted transition IDs."""
-
-        return self.transition_ids
-
-    @property
-    def weights(self) -> PyTree | None:
-        """Compatibility spelling for PER importance weights."""
-
-        return self.importance_weights
-
-
-SampleBatch = TrainingBatch
-
 
 @dataclass(frozen=True, slots=True)
 class PriorityUpdate:
@@ -98,12 +82,6 @@ class PriorityUpdate:
     def __post_init__(self) -> None:
         if len(self.transition_ids) != len(self.priorities):
             raise ValueError("transition_ids and priorities must have equal length")
-
-    @property
-    def indices(self) -> Sequence[TransitionId]:
-        """Compatibility spelling for callers still using replay-index terminology."""
-
-        return self.transition_ids
 
 
 @dataclass(frozen=True, slots=True)

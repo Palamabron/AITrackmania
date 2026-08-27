@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
@@ -25,15 +26,34 @@ class ModelContract(StrEnum):
     CONTINUOUS_QUANTILE_ACTOR_CRITIC = "continuous_quantile_actor_critic"
     DISCRETE_ACTOR_CRITIC = "discrete_actor_critic"
     DISCRETE_VALUE = "discrete_value"
-    DISCRETE_QUANTILE = "discrete_quantile"
     ENSEMBLE_ACTOR_CRITIC = "ensemble_actor_critic"
+
+
+class PolicyMode(StrEnum):
+    ONLINE = "online"
+    EVALUATION = "evaluation"
+
+
+@dataclass(frozen=True, slots=True)
+class ActionSelectionRequest:
+    mode: PolicyMode
+    epsilon: float
+
+
+@dataclass(frozen=True, slots=True)
+class EvaluatorRuntimeRequest:
+    suite: Any | None
+    environment_factory: EnvironmentFactory | None
+    feature_pipeline: FeaturePipeline
+    max_episode_steps: int = 2_000
+    run_dir: str | Path | None = None
 
 
 @runtime_checkable
 class Policy(Protocol):
     """Inference-only policy deployed to a rollout worker."""
 
-    def act(self, observation: Any, *, deterministic: bool = False) -> Any: ...
+    def act(self, observation: Any, mode: PolicyMode = PolicyMode.ONLINE) -> Any: ...
 
 
 @runtime_checkable
@@ -41,7 +61,7 @@ class BehaviorPolicy(Policy, Protocol):
     """Policy that records the behavior statistics required by on-policy learners."""
 
     def act_with_info(
-        self, observation: Any, *, deterministic: bool = False
+        self, observation: Any, mode: PolicyMode = PolicyMode.ONLINE
     ) -> tuple[Any, Mapping[str, Any]]: ...
 
 
@@ -139,9 +159,6 @@ class RunLogger(Protocol):
     def log(self, event: str, payload: Mapping[str, Any], *, step: int | None = None) -> None: ...
 
     def close(self) -> None: ...
-
-
-Tracker = RunLogger
 
 
 @runtime_checkable

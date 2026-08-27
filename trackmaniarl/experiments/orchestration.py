@@ -8,7 +8,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
 from pydantic import BaseModel, ConfigDict, Field, PositiveInt
 
@@ -66,14 +66,16 @@ class GeminiStrategy:
         self.model = model
         self.api_key = api_key
 
-    def propose(self, study: StudySpec, history: list[Mapping[str, Any]]) -> Proposal:
+    def _client(self) -> Any:
         try:
             from google import genai
         except ImportError as exc:
             raise RuntimeError(
                 "Install trackmaniarl[orchestrator] to use the Gemini strategy"
             ) from exc
-        client = genai.Client(api_key=self.api_key)
+        return genai.Client(api_key=self.api_key)
+
+    def _request(self, study: StudySpec, history: list[Mapping[str, Any]]) -> str:
         prompt = {
             "instruction": (
                 "Return only JSON with keys patch and rationale. Patch may only use "
@@ -82,9 +84,14 @@ class GeminiStrategy:
             "study": study.model_dump(mode="json"),
             "history": history,
         }
-        response = client.models.generate_content(model=self.model, contents=json.dumps(prompt))
+        response = self._client().models.generate_content(
+            model=self.model, contents=json.dumps(prompt)
+        )
+        return cast(str, response.text)
+
+    def propose(self, study: StudySpec, history: list[Mapping[str, Any]]) -> Proposal:
         try:
-            result = json.loads(response.text)
+            result = json.loads(self._request(study, history))
             patch = result["patch"]
             rationale = result["rationale"]
         except (AttributeError, KeyError, TypeError, json.JSONDecodeError) as exc:
@@ -177,6 +184,12 @@ class StudyLedger:
             )
 
 
+@dataclass(frozen=True, slots=True)
+class _TrialRecord:
+    outcome: Mapping[str, Any]
+    scores: tuple[float, ...]
+
+
 class StudyRunner:
     """Record every proposal and outcome around an externally supplied trial executor."""
 
@@ -184,43 +197,59 @@ class StudyRunner:
         self.strategy = strategy
         self.ledger = ledger
 
+    def _record_proposal(self, trial_index: int, proposal: Proposal) -> None:
+        self.ledger.append(
+            "proposal",
+            {
+                "trial": trial_index,
+                "patch": proposal.patch,
+                "rationale": proposal.rationale,
+                "source": proposal.source,
+            },
+        )
+
+    def _failure(self, trial_index: int, proposal: Proposal, exc: Exception) -> _TrialRecord:
+        outcome = {
+            "trial": trial_index,
+            "source": proposal.source,
+            "status": "failed",
+            "exception_type": type(exc).__name__,
+            "message": str(exc),
+        }
+        return _TrialRecord(outcome, ())
+
+    def _execute(
+        self,
+        trial_index: int,
+        proposal: Proposal,
+        execute: Callable[[Mapping[str, Any]], float],
+    ) -> _TrialRecord:
+        try:
+            score = float(execute(proposal.patch))
+        except Exception as exc:
+            return self._failure(trial_index, proposal, exc)
+        outcome = {
+            "trial": trial_index,
+            "source": proposal.source,
+            "status": "completed",
+            "score": score,
+        }
+        return _TrialRecord(outcome, (score,))
+
+    def _complete(self, proposal: Proposal, record: _TrialRecord) -> None:
+        complete = getattr(self.strategy, "complete", None)
+        if record.scores and callable(complete):
+            complete(proposal, record.scores[0])
+
     def run(self, study: StudySpec, execute: Callable[[Mapping[str, Any]], float]) -> list[float]:
         history: list[Mapping[str, Any]] = []
         scores: list[float] = []
         for trial_index in range(study.max_trials):
             proposal = self.strategy.propose(study, history)
-            self.ledger.append(
-                "proposal",
-                {
-                    "trial": trial_index,
-                    "patch": proposal.patch,
-                    "rationale": proposal.rationale,
-                    "source": proposal.source,
-                },
-            )
-            try:
-                score = float(execute(proposal.patch))
-            except Exception as exc:
-                outcome: dict[str, Any] = {
-                    "trial": trial_index,
-                    "source": proposal.source,
-                    "status": "failed",
-                    "exception_type": type(exc).__name__,
-                    "message": str(exc),
-                }
-                self.ledger.append("outcome", outcome)
-                history.append(outcome)
-                continue
-            outcome = {
-                "trial": trial_index,
-                "source": proposal.source,
-                "status": "completed",
-                "score": score,
-            }
-            self.ledger.append("outcome", outcome)
-            history.append(outcome)
-            scores.append(score)
-            complete = getattr(self.strategy, "complete", None)
-            if callable(complete):
-                complete(proposal, score)
+            self._record_proposal(trial_index, proposal)
+            record = self._execute(trial_index, proposal, execute)
+            self.ledger.append("outcome", record.outcome)
+            history.append(record.outcome)
+            scores.extend(record.scores)
+            self._complete(proposal, record)
         return scores

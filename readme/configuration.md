@@ -11,8 +11,15 @@ for a real run. The complete, game-free
 be checked without Trackmania:
 
 ```bash
+uv run trackmaniarl inspect-config readme/examples/builtin-smoke.yaml
 uv run trackmaniarl validate readme/examples/builtin-smoke.yaml
 ```
+
+`inspect-config` performs only safe YAML loading and RunSpec validation. It
+prints every nested `class_path`, its YAML location and whether its module is
+first-party or external, without importing any component. The command never
+blocks a namespace and is not a sandbox; review the output before using the
+trusted `validate`, `train`, `learner` or `actor` paths.
 
 Algorithm blocks belong under `components.*.kwargs`; see the
 [algorithm support matrix](algorithms.md). Replay and recurrent constraints
@@ -115,17 +122,14 @@ Map IDs are unique and every path is bound into evaluation provenance.
 
 ## Trackmania environment
 
-The paths below are under
-`components.environment.kwargs.config`. `geometry_path` is preferred because
-it binds map UID/hash and track boundaries; legacy `trajectory_path` is an
-alternative centerline input. At least one is required.
+The paths below are under `components.environment.kwargs.config`.
+`geometry_path` is required because it binds map UID/hash and track boundaries.
 
 ### Connection, controls and termination
 
 | Field | Default | Unit/range and effect |
 | --- | --- | --- |
 | `host`, `port`, `session_port` | `127.0.0.1`, `9000`, `9001` | OpenPlanet telemetry/control and session endpoints. |
-| `field_count` | `33` | Exact telemetry fields, at least three. |
 | `timeout_s`, `start_timeout_s`, `start_poll_s`, `reset_settle_s` | `10`, `15`, `.01`, `0` s | I/O timeout, start deadline, polling cadence and optional post-reset wait. |
 | `action_repeat_frames` | `4` | Native telemetry frames per decision, `1..20`. Must be `1` when `decision_interval_ms` is set. |
 | `decision_interval_ms` | null | Physical decision grid `(0,250]` ms. The generated Trackmania template uses 50 ms and repeat 1. |
@@ -187,9 +191,8 @@ match exactly. `validate` executes a synthetic update to catch these contracts.
 
 Built-in learner `kwargs.execution` accepts `device` (`auto`, `cuda`, `rocm`,
 `mps`, `cpu`), `precision` (`auto`, `bfloat16`, `float16`, `float32`),
-`compile`, `compile_mode` and `deterministic`. Defaults are auto/auto,
-compile false, mode `default`, deterministic true. The resolved backend,
-precision, scaler and any safe fallback are recorded in the manifest.
+and `deterministic`. Defaults are auto/auto with deterministic execution. The
+resolved backend, precision, and scaler are recorded in the manifest.
 
 Experimental `AdaptiveGradientClipper` is applied after AMP unscaling and
 before `optimizer.step`; its EMA/warmup state is checkpointed. Experimental
@@ -203,6 +206,7 @@ identical seeded baseline.
 
 ```text
 trackmaniarl init DIRECTORY [--template starter|trackmania]
+trackmaniarl inspect-config RUN.yaml
 trackmaniarl validate RUN.yaml
 trackmaniarl train RUN.yaml [--model-initialization-checkpoint CHECKPOINT]
 trackmaniarl resume RUN.yaml CHECKPOINT [--reset-replay]

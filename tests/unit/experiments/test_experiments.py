@@ -24,16 +24,57 @@ class FailingStrategy:
         raise RuntimeError("provider unavailable")
 
 
-def test_evaluation_suite_always_reports_the_standard_metric_set() -> None:
-    metrics = aggregate_results(
-        [
-            EvaluationResult(True, 10.0, False, 5.0, 1.0, 60.0),
-            EvaluationResult(False, None, True, 1.0, 3.0, 30.0),
-        ]
+def _finished_result() -> EvaluationResult:
+    return EvaluationResult(
+        True,
+        10.0,
+        False,
+        5.0,
+        1.0,
+        60.0,
+        steps=2,
+        controller_apply_ms=2.0,
+        telemetry_wait_ms=8.0,
+        telemetry_skipped_frames_total=3,
+        telemetry_skipped_frames_max=2,
+        telemetry_steps_with_skipped_frames_fraction=0.5,
     )
-    assert tuple(metrics) == STANDARD_METRICS
+
+
+def _failed_result() -> EvaluationResult:
+    return EvaluationResult(
+        False,
+        None,
+        True,
+        1.0,
+        3.0,
+        30.0,
+        steps=1,
+        controller_apply_ms=5.0,
+        telemetry_wait_ms=11.0,
+        telemetry_skipped_frames_total=0,
+    )
+
+
+def _evaluation_metrics() -> dict[str, float]:
+    return aggregate_results([_finished_result(), _failed_result()])
+
+
+def test_evaluation_suite_always_reports_the_standard_metric_set() -> None:
+    assert tuple(_evaluation_metrics()) == STANDARD_METRICS
+
+
+def test_evaluation_suite_aggregates_timing_and_telemetry() -> None:
+    metrics = _evaluation_metrics()
     assert metrics["eval/finish_rate"] == 0.5
     assert metrics["eval/finish_time_s"] == 10.0
+    assert metrics["eval/action_latency_ms"] == 5 / 3
+    assert metrics["eval/controller_apply_ms"] == 3.0
+    assert metrics["eval/telemetry_wait_ms"] == 9.0
+    assert metrics["eval/telemetry_skipped_frames_total"] == 3.0
+    assert metrics["eval/telemetry_skipped_frames_mean"] == 1.0
+    assert metrics["eval/telemetry_skipped_frames_max"] == 2.0
+    assert metrics["eval/telemetry_steps_with_skipped_frames_fraction"] == 1 / 3
 
 
 def test_provider_failure_falls_back_to_a_valid_grid_proposal() -> None:

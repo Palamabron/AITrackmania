@@ -17,9 +17,6 @@ _ALGORITHMS: dict[str, str] = {
     "truncated_quantile_critic": (
         "trackmaniarl.algorithms.truncated_quantile_critic:TruncatedQuantileCritic"
     ),
-    "implicit_quantile_q_learning": (
-        "trackmaniarl.algorithms.implicit_quantile_q_learning:ImplicitQuantileQLearning"
-    ),
     "stable_discrete_soft_actor_critic": (
         "trackmaniarl.algorithms.stable_discrete_soft_actor_critic:StableDiscreteSoftActorCritic"
     ),

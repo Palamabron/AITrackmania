@@ -14,6 +14,18 @@ from trackmaniarl.core.data import Transition
 from trackmaniarl.core.pytree import PyTree, sanitize_finite, tree_collate
 
 
+def _typed_tensor(values: Sequence[float | bool], dtype: torch.dtype) -> torch.Tensor:
+    return torch.tensor(values, dtype=dtype)
+
+
+def _transition_scalars(transitions: list[Transition]) -> dict[str, torch.Tensor]:
+    return {
+        "rewards": _typed_tensor([item.reward for item in transitions], torch.float32),
+        "terminated": _typed_tensor([item.terminated for item in transitions], torch.bool),
+        "truncated": _typed_tensor([item.truncated for item in transitions], torch.bool),
+    }
+
+
 class GymnasiumObservationCollator:
     """Validate and batch observations described by a Gymnasium space."""
 
@@ -32,18 +44,10 @@ class GymnasiumObservationCollator:
                 [transition.observation for transition in transitions]
             ),
             "actions": tree_collate([transition.action for transition in transitions]),
-            "rewards": torch.tensor(
-                [transition.reward for transition in transitions], dtype=torch.float32
-            ),
             "next_observations": self.collate_observations(
                 [transition.next_observation for transition in transitions]
             ),
-            "terminated": torch.tensor(
-                [transition.terminated for transition in transitions], dtype=torch.bool
-            ),
-            "truncated": torch.tensor(
-                [transition.truncated for transition in transitions], dtype=torch.bool
-            ),
+            **_transition_scalars(transitions),
         }
 
     def _collate(
@@ -53,103 +57,134 @@ class GymnasiumObservationCollator:
         path: str,
     ) -> PyTree:
         if isinstance(space, spaces.Dict):
-            expected = tuple(space.spaces)
-            if not all(isinstance(value, Mapping) and tuple(value) == expected for value in values):
-                raise ValueError(f"{path} must match Dict keys {expected}")
-            return {
-                key: self._collate(
-                    child,
-                    [cast(Mapping[str, Any], value)[key] for value in values],
-                    f"{path}.{key}",
-                )
-                for key, child in space.spaces.items()
-            }
+            return self._collate_dict(space, values, path)
         if isinstance(space, spaces.Tuple):
-            valid = all(
-                isinstance(value, tuple) and len(value) == len(space.spaces) for value in values
-            )
-            if not valid:
-                raise ValueError(f"{path} must match Tuple length {len(space.spaces)}")
-            return tuple(
-                self._collate(
-                    child,
-                    [cast(tuple[Any, ...], value)[index] for value in values],
-                    f"{path}[{index}]",
-                )
-                for index, child in enumerate(space.spaces)
-            )
+            return self._collate_tuple(space, values, path)
         if isinstance(space, spaces.Box):
             return self._collate_box(space, values, path)
         if isinstance(space, spaces.Discrete):
-            if any(not np.issubdtype(np.asarray(value).dtype, np.integer) for value in values):
-                raise ValueError(f"{path} must contain integer Discrete values")
-            tensor = torch.as_tensor(values, dtype=torch.int64)
-            if tensor.shape != (len(values),):
-                raise ValueError(f"{path} must contain scalar discrete values")
-            start = int(cast(Any, space.start))
-            count = int(cast(Any, space.n))
-            if bool(((tensor < start) | (tensor >= start + count)).any()):
-                raise ValueError(f"{path} contains values outside the Discrete space")
-            return tensor
+            return self._collate_discrete(space, values, path)
         if isinstance(space, (spaces.MultiBinary, spaces.MultiDiscrete)):
-            arrays = [np.asarray(value) for value in values]
-            if any(not np.issubdtype(array.dtype, np.integer) for array in arrays):
-                raise ValueError(f"{path} must contain integer values")
-            tensor = torch.as_tensor(np.stack(arrays))
-            if tensor.shape != (len(values), *space.shape):
-                raise ValueError(f"{path} must have batched shape {(len(values), *space.shape)}")
-            if isinstance(space, spaces.MultiBinary):
-                if bool(((tensor != 0) & (tensor != 1)).any()):
-                    raise ValueError(f"{path} contains values outside the MultiBinary space")
-            else:
-                array_start = np.asarray(cast(Any, space.start), dtype=np.int64)
-                counts = np.asarray(cast(Any, space.nvec), dtype=np.int64)
-                low = torch.as_tensor(array_start, dtype=tensor.dtype)
-                high = low + torch.as_tensor(counts, dtype=tensor.dtype)
-                if bool(((tensor < low) | (tensor >= high)).any()):
-                    raise ValueError(f"{path} contains values outside the MultiDiscrete space")
-            return tensor.to(torch.int64)
+            return self._collate_integer_array(space, values, path)
         raise TypeError(f"Unsupported Gymnasium observation space {type(space).__name__}")
+
+    def _collate_dict(
+        self, space: spaces.Dict, values: Sequence[Any], path: str
+    ) -> dict[str, PyTree]:
+        expected = tuple(space.spaces)
+        if not all(isinstance(value, Mapping) and tuple(value) == expected for value in values):
+            raise ValueError(f"{path} must match Dict keys {expected}")
+        return {
+            key: self._collate(
+                child,
+                [cast(Mapping[str, Any], value)[key] for value in values],
+                f"{path}.{key}",
+            )
+            for key, child in space.spaces.items()
+        }
+
+    def _collate_tuple(
+        self, space: spaces.Tuple, values: Sequence[Any], path: str
+    ) -> tuple[PyTree, ...]:
+        valid = all(
+            isinstance(value, tuple) and len(value) == len(space.spaces) for value in values
+        )
+        if not valid:
+            raise ValueError(f"{path} must match Tuple length {len(space.spaces)}")
+        return tuple(
+            self._collate(
+                child,
+                [cast(tuple[Any, ...], value)[index] for value in values],
+                f"{path}[{index}]",
+            )
+            for index, child in enumerate(space.spaces)
+        )
+
+    @staticmethod
+    def _collate_discrete(
+        space: spaces.Discrete[Any], values: Sequence[Any], path: str
+    ) -> torch.Tensor:
+        if any(not np.issubdtype(np.asarray(value).dtype, np.integer) for value in values):
+            raise ValueError(f"{path} must contain integer Discrete values")
+        tensor = torch.as_tensor(values, dtype=torch.int64)
+        if tensor.shape != (len(values),):
+            raise ValueError(f"{path} must contain scalar discrete values")
+        start = int(cast(Any, space.start))
+        count = int(cast(Any, space.n))
+        if bool(((tensor < start) | (tensor >= start + count)).any()):
+            raise ValueError(f"{path} contains values outside the Discrete space")
+        return tensor
+
+    @staticmethod
+    def _collate_integer_array(
+        space: spaces.MultiBinary | spaces.MultiDiscrete,
+        values: Sequence[Any],
+        path: str,
+    ) -> torch.Tensor:
+        arrays = [np.asarray(value) for value in values]
+        if any(not np.issubdtype(array.dtype, np.integer) for array in arrays):
+            raise ValueError(f"{path} must contain integer values")
+        tensor = torch.as_tensor(np.stack(arrays))
+        if tensor.shape != (len(values), *space.shape):
+            raise ValueError(f"{path} must have batched shape {(len(values), *space.shape)}")
+        _validate_integer_bounds(space, tensor, path)
+        return tensor.to(torch.int64)
 
     @staticmethod
     def _collate_box(space: spaces.Box, values: Sequence[Any], path: str) -> torch.Tensor:
         if all(isinstance(value, torch.Tensor) for value in values):
-            tensors = cast(Sequence[torch.Tensor], values)
-            if any(tuple(tensor.shape) != space.shape for tensor in tensors):
-                raise ValueError(f"{path} must have shape {space.shape}")
-            expected_dtype = torch.from_numpy(np.empty((), dtype=space.dtype)).dtype
-            if any(tensor.dtype != expected_dtype for tensor in tensors):
-                raise ValueError(f"{path} must have dtype {space.dtype}")
-            stacked_tensor = torch.stack(tuple(tensors))
-            if stacked_tensor.is_floating_point() and not torch.isfinite(stacked_tensor).all():
-                raise ValueError(f"{path} contains non-finite values")
-            low = torch.as_tensor(
-                space.low,
-                dtype=stacked_tensor.dtype,
-                device=stacked_tensor.device,
-            )
-            high = torch.as_tensor(
-                space.high,
-                dtype=stacked_tensor.dtype,
-                device=stacked_tensor.device,
-            )
-            if bool((stacked_tensor < low).any()) or bool((stacked_tensor > high).any()):
-                raise ValueError(f"{path} contains values outside the Box space")
-            return stacked_tensor
-        arrays = [
-            value.detach().cpu().numpy() if isinstance(value, torch.Tensor) else np.asarray(value)
-            for value in values
-        ]
-        if any(array.shape != space.shape for array in arrays):
-            raise ValueError(f"{path} must have shape {space.shape}")
-        if any(array.dtype != space.dtype for array in arrays):
-            raise ValueError(f"{path} must have dtype {space.dtype}")
-        stacked = np.stack(arrays)
-        if np.issubdtype(stacked.dtype, np.floating) and not np.isfinite(stacked).all():
-            raise ValueError(f"{path} contains non-finite values")
-        if np.any(stacked < space.low) or np.any(stacked > space.high):
-            raise ValueError(f"{path} contains values outside the Box space")
-        return torch.from_numpy(np.ascontiguousarray(stacked))
+            return _collate_tensor_box(space, cast(Sequence[torch.Tensor], values), path)
+        return _collate_array_box(space, values, path)
+
+
+def _validate_integer_bounds(
+    space: spaces.MultiBinary | spaces.MultiDiscrete, tensor: torch.Tensor, path: str
+) -> None:
+    if isinstance(space, spaces.MultiBinary):
+        if bool(((tensor != 0) & (tensor != 1)).any()):
+            raise ValueError(f"{path} contains values outside the MultiBinary space")
+        return
+    array_start = np.asarray(cast(Any, space.start), dtype=np.int64)
+    counts = np.asarray(cast(Any, space.nvec), dtype=np.int64)
+    low = torch.as_tensor(array_start, dtype=tensor.dtype)
+    high = low + torch.as_tensor(counts, dtype=tensor.dtype)
+    if bool(((tensor < low) | (tensor >= high)).any()):
+        raise ValueError(f"{path} contains values outside the MultiDiscrete space")
+
+
+def _collate_tensor_box(
+    space: spaces.Box, tensors: Sequence[torch.Tensor], path: str
+) -> torch.Tensor:
+    if any(tuple(tensor.shape) != space.shape for tensor in tensors):
+        raise ValueError(f"{path} must have shape {space.shape}")
+    expected_dtype = torch.from_numpy(np.empty((), dtype=space.dtype)).dtype
+    if any(tensor.dtype != expected_dtype for tensor in tensors):
+        raise ValueError(f"{path} must have dtype {space.dtype}")
+    stacked = torch.stack(tuple(tensors))
+    if stacked.is_floating_point() and not torch.isfinite(stacked).all():
+        raise ValueError(f"{path} contains non-finite values")
+    low = torch.as_tensor(space.low, dtype=stacked.dtype, device=stacked.device)
+    high = torch.as_tensor(space.high, dtype=stacked.dtype, device=stacked.device)
+    if bool((stacked < low).any()) or bool((stacked > high).any()):
+        raise ValueError(f"{path} contains values outside the Box space")
+    return stacked
+
+
+def _collate_array_box(space: spaces.Box, values: Sequence[Any], path: str) -> torch.Tensor:
+    arrays = [
+        value.detach().cpu().numpy() if isinstance(value, torch.Tensor) else np.asarray(value)
+        for value in values
+    ]
+    if any(array.shape != space.shape for array in arrays):
+        raise ValueError(f"{path} must have shape {space.shape}")
+    if any(array.dtype != space.dtype for array in arrays):
+        raise ValueError(f"{path} must have dtype {space.dtype}")
+    stacked = np.stack(arrays)
+    if np.issubdtype(stacked.dtype, np.floating) and not np.isfinite(stacked).all():
+        raise ValueError(f"{path} contains non-finite values")
+    if np.any(stacked < space.low) or np.any(stacked > space.high):
+        raise ValueError(f"{path} contains values outside the Box space")
+    return torch.from_numpy(np.ascontiguousarray(stacked))
 
 
 class TransitionFeaturePipeline:

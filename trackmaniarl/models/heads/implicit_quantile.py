@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from typing import cast
+from collections.abc import Mapping
+from dataclasses import dataclass
+from typing import Any, Self, cast
 
 import torch
 from torch import nn
@@ -11,26 +13,35 @@ from torch.nn import functional as F
 from trackmaniarl.models.contracts import ValueRepresentation, ValueSupport
 
 
+@dataclass(frozen=True, slots=True)
+class ImplicitQuantileHeadConfig:
+    feature_dim: int
+    action_count: int
+    cosine_count: int = 64
+    dueling: bool = False
+
+    @classmethod
+    def from_mapping(cls, values: Mapping[str, Any]) -> Self:
+        return cls(**dict(values))
+
+
 class ImplicitQuantileHead(nn.Module):
     representation = ValueRepresentation.IMPLICIT_QUANTILE
 
-    def __init__(
-        self,
-        feature_dim: int,
-        action_count: int,
-        cosine_count: int = 64,
-        *,
-        dueling: bool = False,
-    ) -> None:
+    def __init__(self, config: ImplicitQuantileHeadConfig | Mapping[str, Any]) -> None:
         super().__init__()
-        if min(feature_dim, action_count, cosine_count) < 1:
+        if not isinstance(config, ImplicitQuantileHeadConfig):
+            config = ImplicitQuantileHeadConfig.from_mapping(config)
+        if min(config.feature_dim, config.action_count, config.cosine_count) < 1:
             raise ValueError("head dimensions must be positive")
-        self.feature_dim = feature_dim
-        self.action_count = action_count
-        self.register_buffer("frequencies", torch.arange(1, cosine_count + 1).float())
-        self.quantile_embedding = nn.Sequential(nn.Linear(cosine_count, feature_dim), nn.SiLU())
-        self.advantage = nn.Linear(feature_dim, action_count)
-        self.value = nn.Linear(feature_dim, 1) if dueling else None
+        self.feature_dim = config.feature_dim
+        self.action_count = config.action_count
+        self.register_buffer("frequencies", torch.arange(1, config.cosine_count + 1).float())
+        self.quantile_embedding = nn.Sequential(
+            nn.Linear(config.cosine_count, config.feature_dim), nn.SiLU()
+        )
+        self.advantage = nn.Linear(config.feature_dim, config.action_count)
+        self.value = nn.Linear(config.feature_dim, 1) if config.dueling else None
 
     def evaluate_all(self, features: torch.Tensor, support: ValueSupport) -> torch.Tensor:
         combined = self._combined(features, support.points)

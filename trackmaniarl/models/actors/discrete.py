@@ -7,6 +7,8 @@ from typing import Any, cast
 import torch
 from torch import nn
 
+from trackmaniarl.core.contracts import PolicyMode
+
 
 class CategoricalActor(nn.Module):
     """Categorical policy exposing logits, sampled actions and deterministic argmax actions."""
@@ -17,11 +19,11 @@ class CategoricalActor(nn.Module):
         self.logits = nn.Linear(feature_dim, action_count)
 
     def forward(
-        self, observation: Any, *, deterministic: bool = False
+        self, observation: Any, mode: PolicyMode = PolicyMode.ONLINE
     ) -> tuple[torch.Tensor, torch.Tensor]:
         logits = self.logits(_encode(self.encoder, observation))
         distribution: Any = torch.distributions.Categorical(logits=logits)
-        actions = logits.argmax(dim=-1) if deterministic else distribution.sample()
+        actions = logits.argmax(dim=-1) if mode is PolicyMode.EVALUATION else distribution.sample()
         return actions, distribution.log_prob(actions)
 
     def probabilities(self, observation: Any) -> torch.Tensor:

@@ -10,6 +10,21 @@ from trackmaniarl.core.data import TrainingBatch
 
 
 @dataclass(frozen=True, slots=True)
+class _BatchValues:
+    actions: torch.Tensor
+    rewards: torch.Tensor
+    discounts: torch.Tensor
+    sequence: bool
+
+
+@dataclass(frozen=True, slots=True)
+class _BatchMetadata:
+    masks: torch.Tensor
+    gamma: float
+    n_step: int
+
+
+@dataclass(frozen=True, slots=True)
 class ValueBatchView:
     batch: TrainingBatch
     actions: torch.Tensor
@@ -24,40 +39,21 @@ class ValueBatchView:
 
     @classmethod
     def from_batch(cls, batch: TrainingBatch) -> ValueBatchView:
-        actions = _tensor(batch.actions, "actions").long()
-        rewards = _tensor(batch.rewards, "rewards").float()
-        discounts = _tensor(batch.bootstrap_discounts, "bootstrap_discounts").float()
-        sequence = rewards.ndim == 2
-        if not sequence:
-            actions = actions.reshape(-1, 1)
-            rewards = rewards.reshape(-1, 1)
-            discounts = discounts.reshape(-1, 1)
-        if actions.shape != rewards.shape or discounts.shape != rewards.shape:
-            raise ValueError("actions, rewards and discounts must share (batch, time)")
-        batch_size, time_steps = rewards.shape
-        if sequence:
-            if not isinstance(batch.masks, torch.Tensor) or batch.masks.shape != rewards.shape:
-                raise ValueError("sequence batch requires boolean masks with shape (batch, time)")
-            masks = batch.masks.bool()
-            gamma = float(batch.metadata["gamma"])
-            n_step = int(batch.metadata["n_step"])
-        else:
-            masks = torch.ones_like(rewards, dtype=torch.bool)
-            gamma = 1.0
-            n_step = 1
-        if n_step < 1 or (n_step >= time_steps and sequence and time_steps > 1):
-            raise ValueError("n_step must be positive and smaller than sequence length")
+        values = _batch_values(batch)
+        metadata = _batch_metadata(batch, values)
+        _validate_layout(values, metadata)
+        batch_size, time_steps = values.rewards.shape
         return cls(
             batch,
-            actions,
-            rewards,
-            discounts,
-            masks,
-            sequence,
+            values.actions,
+            values.rewards,
+            values.discounts,
+            metadata.masks,
+            values.sequence,
             batch_size,
             time_steps,
-            n_step,
-            gamma,
+            metadata.n_step,
+            metadata.gamma,
         )
 
     def training_positions(self, burn_in: int) -> list[int]:
@@ -103,3 +99,38 @@ def _tensor(value: object, name: str) -> torch.Tensor:
     if not isinstance(value, torch.Tensor):
         raise TypeError(f"{name} must be a tensor")
     return value
+
+
+def _batch_values(batch: TrainingBatch) -> _BatchValues:
+    actions = _tensor(batch.actions, "actions").long()
+    rewards = _tensor(batch.rewards, "rewards").float()
+    discounts = _tensor(batch.bootstrap_discounts, "bootstrap_discounts").float()
+    sequence = rewards.ndim == 2
+    if sequence:
+        return _BatchValues(actions, rewards, discounts, sequence)
+    return _BatchValues(
+        actions.reshape(-1, 1), rewards.reshape(-1, 1), discounts.reshape(-1, 1), sequence
+    )
+
+
+def _batch_metadata(batch: TrainingBatch, values: _BatchValues) -> _BatchMetadata:
+    if not values.sequence:
+        return _BatchMetadata(torch.ones_like(values.rewards, dtype=torch.bool), 1.0, 1)
+    if not isinstance(batch.masks, torch.Tensor) or batch.masks.shape != values.rewards.shape:
+        raise ValueError("sequence batch requires boolean masks with shape (batch, time)")
+    return _BatchMetadata(
+        batch.masks.bool(), float(batch.metadata["gamma"]), int(batch.metadata["n_step"])
+    )
+
+
+def _validate_layout(values: _BatchValues, metadata: _BatchMetadata) -> None:
+    if (
+        values.actions.shape != values.rewards.shape
+        or values.discounts.shape != values.rewards.shape
+    ):
+        raise ValueError("actions, rewards and discounts must share (batch, time)")
+    time_steps = values.rewards.shape[1]
+    if metadata.n_step < 1:
+        raise ValueError("n_step must be positive and smaller than sequence length")
+    if values.sequence and time_steps > 1 and metadata.n_step >= time_steps:
+        raise ValueError("n_step must be positive and smaller than sequence length")

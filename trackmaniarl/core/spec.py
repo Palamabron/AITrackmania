@@ -176,7 +176,7 @@ class EvaluationSuiteSpec(BaseModel):
 
     name: str = Field(min_length=1)
     version: str = Field(min_length=1)
-    maps: tuple[EvaluationMapSpec, ...] = ()
+    maps: tuple[EvaluationMapSpec, ...] = Field(min_length=1)
     trials_per_map: PositiveInt = 1
     time_buckets_s: tuple[float, ...] = DEFAULT_EVALUATION_TIME_BUCKETS_S
     target_median_s: float | None = None
@@ -242,8 +242,6 @@ class RunSpec(BaseModel):
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> RunSpec:
-        """Load and validate a YAML run description without importing legacy config."""
-
         config_path = Path(path)
         with config_path.open(encoding="utf-8") as file:
             data = yaml.safe_load(file)

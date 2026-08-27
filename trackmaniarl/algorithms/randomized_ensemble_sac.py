@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from copy import deepcopy
-from typing import Any
+from dataclasses import dataclass
+from typing import Any, Unpack, cast
 
 import torch
 from torch import nn
@@ -16,9 +17,21 @@ from trackmaniarl.algorithms._torch import (
     polyak_update,
     weighted_mean,
 )
-from trackmaniarl.algorithms.execution import TorchExecutionConfig
+from trackmaniarl.algorithms.sac_config import REDQConfig, REDQOptions
+from trackmaniarl.algorithms.sac_support import (
+    SACBatch,
+    continuous_batch,
+    freeze_modules,
+    unfreeze_modules,
+)
 from trackmaniarl.core.contracts import ModelContract
 from trackmaniarl.core.data import PriorityUpdate, TrainingBatch
+
+
+@dataclass(frozen=True, slots=True)
+class _REDQCriticStep:
+    loss: torch.Tensor
+    td_errors: torch.Tensor
 
 
 class RandomizedEnsembleSAC(TorchLearnerBase):
@@ -30,33 +43,24 @@ class RandomizedEnsembleSAC(TorchLearnerBase):
     def __init__(
         self,
         model: nn.Module | None = None,
-        *,
-        model_factory: Any | None = None,
-        target_tau: float = 0.005,
-        learning_rate: float = 3e-4,
-        entropy_coefficient: float = 0.2,
-        target_subset_size: int = 2,
-        policy_update_interval: int = 20,
-        device: str | None = None,
-        execution: TorchExecutionConfig | Mapping[str, Any] | None = None,
-        seed: int = 0,
+        **options: Unpack[REDQOptions],
     ) -> None:
+        config = REDQConfig(**options)
         super().__init__(
             model,
-            model_factory=model_factory,
-            device=device,
-            execution=execution,
-            seed=seed,
+            model_factory=config.model_factory,
+            execution=config.execution,
+            seed=config.seed,
         )
-        if not 0.0 < target_tau <= 1.0 or learning_rate <= 0.0 or entropy_coefficient <= 0.0:
-            raise ValueError("target_tau, learning_rate, and entropy_coefficient must be positive")
-        if target_subset_size < 1 or policy_update_interval < 1:
-            raise ValueError("target_subset_size and policy_update_interval must be positive")
-        self.target_tau = target_tau
-        self.learning_rate = learning_rate
-        self.entropy_coefficient = entropy_coefficient
-        self.target_subset_size = target_subset_size
-        self.policy_update_interval = policy_update_interval
+        config.validate()
+        self._configure(config)
+
+    def _configure(self, config: REDQConfig) -> None:
+        self.target_tau = config.target_tau
+        self.learning_rate = config.learning_rate
+        self.entropy_coefficient = config.entropy_coefficient
+        self.target_subset_size = config.target_subset_size
+        self.policy_update_interval = config.policy_update_interval
         self.update_count = 0
 
     def _setup_model(self) -> None:
@@ -82,55 +86,57 @@ class RandomizedEnsembleSAC(TorchLearnerBase):
 
     def _update(self, batch: TrainingBatch) -> tuple[Mapping[str, float], PriorityUpdate]:
         assert self.model is not None
-        batch = self._batch(batch)
-        observations = self._tensor(batch.observations, "observations")
-        actions = self._tensor(batch.actions, "actions").float()
-        rewards = self._tensor(batch.rewards, "rewards").float().reshape(-1)
-        next_observations = self._tensor(batch.next_observations, "next_observations")
-        discounts = (
-            self._tensor(batch.bootstrap_discounts, "bootstrap_discounts").float().reshape(-1)
-        )
-        weights = (
-            batch.importance_weights if isinstance(batch.importance_weights, torch.Tensor) else None
-        )
+        prepared = continuous_batch(self._batch(batch))
+        critic = self._critic_step(prepared)
+        self._optimize(critic.loss, self.critic_optimizer)
+        self.update_count += 1
+        actor_loss = self._actor_step(prepared)
+        polyak_update(self.model, self.target_model, self.target_tau)
+        metrics = {"loss/actor": float(actor_loss.item()), "loss/critic": float(critic.loss.item())}
+        priorities = critic.td_errors.cpu().tolist()
+        return metrics, PriorityUpdate(prepared.source.transition_ids, priorities)
+
+    def _critic_targets(self, batch: SACBatch) -> torch.Tensor:
         with torch.no_grad():
-            next_actions, next_log_probabilities = self.model.actor(next_observations)
+            next_actions, next_log_probabilities = self.model.actor(batch.next_observations)
             subset = torch.randperm(
                 len(self.model.critics), generator=self._target_rng, device=self.device
             )[: self.target_subset_size]
             target_values = torch.stack(
                 [
-                    self.target_model.critics[index](next_observations, next_actions)
+                    self.target_model.critics[index](batch.next_observations, next_actions)
                     for index in subset
                 ]
             ).amin(dim=0)
-            targets = rewards + discounts * (
+            result = batch.rewards + batch.discounts * (
                 target_values - self.entropy_coefficient * next_log_probabilities
             )
-        predictions = torch.stack([critic(observations, actions) for critic in self.model.critics])
+            return cast(torch.Tensor, result)
+
+    def _critic_step(self, batch: SACBatch) -> _REDQCriticStep:
+        targets = self._critic_targets(batch)
+        predictions = torch.stack(
+            [critic(batch.observations, batch.actions) for critic in self.model.critics]
+        )
         td_errors = (predictions.mean(dim=0) - targets).detach().abs()
-        critic_loss = weighted_mean(
-            (predictions - targets.unsqueeze(0)).square().mean(dim=0), weights
+        loss = weighted_mean(
+            (predictions - targets.unsqueeze(0)).square().mean(dim=0), batch.weights
         )
-        self._optimize(critic_loss, self.critic_optimizer)
-        self.update_count += 1
+        return _REDQCriticStep(loss, td_errors)
+
+    def _actor_step(self, batch: SACBatch) -> torch.Tensor:
         actor_loss = torch.zeros((), device=self.device)
-        if self.update_count % self.policy_update_interval == 0:
-            for critic in self.model.critics:
-                critic.requires_grad_(False)
-            policy_actions, log_probabilities = self.model.actor(observations)
-            values = torch.stack(
-                [critic(observations, policy_actions) for critic in self.model.critics]
-            ).mean(dim=0)
-            actor_loss = (self.entropy_coefficient * log_probabilities - values).mean()
-            self._optimize(actor_loss, self.actor_optimizer)
-            for critic in self.model.critics:
-                critic.requires_grad_(True)
-        polyak_update(self.model, self.target_model, self.target_tau)
-        return (
-            {"loss/actor": float(actor_loss.item()), "loss/critic": float(critic_loss.item())},
-            PriorityUpdate(batch.transition_ids, td_errors.cpu().tolist()),
-        )
+        if self.update_count % self.policy_update_interval != 0:
+            return actor_loss
+        freeze_modules(self.model.critics)
+        policy_actions, log_probabilities = self.model.actor(batch.observations)
+        values = torch.stack(
+            [critic(batch.observations, policy_actions) for critic in self.model.critics]
+        ).mean(dim=0)
+        actor_loss = (self.entropy_coefficient * log_probabilities - values).mean()
+        self._optimize(actor_loss, self.actor_optimizer)
+        unfreeze_modules(self.model.critics)
+        return cast(torch.Tensor, actor_loss)
 
     def policy(self) -> TorchPolicy:
         assert self.model is not None
@@ -164,7 +170,6 @@ class RandomizedEnsembleSAC(TorchLearnerBase):
         self.actor_optimizer.load_state_dict(state["actor_optimizer"])
         self.critic_optimizer.load_state_dict(state["critic_optimizer"])
         self.update_count = int(state["update_count"])
-        if state.get("target_rng") is not None:
-            self._target_rng.set_state(state["target_rng"])
-        self._restore_scaler(state.get("scaler"))
-        self._restore_rng(state.get("rng", {}))
+        self._target_rng.set_state(state["target_rng"])
+        self._restore_scaler(state["scaler"])
+        self._restore_rng(state["rng"])

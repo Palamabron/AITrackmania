@@ -11,7 +11,8 @@ from pathlib import Path
 from typing import Any, BinaryIO, TextIO, cast
 from uuid import uuid4
 
-from trackmaniarl.core.data import SampleBatch, Transition
+from trackmaniarl.core.contracts import PolicyMode
+from trackmaniarl.core.data import TrainingBatch, Transition
 
 _CHECKPOINT_COPY_CHUNK_BYTES = 8 * 1024**2
 _DEFAULT_MAX_DECOMPRESSED_CHECKPOINT_BYTES = 8 * 1024**3
@@ -37,8 +38,8 @@ class IdentityFeaturePipeline:
 class ZeroPolicy:
     """Safe policy used only by the synthetic validation path."""
 
-    def act(self, observation: Any, *, deterministic: bool = False) -> float:
-        del observation, deterministic
+    def act(self, observation: Any, mode: PolicyMode = PolicyMode.ONLINE) -> float:
+        del observation, mode
         return 0.0
 
 
@@ -52,7 +53,7 @@ class SmokeLearner:
     def setup(self, context: Mapping[str, Any]) -> None:
         del context
 
-    def update(self, batch: SampleBatch) -> Mapping[str, float]:
+    def update(self, batch: TrainingBatch) -> Mapping[str, float]:
         rewards = batch.data["rewards"]
         self._updates += 1
         return {
@@ -108,9 +109,6 @@ class JsonlRunLogger:
                 self._file = None
 
 
-JsonlTracker = JsonlRunLogger
-
-
 class CompositeRunLogger:
     """Fan out neutral events while retaining local JSONL as the source of truth."""
 
@@ -156,7 +154,7 @@ def _load_torch_checkpoint(path: Path) -> Mapping[str, Any]:
 
 
 class TorchCheckpointCodec:
-    """Atomic zstd-streamed Torch checkpoints with legacy uncompressed reads."""
+    """Atomic zstd-streamed Torch checkpoints."""
 
     def __init__(
         self,
@@ -190,7 +188,7 @@ class TorchCheckpointCodec:
         with path.open("rb") as source:
             compressed = source.read(4) == b"\x28\xb5\x2f\xfd"
         if not compressed:
-            return _load_torch_checkpoint(path)
+            raise ValueError(f"checkpoint is not a zstd stream: {path}")
         temporary = path.with_name(f".{path.name}.{uuid4().hex}.decompressed.tmp")
         try:
             with (

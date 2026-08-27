@@ -15,13 +15,21 @@ uv sync
 uv run trackmaniarl validate run.yaml
 ```
 
+> **Windows driver boundary:** the generated TrackMania project installs
+> `vgamepad`, whose normal installer may install or repair the system-wide
+> ViGEmBus driver. Review the pinned `vgamepad` source before provisioning a
+> host. `VGAMEPAD_SKIP_VIGEMBUS_INSTALL=true` skips that driver installer for
+> CI or an already provisioned machine; it does not provide a driver, so the
+> gamepad backend still requires a compatible ViGEmBus installation. Use the
+> keyboard backend when no virtual gamepad driver should be installed.
+
 In Openplanet's **Plugin Manager**, install the signed
 [**TrackmaniaRL Connect**](https://openplanet.dev/plugin/sac_getdata) plugin
 (identifier `SAC_GetData`) and verify version **2.4.0**. Enable
 [School Mode](https://openplanet.dev/docs/school-mode) on Openplanet 1.26.0 or
 newer, which blocks online play and official leaderboard submissions while the
 plugin is active. Do not copy the bundled developer-reference `.as` file into
-`Scripts` or enable a legacy loose TrackmaniaRL script alongside the managed
+`Scripts` or enable an unmanaged loose TrackmaniaRL script alongside the managed
 plugin.
 
 <p align="center">
@@ -136,9 +144,10 @@ its own fraction proposal network, and target quantiles are evaluated only for
 the action selected by online Double-DQN.
 
 To initialize FQF from a proven IQN run, use the warm-start loader for named
-`encoder`, `temporal` and compatible `head` tensors. Do not use a 1.x IQN
-checkpoint as resume state and do not silently copy mismatched shapes. Preserve
-the generated match report with the experiment artifacts.
+`encoder`, `temporal` and compatible `head` tensors from a current compressed
+checkpoint. Pre-2.0 checkpoints are rejected, and tensors with changed names,
+shapes or dtypes are reported without being copied. Preserve the generated
+match report with the experiment artifacts.
 
 ## Mamba temporal core
 
@@ -212,7 +221,7 @@ uv run trackmaniarl resume run.yaml artifacts/trackmania-iqn/checkpoints/distrib
 Replace `trackmania-iqn` if your `run_id` differs.
 
 W&B is optional. The generated project logs locally until you run
-`uv add "trackmaniarl[trackmania,algorithms,distributed,wandb]"` and add an
+`uv add "trackmaniarl[trackmania,distributed,wandb]"` and add an
 explicit `WandbTracker` under `components.additional_loggers`. Supply
 `WANDB_API_KEY` only through a private environment or ignored `.env` file.
 
@@ -235,8 +244,11 @@ uv run trackmaniarl benchmark run.yaml artifacts/trackmania-iqn-lidar/checkpoint
 ```
 
 The remaining manual release gate is a four-hour Windows soak on the real game,
-with periodic checkpoints and at least one successful `trackmaniarl resume`. A failed
-benchmark or soak blocks release.
+with periodic checkpoints and at least one successful `trackmaniarl resume`.
+Run the final benchmark against the newer post-resume checkpoint, then generate
+`soak-report.json` with `scripts/verify_soak.py`; the verifier requires that
+`evaluation.json` be bound to that checkpoint and rejects every telemetry or
+controller error. A failed benchmark or soak blocks release.
 
 ## Connection troubleshooting
 

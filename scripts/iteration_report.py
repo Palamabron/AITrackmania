@@ -13,8 +13,14 @@ import argparse
 import json
 import sys
 from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
+
+if TYPE_CHECKING or __name__ != "__main__":
+    from scripts.iteration_report_rendering import build_markdown_report
+else:
+    from iteration_report_rendering import build_markdown_report
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 EXPERIMENTS_DIR = REPO_ROOT / "experiments"
@@ -22,29 +28,32 @@ ANALYSIS_DIR = EXPERIMENTS_DIR / "analysis"
 SUPPORTED_SCHEMA_VERSION = "2.0"
 
 
+@dataclass(frozen=True, slots=True)
+class ReportArguments:
+    format: str
+    output: str
+
+
+def _read_analysis(path: Path) -> dict[str, Any]:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"invalid analysis JSON: {path}") from exc
+    if not isinstance(data, dict):
+        raise ValueError(f"analysis must be a JSON object: {path}")
+    if data.get("schema_version") != SUPPORTED_SCHEMA_VERSION:
+        raise ValueError(f"analysis must use schema {SUPPORTED_SCHEMA_VERSION}: {path}")
+    exp_id = data.get("exp_id")
+    if not isinstance(exp_id, str) or not exp_id:
+        raise ValueError(f"analysis must contain a non-empty exp_id: {path}")
+    return cast(dict[str, Any], data)
+
+
 def _load_analyses() -> dict[str, dict[str, Any]]:
     analyses: dict[str, dict[str, Any]] = {}
-    unsupported_count = 0
     for path in sorted(ANALYSIS_DIR.glob("*.json")):
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            print(f"WARNING: ignoring invalid JSON: {path}", file=sys.stderr)
-            continue
-        if not isinstance(data, dict) or data.get("schema_version") != SUPPORTED_SCHEMA_VERSION:
-            unsupported_count += 1
-            continue
-        exp_id = data.get("exp_id")
-        if not isinstance(exp_id, str) or not exp_id:
-            print(f"WARNING: ignoring analysis without exp_id: {path}", file=sys.stderr)
-            continue
-        analyses[exp_id] = data
-    if unsupported_count:
-        print(
-            f"WARNING: ignored {unsupported_count} legacy analysis artifacts; "
-            "refresh them with fetch_analysis.py to include them.",
-            file=sys.stderr,
-        )
+        analysis = _read_analysis(path)
+        analyses[analysis["exp_id"]] = analysis
     return analyses
 
 
@@ -104,77 +113,80 @@ def _metric_row(name: str, values: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+SECTION_SPECS: dict[str, tuple[tuple[tuple[str, ...], ...], tuple[str, ...]]] = {
+    "episode_health": (
+        (
+            ("episode/return", "episode/reward"),
+            ("episode/progress_pct",),
+            ("episode/finish_rate",),
+            ("episode/best_finish_time_s",),
+            ("episode/finish_time_s",),
+            ("episode/steps", "episode/transitions"),
+            ("episode/race_time_s",),
+            ("episode/exploration_epsilon",),
+        ),
+        ("episode/reward/", "episode/termination/", "episode/velocity/"),
+    ),
+    "learner_stability": (
+        (
+            ("learner/q_mean", "learner/debug/q_selected_mean"),
+            ("learner/q_abs_max",),
+            ("learner/gradient_norm_max", "learner/debug/gradient_norm"),
+            ("learner/clipped_fraction", "learner/debug/gradient_clipped_fraction"),
+            ("learner/debug/td_abs_mean",),
+            ("learner/debug/td_abs_max",),
+        ),
+        ("learner/loss/",),
+    ),
+    "replay_and_schedule": (
+        (
+            ("replay/size",),
+            ("replay/fill_fraction",),
+            ("replay/per_beta",),
+            ("training/update_credit",),
+            ("training/finish_rate",),
+        ),
+        (),
+    ),
+    "throughput_and_backlog": (
+        (
+            ("training/transitions_per_s",),
+            ("training/updates_per_s",),
+            ("training/update_throughput_ratio",),
+            ("training/update_backlog_s",),
+            ("training/rollout_queue_depth",),
+            ("performance/learner_update_s",),
+            ("performance/replay_wait_s",),
+        ),
+        (),
+    ),
+    "actor_health": (
+        (
+            ("actor/ingest_fps",),
+            ("actor/policy_lag_updates",),
+            ("actor/queue_delay_s",),
+            ("actor/rollout_queue_depth",),
+            ("actor/heartbeat/spool_bytes",),
+            ("actor/timeout/silence_s",),
+        ),
+        ("actor/policy/",),
+    ),
+    "evaluation": (
+        (
+            ("eval/suite/eval/finish_rate", "eval/episode/finish_rate"),
+            ("eval/suite/eval/median_finish_time_s",),
+            ("eval/suite/eval/finish_time_s", "eval/episode/finish_time_s"),
+            ("eval/suite/eval/crash_rate",),
+            ("eval/suite/eval/reward", "eval/episode/return"),
+        ),
+        (),
+    ),
+}
+SECTION_KEYS = tuple(SECTION_SPECS)
+
+
 def _section(metrics: Mapping[str, Any], key: str) -> list[dict[str, Any]]:
-    sections = {
-        "episode_health": (
-            (
-                ("episode/return", "episode/reward"),
-                ("episode/progress_pct",),
-                ("episode/finish_rate",),
-                ("episode/best_finish_time_s",),
-                ("episode/finish_time_s",),
-                ("episode/steps", "episode/transitions"),
-                ("episode/race_time_s",),
-                ("episode/exploration_epsilon",),
-            ),
-            ("episode/reward/", "episode/termination/", "episode/velocity/"),
-        ),
-        "learner_stability": (
-            (
-                ("learner/q_mean", "learner/debug/q_selected_mean"),
-                ("learner/q_abs_max",),
-                ("learner/gradient_norm_max", "learner/debug/gradient_norm"),
-                ("learner/clipped_fraction", "learner/debug/gradient_clipped_fraction"),
-                ("learner/debug/td_abs_mean",),
-                ("learner/debug/td_abs_max",),
-            ),
-            ("learner/loss/",),
-        ),
-        "replay_and_schedule": (
-            (
-                ("replay/size",),
-                ("replay/fill_fraction",),
-                ("replay/per_beta",),
-                ("training/update_credit",),
-                ("training/finish_rate",),
-            ),
-            (),
-        ),
-        "throughput_and_backlog": (
-            (
-                ("training/transitions_per_s",),
-                ("training/updates_per_s",),
-                ("training/update_throughput_ratio",),
-                ("training/update_backlog_s",),
-                ("training/rollout_queue_depth",),
-                ("performance/learner_update_s",),
-                ("performance/replay_wait_s",),
-            ),
-            (),
-        ),
-        "actor_health": (
-            (
-                ("actor/ingest_fps",),
-                ("actor/policy_lag_updates",),
-                ("actor/queue_delay_s",),
-                ("actor/rollout_queue_depth",),
-                ("actor/heartbeat/spool_bytes",),
-                ("actor/timeout/silence_s",),
-            ),
-            ("actor/policy/",),
-        ),
-        "evaluation": (
-            (
-                ("eval/suite/eval/finish_rate", "eval/episode/finish_rate"),
-                ("eval/suite/eval/median_finish_time_s",),
-                ("eval/suite/eval/finish_time_s", "eval/episode/finish_time_s"),
-                ("eval/suite/eval/crash_rate",),
-                ("eval/suite/eval/reward", "eval/episode/return"),
-            ),
-            (),
-        ),
-    }
-    exact, prefixes = sections[key]
+    exact, prefixes = SECTION_SPECS[key]
     return _metric_rows(metrics, exact, prefixes)
 
 
@@ -189,15 +201,21 @@ def _categories(analysis: Mapping[str, Any]) -> dict[str, dict[str, int]]:
     }
 
 
-def _alerts(analysis: Mapping[str, Any], sections: Mapping[str, list[dict[str, Any]]]) -> list[str]:
+def _history_alerts(analysis: Mapping[str, Any]) -> list[str]:
     history = analysis["history"]
     run = analysis.get("run")
-    metrics = analysis["metrics"]
     alerts: list[str] = []
     if int(history["rows_scanned"]) < 10:
         alerts.append("History is too short for reliable trend estimates.")
     if isinstance(run, Mapping) and run.get("state") not in {"running", "finished"}:
         alerts.append(f"Run state is '{run.get('state')}', so the final history may be incomplete.")
+    return alerts
+
+
+def _learner_alerts(
+    metrics: Mapping[str, Any], sections: Mapping[str, list[dict[str, Any]]]
+) -> list[str]:
+    alerts: list[str] = []
     for row in sections["learner_stability"]:
         if row["name"].startswith("learner/loss/") and (row["recent_relative_delta"] or 0.0) > 0.5:
             alerts.append(f"{row['name']} rose by more than 50% in the recent window.")
@@ -208,8 +226,14 @@ def _alerts(analysis: Mapping[str, Any], sections: Mapping[str, list[dict[str, A
     backlog = _metric(metrics, "training/update_backlog_s")
     if backlog is not None and (_number(backlog[1]["recent_mean"]) or 0.0) > 60.0:
         alerts.append("Learner update backlog exceeds one minute.")
+    return alerts
+
+
+def _episode_alerts(sections: Mapping[str, list[dict[str, Any]]]) -> list[str]:
+    alerts: list[str] = []
     no_progress = _section_metric(sections["episode_health"], "episode/termination/no_progress")
-    if _recent(no_progress) is not None and _recent(no_progress) > 0.5:
+    no_progress_rate = _recent(no_progress)
+    if no_progress_rate is not None and no_progress_rate > 0.5:
         alerts.append("No-progress termination is the dominant recent episode outcome.")
     finish_rate = _section_metric(sections["episode_health"], "episode/finish_rate")
     if _last(finish_rate) == 0.0 and finish_rate is not None and int(finish_rate["count"]) >= 25:
@@ -217,6 +241,11 @@ def _alerts(analysis: Mapping[str, Any], sections: Mapping[str, list[dict[str, A
     eval_finish_rate = _section_metric(sections["evaluation"], "eval/episode/finish_rate")
     if _last(eval_finish_rate) == 0.0 and eval_finish_rate is not None:
         alerts.append("Deterministic evaluation has not recorded a finish.")
+    return alerts
+
+
+def _throughput_alerts(sections: Mapping[str, list[dict[str, Any]]]) -> list[str]:
+    alerts: list[str] = []
     transitions = _section_metric(sections["throughput_and_backlog"], "training/transitions_per_s")
     if transitions is not None and (_number(transitions["recent_relative_delta"]) or 0.0) < -0.3:
         alerts.append("Recent collection throughput is more than 30% below the prior window.")
@@ -228,8 +257,22 @@ def _alerts(analysis: Mapping[str, Any], sections: Mapping[str, list[dict[str, A
     return alerts
 
 
+def _alerts(analysis: Mapping[str, Any], sections: Mapping[str, list[dict[str, Any]]]) -> list[str]:
+    metrics = analysis["metrics"]
+    return [
+        *_history_alerts(analysis),
+        *_learner_alerts(metrics, sections),
+        *_episode_alerts(sections),
+        *_throughput_alerts(sections),
+    ]
+
+
 def _section_metric(rows: Iterable[Mapping[str, Any]], name: str) -> Mapping[str, Any] | None:
     return next((row for row in rows if row["name"] == name), None)
+
+
+def _diagnostic_sections(metrics: Mapping[str, Any]) -> dict[str, list[dict[str, Any]]]:
+    return {key: _section(metrics, key) for key in SECTION_KEYS}
 
 
 def _diagnostics(exp_id: str, analysis: Mapping[str, Any]) -> dict[str, Any]:
@@ -237,17 +280,7 @@ def _diagnostics(exp_id: str, analysis: Mapping[str, Any]) -> dict[str, Any]:
     metrics = analysis.get("metrics")
     if not isinstance(history, Mapping) or not isinstance(metrics, Mapping):
         raise ValueError(f"Analysis for {exp_id} has an invalid normalized schema")
-    sections = {
-        key: _section(metrics, key)
-        for key in (
-            "episode_health",
-            "learner_stability",
-            "replay_and_schedule",
-            "throughput_and_backlog",
-            "actor_health",
-            "evaluation",
-        )
-    }
+    sections = _diagnostic_sections(metrics)
     return {
         "exp_id": exp_id,
         "run": analysis.get("run", {}),
@@ -267,70 +300,6 @@ def build_json_report(analyses: Mapping[str, Mapping[str, Any]]) -> dict[str, An
     }
 
 
-def _format_number(value: float | None) -> str:
-    return f"{value:.4g}" if value is not None else "n/a"
-
-
-def _render_metrics(title: str, rows: list[Mapping[str, Any]]) -> list[str]:
-    if not rows:
-        return []
-    lines = [
-        "",
-        f"### {title}",
-        "",
-        "| Metric | Last | Recent mean | Prior mean | Delta | P05-P95 |",
-        "|---|---:|---:|---:|---:|---:|",
-    ]
-    for row in rows:
-        delta = _number(row["recent_delta"])
-        delta_text = f"{delta:+.4g}" if delta is not None else "n/a"
-        interval = f"{_format_number(_number(row['p05']))}-{_format_number(_number(row['p95']))}"
-        lines.append(
-            f"| `{row['name']}` | {_format_number(_number(row['last']))} | "
-            f"{_format_number(_number(row['recent_mean']))} | "
-            f"{_format_number(_number(row['prior_mean']))} | {delta_text} | {interval} |"
-        )
-    return lines
-
-
-def _render_categories(categories: Mapping[str, Mapping[str, int]]) -> list[str]:
-    termination = categories.get("episode/termination")
-    if not termination:
-        return []
-    rows = ", ".join(f"`{name}`: {count}" for name, count in sorted(termination.items()))
-    return ["", "### Termination reasons", "", rows]
-
-
-def _comparison_rows(experiments: Iterable[Mapping[str, Any]]) -> list[str]:
-    rows = list(experiments)
-    if len(rows) < 2:
-        return []
-    lines = [
-        "",
-        "## Cross-run comparison",
-        "",
-        "| Run | State | Return | Progress | Finish rate | Loss |",
-        "|---|---|---:|---:|---:|---:|",
-    ]
-    for experiment in rows:
-        section = experiment["sections"]
-        episode = {row["name"]: row for row in section["episode_health"]}
-        learner = {row["name"]: row for row in section["learner_stability"]}
-        run = experiment["run"] if isinstance(experiment["run"], Mapping) else {}
-        values = (
-            _recent(episode.get("episode/return") or episode.get("episode/reward")),
-            _recent(episode.get("episode/progress_pct")),
-            _last(episode.get("episode/finish_rate")),
-            _recent(learner.get("learner/loss/iqn")),
-        )
-        lines.append(
-            f"| {experiment['exp_id']} | {run.get('state', 'unknown')} | "
-            + " | ".join(_format_number(value) for value in values)
-            + " |"
-        )
-    return lines
-
-
 def _recent(row: Mapping[str, Any] | None) -> float | None:
     return _number(row.get("recent_mean")) if row is not None else None
 
@@ -339,48 +308,15 @@ def _last(row: Mapping[str, Any] | None) -> float | None:
     return _number(row.get("last")) if row is not None else None
 
 
-def build_markdown_report(report: Mapping[str, Any]) -> str:
-    lines = [
-        "# W&B RL Diagnostic Report",
-        "",
-        f"Experiments analyzed: {report['experiment_count']}",
-    ]
-    lines.extend(_comparison_rows(report["experiments"]))
-    titles = {
-        "episode_health": "Episode health",
-        "learner_stability": "Learner stability",
-        "replay_and_schedule": "Replay and schedule",
-        "throughput_and_backlog": "Throughput and backlog",
-        "actor_health": "Actor and policy health",
-        "evaluation": "Evaluation",
-    }
-    for experiment in report["experiments"]:
-        run = experiment["run"] if isinstance(experiment["run"], Mapping) else {}
-        history = experiment["history"]
-        lines.extend(
-            [
-                "",
-                f"## {experiment['exp_id']}",
-                f"State: {run.get('state', 'unknown')} | "
-                f"History rows: {history.get('rows_scanned', 0)} | "
-                f"Numeric metrics: {history.get('metric_count', 0)}",
-            ]
-        )
-        for key, title in titles.items():
-            lines.extend(_render_metrics(title, experiment["sections"][key]))
-        lines.extend(_render_categories(experiment["categories"]))
-        if experiment["alerts"]:
-            lines.extend(["", "### Alerts", ""])
-            lines.extend(f"- {alert}" for alert in experiment["alerts"])
-    return "\n".join(lines)
-
-
-def main() -> None:
+def _parse_args() -> ReportArguments:
     parser = argparse.ArgumentParser(description="Render normalized W&B experiment analyses")
     parser.add_argument("--format", choices=["text", "json", "markdown"], default="text")
     parser.add_argument("--out", default="", help="Write to file instead of stdout")
     args = parser.parse_args()
+    return ReportArguments(args.format, args.out)
 
+
+def _require_analyses() -> dict[str, dict[str, Any]]:
     analyses = _load_analyses()
     if not analyses:
         print(
@@ -389,17 +325,28 @@ def main() -> None:
             file=sys.stderr,
         )
         sys.exit(1)
-    report = build_json_report(analyses)
-    if args.format == "json":
-        output = json.dumps(report, indent=2, default=str)
-    else:
-        output = build_markdown_report(report)
+    return analyses
 
-    if args.out:
-        Path(args.out).write_text(output, encoding="utf-8")
-        print(f"Report written to {args.out}", file=sys.stderr)
+
+def _render_report(analyses: Mapping[str, Mapping[str, Any]], output_format: str) -> str:
+    report = build_json_report(analyses)
+    if output_format == "json":
+        return json.dumps(report, indent=2, default=str)
+    return build_markdown_report(report)
+
+
+def _write_report(output: str, target: str) -> None:
+    if target:
+        Path(target).write_text(output, encoding="utf-8")
+        print(f"Report written to {target}", file=sys.stderr)
     else:
         print(output)
+
+
+def main() -> None:
+    args = _parse_args()
+    analyses = _require_analyses()
+    _write_report(_render_report(analyses, args.format), args.output)
 
 
 if __name__ == "__main__":

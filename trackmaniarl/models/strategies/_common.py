@@ -2,9 +2,24 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from enum import StrEnum
+
 import torch
 
 from trackmaniarl.models.contracts import RiskDistortion, RiskSpec, ValueSupport
+
+
+class SupportSampling(StrEnum):
+    MIDPOINTS = "midpoints"
+    RANDOM = "random"
+
+
+@dataclass(frozen=True, slots=True)
+class UniformSupportSpec:
+    count: int
+    sampling: SupportSampling
+    generator: torch.Generator | None = None
 
 
 def quantile_huber_loss(
@@ -42,19 +57,18 @@ def weighted_expectation(
 
 def uniform_support(
     features: torch.Tensor,
-    count: int,
-    *,
-    random: bool,
-    generator: torch.Generator | None,
+    spec: UniformSupportSpec,
 ) -> ValueSupport:
     leading = features.shape[:-1]
     dtype = torch.float32
     device = features.device
-    boundaries = torch.linspace(0.0, 1.0, count + 1, device=device, dtype=dtype)
+    boundaries = torch.linspace(0.0, 1.0, spec.count + 1, device=device, dtype=dtype)
     boundaries = boundaries.expand(*leading, -1)
-    if random:
-        points = torch.rand(*leading, count, device=device, dtype=dtype, generator=generator)
+    if spec.sampling is SupportSampling.RANDOM:
+        points = torch.rand(
+            *leading, spec.count, device=device, dtype=dtype, generator=spec.generator
+        )
     else:
         points = 0.5 * (boundaries[..., :-1] + boundaries[..., 1:])
-    weights = torch.full((*leading, count), 1.0 / count, device=device, dtype=dtype)
+    weights = torch.full((*leading, spec.count), 1.0 / spec.count, device=device, dtype=dtype)
     return ValueSupport(points=points, weights=weights, boundaries=boundaries)

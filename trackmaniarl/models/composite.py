@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass
+from enum import Enum
 from hashlib import sha256
 from typing import Any, cast
 
@@ -43,12 +44,27 @@ class FrameBatch:
         return features.reshape(self.batch_size, self.time_steps, features.shape[-1])
 
 
+class BatchLayout(Enum):
+    FRAMES = "frames"
+    SEQUENCE = "sequence"
+
+
+def _flatten_sequence(observation: PyTree, batch_size: int, time_steps: int) -> PyTree:
+    def flatten_leaf(leaf: Any) -> Any:
+        if not isinstance(leaf, torch.Tensor):
+            return leaf
+        return leaf.reshape(batch_size * time_steps, *leaf.shape[2:])
+
+    return cast(PyTree, tree_map(flatten_leaf, observation))
+
+
 class FrameBatchAdapter:
     @staticmethod
-    def flatten(observation: PyTree, *, sequence: bool) -> FrameBatch:
+    def flatten(observation: PyTree, layout: BatchLayout) -> FrameBatch:
         leaves = _tensor_leaves(observation)
         if not leaves:
             raise TypeError("observation must contain at least one tensor")
+        sequence = layout is BatchLayout.SEQUENCE
         required_rank = 2 if sequence else 1
         if any(leaf.ndim < required_rank for leaf in leaves):
             raise ValueError("observation tensor rank is too small for its batch layout")
@@ -57,33 +73,39 @@ class FrameBatchAdapter:
         leading = (batch_size, time_steps) if sequence else (batch_size,)
         if any(tuple(leaf.shape[:required_rank]) != leading for leaf in leaves):
             raise ValueError("all observation tensors must share batch and time axes")
-
-        def flatten_leaf(leaf: Any) -> Any:
-            if not isinstance(leaf, torch.Tensor) or not sequence:
-                return leaf
-            return leaf.reshape(batch_size * time_steps, *leaf.shape[2:])
-
-        frames = cast(PyTree, tree_map(flatten_leaf, observation))
+        frames = _flatten_sequence(observation, batch_size, time_steps) if sequence else observation
         return FrameBatch(frames, batch_size, time_steps)
+
+
+@dataclass(frozen=True, slots=True)
+class CompositeModules:
+    encoder: nn.Module
+    temporal: nn.Module
+    head: nn.Module
+    strategy: nn.Module
 
 
 class CompositeValueModel(nn.Module):
     """An encoder, temporal core, value head and distribution strategy."""
 
-    def __init__(
-        self,
-        encoder: nn.Module,
-        temporal: nn.Module,
-        head: nn.Module,
-        strategy: nn.Module,
-    ) -> None:
+    def __init__(self, modules: CompositeModules) -> None:
         super().__init__()
-        encoder_dim = getattr(encoder, "output_dim", None)
-        temporal_input = getattr(temporal, "input_dim", None)
-        temporal_output = getattr(temporal, "output_dim", None)
-        head_dim = getattr(head, "feature_dim", None)
-        representation = getattr(head, "representation", None)
-        required = getattr(strategy, "required_representation", None)
+        representation = self._validate_modules(modules)
+        self.encoder: Any = modules.encoder
+        self.temporal: Any = modules.temporal
+        self.head: Any = modules.head
+        self.strategy: Any = modules.strategy
+        self.action_count = int(cast(Any, modules.head).action_count)
+        self.representation = ValueRepresentation(cast(str, representation))
+
+    @staticmethod
+    def _validate_modules(modules: CompositeModules) -> object:
+        encoder_dim = getattr(modules.encoder, "output_dim", None)
+        temporal_input = getattr(modules.temporal, "input_dim", None)
+        temporal_output = getattr(modules.temporal, "output_dim", None)
+        head_dim = getattr(modules.head, "feature_dim", None)
+        representation = getattr(modules.head, "representation", None)
+        required = getattr(modules.strategy, "required_representation", None)
         if encoder_dim != temporal_input:
             raise ValueError("encoder output_dim must match temporal input_dim")
         if temporal_output != head_dim:
@@ -92,12 +114,7 @@ class CompositeValueModel(nn.Module):
             raise ValueError(
                 f"head representation {representation!r} does not match strategy {required!r}"
             )
-        self.encoder: Any = encoder
-        self.temporal: Any = temporal
-        self.head: Any = head
-        self.strategy: Any = strategy
-        self.action_count = int(cast(Any, head).action_count)
-        self.representation = ValueRepresentation(cast(str, representation))
+        return representation
 
     def encode_frames(self, frames: PyTree) -> torch.Tensor:
         values = self.encoder(frames)
@@ -105,8 +122,10 @@ class CompositeValueModel(nn.Module):
             raise TypeError("sensor encoder must return a rank-two tensor")
         return values
 
-    def encode_sequence(self, observation: PyTree, *, sequence: bool, burn_in: int) -> torch.Tensor:
-        batch = FrameBatchAdapter.flatten(observation, sequence=sequence)
+    def encode_sequence(
+        self, observation: PyTree, layout: BatchLayout, burn_in: int
+    ) -> torch.Tensor:
+        batch = FrameBatchAdapter.flatten(observation, layout)
         frame_features = batch.restore(self.encode_frames(batch.frames))
         return cast(torch.Tensor, self.temporal.unroll(frame_features, burn_in))
 
@@ -154,7 +173,7 @@ class CompositeValueModel(nn.Module):
         return cast(PyTree, self.temporal.initial_state(batch_size, device))
 
     def policy_step(self, observation: PyTree, state: PyTree) -> tuple[torch.Tensor, PyTree]:
-        batch = FrameBatchAdapter.flatten(observation, sequence=False)
+        batch = FrameBatchAdapter.flatten(observation, BatchLayout.FRAMES)
         features = self.encode_frames(batch.frames)
         return cast(tuple[torch.Tensor, PyTree], self.temporal.step(features, state))
 
@@ -175,19 +194,6 @@ class CompositeValueModel(nn.Module):
                 "evaluation_quantile_count",
                 "fraction_count",
                 "entropy_coefficient",
-                "d_state",
-                "d_conv",
-                "inner_dim",
-            )
-        )
-
-    def legacy_architecture_fingerprint(self) -> str:
-        return self._architecture_fingerprint(
-            (
-                "input_dim",
-                "output_dim",
-                "feature_dim",
-                "action_count",
                 "d_state",
                 "d_conv",
                 "inner_dim",

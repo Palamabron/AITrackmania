@@ -4,54 +4,48 @@ from __future__ import annotations
 
 import math
 from collections.abc import Sequence
+from dataclasses import dataclass
 from typing import Any, cast
 
 import torch
 from torch import nn
 from torch.distributions import Normal
 
+from trackmaniarl.core.contracts import PolicyMode
+
+
+@dataclass(frozen=True, slots=True)
+class GaussianActorConfig:
+    feature_dim: int
+    action_dim: int
+    action_low: Sequence[float] | None = None
+    action_high: Sequence[float] | None = None
+
 
 class GaussianActor(nn.Module):
     """Continuous actor whose deterministic path is the distribution mean."""
 
-    def __init__(
-        self,
-        encoder: nn.Module,
-        feature_dim: int,
-        action_dim: int,
-        *,
-        action_low: Sequence[float] | None = None,
-        action_high: Sequence[float] | None = None,
-    ) -> None:
+    def __init__(self, encoder: nn.Module, config: GaussianActorConfig) -> None:
         super().__init__()
-        low = torch.as_tensor(
-            [-1.0] * action_dim if action_low is None else action_low, dtype=torch.float32
-        )
-        high = torch.as_tensor(
-            [1.0] * action_dim if action_high is None else action_high, dtype=torch.float32
-        )
-        if low.shape != (action_dim,) or high.shape != (action_dim,) or torch.any(high <= low):
-            raise ValueError("action bounds must match action_dim and satisfy high > low")
+        low, high = _action_bounds(config.action_dim, config.action_low, config.action_high)
         self.encoder = encoder
-        self.mean = nn.Linear(feature_dim, action_dim)
-        self.log_std: nn.Linear | nn.Parameter = nn.Linear(feature_dim, action_dim)
+        self.mean = nn.Linear(config.feature_dim, config.action_dim)
+        self.log_std: nn.Linear | nn.Parameter = nn.Linear(config.feature_dim, config.action_dim)
         self.register_buffer("action_scale", (high - low) / 2.0)
         self.register_buffer("action_bias", (high + low) / 2.0)
 
     def forward(
-        self, observation: Any, *, deterministic: bool = False
+        self, observation: Any, mode: PolicyMode = PolicyMode.ONLINE
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        action, log_probability, _ = self.sample_with_latent(
-            observation, deterministic=deterministic
-        )
+        action, log_probability, _ = self.sample_with_latent(observation, mode)
         return action, log_probability
 
     def sample_with_latent(
-        self, observation: Any, *, deterministic: bool = False
+        self, observation: Any, mode: PolicyMode = PolicyMode.ONLINE
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         distribution = self._distribution(observation)
         mean = distribution.mean
-        raw = mean if deterministic else distribution.rsample()
+        raw = mean if mode is PolicyMode.EVALUATION else distribution.rsample()
         scale = cast(torch.Tensor, self.action_scale)
         bias = cast(torch.Tensor, self.action_bias)
         action = raw.tanh() * scale + bias
@@ -91,24 +85,10 @@ class GaussianActor(nn.Module):
 class PpoGaussianActor(GaussianActor):
     """Squashed Gaussian PPO policy with state-independent exploration."""
 
-    def __init__(
-        self,
-        encoder: nn.Module,
-        feature_dim: int,
-        action_dim: int,
-        *,
-        action_low: Sequence[float] | None = None,
-        action_high: Sequence[float] | None = None,
-    ) -> None:
-        super().__init__(
-            encoder,
-            feature_dim,
-            action_dim,
-            action_low=action_low,
-            action_high=action_high,
-        )
+    def __init__(self, encoder: nn.Module, config: GaussianActorConfig) -> None:
+        super().__init__(encoder, config)
         del self.log_std
-        self.log_std = nn.Parameter(torch.zeros(action_dim))
+        self.log_std = nn.Parameter(torch.zeros(config.action_dim))
         self._initialize_weights()
 
     def _distribution(self, observation: Any) -> Any:
@@ -136,3 +116,19 @@ def _encode(encoder: nn.Module, observation: Any) -> torch.Tensor:
     if isinstance(observation, dict):
         return cast(torch.Tensor, encoder(**observation))
     return cast(torch.Tensor, encoder(observation))
+
+
+def _action_bounds(
+    action_dim: int,
+    action_low: Sequence[float] | None,
+    action_high: Sequence[float] | None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    low = torch.as_tensor(
+        [-1.0] * action_dim if action_low is None else action_low, dtype=torch.float32
+    )
+    high = torch.as_tensor(
+        [1.0] * action_dim if action_high is None else action_high, dtype=torch.float32
+    )
+    if low.shape != (action_dim,) or high.shape != (action_dim,) or torch.any(high <= low):
+        raise ValueError("action bounds must match action_dim and satisfy high > low")
+    return low, high

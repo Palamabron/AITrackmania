@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from typing import cast
+from collections.abc import Mapping
+from dataclasses import dataclass
+from typing import Any, Self, cast
 
 import torch
 from torch import nn
@@ -10,25 +12,34 @@ from torch import nn
 from trackmaniarl.models.contracts import ValueRepresentation, ValueSupport
 
 
+@dataclass(frozen=True, slots=True)
+class FixedQuantileHeadConfig:
+    feature_dim: int
+    action_count: int
+    quantile_count: int = 32
+    dueling: bool = False
+
+    @classmethod
+    def from_mapping(cls, values: Mapping[str, Any]) -> Self:
+        return cls(**dict(values))
+
+
 class FixedQuantileHead(nn.Module):
     representation = ValueRepresentation.FIXED_QUANTILE
 
-    def __init__(
-        self,
-        feature_dim: int,
-        action_count: int,
-        quantile_count: int = 32,
-        *,
-        dueling: bool = False,
-    ) -> None:
+    def __init__(self, config: FixedQuantileHeadConfig | Mapping[str, Any]) -> None:
         super().__init__()
-        if min(feature_dim, action_count, quantile_count) < 1:
+        if not isinstance(config, FixedQuantileHeadConfig):
+            config = FixedQuantileHeadConfig.from_mapping(config)
+        if min(config.feature_dim, config.action_count, config.quantile_count) < 1:
             raise ValueError("head dimensions must be positive")
-        self.feature_dim = feature_dim
-        self.action_count = action_count
-        self.quantile_count = quantile_count
-        self.advantage = nn.Linear(feature_dim, action_count * quantile_count)
-        self.value = nn.Linear(feature_dim, quantile_count) if dueling else None
+        self.feature_dim = config.feature_dim
+        self.action_count = config.action_count
+        self.quantile_count = config.quantile_count
+        self.advantage = nn.Linear(config.feature_dim, config.action_count * config.quantile_count)
+        self.value = (
+            nn.Linear(config.feature_dim, config.quantile_count) if config.dueling else None
+        )
 
     def evaluate_all(self, features: torch.Tensor, support: ValueSupport) -> torch.Tensor:
         self._validate_support(support)
@@ -55,13 +66,16 @@ class FixedQuantileHead(nn.Module):
         selected = (features.unsqueeze(-2) * selected_weight).sum(dim=-1) + selected_bias
         if self.value is None:
             return selected
+        mean_advantage = self._mean_advantage(features)
+        return cast(torch.Tensor, self.value(features) + selected - mean_advantage)
+
+    def _mean_advantage(self, features: torch.Tensor) -> torch.Tensor:
         weights = self.advantage.weight.reshape(
             self.quantile_count, self.action_count, self.feature_dim
         )
         biases = self.advantage.bias.reshape(self.quantile_count, self.action_count)
         mean_advantage = torch.einsum("...d,nd->...n", features, weights.mean(dim=1))
-        mean_advantage = mean_advantage + biases.mean(dim=1)
-        return cast(torch.Tensor, self.value(features) + selected - mean_advantage)
+        return mean_advantage + biases.mean(dim=1)
 
     def _validate_support(self, support: ValueSupport) -> None:
         if support.points.shape[-1] != self.quantile_count:
