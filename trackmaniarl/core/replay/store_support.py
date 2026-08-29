@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from contextlib import AbstractContextManager
+from dataclasses import dataclass
 from numbers import Number
 from typing import Any, Protocol, TypeGuard
 
@@ -12,6 +13,14 @@ import torch
 
 from trackmaniarl.core.contracts import ReplayStore
 from trackmaniarl.core.data import Transition, TransitionId
+
+
+@dataclass(frozen=True, slots=True)
+class _ReplayChange:
+    appended: TransitionId
+    evicted: TransitionId | None
+    evicted_previous: TransitionId | None
+    evicted_next: TransitionId | None
 
 
 class _IncrementalReplayStore(Protocol):
@@ -51,9 +60,7 @@ class _IncrementalReplayStore(Protocol):
 
     def demo_flags(self, transition_ids: list[TransitionId]) -> list[bool]: ...
 
-    def changes_since(
-        self, revision: int | None
-    ) -> tuple[int, list[tuple[TransitionId, TransitionId | None]] | None]: ...
+    def changes_since(self, revision: int | None) -> tuple[int, list[_ReplayChange] | None]: ...
 
     def sampling_transaction(self) -> AbstractContextManager[None]: ...
 

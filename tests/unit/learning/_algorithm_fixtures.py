@@ -9,7 +9,9 @@ from typing import Any
 import torch
 from torch import nn
 
+from trackmaniarl.algorithms._torch import TorchPolicy
 from trackmaniarl.algorithms.execution import TorchExecutionConfig
+from trackmaniarl.core.contracts import PolicyMode
 from trackmaniarl.core.data import TrainingBatch
 from trackmaniarl.models.actors import CategoricalActor, GaussianActor, GaussianActorConfig
 from trackmaniarl.models.critics import (
@@ -18,6 +20,7 @@ from trackmaniarl.models.critics import (
     QuantileCritic,
     QuantileCriticConfig,
 )
+from trackmaniarl.models.encoders import ConvolutionalSensorEncoder
 
 
 class Encoder(nn.Module):
@@ -83,6 +86,39 @@ class RedqModel(nn.Module):
         super().__init__()
         self.actor = GaussianActor(Encoder(), GaussianActorConfig(16, 2))
         self.critics = nn.ModuleList([ContinuousQCritic(Encoder(), 16, 2) for _ in range(3)])
+
+
+class _ColumnLogProbabilityActor(nn.Module):
+    def __init__(self, actor: nn.Module) -> None:
+        super().__init__()
+        self.actor = actor
+
+    def forward(self, observations: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        actions, log_probabilities = self.actor(observations)
+        return actions, log_probabilities.unsqueeze(-1)
+
+
+class _ColumnScalarCritic(nn.Module):
+    def __init__(self, critic: nn.Module) -> None:
+        super().__init__()
+        self.critic = critic
+
+    def forward(self, observations: torch.Tensor, actions: torch.Tensor) -> torch.Tensor:
+        return self.critic(observations, actions).unsqueeze(-1)
+
+
+class _MappingEncoder(nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.layers = nn.Sequential(nn.Linear(4, 16), nn.SiLU())
+
+    def forward(
+        self,
+        observation: dict[str, torch.Tensor] | None = None,
+        **parts: torch.Tensor,
+    ) -> torch.Tensor:
+        values = observation if observation is not None else parts
+        return self.layers(torch.cat((values["track"], values["telemetry"]), dim=-1))
 
 
 class DiscreteValue(nn.Module):
@@ -164,6 +200,52 @@ def _batch(kind: BatchKind, batch_size: int = 8) -> TrainingBatch:
         bootstrap_discounts=torch.full((batch_size,), 0.99),
         transition_ids=list(range(batch_size)),
     )
+
+
+def _with_column_log_probabilities(model: Any) -> Any:
+    model.actor = _ColumnLogProbabilityActor(model.actor)
+    return model
+
+
+def _with_column_scalar_outputs(model: Any) -> Any:
+    _with_column_log_probabilities(model)
+    if hasattr(model, "critics"):
+        model.critics = nn.ModuleList([_ColumnScalarCritic(critic) for critic in model.critics])
+    else:
+        model.q1 = _ColumnScalarCritic(model.q1)
+        model.q2 = _ColumnScalarCritic(model.q2)
+    return model
+
+
+def _mapping_continuous_case(
+    quantiles: int | None = None,
+) -> tuple[ContinuousModel, TrainingBatch]:
+    model = ContinuousModel(quantiles=quantiles)
+    for component in (model.actor, model.q1, model.q2):
+        component.encoder = _MappingEncoder()
+    batch = _batch(BatchKind.CONTINUOUS)
+    return model, replace(
+        batch,
+        data=_split_observation(batch.observations),
+        observations=_split_observation(batch.observations),
+        next_observations=_split_observation(batch.next_observations),
+    )
+
+
+def _split_observation(observation: torch.Tensor) -> dict[str, torch.Tensor]:
+    return {"track": observation[:, :2], "telemetry": observation[:, 2:]}
+
+
+def _assert_policy_batches_single_chw_image() -> None:
+    actor = GaussianActor(
+        ConvolutionalSensorEncoder(channels=3, output_dim=8, hidden_dim=8),
+        GaussianActorConfig(feature_dim=8, action_dim=2),
+    )
+    policy = TorchPolicy(actor, torch.device("cpu"))
+
+    action = policy.act(torch.randn(3, 16, 16), mode=PolicyMode.EVALUATION)
+
+    assert action.shape == (2,)
 
 
 def _sequence_batch(kind: BatchKind) -> TrainingBatch:

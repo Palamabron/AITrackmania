@@ -9,8 +9,6 @@ from copy import deepcopy
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
-import torch
-
 from trackmaniarl.core.checkpoints import (
     CHECKPOINT_SCHEMA_VERSION,
     validate_checkpoint_v2,
@@ -69,36 +67,25 @@ def state_dict_for_policy(
     modules = learner._module_state_from_flat(policy_state)
     state["online"] = modules
     state["target"] = deepcopy(modules)
-    state["optimizers"] = _fresh_policy_optimizers(learner, state)
+    state["optimizers"] = _fresh_policy_optimizers(state)
     return state
 
 
-def _fresh_policy_optimizers(
-    learner: DiscreteValueLearner, state: Mapping[str, Any]
-) -> Mapping[str, Any]:
-    assert isinstance(learner.model, CompositeValueModel)
-    auxiliary = learner.model.auxiliary_parameters()
-    auxiliary_ids = {id(parameter) for parameter in auxiliary}
-    main = [
-        parameter
-        for parameter in learner.model.parameters()
-        if parameter.requires_grad and id(parameter) not in auxiliary_ids
-    ]
+def _fresh_policy_optimizers(state: Mapping[str, Any]) -> Mapping[str, Any]:
     optimizers = dict(cast(Mapping[str, Any], state["optimizers"]))
-    optimizers["main"] = _fresh_optimizer_state(main, learner.learning_rate)
-    optimizers["strategy"] = _fresh_optimizer_state(auxiliary, learner.fraction_learning_rate)
+    optimizers["main"] = _clear_optimizer_state(optimizers["main"])
+    optimizers["strategy"] = _clear_optimizer_state(optimizers["strategy"])
     return optimizers
 
 
-def _fresh_optimizer_state(
-    parameters: Sequence[torch.nn.Parameter], learning_rate: float
-) -> Mapping[str, Any] | None:
-    if not parameters:
+def _clear_optimizer_state(value: object) -> Mapping[str, Any] | None:
+    if value is None:
         return None
-    return cast(
-        Mapping[str, Any],
-        torch.optim.Adam(parameters, lr=learning_rate).state_dict(),
-    )
+    if not isinstance(value, Mapping):
+        raise ValueError("checkpoint optimizer state must be a mapping")
+    result = deepcopy(dict(value))
+    result["state"] = {}
+    return result
 
 
 def load_state_dict(learner: DiscreteValueLearner, state: Mapping[str, Any]) -> None:
@@ -210,7 +197,7 @@ def configured(value: Any) -> Any:
 
 
 def load_warm_start(learner: DiscreteValueLearner) -> None:
-    if learner.model_initialization_checkpoint is None:
+    if learner.model_initialization_checkpoint is None or learner._restoring_checkpoint:
         return
     from trackmaniarl.models.loading import warm_start_composite_model
 
@@ -234,13 +221,14 @@ def _warm_start_options(learner: DiscreteValueLearner) -> WarmStartOptions:
 
 
 def _write_warm_start_report(run_dir: Path, report: WarmStartReport) -> None:
+    manifest = run_dir / "manifest.json"
+    if not manifest.is_file():
+        raise FileNotFoundError(f"run manifest must exist before warm-start setup: {manifest}")
     report.write(run_dir / "warm-start.json")
-    _record_warm_start_manifest(run_dir / "manifest.json", report)
+    _record_warm_start_manifest(manifest, report)
 
 
 def _record_warm_start_manifest(path: Path, report: WarmStartReport) -> None:
-    if not path.is_file():
-        return
     manifest = json.loads(path.read_text(encoding="utf-8"))
     manifest["warm_start"] = {
         "source": report.source,
@@ -249,4 +237,6 @@ def _record_warm_start_manifest(path: Path, report: WarmStartReport) -> None:
         "unexpected": list(report.unexpected),
         "shape_mismatch": list(report.shape_mismatch),
     }
-    path.write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
+    temporary = path.with_suffix(".json.tmp")
+    temporary.write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
+    temporary.replace(path)

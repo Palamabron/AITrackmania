@@ -9,6 +9,7 @@ import numpy as np
 
 from trackmaniarl.core.data import TransitionId
 from trackmaniarl.core.replay.store import _IncrementalReplayStore
+from trackmaniarl.core.replay.store_support import _ReplayChange
 from trackmaniarl.core.replay.structures import _FenwickTree
 
 if TYPE_CHECKING:
@@ -106,13 +107,28 @@ def _rebuild_index(request: _SynchronizationRequest) -> None:
 
 def _apply_changes(
     request: _SynchronizationRequest,
-    changes: list[tuple[TransitionId, TransitionId | None]],
+    changes: list[_ReplayChange],
 ) -> None:
-    for appended, evicted in changes:
-        if evicted is not None:
-            _deactivate(request.sampler, evicted)
-        for candidate in request.store.affected_n_step_starts(appended, request.n_step):
-            _refresh_candidate(request, candidate)
+    candidates: set[TransitionId] = set()
+    for change in changes:
+        if change.evicted is not None:
+            _deactivate(request.sampler, change.evicted)
+        candidates.update(_affected_candidates(request, change))
+    for candidate in candidates:
+        _refresh_candidate(request, candidate)
+
+
+def _affected_candidates(
+    request: _SynchronizationRequest, change: _ReplayChange
+) -> set[TransitionId]:
+    store = request.store
+    candidates = set(store.affected_n_step_starts(change.appended, request.n_step))
+    candidates.update(store.n_step_ids(change.appended, request.sequence_length))
+    if change.evicted_previous is not None and request.n_step > 1:
+        candidates.update(store.affected_n_step_starts(change.evicted_previous, request.n_step - 1))
+    if change.evicted_next is not None and request.sequence_length > 1:
+        candidates.update(store.n_step_ids(change.evicted_next, request.sequence_length - 1))
+    return candidates
 
 
 def _refresh_candidate(request: _SynchronizationRequest, candidate: TransitionId) -> None:

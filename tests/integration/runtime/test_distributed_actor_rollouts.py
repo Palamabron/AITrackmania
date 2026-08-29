@@ -88,7 +88,7 @@ def test_actor_evaluation_is_greedy_and_never_spooled_as_training_data() -> None
 
     request = probe.requests[0]
     summary = request.evaluations[0] if request.evaluations else {}
-    assert probe.modes == [PolicyMode.EVALUATION, PolicyMode.EVALUATION]
+    assert probe.modes == [PolicyMode.EVALUATION] * 3
     assert (request.transitions, request.summaries, request.policy_version) == ([], [], 9)
     assert summary["finish_time_s"] == 12.5
     assert summary["reward/time"] == pytest.approx(-0.3)
@@ -173,7 +173,7 @@ def _training_actor(probe: _TrainingProbe) -> ActorRuntime:
 
 
 def _assert_episode_versions(probe: _TrainingProbe) -> None:
-    acting = [policy for policy in probe.policies if policy.calls]
+    acting = [policy for policy in probe.policies if policy.calls > 1]
     assert [policy.calls for policy in acting] == [3, 3]
     versions = [
         {item.info["policy_version"] for item in request.transitions}
@@ -204,6 +204,84 @@ def test_actor_training_episode_freezes_one_policy_and_reports_action_gaps() -> 
 
     _assert_episode_versions(probe)
     _assert_summary(probe.requests[0].summaries[0])
+
+
+class _PrewarmPolicy:
+    def __init__(self) -> None:
+        self.state = 0
+        self.modes: list[PolicyMode] = []
+        self.states: list[int] = []
+
+    def act(self, observation: Any, mode: PolicyMode = PolicyMode.ONLINE) -> int:
+        del observation
+        self.modes.append(mode)
+        self.states.append(self.state)
+        self.state += 1
+        return 0
+
+    def reset_episode(self) -> None:
+        self.state = 0
+
+
+class _PrewarmPipeline(_Pipeline):
+    def __init__(self) -> None:
+        self.reset_count = 0
+
+    def reset_episode(self) -> None:
+        self.reset_count += 1
+
+
+class _PrewarmEnvironment:
+    def __init__(self, stop: threading.Event) -> None:
+        self.stop = stop
+        self.reset_count = 0
+        self.step_count = 0
+
+    def reset(self, *, seed: int) -> tuple[np.ndarray, dict[str, Any]]:
+        del seed
+        self.reset_count += 1
+        return np.asarray([self.reset_count], dtype=np.float32), {}
+
+    def step(self, action: int) -> tuple[np.ndarray, float, bool, bool, dict[str, Any]]:
+        assert action == 0
+        self.step_count += 1
+        self.stop.set()
+        info = {"termination_reason": "finished", "race_time_ms": 1_000.0}
+        return np.zeros(1, dtype=np.float32), 1.0, True, False, info
+
+
+@dataclass(slots=True)
+class _PrewarmProbe:
+    policy: _PrewarmPolicy = field(default_factory=_PrewarmPolicy)
+    requests: list[SpoolRequest] = field(default_factory=list)
+
+    def current_policy(self) -> tuple[_PrewarmPolicy, float, int]:
+        return self.policy, 0.1, 3
+
+    def spool(self, request: SpoolRequest) -> None:
+        self.requests.append(request)
+
+
+def _prewarm_actor(probe: _PrewarmProbe) -> ActorRuntime:
+    actor = _training_actor(_TrainingProbe())
+    actor._policy = probe.current_policy
+    actor._spool = probe.spool
+    return actor
+
+
+def test_actor_prewarms_once_before_collecting_the_first_transition() -> None:
+    probe = _PrewarmProbe()
+    actor = _prewarm_actor(probe)
+    pipeline = _PrewarmPipeline()
+    environment = _PrewarmEnvironment(actor.stop)
+    actor._collect(environment, pipeline)
+    transitions = [item for request in probe.requests for item in request.transitions]
+    assert environment.reset_count == 2
+    assert environment.step_count == 1
+    assert probe.policy.modes == [PolicyMode.EVALUATION, PolicyMode.ONLINE]
+    assert probe.policy.states == [0, 0]
+    assert pipeline.reset_count == 3
+    assert len(transitions) == 1
 
 
 class _InterruptPolicy:

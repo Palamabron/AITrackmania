@@ -13,6 +13,7 @@ import torch
 
 from tests.integration.runtime.core_runtime_support import RecordingEvaluator, runtime_spec
 from trackmaniarl.core.builtins import TorchCheckpointCodec
+from trackmaniarl.core.checkpoints import CheckpointRetentionResult, prune_checkpoint_family
 from trackmaniarl.core.data import EpisodeArtifact, Transition
 from trackmaniarl.core.runtime import ResolvedRun, resolve_run
 from trackmaniarl.core.spec import RunSpec
@@ -58,9 +59,9 @@ def _evaluation_run(tmp_path: Path, training: Mapping[str, object]) -> _Evaluati
     return _EvaluationRun(run, evaluator)
 
 
-def _train_and_close(run: ResolvedRun) -> TrainingResult:
+def _train_and_close(run: ResolvedRun, resume_checkpoint: Path | None = None) -> TrainingResult:
     try:
-        return Trainer(run).train()
+        return Trainer(run, resume_checkpoint=resume_checkpoint).train()
     finally:
         run.logger.close()
 
@@ -76,6 +77,7 @@ def _initialized_run(run: ResolvedRun) -> ResolvedRun:
 def _add_warm_start(path: Path) -> None:
     manifest = json.loads(path.read_text(encoding="utf-8"))
     manifest["warm_start"] = {"source": "historic.pt", "matched": ["encoder"]}
+    manifest["torch_execution"] = {"resolved": True, "backend": "cpu"}
     path.write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
 
 
@@ -84,7 +86,11 @@ _PPO_COMPONENTS = {
         "class_path": (
             "trackmaniarl.algorithms.proximal_policy_optimization:ProximalPolicyOptimization"
         ),
-        "kwargs": {"update_epochs": 1, "minibatch_size": 2},
+        "kwargs": {
+            "update_epochs": 1,
+            "minibatch_size": 2,
+            "execution": {"device": "cpu"},
+        },
     },
     "environment": {
         "class_path": ("tests.integration.runtime.core_runtime_support:PpoFakeEnvironmentFactory")
@@ -212,12 +218,22 @@ def test_on_policy_checkpoint_discards_partial_replay_on_resume(tmp_path: Path) 
     assert result.state["replay_store"] is None
     assert result.counters["next_episode_index"] == 1
     assert result.replay_size == 0
+    trained = _train_and_close(resolve_run(spec))
+    resumed = _train_and_close(resolve_run(spec), trained.checkpoints[-1])
+    attempts_path = spec.artifacts_dir / spec.run_id / "manifest-attempts.jsonl"
+    attempts = [json.loads(line) for line in attempts_path.read_text(encoding="utf-8").splitlines()]
+    manifest = json.loads(
+        (spec.artifacts_dir / spec.run_id / "manifest.json").read_text(encoding="utf-8")
+    )
+    assert resumed.transitions == trained.transitions
+    assert "torch_execution" not in manifest
+    assert all(attempt["torch_execution"]["resolved"] is True for attempt in attempts)
 
 
 def test_training_checkpoint_requires_current_resume_fields(tmp_path: Path) -> None:
     spec = _ppo_resume_spec(tmp_path)
     complete = _checkpoint_partial_replay(spec)
-    for field in ("replay_store", "sampler", "next_episode_index"):
+    for field in ("run_fingerprint", "replay_store", "sampler", "next_episode_index"):
         incomplete = dict(complete)
         if field == "next_episode_index":
             incomplete["counters"] = {"updates": 0}
@@ -225,6 +241,41 @@ def test_training_checkpoint_requires_current_resume_fields(tmp_path: Path) -> N
             incomplete.pop(field)
         with pytest.raises(ValueError, match=field):
             _restore_partial_replay(spec, incomplete)
+
+
+def test_training_checkpoint_rejects_changed_training_config(tmp_path: Path) -> None:
+    spec = _ppo_resume_spec(tmp_path)
+    checkpoint = _checkpoint_partial_replay(spec)
+    training = spec.training.model_copy(update={"gamma": 0.5})
+    changed = spec.model_copy(update={"training": training})
+
+    with pytest.raises(ValueError, match="run fingerprint mismatch"):
+        _restore_partial_replay(changed, checkpoint)
+
+
+def test_training_checkpoint_rejects_outdated_schema(tmp_path: Path) -> None:
+    spec = _ppo_resume_spec(tmp_path)
+    checkpoint = dict(_checkpoint_partial_replay(spec))
+    checkpoint["schema_version"] = "1.0"
+
+    with pytest.raises(ValueError, match="Unsupported training checkpoint schema"):
+        _restore_partial_replay(spec, checkpoint)
+
+
+def test_training_checkpoint_identity_ignores_run_and_artifact_paths(tmp_path: Path) -> None:
+    spec = _ppo_resume_spec(tmp_path)
+    checkpoint = _checkpoint_partial_replay(spec)
+    relocated = spec.model_copy(
+        update={"run_id": "ppo-relocated", "artifacts_dir": tmp_path / "relocated"}
+    )
+
+    result = _restore_partial_replay(relocated, checkpoint)
+
+    run_identity = checkpoint["run_fingerprint"]
+    assert checkpoint["schema_version"] == "2.0"
+    assert isinstance(run_identity, str)
+    assert len(run_identity) == 64
+    assert result.counters["transitions"] == 1
 
 
 def test_off_policy_checkpoint_rejects_null_component_state(tmp_path: Path) -> None:
@@ -246,6 +297,65 @@ def test_checkpoint_decompression_has_a_configured_limit(tmp_path: Path) -> None
     TorchCheckpointCodec().save({"tensor": torch.zeros(256)}, path)
     with pytest.raises(ValueError, match="decompressed checkpoint exceeds"):
         TorchCheckpointCodec(max_decompressed_bytes=64).load(path)
+
+
+_RETENTION_CHECKPOINTS = (
+    "update-00000001.pt",
+    "update-00000002.pt",
+    "update-00000003.pt",
+    "distributed-update-00000001.pt",
+    "best-eval-policy-00000007-at-update-00000001.pt",
+    "best-eval-policy-00000008-at-update-00000002.pt",
+    "fastest-eval-policy-00000007-at-update-00000001.pt",
+    "fastest-eval-policy-00000008-at-update-00000002.pt",
+    "notes.pt",
+)
+
+
+def _write_retention_checkpoints(directory: Path) -> None:
+    for name in _RETENTION_CHECKPOINTS:
+        (directory / name).write_bytes(b"checkpoint")
+
+
+def _retention_results(directory: Path) -> tuple[CheckpointRetentionResult, ...]:
+    return (
+        prune_checkpoint_family(directory / _RETENTION_CHECKPOINTS[2], directory, keep=2),
+        prune_checkpoint_family(directory / _RETENTION_CHECKPOINTS[5], directory, keep=1),
+        prune_checkpoint_family(directory / _RETENTION_CHECKPOINTS[7], directory, keep=1),
+    )
+
+
+def _assert_retention_results(results: tuple[CheckpointRetentionResult, ...]) -> None:
+    regular, best, fastest = results
+    assert regular.family == "local"
+    assert [path.name for path in regular.removed] == ["update-00000001.pt"]
+    assert best.family == "best-eval"
+    assert [path.name for path in best.removed] == [_RETENTION_CHECKPOINTS[4]]
+    assert fastest.family == "fastest-eval"
+    assert [path.name for path in fastest.removed] == [_RETENTION_CHECKPOINTS[6]]
+
+
+def test_checkpoint_retention_keeps_filename_families_separate(tmp_path: Path) -> None:
+    directory = tmp_path / "checkpoints"
+    directory.mkdir()
+    _write_retention_checkpoints(directory)
+    _assert_retention_results(_retention_results(directory))
+    assert (directory / "distributed-update-00000001.pt").is_file()
+    assert (directory / "notes.pt").is_file()
+
+
+def test_checkpoint_retention_rejects_a_path_outside_the_exact_directory(
+    tmp_path: Path,
+) -> None:
+    directory = tmp_path / "checkpoints"
+    outside = tmp_path / "outside" / "checkpoints"
+    directory.mkdir()
+    outside.mkdir(parents=True)
+    saved = outside / "update-00000001.pt"
+    saved.write_bytes(b"checkpoint")
+
+    with pytest.raises(ValueError, match="outside"):
+        prune_checkpoint_family(saved, directory, keep=1)
 
 
 def test_trainer_evaluation_artifact_is_bound_to_the_current_checkpoint(

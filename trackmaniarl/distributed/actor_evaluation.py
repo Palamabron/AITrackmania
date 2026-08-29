@@ -42,6 +42,8 @@ def evaluate(runtime: CollectionRuntime, environment: Any, pipeline: Any) -> Non
 
 
 def _evaluation_trials(plan: EvaluationPlan, trials: int) -> list[dict[str, Any]]:
+    if not _prewarm_evaluation_policy(plan):
+        return _evaluation_failures(plan, trials)
     summaries: list[dict[str, Any]] = []
     for trial in range(trials):
         request = EvaluationEpisodeRequest(
@@ -50,12 +52,35 @@ def _evaluation_trials(plan: EvaluationPlan, trials: int) -> list[dict[str, Any]
         summary = plan.runtime._evaluate_episode(request)
         summaries.append(summary)
         if summary["termination"] == "telemetry_error":
-            summaries.extend(
-                plan.runtime._evaluation_telemetry_failure(TelemetryFailure(plan.version))
-                for _ in range(trial + 1, trials)
-            )
+            summaries.extend(_evaluation_failures(plan, trials - trial - 1))
             break
     return summaries
+
+
+def _evaluation_failures(plan: EvaluationPlan, count: int) -> list[dict[str, Any]]:
+    failure = TelemetryFailure(plan.version)
+    return [plan.runtime._evaluation_telemetry_failure(failure) for _ in range(count)]
+
+
+def _prewarm_evaluation_policy(plan: EvaluationPlan) -> bool:
+    reset = EnvironmentReset(
+        plan.environment,
+        1_000_000 + plan.runtime._evaluation_index,
+        attempts=1,
+        stop_on_failure=False,
+    )
+    observation = plan.runtime._reset_environment(reset)
+    if observation is None:
+        return False
+    reset_pipeline(plan.pipeline)
+    reset_policy(plan.policy)
+    try:
+        prepared = plan.pipeline.transform_observation(observation)
+        plan.policy.act(prepared, PolicyMode.EVALUATION)
+    finally:
+        reset_pipeline(plan.pipeline)
+        reset_policy(plan.policy)
+    return True
 
 
 def evaluation_policy(runtime: CollectionRuntime) -> tuple[ReplicablePolicy, int]:

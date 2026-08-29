@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping
+import math
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from enum import StrEnum
+from numbers import Real
 from pathlib import Path
 from time import perf_counter
 from typing import TYPE_CHECKING, Any, cast
 
+from trackmaniarl.core.checkpoints import prune_checkpoint_family
 from trackmaniarl.distributed.coordinator_support import (
     _CheckpointWrite,
     _Counters,
@@ -52,14 +56,33 @@ _DISTRIBUTED_KEYS = frozenset(
         "actor_sequences",
     }
 )
+_DISTRIBUTED_OPTIONAL_KEYS = frozenset(
+    {
+        "best_evaluation_rank",
+        "fastest_evaluation_rank",
+    }
+)
+
+
+class EvaluationCheckpointKind(StrEnum):
+    RELIABLE = "best-eval"
+    FASTEST = "fastest-eval"
+
+
+@dataclass(frozen=True, slots=True)
+class EvaluatedPolicyCheckpoint:
+    state: Mapping[str, Any]
+    version: int
+    kind: EvaluationCheckpointKind
+    on_saved: Callable[[Path], None] | None = None
+    on_failed: Callable[[BaseException], None] | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class _CheckpointPlan:
     coordinator: Coordinator
+    evaluated_policy: EvaluatedPolicyCheckpoint | None
     path: Path
-    policy_state: Mapping[str, Any] | None
-    policy_version: int | None
     started_at: float
 
 
@@ -76,18 +99,15 @@ class _CheckpointCallbacks:
         except Exception as exc:
             coordinator._log_wal_error("prune", exc)
             raise
-        coordinator.run.logger.log(
-            "train/checkpoint_completed",
-            {
-                "path": str(self.plan.path),
-                "journal_applied_frontier": self.frontier,
-                "duration_s": perf_counter() - self.plan.started_at,
-            },
-            step=self.update,
-        )
+        _apply_checkpoint_retention(self.plan, self.update)
+        _log_checkpoint_completed(self)
+        evaluated = self.plan.evaluated_policy
+        if evaluated is not None and evaluated.on_saved is not None:
+            evaluated.on_saved(self.plan.path)
 
     def failed(self, exc: BaseException) -> None:
-        self.plan.coordinator.run.logger.log(
+        coordinator = self.plan.coordinator
+        coordinator.run.logger.log(
             "train/checkpoint_failed",
             {
                 "path": str(self.plan.path),
@@ -97,6 +117,39 @@ class _CheckpointCallbacks:
             },
             step=self.update,
         )
+        evaluated = self.plan.evaluated_policy
+        if evaluated is not None and evaluated.on_failed is not None:
+            evaluated.on_failed(exc)
+
+
+def _log_checkpoint_completed(callbacks: _CheckpointCallbacks) -> None:
+    plan = callbacks.plan
+    plan.coordinator.run.logger.log(
+        "train/checkpoint_completed",
+        {
+            "path": str(plan.path),
+            "journal_applied_frontier": callbacks.frontier,
+            "duration_s": perf_counter() - plan.started_at,
+        },
+        step=callbacks.update,
+    )
+
+
+def _apply_checkpoint_retention(plan: _CheckpointPlan, update: int) -> None:
+    coordinator = plan.coordinator
+    keep = coordinator.run.spec.training.checkpoint_keep_last
+    if keep is None:
+        return
+    result = prune_checkpoint_family(plan.path, coordinator.run.run_dir / "checkpoints", keep)
+    if not result.removed:
+        return
+    removed = [str(path) for path in result.removed]
+    coordinator.run.logger.log(
+        "train/checkpoint_retention",
+        {"family": result.family, "removed_count": len(removed), "paths": removed},
+        step=update,
+    )
+    logger.info("Checkpoint retention removed: %s", ", ".join(removed))
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,11 +161,10 @@ class _RestoreRequest:
 
 def checkpoint(
     coordinator: Coordinator,
-    *,
-    policy_state: Mapping[str, Any] | None = None,
-    policy_version: int | None = None,
+    evaluated_policy: EvaluatedPolicyCheckpoint | None = None,
 ) -> Path:
-    plan = _checkpoint_plan(coordinator, policy_state, policy_version)
+    coordinator._checkpoint_writer.wait()
+    plan = _checkpoint_plan(coordinator, evaluated_policy)
     state = _checkpoint_state(plan)
     callbacks = _CheckpointCallbacks(
         plan, coordinator.counters.journal_applied_frontier, coordinator.counters.updates
@@ -126,17 +178,17 @@ def checkpoint(
 
 def _checkpoint_plan(
     coordinator: Coordinator,
-    policy_state: Mapping[str, Any] | None,
-    policy_version: int | None,
+    evaluated_policy: EvaluatedPolicyCheckpoint | None,
 ) -> _CheckpointPlan:
-    if policy_state is not None and policy_version is not None:
+    if evaluated_policy is not None:
         name = (
-            f"best-eval-policy-{policy_version:08d}-at-update-{coordinator.counters.updates:08d}.pt"
+            f"{evaluated_policy.kind.value}-policy-{evaluated_policy.version:08d}-at-update-"
+            f"{coordinator.counters.updates:08d}.pt"
         )
     else:
         name = f"distributed-update-{coordinator.counters.updates:08d}.pt"
     path = coordinator.run.run_dir / "checkpoints" / name
-    return _CheckpointPlan(coordinator, path, policy_state, policy_version, perf_counter())
+    return _CheckpointPlan(coordinator, evaluated_policy, path, perf_counter())
 
 
 def _checkpoint_state(plan: _CheckpointPlan) -> dict[str, Any]:
@@ -150,18 +202,20 @@ def _checkpoint_state(plan: _CheckpointPlan) -> dict[str, Any]:
         "replay_store": snapshot_value(state_dict(coordinator.run.replay_store)),
         "sampler": snapshot_value(state_dict(coordinator.run.sampler)),
         "distributed": _distributed_state(coordinator),
-        "evaluated_policy_version": plan.policy_version,
+        "evaluated_policy_version": (
+            plan.evaluated_policy.version if plan.evaluated_policy is not None else None
+        ),
     }
 
 
 def _learner_state(plan: _CheckpointPlan) -> Mapping[str, Any]:
     learner = plan.coordinator.run.learner
-    if plan.policy_state is None:
+    if plan.evaluated_policy is None:
         return learner.state_dict()
     exact_state = getattr(learner, "state_dict_for_policy", None)
     if not callable(exact_state):
         raise TypeError("learner cannot build an exact evaluated-policy checkpoint")
-    return cast(Mapping[str, Any], exact_state(plan.policy_state))
+    return cast(Mapping[str, Any], exact_state(plan.evaluated_policy.state))
 
 
 def _distributed_state(coordinator: Coordinator) -> dict[str, Any]:
@@ -179,6 +233,8 @@ def _distributed_state(coordinator: Coordinator) -> dict[str, Any]:
         "journal_applied_frontier": counters.journal_applied_frontier,
         "policy_version": counters.policy_version,
         "actor_sequences": dict(counters.actor_sequences),
+        "best_evaluation_rank": coordinator._best_evaluation,
+        "fastest_evaluation_rank": coordinator._fastest_evaluation,
     }
 
 
@@ -263,7 +319,7 @@ def _validated_distributed_state(
 
 def _validate_distributed_keys(distributed: Mapping[str, Any]) -> None:
     missing = _DISTRIBUTED_KEYS - distributed.keys()
-    unexpected = distributed.keys() - _DISTRIBUTED_KEYS
+    unexpected = distributed.keys() - _DISTRIBUTED_KEYS - _DISTRIBUTED_OPTIONAL_KEYS
     if missing or unexpected:
         raise ValueError(
             f"distributed runtime keys differ: missing={sorted(missing)}, "
@@ -287,6 +343,10 @@ def _restore_distributed(
 ) -> None:
     coordinator = request.coordinator
     coordinator.run.learner.load_state_dict(state["learner"])
+    coordinator._best_evaluation = _evaluation_rank(distributed.pop("best_evaluation_rank", None))
+    coordinator._fastest_evaluation = _evaluation_rank(
+        distributed.pop("fastest_evaluation_rank", None)
+    )
     coordinator.counters = _Counters(**distributed)
     coordinator.counters.update_credit = min(
         coordinator.counters.update_credit,
@@ -295,3 +355,16 @@ def _restore_distributed(
     load_state_dict(coordinator.run.replay_store, state["replay_store"])
     load_state_dict(coordinator.run.sampler, state["sampler"])
     coordinator._recover_journal(coordinator.counters.journal_applied_frontier)
+
+
+def _evaluation_rank(value: object) -> tuple[float, float, float] | None:
+    if value is None:
+        return None
+    if not isinstance(value, (list, tuple)) or len(value) != 3:
+        raise TypeError("evaluation leader rank must contain three numbers")
+    if any(isinstance(item, bool) or not isinstance(item, Real) for item in value):
+        raise TypeError("evaluation leader rank must contain three numbers")
+    rank = tuple(float(item) for item in value)
+    if not all(map(math.isfinite, rank)):
+        raise ValueError("evaluation leader rank must contain three finite numbers")
+    return rank[0], rank[1], rank[2]

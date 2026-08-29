@@ -9,7 +9,13 @@ from pathlib import Path
 import pytest
 from pydantic import BaseModel, ValidationError
 
-from trackmaniarl.core.spec import DistributedSpec, EvaluationSuiteSpec, RunSpec, TrainingSpec
+from trackmaniarl.core.spec import (
+    ComponentSpec,
+    DistributedSpec,
+    EvaluationSuiteSpec,
+    RunSpec,
+    TrainingSpec,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -21,6 +27,13 @@ class _EvaluationStopCase:
 
 
 _NON_FINITE_CASES: tuple[tuple[type[BaseModel], dict[str, object]], ...] = (
+    (
+        ComponentSpec,
+        {
+            "class_path": "trackmaniarl.core.builtins:SmokeLearner",
+            "kwargs": {"schedule": [float("nan")]},
+        },
+    ),
     (TrainingSpec, {"updates_per_transition": float("inf")}),
     (DistributedSpec, {"heartbeat_s": float("inf")}),
     (
@@ -63,6 +76,12 @@ _EVALUATION_STOP_CASES = (
         "evaluation suite",
     ),
 )
+
+
+def test_checkpoint_retention_requires_a_positive_keep_count() -> None:
+    assert TrainingSpec().checkpoint_keep_last is None
+    with pytest.raises(ValidationError, match="checkpoint_keep_last"):
+        TrainingSpec(checkpoint_keep_last=0)
 
 
 def _run_payload() -> dict[str, object]:
@@ -124,6 +143,10 @@ def test_public_numeric_specs_reject_non_finite_values() -> None:
     for model, payload in _NON_FINITE_CASES:
         with pytest.raises(ValidationError, match="finite"):
             model.model_validate(payload)
+
+    payload = {"api_version": "2.0", **_run_payload(), "metadata": {"score": float("inf")}}
+    with pytest.raises(ValidationError, match="finite"):
+        RunSpec.model_validate(payload)
 
 
 def test_evaluation_stop_requires_an_active_evaluation_path() -> None:

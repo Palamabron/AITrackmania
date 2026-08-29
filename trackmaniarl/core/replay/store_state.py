@@ -230,16 +230,14 @@ def _rebuild_reference_state(store: InMemoryReplayStore) -> None:
 def _rebuild_episode_steps(store: InMemoryReplayStore) -> None:
     store._episode_steps.clear()
     store._episode_terminal_steps.clear()
-    completed: set[int] = set()
     for transition_id in range(store._next_index - store._size, store._next_index):
         slot = transition_id % store.capacity
         code = int(store._episode_codes[slot])
         step = int(store._steps[slot])
-        if code >= 0 and step >= 0 and (store._terminated[slot] or store._truncated[slot]):
-            completed.add(code)
-    for transition_id in range(store._next_index - store._size, store._next_index):
-        slot = transition_id % store.capacity
-        code = int(store._episode_codes[slot])
-        step = int(store._steps[slot])
-        if code >= 0 and step >= 0 and code not in completed:
-            store._episode_steps.setdefault(code, {})[step] = transition_id
+        if code < 0 or step < 0:
+            continue
+        store._episode_steps.setdefault(code, {})[step] = transition_id
+        if store._terminated[slot] or store._truncated[slot]:
+            store._episode_terminal_steps[code] = step
+    for code in tuple(store._episode_terminal_steps):
+        store._release_completed_episode(code)

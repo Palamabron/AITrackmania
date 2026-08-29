@@ -149,37 +149,10 @@ def _spawn_context() -> multiprocessing.context.SpawnContext:
 def _next_versioned_run_id(run_id: str, artifacts_dir: Path) -> str:
     """Return the first free local run identifier for a new training attempt."""
 
-    match = re.fullmatch(r"(?P<base>.+-v\d+)(?P<suffix>[a-z]*)", run_id)
-    if match is None:
-        index = 1
-        while (artifacts_dir / f"{run_id}-{index}").exists():
-            index += 1
-        return f"{run_id}-{index}"
-    base = match.group("base")
-    suffix = match.group("suffix")
-    index = _alphabetic_suffix_index(suffix) + 1
-    while (artifacts_dir / f"{base}{_alphabetic_suffix(index)}").exists():
+    index = 1
+    while (artifacts_dir / f"{run_id}-{index}").exists():
         index += 1
-    return f"{base}{_alphabetic_suffix(index)}"
-
-
-def _alphabetic_suffix(index: int) -> str:
-    """Format a one-based alphabetic sequence number."""
-
-    value = ""
-    while index:
-        index, remainder = divmod(index - 1, 26)
-        value = chr(ord("a") + remainder) + value
-    return value
-
-
-def _alphabetic_suffix_index(value: str) -> int:
-    """Parse a possibly empty alphabetic sequence suffix."""
-
-    index = 0
-    for character in value:
-        index = index * 26 + ord(character) - ord("a") + 1
-    return index
+    return f"{run_id}-{index}"
 
 
 def _new_attempt_spec(config: Path, spec: RunSpec, args: argparse.Namespace) -> RunSpec:
@@ -219,16 +192,9 @@ def _resumed_run_dir(config: Path, spec: RunSpec, args: argparse.Namespace) -> P
 
 
 def _matches_attempt(configured_id: str, resumed_id: str) -> bool:
-    if resumed_id == configured_id or resumed_id.startswith(f"{configured_id}-"):
+    if resumed_id == configured_id:
         return True
-    pattern = r"(?P<base>.+-v\d+)(?P<suffix>[a-z]*)"
-    configured = re.fullmatch(pattern, configured_id)
-    resumed = re.fullmatch(pattern, resumed_id)
-    return bool(
-        configured is not None
-        and resumed is not None
-        and configured.group("base") == resumed.group("base")
-    )
+    return re.fullmatch(rf"{re.escape(configured_id)}-[1-9][0-9]*", resumed_id) is not None
 
 
 def _restore_warm_start_identity(spec: RunSpec, run_dir: Path) -> RunSpec:

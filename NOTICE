@@ -1,8 +1,10 @@
-TrackmaniaRL is an independent project maintained by Jakub Szulc.
+TrackmaniaRL is an independent project maintained by Jakub Szulc. Its current
+implementation is an extensive rewrite and does not use TMRL as its runtime
+package or public API.
 
 This repository originated from TMRL, copyright (c) 2021 Edouard Geze and
-Yann Bouteiller, and includes code derived from that project. The applicable
-MIT license and copyright notice are retained in LICENSE.
+Yann Bouteiller. The original MIT copyright and permission notice are retained
+in LICENSE for applicable derived material and repository history.
 
 The portable selective-scan implementation is informed by the Mamba reference
 implementation, copyright (c) 2023 state-spaces, distributed under the Apache

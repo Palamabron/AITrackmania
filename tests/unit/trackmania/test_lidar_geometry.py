@@ -155,6 +155,16 @@ def test_lidar_pipeline_validates_schema_and_builds_masked_local_observation(
         pipeline.transform_observation(np.full(33, np.nan, dtype=np.float32))
 
 
+def test_lidar_pipeline_resolves_mapping_assets_from_injected_base_dir(tmp_path: Path) -> None:
+    asset = _asset(tmp_path)
+    pipeline = LidarFeaturePipeline(
+        {"geometry_path": asset.name, "expected_map_uid": "trackmaniarl-test"},
+        base_dir=tmp_path,
+    )
+
+    assert pipeline.geometry.path == asset
+
+
 def test_lidar_exposes_racing_line_pace_dynamics_and_finish_gate(tmp_path: Path) -> None:
     asset = _asset(tmp_path, lookahead_points=60)
     geometry = BoundaryGeometry(asset)

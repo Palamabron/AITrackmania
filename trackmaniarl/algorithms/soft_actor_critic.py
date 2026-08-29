@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from copy import deepcopy
 from dataclasses import dataclass
-from typing import Any, Unpack, cast
+from typing import Any, Unpack
 
 import torch
 from torch import nn
@@ -27,6 +27,7 @@ from trackmaniarl.algorithms.sac_support import (
     entropy_state,
     freeze_modules,
     restore_entropy_state,
+    scalar_batch_output,
     unfreeze_modules,
 )
 from trackmaniarl.core.contracts import ModelContract
@@ -117,8 +118,13 @@ class SoftActorCritic(TorchLearnerBase):
 
     def _critic_step(self, batch: SACBatch, alpha: torch.Tensor) -> _CriticStep:
         targets = self._critic_targets(batch, alpha)
-        q1 = self.model.q1(batch.observations, batch.actions)
-        q2 = self.model.q2(batch.observations, batch.actions)
+        batch_size = batch.rewards.shape[0]
+        q1 = scalar_batch_output(
+            self.model.q1(batch.observations, batch.actions), "q1 output", batch_size
+        )
+        q2 = scalar_batch_output(
+            self.model.q2(batch.observations, batch.actions), "q2 output", batch_size
+        )
         td_error = (0.5 * (q1 + q2) - targets).detach().abs()
         losses = (q1 - targets).square() + (q2 - targets).square()
         return _CriticStep(weighted_mean(losses, batch.weights), td_error)
@@ -126,14 +132,29 @@ class SoftActorCritic(TorchLearnerBase):
     def _critic_targets(self, batch: SACBatch, alpha: torch.Tensor) -> torch.Tensor:
         with torch.no_grad():
             next_actions, next_log_probabilities = self.model.actor(batch.next_observations)
-            next_values = torch.minimum(
-                self.target_model.q1(batch.next_observations, next_actions),
-                self.target_model.q2(batch.next_observations, next_actions),
+            batch_size = batch.rewards.shape[0]
+            next_log_probabilities = scalar_batch_output(
+                next_log_probabilities, "actor log probabilities", batch_size
             )
+            next_values = self._target_values(batch, next_actions)
             result = batch.rewards + batch.discounts * (
                 next_values - alpha * next_log_probabilities
             )
-            return cast(torch.Tensor, result)
+            return result
+
+    def _target_values(self, batch: SACBatch, actions: torch.Tensor) -> torch.Tensor:
+        batch_size = batch.rewards.shape[0]
+        q1 = scalar_batch_output(
+            self.target_model.q1(batch.next_observations, actions),
+            "target q1 output",
+            batch_size,
+        )
+        q2 = scalar_batch_output(
+            self.target_model.q2(batch.next_observations, actions),
+            "target q2 output",
+            batch_size,
+        )
+        return torch.minimum(q1, q2)
 
     def _actor_step(
         self, batch: SACBatch, alpha: torch.Tensor
@@ -141,14 +162,25 @@ class SoftActorCritic(TorchLearnerBase):
         critics = (self.model.q1, self.model.q2)
         freeze_modules(critics)
         policy_actions, log_probabilities = self.model.actor(batch.observations)
-        policy_values = torch.minimum(
-            self.model.q1(batch.observations, policy_actions),
-            self.model.q2(batch.observations, policy_actions),
+        batch_size = batch.rewards.shape[0]
+        log_probabilities = scalar_batch_output(
+            log_probabilities, "actor log probabilities", batch_size
         )
+        policy_values = self._policy_values(batch, policy_actions)
         actor_loss = (alpha * log_probabilities - policy_values).mean()
         self._optimize(actor_loss, self.actor_optimizer)
         unfreeze_modules(critics)
         return actor_loss, log_probabilities
+
+    def _policy_values(self, batch: SACBatch, actions: torch.Tensor) -> torch.Tensor:
+        batch_size = batch.rewards.shape[0]
+        q1 = scalar_batch_output(
+            self.model.q1(batch.observations, actions), "q1 output", batch_size
+        )
+        q2 = scalar_batch_output(
+            self.model.q2(batch.observations, actions), "q2 output", batch_size
+        )
+        return torch.minimum(q1, q2)
 
     def _entropy_loss(self, actions: torch.Tensor, log_probabilities: torch.Tensor) -> torch.Tensor:
         alpha_loss = torch.zeros((), device=self.device)

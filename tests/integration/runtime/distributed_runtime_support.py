@@ -80,9 +80,13 @@ class _RpcFailure(grpc.RpcError):
 class _SlowLearner:
     def __init__(self) -> None:
         self.value = 0
+        self.manifest_present_at_setup = False
 
     def setup(self, context: Mapping[str, Any]) -> None:
-        del context
+        run_dir = context.get("run_dir")
+        self.manifest_present_at_setup = (
+            run_dir is not None and (Path(run_dir) / "manifest.json").is_file()
+        )
 
     def update(self, batch: Any) -> Mapping[str, float]:
         del batch

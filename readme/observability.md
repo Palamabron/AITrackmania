@@ -11,6 +11,20 @@ misleading names. The asynchronous adapter has a bounded queue; remote failure
 does not stop training, and `health/tracker_dropped_events` plus
 `health/tracker_worker_errors` expose incomplete remote telemetry.
 
+Configure it under `components.additional_loggers` with these kwargs:
+
+| Field | Default | Effect |
+| --- | --- | --- |
+| `project` | required | W&B project name. |
+| `entity` | null | Optional W&B account or team. |
+| `queue_size` | `10000` | Positive bounded asynchronous event queue. A full queue drops remote projections and increments health counters; local JSONL remains complete. |
+| `attempt_id` | generated UUID | Optional explicit process-segment identity. |
+| `resumed_from` | null | Optional checkpoint or prior-attempt attribution. |
+| `run_dir`, `run_id`, `config` | runtime supplied | Artifact location, stable run group and recursively redacted RunSpec. Do not duplicate these in YAML. |
+
+Set `WANDB_API_KEY` in the environment or ignored project `.env`; it is never a
+component kwarg and must not be committed.
+
 ## Semantic axes
 
 W&B's internal `_step` is transport bookkeeping, not a training clock.
@@ -23,7 +37,7 @@ matching axis value in every projected event:
 | `env/transitions` | accepted transitions enter the run | collection, lag, queues and effective UTD |
 | `env/episode` | a training episode summary is accepted | return, progress, safety and exploration |
 | `eval/batch` | a deterministic evaluation batch completes | policy quality and release gates |
-| `system/elapsed_s` | wall time since this process segment started | health and resource incidents |
+| `runtime/elapsed_s` | wall time since this process segment started | health and resource incidents |
 
 A resumed run starts a new W&B attempt in the stable `group=<run_id>`. The
 attempt ID and optional source checkpoint are stored in configuration. This

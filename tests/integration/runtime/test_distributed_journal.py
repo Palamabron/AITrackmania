@@ -186,6 +186,36 @@ def test_failed_checkpoint_never_advances_the_pruned_frontier(tmp_path: Path) ->
         journal.close()
 
 
+def _write_retained_distributed_checkpoints(coordinator: Coordinator) -> None:
+    for update in (1, 2, 3):
+        coordinator.counters.updates = update
+        coordinator._checkpoint()
+    coordinator._checkpoint_writer.wait()
+
+
+def _assert_distributed_retention(coordinator: Coordinator) -> None:
+    files = sorted((coordinator.run.run_dir / "checkpoints").glob("distributed-update-*.pt"))
+    assert [path.name for path in files] == ["distributed-update-00000003.pt"]
+    events = coordinator.run.logger.events
+    assert events.count("train/checkpoint_completed") == 3
+    assert events.count("train/checkpoint_retention") == 2
+
+
+def test_distributed_checkpoint_retention_runs_after_async_saves(tmp_path: Path) -> None:
+    training = {
+        "total_transitions": 10,
+        "warmup_transitions": 10,
+        "checkpoint_interval_updates": None,
+        "checkpoint_keep_last": 1,
+    }
+    coordinator = _coordinator(_resolved_run(tmp_path, "retained", training))
+    try:
+        _write_retained_distributed_checkpoints(coordinator)
+        _assert_distributed_retention(coordinator)
+    finally:
+        _close(coordinator)
+
+
 @dataclass(slots=True)
 class _CheckpointCapture:
     started: threading.Event = field(default_factory=threading.Event)
@@ -258,3 +288,38 @@ def test_async_checkpoint_snapshots_mutable_replay_and_sampler_state(tmp_path: P
     finally:
         capture.release.set()
         _close(coordinator)
+
+
+class _RollbackBeforeSnapshotWriter:
+    def __init__(self, coordinator: Coordinator) -> None:
+        self.coordinator = coordinator
+        self.armed = True
+        self.saved: Mapping[str, Any] | None = None
+
+    def wait(self) -> None:
+        if self.armed:
+            self.armed = False
+            self.coordinator._best_evaluation = None
+
+    def submit(self, request: _CheckpointWrite) -> None:
+        self.wait()
+        self.saved = request.state
+
+
+def test_checkpoint_waits_for_leader_rollback_before_taking_its_snapshot(
+    tmp_path: Path,
+) -> None:
+    coordinator = _coordinator(_resolved_run(tmp_path, "leader-rollback", _training()))
+    coordinator._best_evaluation = (1.0, -40.0, -39.0)
+    writer = _RollbackBeforeSnapshotWriter(coordinator)
+    original_writer = coordinator._checkpoint_writer
+    coordinator._checkpoint_writer = cast(Any, writer)
+
+    try:
+        coordinator._checkpoint()
+
+        assert writer.saved is not None
+        assert writer.saved["distributed"]["best_evaluation_rank"] is None
+    finally:
+        original_writer.close()
+        coordinator.journal.close()

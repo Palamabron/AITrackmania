@@ -21,6 +21,10 @@ from trackmaniarl.core.replay import InMemoryReplayStore, UniformSampler
 from trackmaniarl.core.runtime import ResolvedRun
 from trackmaniarl.core.spec import RunSpec
 from trackmaniarl.distributed.coordinator import Coordinator
+from trackmaniarl.distributed.coordinator_checkpoint import (
+    EvaluatedPolicyCheckpoint,
+    EvaluationCheckpointKind,
+)
 from trackmaniarl.distributed.coordinator_support import _Counters
 from trackmaniarl.distributed.coordinator_types import CoordinatorConfig
 
@@ -107,21 +111,28 @@ class _RecordingLogger:
 @dataclass(slots=True)
 class _CheckpointProbe:
     directory: Path
-    checkpoints: list[int]
+    checkpoints: list[EvaluationCheckpointKind]
 
     def save(
         self,
-        *,
-        policy_state: Mapping[str, Any] | None = None,
-        policy_version: int | None = None,
+        evaluated_policy: EvaluatedPolicyCheckpoint | None = None,
     ) -> Path:
-        del policy_state, policy_version
-        self.checkpoints.append(0)
-        return self.directory / "best.pt"
+        kind = (
+            evaluated_policy.kind
+            if evaluated_policy is not None
+            else EvaluationCheckpointKind.RELIABLE
+        )
+        self.checkpoints.append(kind)
+        path = self.directory / f"{kind.value}.pt"
+        if evaluated_policy is not None and evaluated_policy.on_saved is not None:
+            evaluated_policy.on_saved(path)
+        return path
 
 
 def _evaluation_coordinator(
-    tmp_path: Path, events: list[tuple[str, dict[str, Any]]], checkpoints: list[int]
+    tmp_path: Path,
+    events: list[tuple[str, dict[str, Any]]],
+    checkpoints: list[EvaluationCheckpointKind],
 ) -> Coordinator:
     coordinator = object.__new__(Coordinator)
     coordinator.run = _evaluation_run(events)
@@ -131,9 +142,10 @@ def _evaluation_coordinator(
     coordinator._lock = threading.RLock()
     coordinator._recovering = False
     coordinator._time_buckets = (40.0, 38.0, 36.0)
-    coordinator._best_evaluation = None
-    coordinator._evaluation_policy_states = {}
+    coordinator._best_evaluation = coordinator._fastest_evaluation = None
+    coordinator._evaluation_policy_states = {41: {"weight": 1.0}}
     coordinator._checkpoints = []
+    coordinator._checkpoint_writer = SimpleNamespace(wait=lambda: None)
     coordinator._checkpoint = _CheckpointProbe(tmp_path, checkpoints).save
     return coordinator
 

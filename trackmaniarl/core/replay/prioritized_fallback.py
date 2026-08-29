@@ -45,6 +45,7 @@ class _FallbackSelection:
     probabilities: list[float]
     expert_by_id: Mapping[TransitionId, bool]
     batch_size: int
+    expert_fraction: float
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,6 +95,7 @@ def _sample_locked(context: _FallbackContext) -> _FallbackResult:
         probabilities,
         flags.expert,
         context.request.batch_size,
+        context.sampler._expert_fraction_at(context.request.transition_count),
     )
     chosen, chosen_probabilities = _stratified_fallback_choices(selection)
     return _fallback_result(context, flags, _FallbackDraw(chosen, chosen_probabilities))
@@ -163,9 +165,9 @@ def _mix_uniform(sampler: PrioritizedSampler, probabilities: list[float]) -> lis
 def _stratified_fallback_choices(
     selection: _FallbackSelection,
 ) -> tuple[list[TransitionId], list[float]]:
-    if selection.sampler.expert_fraction == 0.0 or all(selection.expert_by_id.values()):
+    if selection.expert_fraction == 0.0 or all(selection.expert_by_id.values()):
         return _unstratified_choices(selection)
-    expert_count = round(selection.sampler.expert_fraction * selection.batch_size)
+    expert_count = round(selection.expert_fraction * selection.batch_size)
     counts = _GroupCounts(expert_count, selection.batch_size - expert_count)
     return _fallback_group_choices(selection, counts)
 
@@ -229,7 +231,8 @@ def _fallback_result(
     beta = context.sampler.beta if context.request.beta is None else context.request.beta
     weights = _normalized_importance(len(flags.elite), draw.probabilities, beta)
     sampled = _sampled_flags(flags, draw.transition_ids)
-    metadata = _fallback_metadata(flags, sampled)
+    target = context.sampler._expert_fraction_at(context.request.transition_count)
+    metadata = _fallback_metadata(flags, sampled, target)
     return draw.transition_ids, weights, beta, metadata, sampled.demo, sampled.expert
 
 
@@ -250,10 +253,13 @@ def _normalized_importance(
     return tuple(weight / maximum for weight in weights)
 
 
-def _fallback_metadata(flags: _FallbackFlags, sampled: _SampledFlags) -> dict[str, float]:
+def _fallback_metadata(
+    flags: _FallbackFlags, sampled: _SampledFlags, target: float
+) -> dict[str, float]:
     return {
         "replay/elite_active_fraction": sum(flags.elite.values()) / len(flags.elite),
         "replay/elite_sample_fraction": sum(sampled.elite) / len(sampled.transition_ids),
         "replay/demo_sample_fraction": sum(sampled.demo) / len(sampled.transition_ids),
         "replay/expert_demo_sample_fraction": sum(sampled.expert) / len(sampled.transition_ids),
+        "replay/expert_demo_target_fraction": target,
     }

@@ -82,6 +82,7 @@ class ValueUpdater:
         synced = self.learner._sync_target()
         metric_step = _MetricStep(forward, losses, gradients, (synced, perf_counter() - started))
         metrics = self._metrics(metric_step)
+        metrics.update(self._replay_metrics(prepared.batch))
         metrics.update(diagnostics)
         self._optional_metrics(metrics, losses, gradients)
         return metrics, priority_update
@@ -160,13 +161,17 @@ class ValueUpdater:
         expected = value_updates.objective_values(
             learner, forward.features, forward.current_support
         )
-        objective_inputs = value_updates.ObjectiveInputs(
-            expected,
-            forward.batch.actions,
-            forward.batch.valid,
-            forward.batch.batch.metadata,
-        )
+        objective_inputs = self._objective_inputs(forward, expected)
         return value_updates.objective_loss(learner, objective_inputs)
+
+    @staticmethod
+    def _objective_inputs(
+        forward: _ForwardStep, expected: torch.Tensor | None
+    ) -> value_updates.ObjectiveInputs:
+        batch = forward.batch
+        features = value_updates.FeatureInputs(batch.view, batch.positions)
+        metadata = value_updates.objective_metadata(features, batch.batch.metadata)
+        return value_updates.ObjectiveInputs(expected, batch.actions, batch.valid, metadata)
 
     def _fraction_loss(self, forward: _ForwardStep) -> Any:
         fraction_inputs = value_updates.FractionInputs(
@@ -183,6 +188,16 @@ class ValueUpdater:
         if not isinstance(batch.importance_weights, torch.Tensor):
             return None
         return batch.importance_weights.float().reshape(-1)
+
+    @staticmethod
+    def _replay_metrics(batch: TrainingBatch) -> dict[str, float]:
+        keys = (
+            "replay/demo_sample_fraction",
+            "replay/expert_demo_active_fraction",
+            "replay/expert_demo_sample_fraction",
+            "replay/expert_demo_target_fraction",
+        )
+        return {key: float(batch.metadata[key]) for key in keys if key in batch.metadata}
 
     @staticmethod
     def _priority_inputs(forward: _ForwardStep) -> value_updates.PriorityInputs:
@@ -203,7 +218,14 @@ class ValueUpdater:
         inputs = value_updates.DiagnosticInputs(
             priority, forward.rewards, forward.discounts, forward.batch.actions
         )
-        return value_updates.value_diagnostics(self.learner, inputs)
+        metrics = value_updates.value_diagnostics(self.learner, inputs)
+        with torch.no_grad():
+            expected = value_updates.objective_values(
+                self.learner, forward.features, forward.current_support
+            )
+        objective = self._objective_inputs(forward, expected)
+        metrics.update(value_updates.demonstration_diagnostics(self.learner, objective))
+        return metrics
 
     def _optimize(self, losses: _LossStep) -> _GradientStep:
         inputs = value_updates.OptimizationInputs(losses.total, losses.fraction)

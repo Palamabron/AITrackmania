@@ -8,7 +8,7 @@ Install the released CLI, then create the game project only on a machine that
 has Trackmania, Openplanet and a virtual gamepad driver:
 
 ```powershell
-uv tool install "trackmaniarl==2.0.0rc1"
+uv tool install --index https://download.pytorch.org/whl/cpu --with "torch==2.11.0+cpu" "trackmaniarl==2.0.0rc1"
 trackmaniarl init my-agent --template trackmania
 cd my-agent
 uv sync
@@ -85,7 +85,7 @@ uv run trackmaniarl track build-geometry assets/trackmaniarl-test.geometry.npz -
 
 Replace `TRACKMANIARL_TEST_MAP_UID` with the UID reported by `track check` and
 set that same UID in `environment.kwargs.config.expected_map_uid`,
-`feature_pipeline.kwargs.expected_map_uid` and
+`feature_pipeline.kwargs.config.expected_map_uid` and
 `evaluation.maps[].expected_map_uid`. Load that local `.Map.Gbx` manually in
 Trackmania, enter it with a visible vehicle, and run:
 
@@ -170,7 +170,7 @@ uv sync --extra mamba
 
 Select the model explicitly in `run.yaml` and set
 `training.sequence_length > 1`. In the composed replay path, keep
-`LidarFeaturePipeline.history_length: 1`: the sampler creates `[B,T,...]`
+`LidarFeaturePipeline` config `history_length: 1`: the sampler creates `[B,T,...]`
 sequences, `FrameBatchAdapter` flattens their frames for the sensor encoder and
 the temporal core receives the restored sequence. Do not also stack history in
 the feature pipeline.
@@ -182,13 +182,15 @@ components:
     kwargs:
       encoder:
         class_path: trackmaniarl.trackmania.encoders:LidarSensorEncoder
-        kwargs: {telemetry_dim: 20, spatial_bins: 12, output_dim: 256}
+        kwargs:
+          config: {telemetry_dim: 20, spatial_bins: 12, output_dim: 256}
       temporal:
         class_path: trackmaniarl.models.temporal:MambaTemporalCore
         kwargs: {input_dim: 256, backend: auto, d_state: 16, d_conv: 4, expand: 2}
       head:
         class_path: trackmaniarl.models.heads:ImplicitQuantileHead
-        kwargs: {feature_dim: 256, action_count: 78, cosine_count: 64, dueling: true}
+        kwargs:
+          config: {feature_dim: 256, action_count: 78, cosine_count: 64, dueling: true}
       strategy:
         class_path: trackmaniarl.models.strategies:LearnedFractionStrategy
         kwargs: {feature_dim: 256, fraction_count: 32}
@@ -224,6 +226,9 @@ W&B is optional. The generated project logs locally until you run
 `uv add "trackmaniarl[trackmania,distributed,wandb]"` and add an
 explicit `WandbTracker` under `components.additional_loggers`. Supply
 `WANDB_API_KEY` only through a private environment or ignored `.env` file.
+The generated project retains its vetted `vgamepad` source during this update;
+an existing project must retain the same direct source pin documented in the
+[installation guide](../README.md#install-and-create-an-agent).
 
 `trackmaniarl smoke` is the required Windows preflight. It collects a bounded number of
 real actions, completes at least one update, verifies a live policy refresh,

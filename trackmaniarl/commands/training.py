@@ -6,7 +6,7 @@ import argparse
 import secrets
 from dataclasses import dataclass
 from pathlib import Path
-from time import sleep, time_ns
+from time import monotonic, sleep, time_ns
 from typing import Any
 
 from trackmaniarl.commands.common import (
@@ -93,7 +93,8 @@ def _train_asynchronously(plan: _TrainingPlan, args: argparse.Namespace) -> None
     try:
         stopped_by_user = _supervise_local_processes(processes)
     finally:
-        _stop_local_processes(processes)
+        stop = _stop_local_processes_with_notice if stopped_by_user else _stop_local_processes
+        stop(processes)
         if temporary is not None:
             temporary.unlink(missing_ok=True)
     if stopped_by_user:
@@ -159,7 +160,12 @@ def _supervise_local_processes(processes: _LocalProcesses) -> bool:
     try:
         _wait_for_processes(processes)
     except KeyboardInterrupt:
-        print("Stopping async training; saving the learner checkpoint...", flush=True)
+        print("Ctrl+C received. Graceful training shutdown requested.", flush=True)
+        print(
+            "Do not press Ctrl+C again or close this terminal until "
+            "'Safe shutdown complete' appears.",
+            flush=True,
+        )
         return True
     return False
 
@@ -200,14 +206,50 @@ def _wait_for_learner_drain(processes: _LocalProcesses) -> None:
         sleep(0.25)
 
 
+def _stop_local_processes_with_notice(processes: _LocalProcesses) -> None:
+    running = any(process.is_alive() for process in (processes.actor, processes.learner))
+    if running:
+        print(
+            "Stopping the actor and waiting up to 120s for the learner's final checkpoint...",
+            flush=True,
+        )
+    forced = _shutdown_local_processes(processes)
+    if forced or processes.learner.exitcode not in (0, None):
+        print(
+            "The learner did not confirm a clean exit; the final checkpoint may be incomplete. "
+            "Check the last checkpoint log before resuming.",
+            flush=True,
+        )
+        return
+    print("Safe shutdown complete. The terminal may now be closed.", flush=True)
+
+
 def _stop_local_processes(processes: _LocalProcesses) -> None:
+    _shutdown_local_processes(processes)
+
+
+def _shutdown_local_processes(processes: _LocalProcesses) -> bool:
     _signal_shutdown(processes.shutdown, processes.learner, processes.actor)
-    processes.learner.join(timeout=10)
-    processes.actor.join(timeout=10)
+    _join_during_shutdown(processes.actor, timeout=10)
+    _join_during_shutdown(processes.learner, timeout=120)
+    forced = any(process.is_alive() for process in (processes.actor, processes.learner))
     for process in (processes.actor, processes.learner):
         if process.is_alive():
             process.terminate()
-        process.join(timeout=5)
+        _join_during_shutdown(process, timeout=5)
+    return forced
+
+
+def _join_during_shutdown(process: Any, *, timeout: float) -> None:
+    deadline = monotonic() + timeout
+    while process.is_alive() and monotonic() < deadline:
+        try:
+            process.join(timeout=min(1.0, deadline - monotonic()))
+        except KeyboardInterrupt:
+            print(
+                "Shutdown is already in progress; Ctrl+C was ignored to protect the checkpoint.",
+                flush=True,
+            )
 
 
 def _signal_shutdown(shutdown: Any, *processes: Any) -> None:
@@ -227,7 +269,18 @@ def _raise_process_failures(processes: _LocalProcesses) -> None:
 
 def _offline_pretrain(args: argparse.Namespace) -> None:
     config, spec, demonstrations = _offline_training_spec(args)
-    result = _run_offline_pretraining(config, spec, demonstrations)
+    try:
+        result = _run_offline_pretraining(config, spec, demonstrations)
+    except KeyboardInterrupt:
+        print(
+            "Offline pretraining stopped. Any checkpoint write already started was allowed "
+            "to finish; verify the last checkpoint log before resuming.",
+            flush=True,
+        )
+        return
+    if not result.checkpoints:
+        print(f"Offline pretraining complete: updates={result.updates}, final checkpoint disabled.")
+        return
     checkpoint = result.checkpoints[-1]
     print(f"Offline pretraining complete: updates={result.updates}, checkpoint={checkpoint}")
 

@@ -90,6 +90,7 @@ def test_off_track_transition_cannot_collect_progress() -> None:
     trajectory = _trajectory(101)
     config = RewardConfig(
         crash_distance=10.0,
+        limit_progress_by_kinematics=False,
         terminal_failure_penalty=0.0,
         time_penalty_per_second=0.0,
         potential_progress_weight=0.0,
@@ -101,6 +102,24 @@ def test_off_track_transition_cannot_collect_progress() -> None:
     assert result.progress_reward == 0.0
     assert result.potential_progress == 0.0
     assert reward.progress_m == 0.0
+
+
+def test_spatially_valid_progress_can_ignore_centerline_distance_budget() -> None:
+    trajectory = _trajectory(101)
+    reward = TrajectoryReward(
+        trajectory,
+        RewardConfig(
+            crash_distance=10.0,
+            nearest_forward_points=100,
+            limit_progress_by_kinematics=False,
+        ),
+    )
+    reward.reset(_ORIGIN, velocity=_ORIGIN, race_time_ms=0.0)
+
+    result = reward.step(_stationary_transition(trajectory[50], 50.0))
+
+    assert result.reason is None
+    assert reward.progress_m == pytest.approx(50.0)
 
 
 def _task_aligned_reward(trajectory: np.ndarray) -> TrajectoryReward:

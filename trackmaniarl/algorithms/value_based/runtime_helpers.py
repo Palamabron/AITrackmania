@@ -69,11 +69,12 @@ def begin_offline_pretraining(learner: DiscreteValueLearner) -> None:
 
 def end_offline_pretraining(learner: DiscreteValueLearner) -> None:
     state = learner._offline_warm_start_requires_grad
-    if state is None:
-        return
-    for parameter, requires_grad in state:
-        parameter.requires_grad_(requires_grad)
-    learner._offline_warm_start_requires_grad = None
+    if state is not None:
+        for parameter, requires_grad in state:
+            parameter.requires_grad_(requires_grad)
+        learner._offline_warm_start_requires_grad = None
+    assert isinstance(learner.model, CompositeValueModel)
+    learner.target_model.load_state_dict(learner.model.state_dict(), strict=True)
 
 
 def warm_start_parameters(learner: DiscreteValueLearner) -> tuple[torch.nn.Parameter, ...]:

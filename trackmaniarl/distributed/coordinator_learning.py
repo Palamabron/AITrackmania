@@ -120,7 +120,10 @@ def _perform_update(loop: _LearningLoop) -> None:
 def _prepare_update(loop: _LearningLoop) -> _PreparedUpdate:
     coordinator = loop.coordinator
     spec = coordinator.run.spec.training
-    request = spec.batch_request(beta=spec.replay_beta(coordinator.counters.transitions))
+    request = spec.batch_request(
+        beta=spec.replay_beta(coordinator.counters.transitions),
+        transition_count=coordinator.counters.transitions,
+    )
     batch, preparation_s, wait_s = loop.prefetcher.next(request)
     started = perf_counter()
     result = coordinator.run.learner.update(batch)

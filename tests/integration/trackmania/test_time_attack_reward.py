@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from enum import Enum, auto
+from pathlib import Path
 
 import numpy as np
 import pytest
 
+from trackmaniarl.trackmania.environment_config import TrackmaniaEnvironmentConfig
 from trackmaniarl.trackmania.reward import RewardResult, TrajectoryReward
 from trackmaniarl.trackmania.reward_config import RewardConfig
 from trackmaniarl.trackmania.reward_types import TransitionInput
@@ -35,6 +37,11 @@ def _finish_at(reward: TrajectoryReward, race_time_ms: float) -> RewardResult:
 
 def _time_attack_reward(config: RewardConfig) -> TrajectoryReward:
     return TrajectoryReward(_SHORT_TRAJECTORY, config)
+
+
+def test_environment_config_forwards_the_finish_threshold() -> None:
+    config = TrackmaniaEnvironmentConfig(geometry_path=Path("geometry.npz"), finish_progress=0.9)
+    assert config.reward_config().finish_progress == 0.9
 
 
 def test_time_attack_reward_is_bounded_and_ranks_finish_times() -> None:

@@ -7,7 +7,7 @@ from typing import Any
 
 from trackmaniarl.core.contracts import OfflineSupervisedLearner, PolicyMode
 from trackmaniarl.core.data import BatchRequest, Transition
-from trackmaniarl.core.runtime import ResolvedRun, prepare_run
+from trackmaniarl.core.runtime import ResolvedRun, prepare_run, record_run_attempt
 
 
 def validate_resolved_run(run: ResolvedRun) -> dict[str, float]:
@@ -15,6 +15,7 @@ def validate_resolved_run(run: ResolvedRun) -> dict[str, float]:
 
     prepare_run(run)
     _setup_validation_learner(run)
+    record_run_attempt(run)
     request = _validation_request(run)
     _populate_validation_replay(run, request)
     output = _run_validation_update(run, request)

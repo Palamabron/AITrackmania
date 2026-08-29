@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from trackmaniarl.core.data import TransitionId
+from trackmaniarl.core.replay.store_support import _ReplayChange
 
 if TYPE_CHECKING:
     from trackmaniarl.core.replay.store import InMemoryReplayStore
@@ -173,7 +174,7 @@ def demo_flags(store: InMemoryReplayStore, transition_ids: list[TransitionId]) -
 
 def changes_since(
     store: InMemoryReplayStore, revision: int | None
-) -> tuple[int, list[tuple[TransitionId, TransitionId | None]] | None]:
+) -> tuple[int, list[_ReplayChange] | None]:
     """Return append/eviction changes since a sampler's last observed revision."""
 
     with store._lock:
@@ -184,9 +185,7 @@ def changes_since(
         if not store._changes or revision < store._changes[0][0] - 1:
             return store._revision, None
         return store._revision, [
-            (index, evicted)
-            for change_revision, index, evicted in store._changes
-            if change_revision > revision
+            change for change_revision, change in store._changes if change_revision > revision
         ]
 
 

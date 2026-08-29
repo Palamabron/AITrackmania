@@ -14,7 +14,7 @@ from trackmaniarl.core.collector import (
     RolloutCollectionConfig,
 )
 from trackmaniarl.core.data import BatchRequest
-from trackmaniarl.core.runtime import prepare_run
+from trackmaniarl.core.runtime import prepare_run, record_run_attempt
 from trackmaniarl.core.training_support import TrainingCounters, TrainingResult
 from trackmaniarl.observability.artifacts import AsyncEpisodeWriter
 
@@ -46,15 +46,17 @@ def run_training(trainer: Trainer) -> TrainingResult:
 
 def _initialize_run(trainer: Trainer) -> None:
     training = trainer.run.spec.training
+    prepare_run(trainer.run)
     trainer.run.learner.setup(
         {
             "seed": trainer.run.spec.seed,
             "run_dir": trainer.run.run_dir,
             "model_factory": trainer.run.model_factory,
             "total_transitions": training.total_transitions,
+            "restoring_checkpoint": trainer.resume_checkpoint is not None,
         }
     )
-    prepare_run(trainer.run)
+    record_run_attempt(trainer.run)
     print(
         f"Training started: run_id={trainer.run.spec.run_id}, "
         f"target_transitions={training.total_transitions}, artifacts={trainer.run.run_dir}",
@@ -143,7 +145,7 @@ def _run_to_completion(trainer: Trainer, session: _TrainingSession) -> TrainingR
         counters.episodes,
         counters.transitions,
         counters.updates,
-        tuple(session.checkpoints),
+        tuple(path for path in session.checkpoints if path.is_file()),
         session.evaluation,
     )
 
@@ -270,7 +272,10 @@ def _batch_request(
     training = trainer.run.spec.training
     if trainer.on_policy:
         return BatchRequest(batch_size=1, sequence_length=result.transitions, gamma=training.gamma)
-    return training.batch_request(beta=training.replay_beta(counters.transitions))
+    return training.batch_request(
+        beta=training.replay_beta(counters.transitions),
+        transition_count=counters.transitions,
+    )
 
 
 def _maybe_checkpoint(trainer: Trainer, session: _TrainingSession) -> None:

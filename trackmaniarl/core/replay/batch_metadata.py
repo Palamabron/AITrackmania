@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import torch
 
 from trackmaniarl.core.data import Transition
@@ -13,8 +15,8 @@ _BEHAVIOR_KEYS = {
 }
 
 
-def _behavior_metadata(transitions: list[Transition]) -> dict[str, torch.Tensor]:
-    result: dict[str, torch.Tensor] = {}
+def _behavior_metadata(transitions: list[Transition]) -> dict[str, Any]:
+    result = _demonstration_metadata(transitions)
     for output_key, info_key in _BEHAVIOR_KEYS.items():
         values = [transition.info.get(info_key) for transition in transitions]
         if all(value is not None for value in values):
@@ -22,3 +24,19 @@ def _behavior_metadata(transitions: list[Transition]) -> dict[str, torch.Tensor]
                 [torch.as_tensor(value, dtype=torch.float32) for value in values]
             )
     return result
+
+
+def _demonstration_metadata(transitions: list[Transition]) -> dict[str, Any]:
+    return {
+        "demo_flags": tuple(
+            bool(transition.info.get("is_demo", False)) for transition in transitions
+        ),
+        "demonstration_steering_switches": tuple(
+            bool(transition.info.get("demonstration_steering_switch", False))
+            for transition in transitions
+        ),
+        "demonstration_steering_switch_distances": tuple(
+            int(transition.info.get("demonstration_steering_switch_distance", 1_000_000))
+            for transition in transitions
+        ),
+    }

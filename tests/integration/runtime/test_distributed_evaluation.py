@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from pathlib import Path
+from threading import Event
 from types import SimpleNamespace
 from typing import Any
 
@@ -16,7 +17,12 @@ from tests.integration.runtime.distributed_evaluation_support import (
     _stopped_coordinator,
 )
 from tests.integration.runtime.distributed_runtime_support import _Logger
+from trackmaniarl.core.contracts import PolicyMode
+from trackmaniarl.distributed.actor_collection import summary as actor_summary
+from trackmaniarl.distributed.actor_evaluation import EvaluationPlan, _evaluation_trials
+from trackmaniarl.distributed.actor_requests import EvaluationEpisodeRequest
 from trackmaniarl.distributed.coordinator import Coordinator
+from trackmaniarl.distributed.coordinator_checkpoint import EvaluationCheckpointKind
 from trackmaniarl.distributed.coordinator_support import _Counters
 from trackmaniarl.distributed.coordinator_validation import _validate_evaluation_summary
 
@@ -40,9 +46,104 @@ def test_external_stop_does_not_ingest_or_train_a_queued_backlog(tmp_path: Path)
     assert coordinator._rollouts.qsize() == 3
 
 
+class _EvaluationPrewarmPolicy:
+    def __init__(self) -> None:
+        self.state = 0
+        self.modes: list[PolicyMode] = []
+        self.states: list[int] = []
+
+    def act(self, observation: Any, mode: PolicyMode = PolicyMode.ONLINE) -> int:
+        del observation
+        self.modes.append(mode)
+        self.states.append(self.state)
+        self.state += 1
+        return 0
+
+    def reset_episode(self) -> None:
+        self.state = 0
+
+
+class _EvaluationPrewarmPipeline:
+    def __init__(self) -> None:
+        self.reset_count = 0
+
+    def reset_episode(self) -> None:
+        self.reset_count += 1
+
+    def transform_observation(self, observation: Any) -> Any:
+        return observation
+
+
+class _EvaluationPrewarmEnvironment:
+    def __init__(self) -> None:
+        self.reset_count = 0
+        self.step_count = 0
+
+    def reset(self, *, seed: int) -> tuple[list[int], dict[str, Any]]:
+        del seed
+        self.reset_count += 1
+        return [self.reset_count], {}
+
+    def step(self, action: int) -> tuple[list[int], float, bool, bool, dict[str, Any]]:
+        assert action == 0
+        self.step_count += 1
+        return (
+            [0],
+            1.0,
+            True,
+            False,
+            {
+                "termination_reason": "finished",
+                "finished": True,
+                "race_time_ms": 1_000.0,
+            },
+        )
+
+
+class _EvaluationPrewarmRuntime:
+    def __init__(self) -> None:
+        self.spec = SimpleNamespace(training=SimpleNamespace(max_episode_steps=1))
+        self.stop = Event()
+        self._evaluation_index = 0
+
+    @staticmethod
+    def _reset_environment(request: Any) -> Any:
+        observation, _ = request.environment.reset(seed=request.episode)
+        return observation
+
+    def _evaluate_episode(self, request: EvaluationEpisodeRequest) -> dict[str, Any]:
+        from trackmaniarl.distributed.actor_evaluation import evaluate_episode
+
+        return evaluate_episode(self, request)
+
+    @staticmethod
+    def _summary(reward: float, info: Mapping[str, Any], transitions: int) -> dict[str, Any]:
+        return actor_summary(reward, info, transitions)
+
+    def _evaluation_telemetry_failure(self, failure: Any) -> dict[str, Any]:
+        self._evaluation_index += 1
+        return {"termination": "telemetry_error", "policy_version": failure.version}
+
+
+def test_distributed_evaluation_prewarms_before_a_fresh_measured_trial() -> None:
+    runtime = _EvaluationPrewarmRuntime()
+    environment = _EvaluationPrewarmEnvironment()
+    pipeline = _EvaluationPrewarmPipeline()
+    policy = _EvaluationPrewarmPolicy()
+
+    summaries = _evaluation_trials(EvaluationPlan(runtime, environment, pipeline, policy, 4), 1)
+
+    assert summaries[0]["termination"] == "finished"
+    assert environment.reset_count == 2
+    assert environment.step_count == 1
+    assert pipeline.reset_count == 3
+    assert policy.modes == [PolicyMode.EVALUATION, PolicyMode.EVALUATION]
+    assert policy.states == [0, 0]
+
+
 def test_ingest_aggregates_evaluation_batches_and_checkpoints_best(tmp_path: Path) -> None:
     events: list[tuple[str, dict[str, Any]]] = []
-    checkpoints: list[int] = []
+    checkpoints: list[EvaluationCheckpointKind] = []
     ingestor = _EvaluationIngestor(_evaluation_coordinator(tmp_path, events, checkpoints))
     ingestor.ingest([_finished_evaluation(52.0), _failed_evaluation()])
     ingestor.ingest([_failed_evaluation(), _failed_evaluation()])
@@ -81,14 +182,21 @@ def _assert_evaluation_observability(summary: dict[str, Any]) -> None:
 
 
 def _assert_best_evaluation(
-    events: list[tuple[str, dict[str, Any]]], checkpoints: list[int]
+    events: list[tuple[str, dict[str, Any]]], checkpoints: list[EvaluationCheckpointKind]
 ) -> None:
     progress = [payload for event, payload in events if event == "eval/progress_bin"]
     assert progress[0]["90_100/q_max_mean"] == 3.0
-    assert len(checkpoints) == 1
+    assert checkpoints == [
+        EvaluationCheckpointKind.FASTEST,
+        EvaluationCheckpointKind.RELIABLE,
+        EvaluationCheckpointKind.FASTEST,
+    ]
     best = [payload for event, payload in events if event == "eval/best_checkpoint"]
     assert [item["finish_rate"] for item in best] == [1.0]
     assert best[0]["finish_time_median_s"] == pytest.approx(48.0)
+    fastest = [payload for event, payload in events if event == "eval/fastest_checkpoint"]
+    assert [item["finish_time_best_s"] for item in fastest] == [52.0, 46.0]
+    assert [item["shared_with_reliable"] for item in fastest] == [0.0, 0.0]
 
 
 def test_evaluation_summary_rejects_invalid_observability_metrics() -> None:

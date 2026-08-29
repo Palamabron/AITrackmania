@@ -25,6 +25,11 @@ from trackmaniarl.models.encoders import (
     TrackGeometryEncoder,
 )
 from trackmaniarl.models.factory import CompositeValueModelFactory
+from trackmaniarl.models.track_graphs import (
+    TrackGraphTransformer,
+    TrackGraphTransformerConfig,
+    TrackNeighborGraph,
+)
 
 __all__ = [
     "CategoricalActor",
@@ -44,5 +49,8 @@ __all__ = [
     "SimbaV2Block",
     "TemporalMambaTrackGeometryEncoder",
     "TrackGeometryEncoder",
+    "TrackGraphTransformer",
+    "TrackGraphTransformerConfig",
+    "TrackNeighborGraph",
     "project_hyperspherical_weights",
 ]

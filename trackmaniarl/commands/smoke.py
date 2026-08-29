@@ -76,17 +76,25 @@ def _smoke_training(spec: TrainingSpec, transitions: int) -> TrainingSpec:
     n_step = min(spec.n_step, transitions)
     batch_size = _smoke_batch_size(spec, transitions, n_step)
     ready = batch_size * spec.sequence_length + n_step - 1
-    return spec.model_copy(
-        update={
-            "total_transitions": transitions,
-            "max_episode_steps": min(spec.max_episode_steps, transitions),
-            "batch_size": batch_size,
-            "n_step": n_step,
-            "warmup_transitions": ready,
-            "updates_per_transition": 1.0,
-            "checkpoint_interval_updates": transitions,
-        }
-    )
+    updates = {
+        "total_transitions": transitions,
+        "max_episode_steps": min(spec.max_episode_steps, transitions),
+        "batch_size": batch_size,
+        "n_step": n_step,
+        "warmup_transitions": ready,
+        "updates_per_transition": 1.0,
+        "checkpoint_interval_updates": transitions,
+    }
+    return spec.model_copy(update=updates | _disabled_evaluation_schedule())
+
+
+def _disabled_evaluation_schedule() -> dict[str, None]:
+    return {
+        "evaluate_every_episodes": None,
+        "evaluation_stop_min_finish_rate": None,
+        "evaluation_stop_median_s": None,
+        "evaluation_stop_consecutive_batches": None,
+    }
 
 
 def _smoke_batch_size(spec: TrainingSpec, transitions: int, n_step: int) -> int:
@@ -142,7 +150,12 @@ def _smoke_restore_spec(spec: RunSpec) -> RunSpec:
 def _restore_checkpoint(restore: _SmokeRestore) -> None:
     run = restore.run
     run.learner.setup(
-        {"seed": restore.spec.seed, "run_dir": run.run_dir, "model_factory": run.model_factory}
+        {
+            "seed": restore.spec.seed,
+            "run_dir": run.run_dir,
+            "model_factory": run.model_factory,
+            "restoring_checkpoint": True,
+        }
     )
     restore.coordinator.restore_checkpoint(restore.checkpoint)
     if restore.coordinator.counters.updates < 1:

@@ -2,22 +2,16 @@
 
 from __future__ import annotations
 
-import hashlib
 import hmac
-import importlib
-import inspect
 import ipaddress
-import json
 from collections.abc import Mapping
-from enum import Enum
-from pathlib import Path
 from typing import Any, cast
 
 import grpc
 from google.protobuf.wrappers_pb2 import BytesValue
 
 from trackmaniarl.core.data import Transition
-from trackmaniarl.core.spec import RunSpec
+from trackmaniarl.core.fingerprint import run_fingerprint as run_fingerprint
 
 PROTOCOL_VERSION = "1"
 SERVICE = "trackmaniarl.Distributed"
@@ -95,177 +89,3 @@ def require_loopback_bind(bind: str) -> str:
     if not address.is_loopback:
         raise ValueError("distributed learner only accepts loopback binds; use an encrypted tunnel")
     return bind
-
-
-def run_fingerprint(spec: RunSpec, base_dir: Path) -> str:
-    config, manifest = _fingerprint_config(spec)
-    config["components"] = _semantic_component_tree(config["components"], manifest)
-    config["component_manifest"] = sorted(manifest, key=_canonical_sort_key)
-    if _uses_trackmania(manifest):
-        config["builtin_contracts"] = _trackmania_contracts()
-    config = _hash_geometry_paths(config, base_dir)
-    _remove_evaluation_map_paths(config)
-    canonical = json.dumps(config, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(canonical.encode()).hexdigest()
-
-
-def _fingerprint_config(spec: RunSpec) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    config = spec.model_dump(mode="json")
-    config.pop("run_id")
-    config.pop("artifacts_dir")
-    components = config["components"]
-    components.pop("logger")
-    components.pop("additional_loggers")
-    config["components"] = components
-    return config, []
-
-
-def _canonical_sort_key(value: Any) -> str:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"))
-
-
-def _uses_trackmania(manifest: list[dict[str, Any]]) -> bool:
-    return any(
-        str(item["resolved_symbol"]).partition(":")[0].startswith("trackmaniarl.trackmania")
-        for item in manifest
-    )
-
-
-def _remove_evaluation_map_paths(config: dict[str, Any]) -> None:
-    evaluation = config["evaluation"]
-    if evaluation is None:
-        return
-    if not isinstance(evaluation, dict):
-        raise TypeError("evaluation fingerprint state must be a mapping")
-    maps = evaluation["maps"]
-    for map_spec in maps:
-        map_spec.pop("map_path")
-
-
-def _semantic_component_tree(value: Any, manifest: list[dict[str, Any]]) -> Any:
-    if isinstance(value, dict):
-        return _semantic_mapping(value, manifest)
-    if isinstance(value, (list, tuple)):
-        return [_semantic_component_tree(item, manifest) for item in value]
-    if isinstance(value, Path):
-        return value.as_posix()
-    if isinstance(value, Enum):
-        return _semantic_component_tree(value.value, manifest)
-    if isinstance(value, (set, frozenset)):
-        return _semantic_set(value, manifest)
-    if value is None or isinstance(value, (str, int, float, bool)):
-        return value
-    return _semantic_object(value, manifest)
-
-
-def _semantic_mapping(value: dict[Any, Any], manifest: list[dict[str, Any]]) -> Any:
-    class_path = value.get("class_path")
-    if not isinstance(class_path, str):
-        return {str(key): _semantic_component_tree(item, manifest) for key, item in value.items()}
-    symbol = _resolved_symbol(class_path)
-    provided = value["kwargs"]
-    if not isinstance(provided, Mapping):
-        raise TypeError(f"Component {class_path!r} kwargs must be a mapping")
-    parameters = _semantic_component_tree(_semantic_parameters(symbol, provided), manifest)
-    implementation = _component_implementation(symbol)
-    manifest.append(_component_manifest_entry(class_path, implementation, parameters))
-    return {"class_path": class_path, "kwargs": parameters}
-
-
-def _component_manifest_entry(
-    class_path: str, implementation: Mapping[str, Any], parameters: Any
-) -> dict[str, Any]:
-    return {
-        "class_path": class_path,
-        "resolved_symbol": implementation["resolved_symbol"],
-        "source_sha256": implementation["source_sha256"],
-        "parameters": parameters,
-    }
-
-
-def _semantic_set(value: set[Any] | frozenset[Any], manifest: list[dict[str, Any]]) -> list[Any]:
-    normalized = [_semantic_component_tree(item, manifest) for item in value]
-    return sorted(normalized, key=lambda item: json.dumps(item, sort_keys=True, default=str))
-
-
-def _semantic_object(value: Any, manifest: list[dict[str, Any]]) -> Any:
-    dump = getattr(value, "model_dump", None)
-    if callable(dump):
-        return _semantic_component_tree(dump(mode="json"), manifest)
-    return {"type": f"{type(value).__module__}:{type(value).__qualname__}"}
-
-
-def _resolved_symbol(class_path: str) -> Any:
-    module_name, _, symbol_name = class_path.partition(":")
-    return getattr(importlib.import_module(module_name), symbol_name)
-
-
-def _component_implementation(symbol: Any) -> dict[str, str | None]:
-    module_name = getattr(symbol, "__module__", type(symbol).__module__)
-    qualname = getattr(symbol, "__qualname__", type(symbol).__qualname__)
-    try:
-        source = inspect.getsourcefile(symbol)
-    except TypeError:
-        source = None
-    source_hash = None
-    if source is not None:
-        source_bytes = Path(source).read_bytes().replace(b"\r\n", b"\n")
-        source_hash = hashlib.sha256(source_bytes).hexdigest()
-    return {
-        "resolved_symbol": f"{module_name}:{qualname}",
-        "source_sha256": source_hash,
-    }
-
-
-def _semantic_parameters(symbol: Any, provided: Mapping[str, Any]) -> dict[str, Any]:
-    ignored = frozenset(getattr(symbol, "fingerprint_ignored_parameters", ()))
-    parameters = {str(key): value for key, value in provided.items() if key not in ignored}
-    try:
-        signature = inspect.signature(symbol)
-    except (TypeError, ValueError):
-        return parameters
-    for name, parameter in signature.parameters.items():
-        if name in ignored or name in parameters:
-            continue
-        if parameter.kind in {parameter.VAR_POSITIONAL, parameter.VAR_KEYWORD}:
-            continue
-        if parameter.default is not inspect.Parameter.empty:
-            parameters[name] = parameter.default
-    return parameters
-
-
-def _trackmania_contracts() -> dict[str, Any]:
-    from trackmaniarl.trackmania.actions import build_brake_tap_action_table
-    from trackmaniarl.trackmania.features import LidarFeaturePipeline
-
-    _, action_table = build_brake_tap_action_table()
-    action_bytes = b"".join(item.tobytes() for item in action_table)
-    return {
-        "action_table_sha256": hashlib.sha256(action_bytes).hexdigest(),
-        "feature_schema": LidarFeaturePipeline.schema_version,
-        "feature_fields": LidarFeaturePipeline.source_fields,
-    }
-
-
-def _hash_geometry_paths(value: Any, base_dir: Path) -> Any:
-    if isinstance(value, dict):
-        return {
-            key: (
-                _geometry_hash(item, base_dir)
-                if key == "geometry_path"
-                else _hash_geometry_paths(item, base_dir)
-            )
-            for key, item in value.items()
-        }
-    if isinstance(value, list):
-        return [_hash_geometry_paths(item, base_dir) for item in value]
-    return value
-
-
-def _geometry_hash(value: Any, base_dir: Path) -> str | None:
-    if value is None:
-        return None
-    if not isinstance(value, str):
-        raise TypeError("geometry_path must be a string")
-    geometry = (base_dir / value).resolve()
-    return hashlib.sha256(geometry.read_bytes()).hexdigest()

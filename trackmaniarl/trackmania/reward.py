@@ -55,6 +55,7 @@ class TrajectoryReward:
         self.minimum_finish_steps = config.minimum_finish_steps
         self.nearest_forward_points = config.nearest_forward_points
         self.nearest_backward_points = config.nearest_backward_points
+        self.limit_progress_by_kinematics = config.limit_progress_by_kinematics
         self.max_time_delta_s = config.max_time_delta_s
         self.maximum_race_time_s = config.maximum_race_time_s
 

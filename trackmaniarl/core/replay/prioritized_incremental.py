@@ -40,9 +40,9 @@ def _sample_incremental_ids(
 
 
 def _incremental_choices(
-    sampler: PrioritizedSampler, batch_size: int
+    sampler: PrioritizedSampler, request: BatchRequest
 ) -> tuple[list[TransitionId], list[float]]:
-    return prioritized_draw._incremental_choices(sampler, batch_size)
+    return prioritized_draw._incremental_choices(sampler, request)
 
 
 def _synchronize_incremental_store(request: _SynchronizationRequest) -> None:

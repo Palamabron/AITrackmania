@@ -102,7 +102,7 @@ map provenance should be re-recorded and rebuilt rather than relabelled.
 Local `events.jsonl` remains the complete event stream. W&B no longer exports
 every flattened progress bin or raw heartbeat. It uses semantic axes
 (`trainer/update`, `env/transitions`, `env/episode`, `eval/batch` and
-`system/elapsed_s`) and a bounded metric catalogue. Existing dashboards using
+`runtime/elapsed_s`) and a bounded metric catalogue. Existing dashboards using
 the old `training/*`, `actor/*` or global-step series must be recreated from the
 mapping in [Observability and W&B](observability.md).
 

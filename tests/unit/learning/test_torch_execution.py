@@ -49,9 +49,7 @@ def _checkpoint_learner(name: str) -> Any:
     return learner
 
 
-def test_auto_execution_resolves_cpu_when_no_accelerator_is_visible(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def _hide_accelerators(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
     monkeypatch.setattr(torch.backends.mps, "is_built", lambda: False)
     monkeypatch.setattr(
@@ -59,11 +57,23 @@ def test_auto_execution_resolves_cpu_when_no_accelerator_is_visible(
         lambda: set(),
     )
 
-    resolved = resolve_torch_execution(TorchExecutionConfig())
 
-    assert resolved.backend == "cpu"
-    assert resolved.precision == "float32"
-    assert not resolved.scaler_enabled
+def test_auto_execution_resolves_cpu_when_no_accelerator_is_visible(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _hide_accelerators(monkeypatch)
+    resolved = resolve_torch_execution(TorchExecutionConfig())
+    learner = SoftActorCritic(ContinuousModel())
+    learner.setup({"seed": 0})
+    manifest = learner.execution_manifest()
+
+    assert (resolved.backend, resolved.precision, resolved.scaler_enabled) == (
+        "cpu",
+        "float32",
+        False,
+    )
+    assert manifest["resolved"] is True
+    assert manifest["backend"] == "cpu"
 
 
 def test_auto_execution_rejects_accelerator_build_mismatch(

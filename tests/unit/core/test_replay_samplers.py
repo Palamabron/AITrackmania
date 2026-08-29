@@ -127,6 +127,23 @@ def _copy_store(source: InMemoryReplayStore, target: InMemoryReplayStore) -> Non
         target.append(transition)
 
 
+def _assert_interleaved_sequence_batch(batch: TrainingBatch) -> None:
+    windows = [batch.transition_ids[index : index + 3] for index in range(0, 12, 3)]
+    assert {tuple(window) for window in windows} == {
+        (0, 2, 4),
+        (1, 3, 5),
+        (2, 4, 6),
+        (3, 5, 7),
+    }
+    assert batch.metadata["priority_transition_ids"] == tuple(window[-1] for window in windows)
+    assert torch.equal(batch.masks, torch.ones((4, 3), dtype=torch.bool))
+    for row, window in enumerate(windows):
+        assert batch.rewards[row].tolist() == pytest.approx(
+            [1.0, 1.0, 1.5 if window[-1] in {4, 5} else 1.0]
+        )
+        assert batch.bootstrap_discounts[row].tolist() == pytest.approx([0.5, 0.5, 0.0])
+
+
 def test_prioritized_sampler_normalizes_weights_and_accepts_priority_feedback() -> None:
     store = _store()
     sampler = PrioritizedSampler(IdentityFeaturePipeline(), alpha=0.6, beta=0.5, seed=1)
@@ -149,6 +166,44 @@ def test_prioritized_sampler_uses_demo_flags_without_an_expert_threshold() -> No
 
     assert "expert_demo_flags" not in batch.metadata
     assert any(batch.metadata["demo_flags"])
+
+
+def test_uniform_sampler_exposes_demo_flags_to_learner_objectives() -> None:
+    store = _store(demos=4)
+    sampler = UniformSampler(IdentityFeaturePipeline(), seed=1)
+
+    batch = sampler.sample(store, BatchRequest(batch_size=4))
+
+    assert batch.metadata["demo_flags"] == tuple(store.demo_flags(batch.transition_ids))
+
+
+def _switch_transition(step: int) -> Transition:
+    is_demo = step < 2
+    steering_switch = step in (0, 3)
+    switch_info = {"demonstration_steering_switch": steering_switch} if is_demo else {}
+    return Transition(
+        observation=float(step),
+        action=0,
+        reward=1.0,
+        next_observation=float(step + 1),
+        terminated=True,
+        truncated=False,
+        info={"is_demo": is_demo, **switch_info},
+    )
+
+
+def test_uniform_sampler_preserves_demo_switches_in_a_mixed_batch() -> None:
+    store = InMemoryReplayStore()
+    for step in range(4):
+        store.append(_switch_transition(step))
+    batch = UniformSampler(IdentityFeaturePipeline(), seed=1).sample(
+        store, BatchRequest(batch_size=4)
+    )
+    expected = tuple(
+        bool(item.info.get("demonstration_steering_switch", False))
+        for item in store.get(batch.transition_ids)
+    )
+    assert batch.metadata["demonstration_steering_switches"] == expected
 
 
 def test_prioritized_sampler_state_round_trips_current_schema() -> None:
@@ -197,18 +252,18 @@ def test_prioritized_prefetch_blocks_fifo_eviction_until_batch_is_materialized()
     assert appended.is_set()
 
 
-def test_sequence_sampler_never_crosses_episode_or_terminal_boundary() -> None:
-    store = _store(episodes=2, steps=3)
-    batch = SequenceSampler(IdentityFeaturePipeline(), sequence_length=2, seed=1).sample(
-        store, BatchRequest(batch_size=2)
+def test_sequence_sampler_uses_linked_episode_windows_and_n_step_targets() -> None:
+    source = _store(episodes=2, steps=4)
+    transitions = source.get(source.available_ids())
+    store = InMemoryReplayStore()
+    for step in range(4):
+        store.append(transitions[step])
+        store.append(transitions[step + 4])
+
+    batch = SequenceSampler(IdentityFeaturePipeline(), sequence_length=3, seed=1).sample(
+        store, BatchRequest(batch_size=4, sequence_length=3, n_step=2, gamma=0.5)
     )
-    assert batch.metadata["sequence_length"] == 2
-    assert torch.equal(batch.masks, torch.ones((2, 2), dtype=torch.bool))
-    assert batch.observations.shape == (2, 2)
-    assert batch.actions.shape == (2, 2)
-    assert batch.rewards.shape == (2, 2)
-    windows = [batch.transition_ids[index : index + 2] for index in range(0, 4, 2)]
-    assert all(window[0] in {0, 1, 3, 4} and window[1] == window[0] + 1 for window in windows)
+    _assert_interleaved_sequence_batch(batch)
 
 
 def test_basic_sequence_sampler_builds_only_the_final_n_step_target() -> None:

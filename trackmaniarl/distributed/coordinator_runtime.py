@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import logging
 import os
+from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from trackmaniarl.core.runtime import prepare_run, resolve_run
+from trackmaniarl.core.runtime import prepare_run, record_run_attempt, resolve_run
 from trackmaniarl.core.spec import RunSpec
 from trackmaniarl.core.training import TrainingResult
 from trackmaniarl.distributed.coordinator_policy import PolicyPublicationMode
@@ -110,7 +111,7 @@ def _training_result(coordinator: Coordinator, checkpoints: list[Path]) -> Train
         coordinator.counters.episodes,
         coordinator.counters.transitions,
         coordinator.counters.updates,
-        tuple(checkpoints),
+        tuple(path for path in checkpoints if path.is_file()),
         None,
     )
 
@@ -135,11 +136,44 @@ def _run_offline_pretraining(coordinator: Coordinator) -> TrainingResult:
     coordinator._prepare_training()
     _validate_empty_journal(coordinator)
     coordinator._import_demonstrations()
-    coordinator._offline_pretrain()
+    try:
+        coordinator._offline_pretrain()
+    except KeyboardInterrupt:
+        _log_offline_interrupt(coordinator)
+        _save_offline_checkpoint(coordinator, checkpoints)
+        raise
+    _save_offline_checkpoint(coordinator, checkpoints)
+    return _training_result(coordinator, checkpoints)
+
+
+def _log_offline_interrupt(coordinator: Coordinator) -> None:
+    if coordinator.run.spec.training.save_final_checkpoint:
+        action = "Saving a final checkpoint"
+    else:
+        action = "Final checkpoint is disabled; waiting for in-progress writes"
+    logger.warning(
+        "Ctrl+C received during offline pretraining. %s; do not interrupt again "
+        "or close the terminal.",
+        action,
+    )
+
+
+def _save_offline_checkpoint(coordinator: Coordinator, checkpoints: list[Path]) -> None:
     if coordinator.run.spec.training.save_final_checkpoint:
         checkpoints.append(coordinator._checkpoint())
-    coordinator._checkpoint_writer.wait()
-    return _training_result(coordinator, checkpoints)
+    _wait_for_checkpoint_writer(coordinator)
+
+
+def _wait_for_checkpoint_writer(coordinator: Coordinator) -> None:
+    while True:
+        try:
+            coordinator._checkpoint_writer.wait()
+            return
+        except KeyboardInterrupt:
+            logger.warning(
+                "Checkpoint write is still in progress; Ctrl+C was ignored. "
+                "Wait for completion before closing the terminal."
+            )
 
 
 def _validate_offline_pretraining(coordinator: Coordinator) -> None:
@@ -170,23 +204,48 @@ def log_run_failure(coordinator: Coordinator, phase: str, exc: BaseException) ->
 
 
 def close_runtime(coordinator: Coordinator) -> None:
+    _close_actions(
+        (
+            lambda: _stop_server(coordinator),
+            lambda: _shutdown_rpc_executor(coordinator),
+            coordinator._checkpoint_writer.close,
+            coordinator.journal.close,
+        )
+    )
+
+
+def _stop_server(coordinator: Coordinator) -> None:
     if coordinator._server is not None:
         coordinator._server.stop(grace=2).wait(timeout=5)
+
+
+def _shutdown_rpc_executor(coordinator: Coordinator) -> None:
     if coordinator._rpc_executor is not None:
         coordinator._rpc_executor.shutdown(wait=True, cancel_futures=True)
-    coordinator._checkpoint_writer.close()
-    coordinator.journal.close()
+
+
+def _close_actions(actions: tuple[Callable[[], None], ...]) -> None:
+    errors: list[BaseException] = []
+    for action in actions:
+        try:
+            action()
+        except BaseException as exc:
+            errors.append(exc)
+    if errors:
+        raise errors[0]
 
 
 def prepare_training(coordinator: Coordinator) -> None:
+    prepare_run(coordinator.run)
     coordinator.run.learner.setup(
         {
             "seed": coordinator.run.spec.seed,
             "run_dir": coordinator.run.run_dir,
             "model_factory": coordinator.run.model_factory,
+            "restoring_checkpoint": coordinator.resume_checkpoint is not None,
         }
     )
-    prepare_run(coordinator.run)
+    record_run_attempt(coordinator.run)
     coordinator._log_execution()
 
 

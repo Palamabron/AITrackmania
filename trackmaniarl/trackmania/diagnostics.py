@@ -13,6 +13,22 @@ from trackmaniarl.trackmania.actions import (
     build_brake_tap_action_table,
     continuous_control_to_discrete_index,
 )
+from trackmaniarl.trackmania.expert_diagnostics import (
+    ExpertActionDiagnostics,
+    ExpertDiagnosticRecord,
+    aggregate_expert_actions,
+    aggregate_expert_bins,
+)
+
+__all__ = [
+    "ExpertActionDiagnostics",
+    "ExpertDiagnosticRecord",
+    "ProgressBinDiagnostics",
+    "ProgressDiagnosticRecord",
+    "aggregate_expert_actions",
+    "aggregate_expert_bins",
+    "aggregate_progress_bins",
+]
 
 _TIMING_METRICS = (
     "entry_time_s",
@@ -37,14 +53,6 @@ class ProgressDiagnosticRecord:
     action: Any
     policy: Any
     info: Mapping[str, Any] | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class ExpertDiagnosticRecord:
-    progress_pct: float
-    expert_q: float
-    greedy_q: float
-    expert_rank: int
 
 
 class ProgressBinDiagnostics:
@@ -265,70 +273,3 @@ def _observed_progress_metrics(prefix: str, values: list[Mapping[str, float]]) -
         if observed:
             result[f"{prefix}/{metric}"] = float(np.mean(observed))
     return result
-
-
-class ExpertActionDiagnostics:
-    def __init__(self, bin_count: int = 10) -> None:
-        if bin_count < 1:
-            raise ValueError("bin_count must be positive")
-        self.bin_count = bin_count
-        self._counts = [0] * bin_count
-        self._expert_q_totals = [0.0] * bin_count
-        self._greedy_q_totals = [0.0] * bin_count
-        self._rank_totals = [0.0] * bin_count
-
-    def record(self, record: ExpertDiagnosticRecord) -> None:
-        index = min(
-            self.bin_count - 1,
-            max(0, int(record.progress_pct * self.bin_count / 100.0)),
-        )
-        self._counts[index] += 1
-        self._expert_q_totals[index] += record.expert_q
-        self._greedy_q_totals[index] += record.greedy_q
-        self._rank_totals[index] += record.expert_rank
-
-    def summary(self) -> dict[str, dict[str, float]]:
-        return {
-            self._name(index): self._summary_at(index, count)
-            for index, count in enumerate(self._counts)
-        }
-
-    def _name(self, index: int) -> str:
-        start = index * 100 // self.bin_count
-        end = (index + 1) * 100 // self.bin_count
-        return f"{start:02d}_{end:03d}"
-
-    def _summary_at(self, index: int, count: int) -> dict[str, float]:
-        expert_total = self._expert_q_totals[index]
-        greedy_total = self._greedy_q_totals[index]
-        return {
-            "count": float(count),
-            "expert_q_mean": expert_total / count if count else 0.0,
-            "raw_greedy_q_mean": greedy_total / count if count else 0.0,
-            "advantage_gap_mean": (greedy_total - expert_total) / count if count else 0.0,
-            "expert_action_rank_mean": self._rank_totals[index] / count if count else 0.0,
-        }
-
-
-def aggregate_expert_bins(
-    summaries: Iterable[Mapping[str, Mapping[str, float]]],
-) -> dict[str, dict[str, float]]:
-    grouped = _group_progress_summaries(summaries)
-    return {name: _aggregate_expert_bin(values) for name, values in grouped.items()}
-
-
-def _aggregate_expert_bin(values: list[Mapping[str, float]]) -> dict[str, float]:
-    total = sum(item["count"] for item in values)
-    metrics = (
-        "expert_q_mean",
-        "raw_greedy_q_mean",
-        "advantage_gap_mean",
-        "expert_action_rank_mean",
-    )
-    return {
-        "count": total,
-        **{
-            metric: sum(item["count"] * item[metric] for item in values) / total if total else 0.0
-            for metric in metrics
-        },
-    }

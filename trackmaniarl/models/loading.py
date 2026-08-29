@@ -24,7 +24,9 @@ class WarmStartReport:
     shape_mismatch: tuple[str, ...]
 
     def write(self, path: Path) -> None:
-        path.write_text(json.dumps(asdict(self), indent=2, sort_keys=True), encoding="utf-8")
+        temporary = path.with_suffix(".json.tmp")
+        temporary.write_text(json.dumps(asdict(self), indent=2, sort_keys=True), encoding="utf-8")
+        temporary.replace(path)
 
 
 @dataclass(frozen=True, slots=True)

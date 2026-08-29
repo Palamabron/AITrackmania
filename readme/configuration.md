@@ -45,6 +45,9 @@ and reward fields are derived in [Rewards](rewards.md).
 | `components.additional_loggers` | tuple; empty | Optional projections such as W&B; failures must not replace the local stream. |
 | `components.checkpoint_codec` | component; `TorchCheckpointCodec` | Bounded Zstandard + `torch.load(weights_only=True)` checkpoint format. |
 | `components.evaluator` | optional component | Mandatory when scheduled evaluation is enabled. |
+| `training` | `TrainingSpec`; defaults below | Budgets, replay request shape, update ratio, checkpoints and evaluation stopping. |
+| `distributed` | `DistributedSpec`; defaults below | Local/remote actor transport, durability, exploration and actor execution. |
+| `evaluation` | suite or null; null | Versioned local maps and release acceptance thresholds. |
 
 A component has exactly `class_path` and optional `kwargs`:
 
@@ -62,7 +65,7 @@ Relative asset paths are resolved against the directory containing
 
 | Field | Type; default | Unit/range and effect |
 | --- | --- | --- |
-| `total_transitions` | positive int; `10000` | Physical environment transitions that bound a run. PPO requires divisibility by `sequence_length`. |
+| `total_transitions` | positive int; `10000` | PPO uses an exact divisible budget. Asynchronous off-policy training stops after reaching this target but accepts already durable whole chunks, so the final count can be higher; use the recorded count as the actual budget. |
 | `max_episode_steps` | positive int; `2000` | Decision steps. Too small creates artificial truncations; too large delays episode-level diagnostics. |
 | `batch_size` | positive int; `256` | Transitions or sequences per update. Memory grows roughly linearly. |
 | `sequence_length` | positive int; `1` | Replay timesteps per sampled sequence. Values above one require sequence-capable replay and temporal learner support. |
@@ -73,13 +76,25 @@ Relative asset paths are resolved against the directory containing
 | `offline_pretrain_updates` | int; `0` | Updates performed from loaded demonstration replay before actors start. |
 | `updates_per_transition` | finite float `>0`; `1.0` | Off-policy update-to-data ratio. High values improve reuse but amplify stale-policy and overfitting risk. |
 | `checkpoint_interval_updates` | positive int or null; `1000` | Periodic exact-state checkpoint cadence; null disables periodic saves. |
+| `checkpoint_keep_last` | positive int or null; null | Retains only the newest count within each checkpoint family after a successful save. Regular and evaluation-leader checkpoints are pruned independently; null disables pruning. |
 | `save_final_checkpoint` | bool; `true` | Atomically writes the latest counters/state even when no new optimizer update followed the last periodic save. |
 | `metrics_interval_updates` | positive int; `50` | Learner diagnostic cadence; it does not change optimization. |
 | `per_beta_final` | `[0,1]` or null; null | Linear final PER beta; requires `training.beta`. |
 | `per_beta_anneal_transitions` | positive int or null | Anneal duration; defaults to `total_transitions`. |
 | `evaluate_every_episodes` | positive int or null | Schedules evaluation and therefore requires `components.evaluator`. |
-| `evaluation_stop_*` | rate, seconds, batch count; all null | All three must be supplied together, with scheduled evaluator and `evaluation`; stops only after consecutive qualifying batches. |
+| `evaluation_stop_min_finish_rate` | float `[0,1]` or null; null | Minimum finish rate for early stopping. Requires the next two stop fields, scheduled evaluation and an `evaluation` suite. |
+| `evaluation_stop_median_s` | positive float or null; null | Maximum qualifying median finish time in seconds. It is evaluated only from finished trials. |
+| `evaluation_stop_consecutive_batches` | positive int or null; null | Number of consecutive evaluation batches that must satisfy both thresholds before training stops. |
 | `max_episode_artifacts` | positive int; `100` | Retention bound for compressed local episode artifacts. |
+
+Scheduled distributed evaluation maintains two leaders. `best-eval-*` requires
+the suite's `min_finish_rate` and ranks policies by finish rate first, then lower
+median finish time, then lower best finish time. `fastest-eval-*` ranks policies
+by lower best finish time first, then finish rate, then lower median finish time,
+so it preserves the best individual completed lap even when its batch does not
+pass the reliability threshold. When one batch improves both leaders, each
+family writes its own exact-policy checkpoint. Promotion durability and
+checkpoint retention are independent for the two families.
 
 ## `distributed`
 
@@ -101,9 +116,17 @@ not encrypt; bind to loopback and use an encrypted tunnel.
 | `max_update_credit` | `512` | Caps accumulated learner update debt after bursts. |
 | `epsilon_profiles` | `[1,.4,.1,.02]` | Multipliers assigned by stable actor ID. Each value is in `[0,1]`. |
 | `epsilon_start` / `epsilon_final` | `.5` / `.05` | Base epsilon schedule in `[0,1]`. |
-| `epsilon_decay_transitions` | `1500000` | Default schedule axis; `epsilon_decay_updates` switches the axis to updates. |
+| `epsilon_decay_transitions`, `epsilon_decay_updates` | `1500000`, null | Transition decay is the default; a positive update count switches the epsilon schedule axis to learner updates. |
 | `actor_execution` | null | Optional actor replica `device`, `precision` and `torch_threads`; defaults remain CPU/float32 at this boundary. |
 | `token_env` | `TRACKMANIARL_DISTRIBUTED_TOKEN` | Environment-variable name only. Values are never written into manifests. |
+
+### Actor execution override
+
+| Field | Default | Effect |
+| --- | --- | --- |
+| `device` | `cpu` | Actor replica backend: `auto`, `cuda`, `rocm`, `mps` or `cpu`. Keep remote actors on CPU unless policy inference is measured as the bottleneck. |
+| `precision` | `float32` | Actor inference precision: `auto`, `bfloat16`, `float16` or `float32`; unsupported backend/precision pairs fail validation. |
+| `torch_threads` | null | Optional positive intra-op thread count for the actor process. Null preserves Torch's process default. |
 
 ## `evaluation`
 
@@ -114,11 +137,20 @@ Map IDs are unique and every path is bound into evaluation provenance.
 | Field | Default | Effect |
 | --- | --- | --- |
 | `name`, `version` | required strings | Human- and machine-readable suite identity. |
-| `maps` | empty tuple | Immutable evaluation maps. Live benchmark commands require at least one. |
+| `maps` | required, non-empty tuple | Immutable evaluation maps. Omit the entire `evaluation` section when no suite is configured. |
 | `trials_per_map` | `1` | Closed-loop attempts per map. |
 | `time_buckets_s` | `[40,38,36]` s | Positive strict finish-time thresholds used for rates. |
 | `target_median_s` | null | Positive release target; BC's mandatory gate fails when absent unless `--report-only` is explicit. |
 | `min_finish_rate` | `.9` | Required fraction in `[0,1]`. |
+
+Each `maps[]` item has an immutable local asset identity:
+
+| Field | Default | Effect |
+| --- | --- | --- |
+| `id` | required | Unique safe identifier used in evaluation results and artifact names. |
+| `map_path` | required | Local `.Map.Gbx` loaded for this evaluation case. |
+| `geometry_path` | required | Matching versioned geometry used for feature/reward contracts. |
+| `expected_map_uid` | required | UID that the live session must report; a mismatch fails before driving. |
 
 ## Trackmania environment
 
@@ -136,12 +168,15 @@ The paths below are under `components.environment.kwargs.config`.
 | `control_backend` | `gamepad` | `gamepad` preserves analog controls; `keyboard` digitizes them. |
 | `compact_action_ids` | null | Explicit subset of the 78-action brake-tap table; model and BC IDs must match exactly. |
 | `position_indices`, `velocity_indices` | protocol defaults | Three unique telemetry indices each. |
+| `expected_map_uid` | null | Optional active-map UID assertion for training/smoke. Configure it for every release run. |
 | `crash_distance` | `25` m | Distance threshold for off-track failure. |
+| `finish_progress` | `0.995`, range `(0,1]` | Required accepted lap fraction before finish UI can end the episode successfully. |
 | `no_progress_steps` | `200` decisions | Consecutive stall limit. Cadence changes alter elapsed time, so retune intentionally. |
 | `slow_progress_window_steps` | `80` decisions | Rolling progress window, at least two. |
 | `minimum_progress_per_window_m` | `2` m | Required arc progress in the rolling window. |
 | `minimum_finish_steps` | `50` decisions | Prevents start/finish false positives. |
 | `nearest_forward_points`, `nearest_backward_points` | `500`, `10` | Local projection search window. Too small loses fast motion; too large increases folded-track ambiguity. |
+| `limit_progress_by_kinematics` | `true` | Caps reward progress by measured displacement and elapsed-time speed bounds. Disable only for an adapter with intentional teleport/reset semantics; this is independent of the feature-pipeline switch below. |
 | `maximum_race_time_s` | null | Optional physical timeout. `TrajectoryReward` treats it as the natural `time_limit` terminal and applies `terminal_failure_penalty`; transport/game interruption is a truncation instead. |
 
 Reward fields in this same mapping are listed with equations and ranges in
@@ -159,7 +194,7 @@ before changing either field.
 
 ## Lidar feature pipeline
 
-These paths are under `components.feature_pipeline.kwargs` for
+These paths are under `components.feature_pipeline.kwargs.config` for
 `LidarFeaturePipeline`.
 
 | Field | Default | Unit/range and effect |
@@ -175,7 +210,7 @@ These paths are under `components.feature_pipeline.kwargs` for
 | `use_racing_line` | `false` | Uses the asset racing line instead of reward center where supported. |
 | `max_speed_mps`, `velocity_to_mps_scale` | `80`, `.001` | Physical speed normalization and native velocity-unit conversion. |
 | `max_time_delta_s` | `1` s | Rejects stale finite-difference dynamics. |
-| `limit_progress_by_kinematics` | `false` | Opt-in physical bound for feature progress projection. Reward projection is always bounded separately. |
+| `limit_progress_by_kinematics` | `false` | Opt-in physical bound for feature progress projection. Reward projection has the independent environment setting above. |
 | `nearest_forward_points`, `nearest_backward_points` | `128`, `10` | Feature projection search window. |
 | `pace_reference_path`, `pace_debt_clip_s` | null, `10` s | Optional compatible human reference and clipped debt features. |
 | `reference_speed_offsets_m` | `[0,20,40,80]` m | Future reference-speed lookaheads; ignored without a pace profile. |
@@ -187,20 +222,109 @@ These paths are under `components.feature_pipeline.kwargs` for
 Model `telemetry_dim`, `lidar_channels`, history layout and feature output must
 match exactly. `validate` executes a synthetic update to catch these contracts.
 
+## Built-in learner `kwargs`
+
+The tables below name every stable learner option accepted below
+`components.learner.kwargs`. The runtime supplies `model_factory` from
+`components.model_factory` and `seed` from the RunSpec root unless they are
+explicitly overridden. `base_dir` is also supplied to the discrete learner for
+relative warm-start paths. Prefer the RunSpec fields so one value remains
+authoritative.
+
+### `DiscreteValueLearner`
+
+| Field | Default | Effect and constraint |
+| --- | --- | --- |
+| `learning_rate` | `1e-4` | Main optimizer rate; positive. |
+| `fraction_learning_rate` | `1e-7` | Separate FQF proposal optimizer rate; positive and ignored by non-FQF strategies. |
+| `target_update_interval` | `1000` | Hard-copy cadence when `target_tau` is zero; positive. |
+| `target_tau` | `0.0` | Polyak coefficient in `[0,1]`; a positive value updates every learner step. |
+| `gradient_clip_norm` / `fraction_gradient_clip_norm` | `10` / `10` | Positive main and FQF gradient-norm caps. |
+| `burn_in` | `0` | Recurrent prefix positions used only to reconstruct state; non-negative and below `training.sequence_length`. |
+| `exploration_epsilon` | `0.1` | Standalone policy epsilon in `[0,1]`; distributed actors apply their assigned profile to the runtime schedule. |
+| `policy_action_ids` | null | Unique non-negative global action IDs allowed by the policy; model output and environment mapping must agree. |
+| `online_quantile_distortion` / `evaluation_quantile_distortion` | `neutral` / `neutral` | `neutral` or `upper_cvar`; controls action selection, not the TD target distribution. |
+| `upper_cvar_alpha` | `0.25` | Upper-tail mass in `(0,1]` used by either `upper_cvar` distortion. |
+| `value_rescaling` | `false` | Applies the signed-square-root transform and its inverse around value targets. |
+| `adaptive_gradient_clipper` | null | Optional `ComponentSpec` for `AdaptiveGradientClipper`; replaces the fixed main clip and is checkpointed. |
+| `diagnostics_interval_updates` | `100` | Positive cadence for detailed Q, TD, return and action-distribution metrics. |
+| `objectives` | empty | Ordered `ComponentSpec` sequence of auxiliary value objectives; their weighted losses add to TD loss. |
+| `action_selector` | null | Optional custom action-selection component; it must preserve the configured action mask and value contract. |
+| `model_initialization_checkpoint` | null | Warm-start checkpoint path, resolved relative to `run.yaml`; this is not resume. |
+| `warm_start_submodules` | `[encoder, temporal]` | Named model prefixes eligible for transfer. |
+| `warm_start_required_tensors` | empty | Exact tensor names that must be present and shape-compatible. |
+| `freeze_warm_start_during_offline_pretraining` | `false` | Freezes transferred parameters only during the configured demonstration pretraining phase. |
+| `execution` | null | Torch device, precision and determinism policy described below. |
+
+Built-in auxiliary objectives accept: `DemonstrationMarginObjective(margin=0.8,
+weight=1.0, steering_switch_weight=1.0)`,
+`DemonstrationCrossEntropyObjective(weight=1.0, steering_switch_weight=1.0)`, and
+`PolicyAnchorObjective(weight=1.0)`. All values are non-negative. A switch
+weight above one emphasizes demonstration positions where the steering bin
+changes, while one preserves uniform weighting. The policy anchor requires a
+custom batch producer for `policy_anchor_q_values`.
+
+### SAC, REDQ, TQC and stable discrete SAC
+
+| Learner/field | Default | Effect and constraint |
+| --- | --- | --- |
+| all: `learning_rate` | `3e-4` | Actor, critic and learned-temperature optimizer rate; positive. |
+| all: `target_tau` | `0.005` | Polyak coefficient in `(0,1]`. |
+| all: `entropy_coefficient` | `0.2` | Positive fixed value or initial learned alpha. |
+| SAC/TQC/SD-SAC: `target_entropy` | null | Desired policy entropy; null derives the continuous target from action width and uses the learner default for discrete SAC. |
+| SAC/TQC/SD-SAC: `learn_entropy_coefficient` | `true` | Enables checkpointed log-alpha optimization; false keeps alpha fixed. |
+| REDQ: `target_subset_size` | `2` | Positive number of target critics sampled; cannot exceed ensemble size. |
+| REDQ: `policy_update_interval` | `20` | Positive critic updates between actor updates. |
+| TQC: `top_quantiles_to_drop_per_critic` | `2` | Non-negative global upper-quantile truncation per critic; cannot remove every target quantile. |
+| SD-SAC: `q_clip_epsilon` | `0.5` | Non-negative critic-target clipping width. |
+| SD-SAC: `entropy_penalty_coefficient` | `0.5` | Non-negative entropy-change penalty weight. |
+| all: `execution` | null | Torch device, precision and determinism policy described below. |
+
+SAC-family feature pipelines may collate observations and next observations as
+one tensor or as a homogeneous tensor PyTree (for example, a mapping of image
+and telemetry tensors). The supplied actor and critics must accept that same
+structure. Scalar critics may return `[B]` or `[B,1]`; other shapes fail before
+loss computation. TQC critics must return a non-empty `[B,Q]` matrix.
+
+### `ProximalPolicyOptimization`
+
+| Field | Default | Effect and constraint |
+| --- | --- | --- |
+| `learning_rate` | `3e-4` | Initial optimizer rate before linear annealing; positive. |
+| `clip_epsilon` / `value_clip_epsilon` | `0.2` / `0.2` | Policy-ratio and value-change clips, each strictly between zero and one. |
+| `gae_lambda` | `0.95` | GAE coefficient in `[0,1]`. |
+| `entropy_coefficient` / `value_coefficient` | `0.01` / `0.5` | Non-negative entropy bonus and value-loss weights. |
+| `max_gradient_norm` | `0.5` | Positive gradient-norm cap. |
+| `update_epochs` | `10` | Positive passes over each on-policy rollout. |
+| `minibatch_size` | `256` | Positive optimization minibatch size. |
+| `target_kl` | `0.02` | Positive early-stop threshold; null disables KL stopping. |
+| `normalize_observations` / `normalize_rewards` | `true` / `true` | Enables checkpointed running normalization. |
+| `observation_clip` / `reward_clip` | `10` / `10` | Positive post-normalization absolute clips. |
+| `execution` | null | Torch device, precision and determinism policy described below. |
+
 ## Torch execution and stability
 
 Built-in learner `kwargs.execution` accepts `device` (`auto`, `cuda`, `rocm`,
 `mps`, `cpu`), `precision` (`auto`, `bfloat16`, `float16`, `float32`),
-and `deterministic`. Defaults are auto/auto with deterministic execution. The
-resolved backend, precision, and scaler are recorded in the manifest.
+and `deterministic`. Defaults are auto/auto with deterministic execution. Each
+initialized process segment appends its resolved backend, precision and scaler
+to `manifest-attempts.jsonl`; `manifest.json` remains the config identity.
 
 Experimental `AdaptiveGradientClipper` is applied after AMP unscaling and
-before `optimizer.step`; its EMA/warmup state is checkpointed. Experimental
+before `optimizer.step`; its EMA/warmup state is checkpointed. Its constructor
+is `decay=0.995` (`[0,1)`), `warmup_steps=100` (non-negative), and
+`clip_factor=2.0` (positive). Experimental
 [SimBaV2](https://arxiv.org/abs/2502.15280) and
 [Mamba](https://arxiv.org/abs/2312.00752) blocks remain opt-in reusable model
 components; their presence does not reproduce the papers' full experiment
 setups. Change one experimental variable at a time and compare against an
 identical seeded baseline.
+
+`SimbaV2Backbone` requires `input_dim` and `hidden_dim`, and accepts
+`block_count=2`, `expansion=4`, and `input_shift=1.0`. Dimensions and expansion
+must be positive; block count is non-negative. A custom learner using it must
+call `project_hyperspherical_weights(model)` after each optimizer step. The
+built-in discrete learner performs that projection automatically.
 
 ## CLI boundary
 

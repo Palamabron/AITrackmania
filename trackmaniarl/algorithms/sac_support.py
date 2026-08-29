@@ -7,15 +7,16 @@ from typing import Any
 import torch
 
 from trackmaniarl.core.data import TrainingBatch
+from trackmaniarl.core.pytree import PyTree
 
 
 @dataclass(frozen=True, slots=True)
 class SACBatch:
     source: TrainingBatch
-    observations: torch.Tensor
+    observations: PyTree
     actions: torch.Tensor
     rewards: torch.Tensor
-    next_observations: torch.Tensor
+    next_observations: PyTree
     discounts: torch.Tensor
     weights: torch.Tensor | None
 
@@ -37,10 +38,10 @@ class EntropyRestoreTarget:
 def continuous_batch(batch: TrainingBatch) -> SACBatch:
     return SACBatch(
         batch,
-        tensor(batch.observations, "observations"),
+        batch.observations,
         tensor(batch.actions, "actions").float(),
         tensor(batch.rewards, "rewards").float().reshape(-1),
-        tensor(batch.next_observations, "next_observations"),
+        batch.next_observations,
         tensor(batch.bootstrap_discounts, "bootstrap_discounts").float().reshape(-1),
         batch.importance_weights if isinstance(batch.importance_weights, torch.Tensor) else None,
     )
@@ -63,6 +64,24 @@ def tensor(value: Any, name: str) -> torch.Tensor:
     if not isinstance(value, torch.Tensor):
         raise TypeError(f"{name} must be a tensor after feature collation")
     return value
+
+
+def scalar_batch_output(value: Any, name: str, batch_size: int) -> torch.Tensor:
+    output = tensor(value, name)
+    if output.shape == (batch_size,):
+        return output
+    if output.shape == (batch_size, 1):
+        return output.squeeze(-1)
+    raise ValueError(
+        f"{name} must have shape ({batch_size},) or ({batch_size}, 1), got {tuple(output.shape)}"
+    )
+
+
+def quantile_batch_output(value: Any, name: str, batch_size: int) -> torch.Tensor:
+    output = tensor(value, name)
+    if output.ndim == 2 and output.shape[0] == batch_size and output.shape[1] > 0:
+        return output
+    raise ValueError(f"{name} must have shape ({batch_size}, quantiles), got {tuple(output.shape)}")
 
 
 def entropy_state(

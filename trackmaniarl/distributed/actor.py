@@ -206,8 +206,8 @@ class ActorRuntime:
     def _replica_context(self, model_factory: Any) -> dict[str, Any]:
         return {
             "seed": self._actor_seed(),
-            "run_dir": self.base_dir / self.spec.artifacts_dir / self.spec.run_id,
             "model_factory": model_factory,
+            "restoring_checkpoint": True,
         }
 
     def _log_replica_execution(self) -> None:

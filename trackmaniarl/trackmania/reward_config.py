@@ -22,6 +22,7 @@ class RewardConfig:
     minimum_finish_steps: int = 50
     nearest_forward_points: int = 500
     nearest_backward_points: int = 10
+    limit_progress_by_kinematics: bool = True
     time_penalty_per_second: float = 0.1
     max_time_delta_s: float = 1.0
     maximum_race_time_s: float | None = None

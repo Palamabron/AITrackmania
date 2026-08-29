@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=83"]
+requires = ["setuptools==83.0.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -30,7 +30,7 @@ classifiers = [
     "Topic :: Games/Entertainment",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
-requires-python = ">=3.12"
+requires-python = ">=3.12,<3.13"
 dependencies = [
     "pydantic>=2.0",
     "numpy>=1.24",
@@ -78,17 +78,20 @@ all = [
 [tool.uv]
 default-groups = ["dev"]
 no-build-isolation-package = ["causal-conv1d", "mamba-ssm"]
+constraint-dependencies = [
+    "torch==2.11.0+cu128; sys_platform == 'win32' or sys_platform == 'linux'",
+    "torch==2.11.0; sys_platform != 'win32' and sys_platform != 'linux'",
+]
 
 [tool.uv.extra-build-dependencies]
 causal-conv1d = ["torch", "setuptools", "wheel", "packaging", "ninja"]
 mamba-ssm = ["torch", "setuptools", "wheel", "packaging", "ninja"]
 
 [tool.uv.sources]
-# TrackMania hosts on Windows and Linux use the tested CUDA wheels. Other
-# platforms use the CPU index and can override it for ROCm or another backend.
+# TrackMania training hosts use the tested CUDA wheels. Other platforms use
+# their native PyTorch package and can override it for another backend.
 torch = [
     { index = "pytorch-cuda", marker = "sys_platform == 'win32' or sys_platform == 'linux'" },
-    { index = "pytorch-cpu", marker = "sys_platform != 'win32' and sys_platform != 'linux'" },
 ]
 vgamepad = { git = "https://github.com/Palamabron/vgamepad", rev = "5f3435df3f8a0e658feb58b207d9137cdb5183cd" }
 
@@ -132,18 +135,7 @@ Security = "https://github.com/Palamabron/TrackmaniaRL/blob/main/SECURITY.md"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = [
-    "trackmaniarl",
-    "trackmaniarl.algorithms*",
-    "trackmaniarl.builtins*",
-    "trackmaniarl.core*",
-    "trackmaniarl.distributed*",
-    "trackmaniarl.experiments*",
-    "trackmaniarl.models*",
-    "trackmaniarl.observability*",
-    "trackmaniarl.project*",
-    "trackmaniarl.trackmania*",
-]
+include = ["trackmaniarl*"]
 exclude = ["tests*"]
 
 [tool.setuptools.package-data]
@@ -186,6 +178,12 @@ extend-safe-fixes = ["RUF022"]
 max-args = 3
 
 [tool.pytest.ini_options]
+addopts = [
+    "--basetemp=.pytest-cache/tmp",
+    "--strict-config",
+    "--strict-markers",
+]
+cache_dir = ".pytest-cache/cache"
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]

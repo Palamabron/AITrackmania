@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import deque
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -129,9 +130,15 @@ class LidarFeaturePipeline:
     )
     telemetry_dim = len(telemetry_fields)
 
-    def __init__(self, config: LidarFeatureConfig | Mapping[str, Any]) -> None:
+    def __init__(
+        self,
+        config: LidarFeatureConfig | Mapping[str, Any],
+        base_dir: str | Path = ".",
+    ) -> None:
         if not isinstance(config, LidarFeatureConfig):
-            config = LidarFeatureConfig.from_mapping(config)
+            configured = dict(config)
+            configured.setdefault("base_dir", base_dir)
+            config = LidarFeatureConfig.from_mapping(configured)
         validate_feature_config(config)
         self._set_core_config(config)
         self._set_feature_flags(config)

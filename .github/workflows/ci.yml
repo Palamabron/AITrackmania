@@ -11,40 +11,56 @@ on:
     branches:
       - main
 
+permissions:
+  contents: read
+
+env:
+  UV_VERSION: "0.12.5"
+  TORCH_CPU_INDEX: https://download.pytorch.org/whl/cpu
+  TORCH_CPU_VERSION: 2.11.0+cpu
+
 jobs:
   lint:
     name: Lint and type-check
     runs-on: ubuntu-latest
+    env:
+      VGAMEPAD_SKIP_VIGEMBUS_INSTALL: "true"
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Set up uv
-        uses: astral-sh/setup-uv@v4
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
+          version: ${{ env.UV_VERSION }}
           python-version: "3.12"
 
-      - name: Install dev dependencies
-        env:
-          UV_INDEX_PYTORCH_CUDA: https://download.pytorch.org/whl/cpu
-        run: uv sync --locked --group dev
+      - name: Export locked development requirements without CUDA Torch
+        run: uv export --quiet --locked --group dev --prune torch --no-header --no-annotate --no-emit-project --output-file .ci-dev-requirements.txt
+
+      - name: Verify exact CPU Torch resolution
+        run: uv run --isolated --no-project --no-config --index "${{ env.TORCH_CPU_INDEX }}" --index-strategy unsafe-best-match --with "torch==${{ env.TORCH_CPU_VERSION }}" --with-requirements .ci-dev-requirements.txt python -c "import os, torch; assert torch.__version__ == os.environ['TORCH_CPU_VERSION'], torch.__version__; assert torch.version.cuda is None, torch.version.cuda"
 
       - name: Verify lockfile
         run: uv lock --check
 
       - name: Check formatting (ruff format)
-        run: uv run ruff format --check .
+        run: uv run --isolated --no-project --no-config --index "${{ env.TORCH_CPU_INDEX }}" --index-strategy unsafe-best-match --with "torch==${{ env.TORCH_CPU_VERSION }}" --with-requirements .ci-dev-requirements.txt ruff format --check .
 
       - name: Lint (ruff check)
-        run: uv run ruff check .
+        run: uv run --isolated --no-project --no-config --index "${{ env.TORCH_CPU_INDEX }}" --index-strategy unsafe-best-match --with "torch==${{ env.TORCH_CPU_VERSION }}" --with-requirements .ci-dev-requirements.txt ruff check .
 
       - name: Type-check (mypy)
-        run: uv run mypy trackmaniarl/
+        run: uv run --isolated --no-project --no-config --index "${{ env.TORCH_CPU_INDEX }}" --index-strategy unsafe-best-match --with "torch==${{ env.TORCH_CPU_VERSION }}" --with-requirements .ci-dev-requirements.txt mypy --strict trackmaniarl
 
   test:
     name: Tests (${{ matrix.os }}, Python ${{ matrix.python-version }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
+    env:
+      VGAMEPAD_SKIP_VIGEMBUS_INSTALL: "true"
 
     strategy:
       fail-fast: false
@@ -56,52 +72,51 @@ jobs:
           - "3.12"
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Set up uv
-        uses: astral-sh/setup-uv@v4
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
+          version: ${{ env.UV_VERSION }}
           python-version: ${{ matrix.python-version }}
 
-      - name: Install dev dependencies
-        env:
-          UV_INDEX_PYTORCH_CUDA: https://download.pytorch.org/whl/cpu
-          VGAMEPAD_SKIP_VIGEMBUS_INSTALL: "true"
-        run: uv sync --locked --group dev
+      - name: Export locked development requirements without CUDA Torch
+        run: uv export --quiet --locked --group dev --prune torch --no-header --no-annotate --no-emit-project --output-file .ci-dev-requirements.txt
+
+      - name: Verify exact CPU Torch resolution
+        run: uv run --isolated --no-project --no-config --index "${{ env.TORCH_CPU_INDEX }}" --index-strategy unsafe-best-match --with "torch==${{ env.TORCH_CPU_VERSION }}" --with-requirements .ci-dev-requirements.txt python -c "import os, torch; assert torch.__version__ == os.environ['TORCH_CPU_VERSION'], torch.__version__; assert torch.version.cuda is None, torch.version.cuda"
 
       - name: Run tests
-        env:
-          TRACKMANIARL_DISABLE_GAME: "1"
-        run: uv run pytest tests/ -v --tb=short
+        run: uv run --isolated --no-project --no-config --index "${{ env.TORCH_CPU_INDEX }}" --index-strategy unsafe-best-match --with "torch==${{ env.TORCH_CPU_VERSION }}" --with-requirements .ci-dev-requirements.txt pytest tests/ -v --tb=short
 
   package:
     name: Build distributables
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Set up uv
-        uses: astral-sh/setup-uv@v4
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
+          version: ${{ env.UV_VERSION }}
           python-version: "3.12"
-
-      - name: Install build dependencies
-        env:
-          UV_INDEX_PYTORCH_CUDA: https://download.pytorch.org/whl/cpu
-        run: uv sync --locked --group dev
 
       - name: Build source distribution and wheel
         run: uv build
 
-      - name: Verify license contents
-        run: uv run python scripts/check_distribution.py
+      - name: Verify distribution contents
+        run: uv run --isolated --no-project python scripts/check_distribution.py
 
       - name: Verify wheel import and CLI
-        run: uv run --isolated --no-project --with ./dist/*.whl trackmaniarl --help
+        run: uv run --isolated --no-project --index "$TORCH_CPU_INDEX" --with "torch==$TORCH_CPU_VERSION" --with ./dist/*.whl trackmaniarl --help
 
       - name: Verify generated project resolves the released wheel
         run: |
           agent_dir="$(mktemp -d)/agent"
-          uv run --isolated --no-project --with ./dist/*.whl trackmaniarl init "$agent_dir"
+          uv run --isolated --no-project --index "$TORCH_CPU_INDEX" --with "torch==$TORCH_CPU_VERSION" --with ./dist/*.whl trackmaniarl init "$agent_dir"
           uv lock --directory "$agent_dir" --find-links "$GITHUB_WORKSPACE/dist"

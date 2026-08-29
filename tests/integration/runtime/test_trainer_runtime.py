@@ -11,6 +11,7 @@ from typing import Any
 import pytest
 
 from tests.integration.runtime.core_runtime_support import FakeEnvironment, runtime_spec
+from trackmaniarl.core.builtins import SmokeLearner
 from trackmaniarl.core.runtime import ResolvedRun, resolve_run
 from trackmaniarl.core.spec import RunSpec
 from trackmaniarl.core.training import Trainer
@@ -42,6 +43,14 @@ _PPO_TRAINING = {
     "batch_size": 2,
     "sequence_length": 2,
     "checkpoint_interval_updates": None,
+}
+_CHECKPOINT_TRAINING = {
+    "total_transitions": 8,
+    "max_episode_steps": 2,
+    "batch_size": 4,
+    "warmup_transitions": 4,
+    "updates_per_transition": 1.0,
+    "checkpoint_interval_updates": 2,
 }
 
 
@@ -94,6 +103,16 @@ class _InterruptingFactory:
         return FakeEnvironment()
 
 
+class _ManifestAwareSmokeLearner(SmokeLearner):
+    def __init__(self) -> None:
+        super().__init__()
+        self.manifest_present_at_setup = False
+
+    def setup(self, context: Mapping[str, Any]) -> None:
+        self.manifest_present_at_setup = (Path(context["run_dir"]) / "manifest.json").is_file()
+        super().setup(context)
+
+
 def _assert_interrupted_state(state: Mapping[str, Any]) -> None:
     assert state["counters"]["transitions"] == 4
     assert state["counters"]["episodes"] == 2
@@ -106,24 +125,47 @@ def test_local_trainer_updates_ppo_once_per_fresh_episode(tmp_path: Path) -> Non
 
 
 def test_trainer_collects_updates_and_checkpoints(tmp_path: Path) -> None:
-    training = {
-        "total_transitions": 8,
-        "max_episode_steps": 2,
-        "batch_size": 4,
-        "warmup_transitions": 4,
-        "updates_per_transition": 1.0,
-        "checkpoint_interval_updates": 2,
-    }
-    spec = _trainer_spec(tmp_path, training, _FAKE_ENVIRONMENT)
-    run = resolve_run(spec)
+    spec = _trainer_spec(tmp_path, _CHECKPOINT_TRAINING, _FAKE_ENVIRONMENT)
+    learner = _ManifestAwareSmokeLearner()
+    run = replace(resolve_run(spec), learner=learner)
     result = _train_and_close(run)
+    assert learner.manifest_present_at_setup
     assert (result.transitions, result.updates) == (8, 4)
     assert len(result.checkpoints) == len(set(result.checkpoints))
     names = _event_names(run.run_dir)
     assert names.count("train/checkpoint_completed") >= len(result.checkpoints)
     assert "train/checkpoint_failed" not in names
-    resumed = _train_and_close(resolve_run(spec), result.checkpoints[-1])
+    resumed_learner = _ManifestAwareSmokeLearner()
+    resumed_run = replace(resolve_run(spec), learner=resumed_learner)
+    resumed = _train_and_close(resumed_run, result.checkpoints[-1])
+    assert resumed_learner.manifest_present_at_setup
     assert (resumed.transitions, resumed.updates) == (result.transitions, result.updates)
+
+
+def test_local_checkpoint_retention_runs_only_after_successful_saves(tmp_path: Path) -> None:
+    training = {
+        **_CHECKPOINT_TRAINING,
+        "checkpoint_interval_updates": 1,
+        "checkpoint_keep_last": 1,
+    }
+    run = resolve_run(_trainer_spec(tmp_path, training, _FAKE_ENVIRONMENT))
+
+    result = _train_and_close(run)
+
+    files = sorted((run.run_dir / "checkpoints").glob("update-*.pt"))
+    assert files == [run.run_dir / "checkpoints" / "update-00000004.pt"]
+    assert result.checkpoints == tuple(files)
+    retention = _retention_events(run.run_dir)
+    assert retention
+    assert retention[-1]["payload"]["removed_count"] == 1
+
+
+def _retention_events(run_dir: Path) -> list[dict[str, Any]]:
+    return [
+        event
+        for event in _event_payloads(run_dir)
+        if event["event"] == "train/checkpoint_retention"
+    ]
 
 
 def test_trainer_checkpoints_latest_completed_episode_on_interrupt(tmp_path: Path) -> None:

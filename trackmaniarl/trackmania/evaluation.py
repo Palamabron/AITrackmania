@@ -76,7 +76,7 @@ class _EpisodeState:
     telemetry_error: str | None = None
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(slots=True)
 class _EpisodeContext:
     environment: Any
     diagnostics: ProgressBinDiagnostics
@@ -191,6 +191,9 @@ class TrackmaniaEvaluator:
         context = self._episode_context(request)
         state = _EpisodeState()
         try:
+            if request.trial_index == 0:
+                self._prewarm_policy(request)
+                context.started = perf_counter()
             self._run_episode(request, context, state)
         except (TimeoutError, ConnectionError) as exc:
             state.telemetry_error = f"{type(exc).__name__}: {exc}"
@@ -217,6 +220,20 @@ class TrackmaniaEvaluator:
         return _EpisodeLoop(
             request.policy, context.environment, context.diagnostics, observation, prepared
         )
+
+    def _prewarm_policy(self, request: _EpisodeRequest) -> None:
+        observation, _ = request.environment.reset(seed=request.seed)
+        self._reset_component(self.feature_pipeline)
+        self._reset_component(request.policy)
+        prepared = self.feature_pipeline.transform_observation(observation)
+        policy_observation = (
+            observation if getattr(request.policy, "requires_raw_observation", False) else prepared
+        )
+        try:
+            request.policy.act(policy_observation, PolicyMode.EVALUATION)
+        finally:
+            self._reset_component(self.feature_pipeline)
+            self._reset_component(request.policy)
 
     @staticmethod
     def _reset_component(component: Any) -> None:
@@ -275,7 +292,18 @@ class TrackmaniaEvaluator:
         termination_reason = str(info.get("termination_reason", ""))
         state.progress_pct = float(info.get("progress_pct", state.progress_pct))
         state.finished = termination_reason == "finished"
-        state.crashed = termination_reason in {"crashed", "off_track"}
+        collision = bool(info.get("collision", False)) or bool(
+            info.get("collision_detected", False)
+        )
+        state.crashed = (
+            state.crashed
+            or collision
+            or termination_reason
+            in {
+                "crashed",
+                "off_track",
+            }
+        )
         race_time_ms = info.get("race_time_ms")
         if state.finished and isinstance(race_time_ms, (float, int)) and race_time_ms > 0.0:
             state.finish_time_s = float(race_time_ms) / 1_000.0

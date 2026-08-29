@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import email
 import json
 import re
 import tarfile
@@ -17,8 +18,9 @@ PINNED_ACTION = re.compile(r"[^@]+@[0-9a-f]{40}")
 CPU_TORCH_ENV = {
     "TORCH_CPU_INDEX": "https://download.pytorch.org/whl/cpu",
     "TORCH_CPU_VERSION": "2.11.0+cpu",
-    "VGAMEPAD_SKIP_VIGEMBUS_INSTALL": "true",
 }
+LOCKED_DEV_EXPORT = "uv export --quiet --locked --group dev --prune torch"
+CPU_REQUIREMENTS = "--with-requirements .ci-dev-requirements.txt"
 
 
 def _workflow() -> dict[str, object]:
@@ -66,7 +68,7 @@ def test_release_workflow_uses_canonical_job_order_and_matrices() -> None:
     verify = jobs["verify-dist"]
     publish = jobs["attest-publish"]
     assert workflow["permissions"] == {}
-    assert workflow["env"] == {"UV_VERSION": "0.12.5"}
+    assert workflow["env"] == CPU_TORCH_ENV | {"UV_VERSION": "0.12.5"}
     expected_matrix = {"os": ["ubuntu-latest", "windows-latest"]}
     assert source_gate["strategy"]["matrix"] == expected_matrix
     assert verify["strategy"]["matrix"] == expected_matrix
@@ -75,38 +77,22 @@ def test_release_workflow_uses_canonical_job_order_and_matrices() -> None:
     assert publish["needs"] == "verify-dist"
 
 
-def _assert_release_source_gate_runs_the_full_quality_suite() -> None:
-    workflow = _workflow()
-    source_gate = _jobs()["source-gate"]
-    gate_commands = _commands(source_gate)
-    assert "uv lock --check" in gate_commands
-    assert "uv run --no-sync ruff format --check ." in gate_commands
-    assert "uv run --no-sync ruff check ." in gate_commands
-    assert "uv run --no-sync mypy --strict trackmaniarl" in gate_commands
-    assert "uv run --no-sync pytest" in gate_commands
-    assert "UV_INDEX" not in workflow["env"]
-
-
-def _assert_windows_job_installs_cpu_torch(job_name: str) -> None:
-    job = _jobs()[job_name]
-    cpu_step = next(
-        step
+def _assert_locked_cpu_gate(job: dict[str, object], required: tuple[str, ...]) -> None:
+    commands = _commands(job)
+    assert LOCKED_DEV_EXPORT in commands
+    assert "--no-hashes" not in commands
+    assert "uv sync" not in commands
+    cpu_runs = [
+        str(step["run"])
         for step in cast(list[dict[str, object]], job["steps"])
-        if "CPU Torch on Windows" in str(step.get("name", ""))
-    )
-    assert cpu_step["if"] == "runner.os == 'Windows'"
-    assert cpu_step["env"] == CPU_TORCH_ENV
-    command = str(cpu_step["run"])
-    assert "uv sync --locked --group dev --no-install-package torch" in command
-    assert "uv run --no-sync" in command
-    assert '--with "torch==$env:TORCH_CPU_VERSION"' in command
-    assert '--index "$env:TORCH_CPU_INDEX"' in command
-    assert "torch.version.cuda is None" in command
-
-
-def _assert_release_workflow_never_uses_uv_pip() -> None:
-    commands = "\n".join(_commands(job) for job in _jobs().values())
-    assert "uv pip" not in commands
+        if CPU_REQUIREMENTS in str(step.get("run", ""))
+    ]
+    assert cpu_runs
+    for command in cpu_runs:
+        assert "uv run --isolated --no-project --no-config" in command
+        assert '--index "${{ env.TORCH_CPU_INDEX }}"' in command
+        assert '--with "torch==${{ env.TORCH_CPU_VERSION }}"' in command
+    assert all(fragment in commands for fragment in required)
 
 
 def _assert_windows_wheel_validation_requires_cpu_torch() -> None:
@@ -122,14 +108,19 @@ def _assert_windows_wheel_validation_requires_cpu_torch() -> None:
 
 
 def test_release_workflow_uses_uv_quality_gate() -> None:
-    _assert_release_source_gate_runs_the_full_quality_suite()
-    _assert_release_workflow_never_uses_uv_pip()
-    _assert_release_workflow_gates_publish_on_full_quality_suite()
+    source_gate = _jobs()["source-gate"]
+    required = (
+        "uv lock --check",
+        "ruff format --check .",
+        "ruff check .",
+        "mypy --strict trackmaniarl",
+        "pytest",
+    )
+    _assert_locked_cpu_gate(source_gate, required)
+    assert "uv pip" not in "\n".join(_commands(job) for job in _jobs().values())
 
 
-def test_release_windows_jobs_use_cpu_torch() -> None:
-    for job_name in ("source-gate", "verify-dist"):
-        _assert_windows_job_installs_cpu_torch(job_name)
+def test_release_verification_uses_exact_cpu_torch() -> None:
     _assert_windows_wheel_validation_requires_cpu_torch()
 
 
@@ -139,15 +130,17 @@ def test_release_builds_once_and_verifies_canonical_bytes() -> None:
     verify_commands = _commands(jobs["verify-dist"])
     all_commands = "\n".join(_commands(job) for job in jobs.values())
     assert all_commands.count("uv build") == 1
+    assert "uv sync" not in all_commands
+    assert "uv run --isolated --no-project python scripts/check_distribution.py" in build_commands
     assert "--write-checksums" in build_commands
     assert "--verify-checksums" in verify_commands
     assert "trackmaniarl --help" in verify_commands
-    assert "import trackmaniarl" in verify_commands
+    assert "import torch, trackmaniarl" in verify_commands
     assert "trackmaniarl init" in verify_commands
     assert "uv lock" in verify_commands
 
 
-def _assert_distribution_contains_current_sources() -> None:
+def test_distribution_contains_current_packaging_sources() -> None:
     scaffold_modules = {
         "trackmaniarl/project/scaffold.py",
         "trackmaniarl/project/scaffold_run_templates.py",
@@ -156,16 +149,22 @@ def _assert_distribution_contains_current_sources() -> None:
     wheel_members = check_distribution._wheel_required_members("2.0.0")
     sdist_members = check_distribution._sdist_required_members("trackmaniarl-2.0.0")
     assert scaffold_modules <= wheel_members
+    assert {
+        path.relative_to(REPOSITORY).as_posix()
+        for path in (REPOSITORY / "trackmaniarl").rglob("*.py")
+    } <= wheel_members
     assert {f"trackmaniarl-2.0.0/{name}" for name in scaffold_modules} <= sdist_members
-    sources = (
-        REPOSITORY / "trackmaniarl" / "__init__.py",
-        REPOSITORY / "trackmaniarl" / "project" / "scaffold_templates.py",
+
+
+def test_distribution_metadata_and_attribution_are_release_ready() -> None:
+    metadata = email.message_from_string(
+        "Name: TrackmaniaRL\nVersion: 2.0.0\nRequires-Python: <3.13,>=3.12"
     )
-    assert all("PackageNotFoundError" not in path.read_text(encoding="utf-8") for path in sources)
-
-
-def test_distribution_contains_current_packaging_sources() -> None:
-    _assert_distribution_contains_current_sources()
+    check_distribution._validate_wheel_metadata(metadata, Path("package.whl"), "2.0.0")
+    license_text = (REPOSITORY / "LICENSE").read_text(encoding="utf-8")
+    assert "Copyright (c) 2021 Edouard Geze and Yann Bouteiller" in license_text
+    assert "Copyright (c) 2026 Jakub Szulc" in license_text
+    assert "This repository originated from TMRL" in (REPOSITORY / "NOTICE").read_text()
 
 
 def _assert_release_workflow_uploads_archives_and_spdx_sbom() -> None:
@@ -181,6 +180,10 @@ def _assert_release_workflow_uploads_archives_and_spdx_sbom() -> None:
     assert sbom["with"]["path"] == "sbom-root"
     assert sbom["with"]["format"] == "spdx-json"
     assert sbom["with"]["output-file"] == "dist/trackmaniarl-release.spdx.json"
+    staging = str(_step_named(build, "Stage wheel and dependency metadata for the SBOM")["run"])
+    assert '--with "torch==$TORCH_CPU_VERSION"' in staging
+    assert "--with ./dist/*.whl" in staging
+    assert "from importlib.metadata import distributions" in staging
 
 
 def _assert_release_workflow_attests_archives_and_sbom() -> None:
@@ -217,8 +220,7 @@ def _assert_release_workflow_publishes_without_rebuilding() -> None:
     assert "pypi-attestations verify attestation" in commands
 
 
-def _assert_release_workflow_pins_every_action_and_disables_checkout_credentials() -> None:
-    workflow = _workflow()
+def _assert_pinned_actions(workflow: dict[str, object]) -> None:
     jobs = workflow["jobs"]
     for job in jobs.values():
         for step in job["steps"]:
@@ -232,29 +234,26 @@ def _assert_release_workflow_pins_every_action_and_disables_checkout_credentials
                 assert step["with"]["version"] == "${{ env.UV_VERSION }}"
 
 
-def _assert_release_workflow_gates_publish_on_full_quality_suite() -> None:
+def _assert_ci_workflow_uses_least_privilege_and_pinned_actions() -> None:
     workflow = yaml.safe_load(
-        (REPOSITORY / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+        (REPOSITORY / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
     )
-    gate = workflow["jobs"]["source-gate"]
-    publish = workflow["jobs"]["attest-publish"]
-    gate_commands = _commands(gate)
-    publish_commands = _commands(publish)
-
-    assert publish["needs"] == "verify-dist"
-    assert "uv run --no-sync ruff format --check ." in gate_commands
-    assert "uv run --no-sync ruff check ." in gate_commands
-    assert "uv run --no-sync mypy --strict trackmaniarl" in gate_commands
-    assert "uv run --no-sync pytest" in gate_commands
-    assert "uv build" not in publish_commands
-    assert "uv publish dist/*.whl dist/*.tar.gz" in publish_commands
+    assert workflow["permissions"] == {"contents": "read"}
+    assert workflow["env"] == CPU_TORCH_ENV | {"UV_VERSION": "0.12.5"}
+    commands = "\n".join(_commands(job) for job in workflow["jobs"].values())
+    assert "uv sync" not in commands
+    assert "uv pip" not in commands
+    _assert_locked_cpu_gate(workflow["jobs"]["lint"], ("ruff format --check .", "ruff check ."))
+    _assert_locked_cpu_gate(workflow["jobs"]["test"], ("pytest tests/",))
+    _assert_pinned_actions(workflow)
 
 
 def test_release_workflow_secures_and_publishes_canonical_artifacts() -> None:
     _assert_release_workflow_uploads_archives_and_spdx_sbom()
     _assert_release_workflow_attests_archives_and_sbom()
     _assert_release_workflow_publishes_without_rebuilding()
-    _assert_release_workflow_pins_every_action_and_disables_checkout_credentials()
+    _assert_pinned_actions(_workflow())
+    _assert_ci_workflow_uses_least_privilege_and_pinned_actions()
 
 
 def _assert_wheel_validation_rejects_post_build_source_mutation(

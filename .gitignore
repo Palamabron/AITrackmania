@@ -3,6 +3,10 @@
 .vs/
 .idea/
 
+# Local AI assistant instructions
+AGENTS.md
+CLAUDE.md
+
 # Vagrant
 .vagrant/
 
@@ -61,9 +65,10 @@ nosetests.xml
 coverage.xml
 *.cover
 .hypothesis/
+.pytest-cache/
+# Ignore legacy/custom pytest temp roots created before cache consolidation.
 .pytest_cache/
-.pytest-tmp/
-.pytest-tmp-*/
+.pytest-tmp*/
 .pytest-*/
 .test-temp/
 .tmptest-*/

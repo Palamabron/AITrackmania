@@ -29,7 +29,7 @@ from trackmaniarl.algorithms.sac_support import (
 )
 from trackmaniarl.core.contracts import ModelContract, PolicyMode
 from trackmaniarl.core.data import PriorityUpdate, TrainingBatch
-from trackmaniarl.core.pytree import sanitize_finite, tree_to_device
+from trackmaniarl.core.pytree import sanitize_finite, tree_collate, tree_to_device
 
 
 class _DiscretePolicy:
@@ -38,11 +38,7 @@ class _DiscretePolicy:
         self.device = device
 
     def act(self, observation: Any, mode: PolicyMode = PolicyMode.ONLINE) -> Any:
-        observation = tree_to_device(sanitize_finite(observation), self.device)
-        if not isinstance(observation, torch.Tensor):
-            raise TypeError(
-                "Discrete policy requires tensor observations from the feature pipeline"
-            )
+        observation = tree_to_device(tree_collate([sanitize_finite(observation)]), self.device)
         with torch.no_grad():
             action, _ = self.actor(observation, mode=mode)
         values = action.detach().cpu().reshape(-1)

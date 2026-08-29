@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+from math import isfinite
+from numbers import Real
 from typing import Any
 
 from trackmaniarl.core.pytree import PyTree
@@ -40,6 +42,7 @@ class BatchRequest:
     beta: float | None = None
     n_step: int = 1
     gamma: float = 0.99
+    transition_count: int = 0
 
     def __post_init__(self) -> None:
         if self.batch_size < 1:
@@ -52,6 +55,8 @@ class BatchRequest:
             raise ValueError("n_step must be positive")
         if not 0.0 <= self.gamma <= 1.0:
             raise ValueError("gamma must be between 0 and 1")
+        if self.transition_count < 0:
+            raise ValueError("transition_count must be non-negative")
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,6 +87,11 @@ class PriorityUpdate:
     def __post_init__(self) -> None:
         if len(self.transition_ids) != len(self.priorities):
             raise ValueError("transition_ids and priorities must have equal length")
+        for priority in self.priorities:
+            if not isinstance(priority, Real):
+                raise TypeError("priorities must contain scalar real numbers")
+            if not isfinite(float(priority)):
+                raise ValueError("priorities must be finite")
 
 
 @dataclass(frozen=True, slots=True)

@@ -18,9 +18,13 @@ from tests.unit.learning._algorithm_fixtures import (
     DiscreteSacModel,
     RedqModel,
     StructuredPpoModel,
+    _assert_policy_batches_single_chw_image,
     _assert_update,
     _batch,
+    _mapping_continuous_case,
     _sequence_batch,
+    _with_column_log_probabilities,
+    _with_column_scalar_outputs,
 )
 from trackmaniarl.algorithms import (
     ProximalPolicyOptimization,
@@ -31,20 +35,55 @@ from trackmaniarl.algorithms import (
 )
 from trackmaniarl.algorithms.execution import TorchExecutionConfig
 from trackmaniarl.algorithms.ppo_support import AdvantageInputs, generalized_advantage_estimate
+from trackmaniarl.algorithms.sac_support import quantile_batch_output, scalar_batch_output
 from trackmaniarl.algorithms.truncated_quantile_critic import _truncate_quantile_mixture
 from trackmaniarl.core.data import TrainingBatch
 
 
-def test_continuous_learners_update_without_shape_or_target_errors() -> None:
+def _assert_dense_continuous_updates() -> None:
+    batch = _batch(BatchKind.CONTINUOUS)
     _assert_update(SoftActorCritic(ContinuousModel()), _batch(BatchKind.CONTINUOUS))
     _assert_update(
         RandomizedEnsembleSAC(RedqModel(), policy_update_interval=1),
-        _batch(BatchKind.CONTINUOUS),
+        batch,
+    )
+    _assert_update(TruncatedQuantileCritic(ContinuousModel(quantiles=5)), batch)
+    _assert_update(
+        SoftActorCritic(_with_column_scalar_outputs(ContinuousModel())),
+        batch,
     )
     _assert_update(
-        TruncatedQuantileCritic(ContinuousModel(quantiles=5)),
+        RandomizedEnsembleSAC(_with_column_scalar_outputs(RedqModel()), policy_update_interval=1),
+        batch,
+    )
+
+
+def _assert_structured_continuous_updates() -> None:
+    _assert_update(
+        TruncatedQuantileCritic(_with_column_log_probabilities(ContinuousModel(quantiles=5))),
         _batch(BatchKind.CONTINUOUS),
     )
+    model, batch = _mapping_continuous_case()
+    _assert_update(SoftActorCritic(model), batch)
+    model, batch = _mapping_continuous_case(quantiles=5)
+    _assert_update(TruncatedQuantileCritic(model), batch)
+
+
+def test_continuous_learners_update_with_supported_observation_structures() -> None:
+    _assert_dense_continuous_updates()
+    _assert_structured_continuous_updates()
+    _assert_policy_batches_single_chw_image()
+
+
+def test_continuous_learners_reject_ambiguous_model_output_shapes() -> None:
+    with pytest.raises(ValueError, match=r"critic output must have shape \(8,\)"):
+        scalar_batch_output(torch.zeros(8, 2), "critic output", 8)
+    with pytest.raises(ValueError, match=r"log probabilities must have shape \(8,\)"):
+        scalar_batch_output(torch.zeros(8, 1, 1), "log probabilities", 8)
+    with pytest.raises(ValueError, match=r"critic output must have shape \(8, quantiles\)"):
+        quantile_batch_output(torch.zeros(8), "critic output", 8)
+    with pytest.raises(ValueError, match=r"critic output must have shape \(8, quantiles\)"):
+        quantile_batch_output(torch.zeros(7, 5), "critic output", 8)
 
 
 @dataclass(frozen=True)

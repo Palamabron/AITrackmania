@@ -31,6 +31,8 @@ class _PrioritizedOptions(TypedDict):
     elite_priority_boost: NotRequired[float]
     expert_demo_time_s: NotRequired[float | None]
     expert_fraction: NotRequired[float]
+    expert_fraction_final: NotRequired[float | None]
+    expert_fraction_anneal_transitions: NotRequired[int | None]
     uniform_mix: NotRequired[float]
     seed: NotRequired[int]
 
@@ -44,6 +46,8 @@ class _PrioritizedConfig:
     elite_priority_boost: float = 1.0
     expert_demo_time_s: float | None = None
     expert_fraction: float = 0.0
+    expert_fraction_final: float | None = None
+    expert_fraction_anneal_transitions: int | None = None
     uniform_mix: float = 0.0
     seed: int = 0
 
@@ -52,19 +56,40 @@ class _PrioritizedConfig:
         return cls(**options)
 
 
-def _validate_prioritized_config(config: _PrioritizedConfig) -> None:
-    invalid = (
+def _invalid_expert_schedule(config: _PrioritizedConfig) -> bool:
+    schedule = (config.expert_fraction_final, config.expert_fraction_anneal_transitions)
+    return any(value is not None for value in schedule) and any(value is None for value in schedule)
+
+
+def _invalid_expert_config(config: _PrioritizedConfig) -> bool:
+    final_fraction = config.expert_fraction_final or 0.0
+    return (
+        not 0.0 <= config.expert_fraction <= 1.0
+        or not 0.0 <= final_fraction <= 1.0
+        or (
+            config.expert_fraction_anneal_transitions is not None
+            and config.expert_fraction_anneal_transitions < 1
+        )
+        or _invalid_expert_schedule(config)
+        or (max(config.expert_fraction, final_fraction) > 0.0 and config.expert_demo_time_s is None)
+    )
+
+
+def _invalid_prioritized_config(config: _PrioritizedConfig) -> bool:
+    return (
         config.alpha < 0.0
         or config.beta < 0.0
         or config.priority_epsilon <= 0.0
         or (config.elite_time_s is not None and config.elite_time_s <= 0.0)
         or config.elite_priority_boost < 1.0
         or (config.expert_demo_time_s is not None and config.expert_demo_time_s <= 0.0)
-        or not 0.0 <= config.expert_fraction <= 1.0
-        or (config.expert_fraction > 0.0 and config.expert_demo_time_s is None)
+        or _invalid_expert_config(config)
         or not 0.0 <= config.uniform_mix <= 1.0
     )
-    if invalid:
+
+
+def _validate_prioritized_config(config: _PrioritizedConfig) -> None:
+    if _invalid_prioritized_config(config):
         raise ValueError("invalid prioritized replay parameters")
 
 
@@ -97,7 +122,16 @@ class PrioritizedSampler:
         self.elite_priority_boost = config.elite_priority_boost
         self.expert_demo_time_s = config.expert_demo_time_s
         self.expert_fraction = config.expert_fraction
+        self.expert_fraction_final = config.expert_fraction_final
+        self.expert_fraction_anneal_transitions = config.expert_fraction_anneal_transitions
         self.uniform_mix = config.uniform_mix
+
+    def _expert_fraction_at(self, transition_count: int) -> float:
+        if self.expert_fraction_final is None:
+            return self.expert_fraction
+        assert self.expert_fraction_anneal_transitions is not None
+        progress = min(1.0, transition_count / self.expert_fraction_anneal_transitions)
+        return self.expert_fraction + progress * (self.expert_fraction_final - self.expert_fraction)
 
     def _initialize_arrays(self) -> None:
         self._fallback_priorities: dict[int, float] = {}
@@ -189,8 +223,8 @@ class PrioritizedSampler:
     ) -> tuple[list[TransitionId], tuple[float, ...], float, dict[str, float]]:
         return prioritized_incremental._sample_incremental_ids(self, store, request)
 
-    def _incremental_choices(self, batch_size: int) -> tuple[list[TransitionId], list[float]]:
-        return prioritized_incremental._incremental_choices(self, batch_size)
+    def _incremental_choices(self, request: BatchRequest) -> tuple[list[TransitionId], list[float]]:
+        return prioritized_incremental._incremental_choices(self, request)
 
     def _synchronize_incremental_store(
         self,

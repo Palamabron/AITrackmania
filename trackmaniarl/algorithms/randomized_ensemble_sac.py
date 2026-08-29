@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from copy import deepcopy
 from dataclasses import dataclass
-from typing import Any, Unpack, cast
+from typing import Any, Unpack
 
 import torch
 from torch import nn
@@ -22,6 +22,7 @@ from trackmaniarl.algorithms.sac_support import (
     SACBatch,
     continuous_batch,
     freeze_modules,
+    scalar_batch_output,
     unfreeze_modules,
 )
 from trackmaniarl.core.contracts import ModelContract
@@ -78,7 +79,7 @@ class RandomizedEnsembleSAC(TorchLearnerBase):
         self.critic_optimizer = torch.optim.Adam(
             self.model.critics.parameters(), lr=self.learning_rate
         )
-        self._target_rng = torch.Generator(device=self.device).manual_seed(self.seed)
+        self._target_rng = torch.Generator().manual_seed(self.seed)
 
     def update(self, batch: TrainingBatch) -> tuple[Mapping[str, float], PriorityUpdate]:
         with self.autocast():
@@ -99,24 +100,42 @@ class RandomizedEnsembleSAC(TorchLearnerBase):
     def _critic_targets(self, batch: SACBatch) -> torch.Tensor:
         with torch.no_grad():
             next_actions, next_log_probabilities = self.model.actor(batch.next_observations)
-            subset = torch.randperm(
-                len(self.model.critics), generator=self._target_rng, device=self.device
-            )[: self.target_subset_size]
-            target_values = torch.stack(
-                [
-                    self.target_model.critics[index](batch.next_observations, next_actions)
-                    for index in subset
-                ]
-            ).amin(dim=0)
+            batch_size = batch.rewards.shape[0]
+            next_log_probabilities = scalar_batch_output(
+                next_log_probabilities, "actor log probabilities", batch_size
+            )
+            target_values = self._target_values(batch, next_actions)
             result = batch.rewards + batch.discounts * (
                 target_values - self.entropy_coefficient * next_log_probabilities
             )
-            return cast(torch.Tensor, result)
+            return result
+
+    def _target_values(self, batch: SACBatch, actions: torch.Tensor) -> torch.Tensor:
+        subset = torch.randperm(len(self.model.critics), generator=self._target_rng)[
+            : self.target_subset_size
+        ].tolist()
+        values = [
+            scalar_batch_output(
+                self.target_model.critics[index](batch.next_observations, actions),
+                f"target critic {index} output",
+                batch.rewards.shape[0],
+            )
+            for index in subset
+        ]
+        return torch.stack(values).amin(dim=0)
 
     def _critic_step(self, batch: SACBatch) -> _REDQCriticStep:
         targets = self._critic_targets(batch)
+        batch_size = batch.rewards.shape[0]
         predictions = torch.stack(
-            [critic(batch.observations, batch.actions) for critic in self.model.critics]
+            [
+                scalar_batch_output(
+                    critic(batch.observations, batch.actions),
+                    f"critic {index} output",
+                    batch_size,
+                )
+                for index, critic in enumerate(self.model.critics)
+            ]
         )
         td_errors = (predictions.mean(dim=0) - targets).detach().abs()
         loss = weighted_mean(
@@ -130,13 +149,26 @@ class RandomizedEnsembleSAC(TorchLearnerBase):
             return actor_loss
         freeze_modules(self.model.critics)
         policy_actions, log_probabilities = self.model.actor(batch.observations)
-        values = torch.stack(
-            [critic(batch.observations, policy_actions) for critic in self.model.critics]
-        ).mean(dim=0)
+        batch_size = batch.rewards.shape[0]
+        log_probabilities = scalar_batch_output(
+            log_probabilities, "actor log probabilities", batch_size
+        )
+        values = self._policy_values(batch, policy_actions)
         actor_loss = (self.entropy_coefficient * log_probabilities - values).mean()
         self._optimize(actor_loss, self.actor_optimizer)
         unfreeze_modules(self.model.critics)
-        return cast(torch.Tensor, actor_loss)
+        return actor_loss
+
+    def _policy_values(self, batch: SACBatch, actions: torch.Tensor) -> torch.Tensor:
+        values = [
+            scalar_batch_output(
+                critic(batch.observations, actions),
+                f"critic {index} output",
+                batch.rewards.shape[0],
+            )
+            for index, critic in enumerate(self.model.critics)
+        ]
+        return torch.stack(values).mean(dim=0)
 
     def policy(self) -> TorchPolicy:
         assert self.model is not None

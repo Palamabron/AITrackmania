@@ -42,6 +42,7 @@ SDIST_REQUIRED_PATHS = frozenset(
     {
         "CHANGELOG.md",
         "CONTRIBUTING.md",
+        "docs/assets/trackmaniarl-logo.png",
         "docs/diagrams/render.py",
         "LICENSE",
         "NOTICE",
@@ -121,7 +122,8 @@ def _validate_sdist_checkout_files(package: tarfile.TarFile, archive: Path, root
 
 def _wheel_required_members(version: str) -> set[str]:
     dist_info = f"trackmaniarl-{version}.dist-info"
-    return {
+    sources = {path.as_posix() for path in Path("trackmaniarl").rglob("*.py")}
+    return sources | {
         "trackmaniarl/py.typed",
         "trackmaniarl/project/scaffold.py",
         "trackmaniarl/project/scaffold_run_templates.py",
@@ -145,10 +147,19 @@ def _read_wheel_metadata(archive: Path, version: str) -> Message:
 
 
 def _validate_wheel_metadata(metadata: Message, archive: Path, version: str) -> None:
-    expected = {"Name": "TrackmaniaRL", "Version": version, "Requires-Python": ">=3.12"}
+    expected = {
+        "Name": "TrackmaniaRL",
+        "Version": version,
+    }
     invalid = [
         f"{key}={metadata[key]!r}" for key, value in expected.items() if metadata[key] != value
     ]
+    requires_python = metadata["Requires-Python"]
+    constraints = (
+        {part.strip() for part in requires_python.split(",")} if requires_python else set()
+    )
+    if constraints != {">=3.12", "<3.13"}:
+        invalid.append(f"Requires-Python={requires_python!r}")
     if invalid:
         raise RuntimeError(f"{archive} has invalid metadata: {', '.join(invalid)}")
 

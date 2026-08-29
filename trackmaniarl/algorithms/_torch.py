@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import random
 from collections.abc import Mapping
 from contextlib import AbstractContextManager
@@ -23,7 +22,7 @@ from trackmaniarl.algorithms.execution import (
 from trackmaniarl.algorithms.torch_batches import transform_batch
 from trackmaniarl.core.contracts import PolicyMode
 from trackmaniarl.core.data import TrainingBatch
-from trackmaniarl.core.pytree import sanitize_finite, tree_map, tree_to_device
+from trackmaniarl.core.pytree import sanitize_finite, tree_collate, tree_map, tree_to_device
 
 type _TransferMode = Literal["blocking", "non_blocking"]
 
@@ -63,16 +62,11 @@ class TorchPolicy:
         self.device = device
 
     def act(self, observation: Any, mode: PolicyMode = PolicyMode.ONLINE) -> Any:
-        prepared = tree_to_device(sanitize_finite(observation), self.device)
-        if not isinstance(prepared, torch.Tensor):
-            raise TypeError(
-                "Bundled torch policies require a tensor observation from the feature pipeline"
-            )
-        batched = prepared.unsqueeze(0) if prepared.ndim == 1 else prepared
+        batched = tree_to_device(tree_collate([sanitize_finite(observation)]), self.device)
         with torch.no_grad():
             output = self.actor(batched, mode=mode)
         action = output[0] if isinstance(output, tuple) else output
-        action = action[0] if prepared.ndim == 1 else action
+        action = action[0]
         return action.detach().cpu().numpy()
 
     def export_state(self) -> Mapping[str, Any]:
@@ -115,6 +109,7 @@ class TorchLearnerBase:
         self.scaler: _GradScaler | None = None
         self._transfer_stream: torch.cuda.Stream | None = None
         self.run_dir: Path | None = None
+        self._restoring_checkpoint = False
         self.seed = options.get("seed", 0)
 
     def setup(self, context: Mapping[str, Any]) -> None:
@@ -127,6 +122,10 @@ class TorchLearnerBase:
     def _setup_runtime(self, context: Mapping[str, Any]) -> None:
         run_dir = context.get("run_dir")
         self.run_dir = Path(run_dir) if run_dir is not None else None
+        restoring = context.get("restoring_checkpoint", False)
+        if not isinstance(restoring, bool):
+            raise TypeError("restoring_checkpoint must be a bool")
+        self._restoring_checkpoint = restoring
         self.resolved_execution = resolve_torch_execution(self.execution)
         self.device = self.resolved_execution.torch_device
         torch.use_deterministic_algorithms(self.execution.deterministic)
@@ -191,21 +190,6 @@ class TorchLearnerBase:
                 "resolved": False,
             }
         return {"resolved": True, **self.resolved_execution.manifest()}
-
-    def _record_execution_result(self) -> None:
-        if self.run_dir is None or self.resolved_execution is None:
-            return
-        path = self.run_dir / "manifest.json"
-        if not path.is_file():
-            return
-        manifest = json.loads(path.read_text(encoding="utf-8"))
-        manifest["torch_execution"] = dict(self.execution_manifest())
-        temporary = path.with_suffix(".json.tmp")
-        temporary.write_text(
-            json.dumps(manifest, indent=2, sort_keys=True, default=str),
-            encoding="utf-8",
-        )
-        temporary.replace(path)
 
     def _setup_model(self) -> None:
         raise NotImplementedError

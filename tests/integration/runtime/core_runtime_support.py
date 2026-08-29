@@ -84,6 +84,11 @@ class RecordingEvaluator:
         return {"eval/finish_rate": 1.0}
 
 
+class CapturingLogger:
+    def __init__(self, **kwargs: object) -> None:
+        self.kwargs = kwargs
+
+
 def runtime_spec(tmp_path: Path) -> RunSpec:
     return RunSpec.model_validate(
         {

@@ -2,12 +2,12 @@
 
 ## Repository setup
 
-Requirements are Git, Python 3.12 or newer and
+Requirements are Git, Python 3.12 and
 [uv](https://docs.astral.sh/uv/). From a clone:
 
 ```bash
 git clone https://github.com/Palamabron/TrackmaniaRL.git
-cd AITrackmania
+cd TrackmaniaRL
 uv sync --group dev
 uv run trackmaniarl --help
 ```
@@ -141,16 +141,17 @@ Before creating a tag, run the local quality gate and inspect both distributions
 uv run poe fmt
 uv run poe types
 uv run poe test
-uv build
+uv build --clear
 uv run python scripts/check_distribution.py
 ```
 
-The tag workflow repeats the source gate on Ubuntu and Windows. Ubuntu uses the
-lock file without an index override. On Windows, CI installs every locked
-dependency except the CUDA Torch wheel, then installs the exact CPU-only Torch
-version without changing the other locked packages; all later project commands
-disable automatic synchronization. It then builds exactly once on Ubuntu. The resulting
-wheel and source archive, `SHA256SUMS` and SPDX 2.3 JSON SBOM are uploaded
+The tag workflow repeats the source gate on Ubuntu and Windows. Both platforms
+export the locked development environment with Torch pruned, then run the gate
+in an isolated environment with the exact CPU-only Torch wheel. This preserves
+the locked versions and hashes for every other dependency without downloading
+the CUDA dependency tree. Generated application projects select their own
+accelerator source. The workflow then builds exactly once on Ubuntu. The
+resulting wheel and source archive, `SHA256SUMS` and SPDX 2.3 JSON SBOM are uploaded
 together as the single `release-dist` artifact. Ubuntu and Windows download and
 verify that artifact, including its checksums, wheel CLI and generated-project
 resolution. Only after both verifiers pass does the final job attach and locally

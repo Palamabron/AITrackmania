@@ -11,6 +11,7 @@ from tests.integration.runtime.distributed_runtime_support import (
     _DISTRIBUTED_TOKEN,
     _Context,
 )
+from trackmaniarl.core import fingerprint
 from trackmaniarl.core.data import BatchRequest
 from trackmaniarl.core.spec import RunSpec
 from trackmaniarl.distributed.actor import (
@@ -111,32 +112,95 @@ def test_distributed_runtimes_reject_short_tokens(tmp_path: Path) -> None:
         )
 
 
+def test_actor_policy_replica_context_cannot_write_run_artifacts() -> None:
+    actor = object.__new__(ActorRuntime)
+    actor.actor_id = "actor"
+    actor.base_dir = Path("project")
+    actor.spec = SimpleNamespace(seed=7, artifacts_dir=Path("artifacts"), run_id="run")
+    model_factory = object()
+
+    context = actor._replica_context(model_factory)
+
+    assert context == {
+        "seed": actor._actor_seed(),
+        "model_factory": model_factory,
+        "restoring_checkpoint": True,
+    }
+
+
 def test_authentication_requires_the_distributed_token() -> None:
     authenticate(cast(Any, _Context(f"Bearer {_DISTRIBUTED_TOKEN}")), _DISTRIBUTED_TOKEN)
     with pytest.raises(RuntimeError, match="UNAUTHENTICATED"):
         authenticate(cast(Any, _Context("Bearer wrong")), _DISTRIBUTED_TOKEN)
 
 
-def test_run_fingerprint_covers_geometry(tmp_path: Path) -> None:
+def test_run_fingerprint_covers_semantic_assets(tmp_path: Path) -> None:
     geometry = tmp_path / "geometry.npz"
+    pace = tmp_path / "pace.npz"
     geometry.write_bytes(b"geometry-v1")
-    config = _geometry_config(geometry.name)
+    pace.write_bytes(b"pace-v1")
+    config = _geometry_config(geometry.name, pace.name)
     first = run_fingerprint(RunSpec.model_validate(config), tmp_path)
     config["run_id"] = "run-b"
     assert run_fingerprint(RunSpec.model_validate(config), tmp_path) == first
+    pace.write_bytes(b"pace-v2")
+    assert run_fingerprint(RunSpec.model_validate(config), tmp_path) != first
+    pace.write_bytes(b"pace-v1")
     geometry.write_bytes(b"geometry-v2")
     assert run_fingerprint(RunSpec.model_validate(config), tmp_path) != first
 
 
-def _geometry_config(geometry_name: str) -> dict[str, Any]:
+def test_run_fingerprint_covers_first_party_source_digest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = {
+        "api_version": "2.0",
+        "run_id": "source-digest",
+        "components": _fingerprint_components("trackmaniarl.core.builtins:SmokeLearner"),
+    }
+    spec = RunSpec.model_validate(config)
+    baseline = run_fingerprint(spec, tmp_path)
+
+    monkeypatch.setattr(fingerprint, "_trackmaniarl_source_digest", lambda: "changed")
+
+    assert run_fingerprint(spec, tmp_path) != baseline
+
+
+def test_run_fingerprint_accepts_nested_component_without_kwargs(tmp_path: Path) -> None:
+    components = _fingerprint_components("trackmaniarl.core.builtins:SmokeLearner")
+    components["learner"]["kwargs"] = {
+        "component": {"class_path": "trackmaniarl.core.builtins:IdentityFeaturePipeline"}
+    }
+    spec = RunSpec.model_validate(
+        {"api_version": "2.0", "run_id": "nested-component", "components": components}
+    )
+
+    assert len(run_fingerprint(spec, tmp_path)) == 64
+
+
+def _geometry_config(geometry_name: str, pace_name: str) -> dict[str, Any]:
+    components = _fingerprint_components("trackmaniarl.core.builtins:SmokeLearner")
+    components["feature_pipeline"] = _lidar_config(geometry_name, pace_name)
     return {
         "api_version": "2.0",
         "run_id": "run-a",
-        "components": _fingerprint_components("trackmaniarl.core.builtins:SmokeLearner"),
+        "components": components,
         "evaluation": {
             "name": "map",
             "version": "1",
             "maps": [_map_config(geometry_name)],
+        },
+    }
+
+
+def _lidar_config(geometry_name: str, pace_name: str) -> dict[str, Any]:
+    return {
+        "class_path": "trackmaniarl.trackmania.features:LidarFeaturePipeline",
+        "kwargs": {
+            "config": {
+                "geometry_path": geometry_name,
+                "pace_reference_path": pace_name,
+            }
         },
     }
 
@@ -150,7 +214,7 @@ def _map_config(geometry_name: str) -> dict[str, str]:
     }
 
 
-def _fingerprint_components(learner: str) -> dict[str, dict[str, str]]:
+def _fingerprint_components(learner: str) -> dict[str, dict[str, Any]]:
     return {
         "learner": {"class_path": learner},
         "replay_store": {"class_path": "trackmaniarl.core.replay:InMemoryReplayStore"},
@@ -163,28 +227,35 @@ def test_run_fingerprint_hashes_reexported_implementation_and_effective_paramete
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    implementation = _write_fingerprint_package(tmp_path)
+    implementation, helper = _write_fingerprint_package(tmp_path)
     monkeypatch.syspath_prepend(str(tmp_path))
     config = _implementation_config()
     implicit_default = run_fingerprint(RunSpec.model_validate(config), tmp_path)
     _assert_parameter_fingerprints(config, tmp_path, implicit_default)
+    helper.write_text("WIDTH = 5\n", encoding="utf-8")
+    assert run_fingerprint(RunSpec.model_validate(config), tmp_path) != implicit_default
     _change_implementation(implementation)
     assert run_fingerprint(RunSpec.model_validate(config), tmp_path) != implicit_default
 
 
-def _write_fingerprint_package(tmp_path: Path) -> Path:
+def _write_fingerprint_package(tmp_path: Path) -> tuple[Path, Path]:
     package = tmp_path / "fingerprint_package"
     package.mkdir()
     (package / "__init__.py").write_text("", encoding="utf-8")
+    helper = package / "helper.py"
+    helper.write_text("WIDTH = 4\n", encoding="utf-8")
     implementation = package / "implementation.py"
     implementation.write_text(
-        "class Component:\n    def __init__(self, width=4):\n        self.width = width\n",
+        "from fingerprint_package.helper import WIDTH\n\n"
+        "class Component:\n"
+        "    def __init__(self, width=WIDTH):\n"
+        "        self.width = width\n",
         encoding="utf-8",
     )
     (package / "reexport.py").write_text(
         "from fingerprint_package.implementation import Component\n", encoding="utf-8"
     )
-    return implementation
+    return implementation, helper
 
 
 def _implementation_config() -> dict[str, Any]:
@@ -212,3 +283,36 @@ def _change_implementation(path: Path) -> None:
         "        self.width = width\n",
         encoding="utf-8",
     )
+
+
+def test_run_fingerprint_hashes_declared_wrapper_package(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    helper = _write_wrapper_package(tmp_path)
+    monkeypatch.syspath_prepend(str(tmp_path))
+    components = _fingerprint_components("fingerprint_wrapper.reexport:Component")
+    spec = RunSpec.model_validate(
+        {"api_version": "2.0", "run_id": "wrapper", "components": components}
+    )
+    baseline = run_fingerprint(spec, tmp_path)
+
+    helper.write_text("SENTINEL = 2\n", encoding="utf-8")
+
+    assert run_fingerprint(spec, tmp_path) != baseline
+
+
+def _write_wrapper_package(tmp_path: Path) -> Path:
+    package = tmp_path / "fingerprint_wrapper"
+    package.mkdir()
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    helper = package / "helper.py"
+    helper.write_text("SENTINEL = 1\n", encoding="utf-8")
+    (package / "reexport.py").write_text(
+        "from functools import partial\n"
+        "from fingerprint_wrapper.helper import SENTINEL\n"
+        "from trackmaniarl.core.builtins import SmokeLearner\n\n"
+        "assert SENTINEL\n"
+        "Component = partial(SmokeLearner)\n",
+        encoding="utf-8",
+    )
+    return helper

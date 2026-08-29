@@ -1,6 +1,6 @@
 # Changelog
 
-## 2.0.0rc1 - 2026-08-23
+## 2.0.0rc1 - 2026-08-28
 
 - Require RunSpec API 2.0 and compose discrete value models from a frame-only
   encoder, temporal core, head and value strategy.
@@ -83,6 +83,23 @@
   suite, then compare every packaged source file byte-for-byte with the release
   checkout before upload. Package metadata and README links now use the
   canonical `Palamabron/TrackmaniaRL` repository URL.
+- Package every `trackmaniarl` subpackage, keep base CLI/import paths independent
+  of optional gRPC modules, pin the build backend and test the wheel against the
+  complete source tree. CI actions are commit-pinned with least privilege and
+  CPU-only quality gates avoid downloading the CUDA development stack.
+- Correct recurrent replay after eviction, interleaved actor episodes and
+  terminal-first checkpoint restore while keeping eviction refresh bounded by
+  sequence length. Validate finite scalar priorities before sampler mutation.
+- Correct SAC, REDQ-SAC and TQC scalar/quantile shapes, preserve structured
+  observation PyTrees and batch single CHW observations during policy inference.
+- Bind local exact resume and distributed handshakes to the semantic RunSpec,
+  declared and resolved component-package source, and geometry/pace-reference
+  contents. Suppress obsolete warm-start loading during state restoration and
+  record resolved execution separately for every process attempt. Pytest now
+  uses an ignored repository-local base temp directory on Windows.
+- Validate documented component constructor kwargs and public configuration
+  field coverage, correct the RunSpec examples and defaults, and distinguish the
+  off-policy architecture diagrams from the local PPO lifecycle.
 
 ## 1.0.4 - 2026-08-19
 

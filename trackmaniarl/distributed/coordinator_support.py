@@ -123,13 +123,19 @@ class _AsyncCheckpointWriter:
 
     def wait(self) -> None:
         pending = self.pending
-        self.pending = None
-        if pending is not None:
+        if pending is None:
+            return
+        try:
             pending.result()
+        finally:
+            if pending.done() and self.pending is pending:
+                self.pending = None
 
     def close(self) -> None:
-        self.wait()
-        self.executor.shutdown(wait=True, cancel_futures=False)
+        try:
+            self.wait()
+        finally:
+            self.executor.shutdown(wait=True, cancel_futures=False)
 
 
 def state_dict(component: object) -> Mapping[str, object]:

@@ -101,10 +101,11 @@ components:
   feature_pipeline:
     class_path: trackmaniarl.trackmania.features:LidarFeaturePipeline
     kwargs:
-      geometry_path: assets/trackmaniarl-test.geometry.npz
-      expected_map_uid: <map-uid>
-      history_length: 8
-      include_control_inputs: false
+      config:
+        geometry_path: assets/trackmaniarl-test.geometry.npz
+        expected_map_uid: <map-uid>
+        history_length: 8
+        include_control_inputs: false
 
 training:
   batch_size: 256
@@ -119,6 +120,46 @@ and four lidar channels. If
 `previous_action_conditioning` is enabled, human and recovery data use expert
 previous actions during training; inference uses the policy's previous
 prediction. DAgger collection deliberately requires conditioning to be off.
+
+### Behavior-cloning learner `kwargs`
+
+| Field | Default | Effect and constraint |
+| --- | --- | --- |
+| `learning_rate` / `weight_decay` | `3e-4` / `1e-4` | Optimizer rate (positive) and non-negative L2 decay. |
+| `label_smoothing` | `0.01` | Categorical smoothing in `[0,1)`. |
+| `max_steps` | `20000` | Positive optimizer-step budget. |
+| `validation_interval` | `100` | Positive update cadence for deterministic validation and checkpoint selection. |
+| `early_stopping_patience` | `30` | Positive count of validation intervals without improvement. |
+| `lr_scheduler_factor` / `lr_scheduler_patience` | `0.3` / `5` | ReduceLROnPlateau factor in `(0,1)` and positive interval patience. |
+| `min_learning_rate` | `1e-6` | Non-negative scheduler floor. |
+| `gradient_clip_norm` | `5` | Positive gradient-norm cap. |
+| `action_transition_weight` | `1` | Weight for action-change samples; at least one. |
+| `class_weight_power` | `0.5` | Class-frequency correction exponent in `[0,1]`. |
+| `focal_gamma` | `0` | Non-negative focal-loss exponent; zero disables focal modulation. |
+| `steering_auxiliary_loss_weight` | `0` | Non-negative factorized steering-loss weight. |
+| `horizontal_flip_augmentation` | `false` | Enables the strict mirrored schema described below. |
+| `execution` | auto/auto/deterministic | Torch execution policy; see the configuration reference. |
+
+The runtime injects `model_factory` and the RunSpec root `seed`; keep those as
+top-level component/root choices rather than duplicating them in learner kwargs.
+
+### `LidarBehaviorCloningModelFactory` `kwargs`
+
+| Field | Default | Effect and constraint |
+| --- | --- | --- |
+| `action_ids` | required | Ordered unique compact global actions; must exactly match the environment. |
+| `telemetry_dim` / `lidar_channels` | `26` / `4` | Exact feature tensor dimensions. |
+| `history_length` / `burn_in` | `1` / `0` | Feed-forward history or GRU sequence length and its non-learning prefix. |
+| `spatial_bins` | `12` | Lidar encoder spatial pooling bins. |
+| `telemetry_group_dims` | null | Optional group widths whose sum must equal `telemetry_dim`. |
+| `encoder_hidden_dim` / `encoder_output_dim` | `192` / `256` | Positive lidar encoder widths. |
+| `previous_action_conditioning` | `false` | Adds the previous compact action embedding; unavailable for DAgger collection. |
+| `previous_action_embedding_dim` | `16` | Positive embedding width when conditioning is enabled. |
+| `minimum_action_hold_steps` | `1` | Positive inference hysteresis duration. |
+| `switch_logit_margin` | `0` | Non-negative confidence margin required before switching action. |
+| `masked_telemetry_indices` | empty | Unique in-range telemetry fields zeroed before encoding. |
+| `simba_backbone` | null | Optional mapping for the experimental feed-forward SimBaV2 backbone; mutually exclusive with recurrent history. |
+| `factorized_action_head` | `false` | Represents compact action logits as steering plus drive-mode factors. |
 
 Horizontal reflection is opt-in and only accepts the versioned local
 8-channel lidar/46-feature telemetry schema. That schema requires local

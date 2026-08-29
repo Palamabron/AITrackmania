@@ -108,7 +108,10 @@ def _accept_progress(reward: TrajectoryReward, step: _StepInput, nearest: _Neare
         step.elapsed_s if step.transition.race_time_ms is not None else reward.max_time_delta_s
     )
     request = AdvanceRequest(nearest.index, step.point, time_budget_s)
-    reward._index = max(reward._index, reward._bounded_advance(request))
+    accepted = (
+        reward._bounded_advance(request) if reward.limit_progress_by_kinematics else nearest.index
+    )
+    reward._index = max(reward._index, accepted)
 
 
 def _update_progress_history(reward: TrajectoryReward, progress_m: float) -> None:

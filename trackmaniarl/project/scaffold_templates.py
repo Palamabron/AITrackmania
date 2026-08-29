@@ -4,10 +4,10 @@ from importlib.metadata import version
 from pathlib import Path
 
 _PYPROJECT_TEMPLATE = (
-    '[build-system]\nrequires = ["setuptools>=83"]\n'
+    '[build-system]\nrequires = ["setuptools==83.0.0"]\n'
     'build-backend = "setuptools.build_meta"\n\n'
     '[project]\nname = "{name}"\nversion = "0.1.0"\n'
-    'requires-python = ">=3.12"\ndependencies = ["{requirement}", "torch>=2.4"]\n\n'
+    'requires-python = ">=3.12,<3.13"\ndependencies = ["{requirement}", "torch>=2.4"]\n\n'
     '[dependency-groups]\ndev = ["mypy>=1.8", "poethepoet>=0.36", '
     '"pytest>=7.0", "ruff>=0.4"]\n\n'
     '[tool.setuptools.packages.find]\nwhere = ["src"]\n\n'

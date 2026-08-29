@@ -52,6 +52,7 @@ def _redact(value: Any) -> Any:
 def _resume_equivalent_manifest(value: str) -> str:
     manifest = json.loads(value)
     manifest.pop("warm_start", None)
+    manifest.pop("torch_execution", None)
     config = manifest.get("config")
     if not isinstance(config, dict):
         return value
@@ -126,18 +127,31 @@ def _append_environment_snapshot(run: ResolvedRun) -> None:
         file.write(json.dumps(snapshot, sort_keys=True, default=str) + "\n")
 
 
-def write_run_manifest(run: ResolvedRun) -> Path:
-    """Write the immutable config manifest and append a per-attempt environment snapshot."""
+def ensure_run_manifest(run: ResolvedRun) -> Path:
+    """Create or validate the immutable config manifest."""
 
     run.run_dir.mkdir(parents=True, exist_ok=True)
     candidate = json.dumps(_run_manifest(run), indent=2, sort_keys=True, default=str)
-    _append_environment_snapshot(run)
     target = run.run_dir / "manifest.json"
     if _existing_manifest_matches(target, candidate, run.spec.run_id):
         return target
     temporary = target.with_suffix(".json.tmp")
     temporary.write_text(candidate, encoding="utf-8")
     temporary.replace(target)
+    return target
+
+
+def record_run_attempt(run: ResolvedRun) -> None:
+    """Append environment and resolved execution details for one initialized attempt."""
+
+    _append_environment_snapshot(run)
+
+
+def write_run_manifest(run: ResolvedRun) -> Path:
+    """Create the config manifest and record the current initialized attempt."""
+
+    target = ensure_run_manifest(run)
+    record_run_attempt(run)
     return target
 
 

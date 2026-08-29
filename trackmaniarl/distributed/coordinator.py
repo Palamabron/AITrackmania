@@ -20,6 +20,7 @@ from trackmaniarl.distributed import (
     coordinator_checkpoint,
     coordinator_evaluation,
     coordinator_ingest,
+    coordinator_leaders,
     coordinator_learning,
     coordinator_policy,
     coordinator_rpc,
@@ -99,6 +100,7 @@ class Coordinator:
             else DEFAULT_EVALUATION_TIME_BUCKETS_S
         )
         self._best_evaluation: tuple[float, float, float] | None = None
+        self._fastest_evaluation: tuple[float, float, float] | None = None
         self._evaluation_policy_states: dict[int, Mapping[str, Any]] = {}
         self._consecutive_evaluation_passes = 0
         self._evaluation_stop_reason: str | None = None
@@ -218,10 +220,10 @@ class Coordinator:
     def _record_evaluation_stop(self, stats: Mapping[str, float]) -> None:
         coordinator_evaluation.record_evaluation_stop(self, stats)
 
-    def _record_best_evaluation(
-        self, candidate: coordinator_evaluation._EvaluationCandidate
+    def _record_evaluation_leaders(
+        self, candidate: coordinator_leaders.EvaluationCandidate
     ) -> None:
-        coordinator_evaluation.record_best_evaluation(self, candidate)
+        coordinator_leaders.record_evaluation_leaders(self, candidate)
 
     def _emit_metrics_if_ready(self) -> None:
         coordinator_learning.emit_metrics_if_ready(self)
@@ -251,13 +253,9 @@ class Coordinator:
 
     def _checkpoint(
         self,
-        *,
-        policy_state: Mapping[str, Any] | None = None,
-        policy_version: int | None = None,
+        evaluated_policy: coordinator_checkpoint.EvaluatedPolicyCheckpoint | None = None,
     ) -> Path:
-        return coordinator_checkpoint.checkpoint(
-            self, policy_state=policy_state, policy_version=policy_version
-        )
+        return coordinator_checkpoint.checkpoint(self, evaluated_policy)
 
     def restore_checkpoint(
         self, path: Path, mode: ReplayRestoreMode = ReplayRestoreMode.FULL

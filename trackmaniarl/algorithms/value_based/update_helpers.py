@@ -19,6 +19,12 @@ if TYPE_CHECKING:
     from trackmaniarl.algorithms.value_based.learner import DiscreteValueLearner
 
 _SEQUENCE_PRIORITY_MAX_WEIGHT = 0.9
+_OBJECTIVE_POSITION_KEYS = (
+    "demo_flags",
+    "expert_demo_flags",
+    "demonstration_steering_switches",
+    "demonstration_steering_switch_distances",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,6 +79,23 @@ class _EncodedFeatures:
     target: torch.Tensor
     final_online: torch.Tensor
     final_target: torch.Tensor
+
+
+def objective_metadata(inputs: FeatureInputs, metadata: Mapping[str, Any]) -> dict[str, Any]:
+    result = dict(metadata)
+    for key in _OBJECTIVE_POSITION_KEYS:
+        if key in result:
+            result[key] = _position_metadata(inputs, result[key])
+    return result
+
+
+def _position_metadata(inputs: FeatureInputs, values: object) -> object:
+    view = inputs.view
+    tensor = torch.as_tensor(values)
+    full_shape = (view.batch_size, view.time_steps)
+    if tensor.shape != full_shape and tensor.numel() != view.batch_size * view.time_steps:
+        return values
+    return tensor.reshape(full_shape)[:, inputs.positions]
 
 
 def features(
@@ -156,6 +179,57 @@ def objective_loss(learner: DiscreteValueLearner, inputs: ObjectiveInputs) -> to
         if value is not None:
             loss = loss + value
     return loss
+
+
+@torch.no_grad()
+def demonstration_diagnostics(
+    learner: DiscreteValueLearner, inputs: ObjectiveInputs
+) -> dict[str, float]:
+    flags = inputs.metadata.get("demo_flags")
+    if inputs.expected is None or flags is None:
+        return {}
+    valid_demo = inputs.valid & _diagnostic_mask(inputs, flags)
+    predictions = learner._masked(inputs.expected.detach()).argmax(dim=-1)
+    correct = predictions == inputs.actions
+    metrics = {
+        "debug/demo_sample_fraction": _mask_fraction(valid_demo, inputs.valid),
+        "debug/demo_accuracy": _masked_fraction(correct, valid_demo),
+    }
+    switches = inputs.metadata.get("demonstration_steering_switches")
+    if switches is None:
+        return metrics
+    switch_demo = valid_demo & _diagnostic_mask(inputs, switches)
+    metrics.update(_demo_switch_diagnostics(correct, valid_demo, switch_demo))
+    return metrics
+
+
+def _demo_switch_diagnostics(
+    correct: torch.Tensor, valid_demo: torch.Tensor, switch_demo: torch.Tensor
+) -> dict[str, float]:
+    return {
+        "debug/demo_steering_switch_fraction": _mask_fraction(switch_demo, valid_demo),
+        "debug/demo_steering_switch_accuracy": _masked_fraction(correct, switch_demo),
+        "debug/demo_steady_accuracy": _masked_fraction(correct, valid_demo & ~switch_demo),
+    }
+
+
+def _diagnostic_mask(inputs: ObjectiveInputs, values: object) -> torch.Tensor:
+    tensor = torch.as_tensor(values, dtype=torch.bool, device=inputs.actions.device)
+    if tensor.shape == inputs.actions.shape:
+        return tensor
+    if tensor.shape == inputs.actions.shape[:1]:
+        return tensor.unsqueeze(1).expand_as(inputs.actions)
+    if tensor.numel() == inputs.actions.numel():
+        return tensor.reshape_as(inputs.actions)
+    raise ValueError("diagnostic metadata shape does not match actions")
+
+
+def _mask_fraction(numerator: torch.Tensor, denominator: torch.Tensor) -> float:
+    return float(numerator.sum().float().div(denominator.sum().clamp_min(1)).item())
+
+
+def _masked_fraction(values: torch.Tensor, mask: torch.Tensor) -> float:
+    return _mask_fraction(values & mask, mask)
 
 
 def _action_mask(learner: DiscreteValueLearner, expected: torch.Tensor) -> torch.Tensor | None:

@@ -11,7 +11,7 @@ from typing import Any, cast
 import numpy as np
 import torch
 
-from trackmaniarl.core.contracts import ReplicablePolicy
+from trackmaniarl.core.contracts import PolicyMode, ReplicablePolicy
 from trackmaniarl.core.data import Transition
 from trackmaniarl.core.pytree import tree_map
 from trackmaniarl.distributed.actor_errors import ActorEnvironmentError
@@ -81,11 +81,11 @@ class ResetRetry:
 
 def collect(runtime: CollectionRuntime, environment: Any, pipeline: Any) -> None:
     context = CollectionContext(runtime, environment, pipeline)
+    if not _prewarm_initial_policy(context):
+        return
     episode = 0
     while not runtime.stop.is_set():
-        if runtime.evaluate.is_set():
-            runtime.evaluate.clear()
-            runtime._evaluate(environment, pipeline)
+        _run_pending_evaluation(context)
         state = _start_training_episode(context, episode)
         if state is None:
             break
@@ -97,6 +97,31 @@ def collect(runtime: CollectionRuntime, environment: Any, pipeline: Any) -> None
             continue
         _finish_training_episode(context, state)
         episode += 1
+
+
+def _run_pending_evaluation(context: CollectionContext) -> None:
+    runtime = context.runtime
+    if not runtime.evaluate.is_set():
+        return
+    runtime.evaluate.clear()
+    runtime._evaluate(context.environment, context.pipeline)
+
+
+def _prewarm_initial_policy(context: CollectionContext) -> bool:
+    runtime = context.runtime
+    observation = runtime._reset_environment(EnvironmentReset(context.environment, 0))
+    if observation is None:
+        return False
+    policy, _, _ = runtime._policy()
+    reset_pipeline(context.pipeline)
+    reset_policy(policy)
+    try:
+        prepared = context.pipeline.transform_observation(observation)
+        policy.act(prepared, PolicyMode.EVALUATION)
+    finally:
+        reset_pipeline(context.pipeline)
+        reset_policy(policy)
+    return True
 
 
 def _start_training_episode(context: CollectionContext, episode: int) -> TrainingEpisode | None:

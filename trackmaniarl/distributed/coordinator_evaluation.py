@@ -3,24 +3,16 @@ from __future__ import annotations
 import logging
 from collections.abc import Mapping
 from dataclasses import dataclass
-from pathlib import Path
 from statistics import fmean, median
 from typing import TYPE_CHECKING, Any
 
+from trackmaniarl.distributed.coordinator_leaders import candidate_from_stats
 from trackmaniarl.trackmania.diagnostics import aggregate_progress_bins
 
 if TYPE_CHECKING:
     from trackmaniarl.distributed.coordinator import Coordinator
 
 logger = logging.getLogger("trackmaniarl.distributed.coordinator")
-
-
-@dataclass(frozen=True, slots=True)
-class _EvaluationCandidate:
-    finish_rate: float
-    median_time_s: float
-    mean_time_s: float
-    policy_version: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,25 +32,8 @@ class _TimingBatch:
     total_steps: int
 
 
-@dataclass(frozen=True, slots=True)
-class _BestCheckpoint:
-    candidate: _EvaluationCandidate
-    path: Path
-    policy_state: Mapping[str, Any] | None
-
-
 def _bucket_key(bucket: float) -> str:
     return f"sub_{bucket:g}"
-
-
-def _evaluation_rank(
-    finish_rate: float, median_time_s: float, required_finish_rate: float
-) -> tuple[float, float, float]:
-    """Rank release-qualified policies by time, otherwise by reliability."""
-
-    if finish_rate >= required_finish_rate:
-        return 1.0, -median_time_s, finish_rate
-    return 0.0, finish_rate, -median_time_s
 
 
 def finish_evaluation_batch(coordinator: Coordinator, summaries: list[dict[str, Any]]) -> None:
@@ -66,7 +41,8 @@ def finish_evaluation_batch(coordinator: Coordinator, summaries: list[dict[str, 
     coordinator.run.logger.log("eval/summary", stats, step=coordinator.counters.updates)
     _log_progress_bins(coordinator, stats)
     _log_evaluation_summary(coordinator, stats)
-    coordinator._record_best_evaluation(_evaluation_candidate(stats))
+    candidate = candidate_from_stats(stats)
+    coordinator._record_evaluation_leaders(candidate)
     coordinator._record_evaluation_stop(stats)
 
 
@@ -88,15 +64,6 @@ def _log_evaluation_summary(coordinator: Coordinator, stats: Mapping[str, float]
         int(stats["trials"]),
         stats["finish_time_mean_s"],
         stats["finish_time_best_s"],
-        int(stats["policy_version"]),
-    )
-
-
-def _evaluation_candidate(stats: Mapping[str, float]) -> _EvaluationCandidate:
-    return _EvaluationCandidate(
-        float(stats["finish_rate"]),
-        float(stats["finish_time_median_s"]),
-        float(stats["finish_time_mean_s"]),
         int(stats["policy_version"]),
     )
 
@@ -144,57 +111,6 @@ def _record_evaluation_stop(coordinator: Coordinator, stats: Mapping[str, float]
         step=coordinator.counters.updates,
     )
     logger.info("Stopping training: %s", coordinator._evaluation_stop_reason)
-
-
-def record_best_evaluation(coordinator: Coordinator, candidate: _EvaluationCandidate) -> None:
-    if coordinator._recovering:
-        return
-    suite = coordinator.run.spec.evaluation
-    required_finish_rate = 1.0 if suite is None else suite.min_finish_rate
-    if candidate.finish_rate < required_finish_rate:
-        return
-    rank = _evaluation_rank(candidate.finish_rate, candidate.median_time_s, required_finish_rate)
-    if coordinator._best_evaluation is not None and rank <= coordinator._best_evaluation:
-        return
-    coordinator._best_evaluation = rank
-    policy_state = _evaluated_policy_state(coordinator, candidate.policy_version)
-    path = _best_checkpoint(coordinator, candidate.policy_version, policy_state)
-    coordinator._checkpoints.append(path)
-    _log_best_checkpoint(coordinator, _BestCheckpoint(candidate, path, policy_state))
-
-
-def _evaluated_policy_state(
-    coordinator: Coordinator, policy_version: int
-) -> Mapping[str, Any] | None:
-    with coordinator._lock:
-        return coordinator._evaluation_policy_states.get(policy_version)
-
-
-def _best_checkpoint(
-    coordinator: Coordinator, policy_version: int, policy_state: Mapping[str, Any] | None
-) -> Path:
-    return (
-        coordinator._checkpoint(policy_state=policy_state, policy_version=policy_version)
-        if policy_state is not None
-        else coordinator._checkpoint()
-    )
-
-
-def _log_best_checkpoint(coordinator: Coordinator, report: _BestCheckpoint) -> None:
-    candidate = report.candidate
-    coordinator.run.logger.log(
-        "eval/best_checkpoint",
-        {
-            "finish_rate": candidate.finish_rate,
-            "finish_time_median_s": candidate.median_time_s,
-            "finish_time_mean_s": candidate.mean_time_s,
-            "release_qualified": 1.0,
-            "policy_version": candidate.policy_version,
-            "exact_policy": float(report.policy_state is not None),
-            "path": str(report.path),
-        },
-        step=coordinator.counters.updates,
-    )
 
 
 def _evaluation_batch_stats(

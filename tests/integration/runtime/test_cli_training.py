@@ -12,6 +12,9 @@ from trackmaniarl.cli import (
     _train,
     entrypoint,
 )
+from trackmaniarl.commands.common import _matches_attempt, _next_versioned_run_id
+from trackmaniarl.commands.smoke import _smoke_spec
+from trackmaniarl.commands.training import _offline_pretrain
 from trackmaniarl.core.spec import RunSpec, TrainingSpec
 from trackmaniarl.distributed.coordinator_types import CoordinatorConfig
 from trackmaniarl.distributed.protocol import run_fingerprint
@@ -88,6 +91,49 @@ def test_smoke_training_reserves_transitions_for_a_learner_update() -> None:
     assert training.warmup_transitions == 51
     assert training.total_transitions > training.warmup_transitions
     assert training.checkpoint_interval_updates == 100
+
+
+def _smoke_evaluation_suite() -> dict[str, object]:
+    return {
+        "name": "scheduled-smoke",
+        "version": "1",
+        "maps": [
+            {
+                "id": "test-map",
+                "map_path": "test.Map.Gbx",
+                "geometry_path": "test.geometry.npz",
+                "expected_map_uid": "test-map",
+            }
+        ],
+    }
+
+
+def _scheduled_smoke_spec() -> RunSpec:
+    source = _run_spec("scheduled-smoke", "trackmaniarl.core.builtins:SmokeLearner")
+    data = source.model_dump(mode="python")
+    data["components"]["evaluator"] = {"class_path": "trackmaniarl.core.builtins:SmokeEvaluator"}
+    data["evaluation"] = _smoke_evaluation_suite()
+    data["training"].update(
+        {
+            "evaluate_every_episodes": 1,
+            "evaluation_stop_min_finish_rate": 1.0,
+            "evaluation_stop_median_s": 37.0,
+            "evaluation_stop_consecutive_batches": 2,
+        }
+    )
+    return RunSpec.model_validate(data)
+
+
+def test_smoke_spec_disables_scheduled_evaluation() -> None:
+    source = _scheduled_smoke_spec()
+
+    smoke = RunSpec.model_validate(_smoke_spec(source, 100).model_dump(mode="python"))
+
+    assert smoke.components.evaluator is None
+    assert smoke.training.evaluate_every_episodes is None
+    assert smoke.training.evaluation_stop_min_finish_rate is None
+    assert smoke.training.evaluation_stop_median_s is None
+    assert smoke.training.evaluation_stop_consecutive_batches is None
 
 
 def test_smoke_checkpoint_restore_uses_the_run_fingerprint(
@@ -210,6 +256,24 @@ def test_resume_recovers_numbered_sibling_for_a_descriptive_run_id(tmp_path: Pat
     assert resumed.components.learner.kwargs["model_initialization_checkpoint"] == "historic.pt"
 
 
+@pytest.mark.parametrize("run_id", ["experiment", "experiment-v1"])
+def test_new_attempt_uses_a_numeric_suffix(run_id: str, tmp_path: Path) -> None:
+    artifacts = tmp_path / "artifacts"
+    (artifacts / f"{run_id}-1").mkdir(parents=True)
+
+    assert _next_versioned_run_id(run_id, artifacts) == f"{run_id}-2"
+
+
+@pytest.mark.parametrize("resumed_id", ["experiment", "experiment-1", "experiment-20"])
+def test_resume_adopts_generated_numeric_attempts(resumed_id: str) -> None:
+    assert _matches_attempt("experiment", resumed_id)
+
+
+@pytest.mark.parametrize("resumed_id", ["experiment-01", "experiment-fast", "experiment-copy-1"])
+def test_resume_rejects_unrelated_attempt_names(resumed_id: str) -> None:
+    assert not _matches_attempt("experiment", resumed_id)
+
+
 def _write_checkpoint(run_dir: Path) -> Path:
     checkpoint = run_dir / "checkpoints" / "checkpoint.pt"
     checkpoint.parent.mkdir(parents=True)
@@ -301,6 +365,25 @@ def test_offline_pretrain_accepts_repeatable_demos_and_model_initialization(
 
     assert captured["demo"] == [Path("elite"), Path("recovery.npz")]
     assert captured["model_initialization_checkpoint"] == Path("bc-best.pt")
+
+
+def test_offline_pretrain_reports_when_final_checkpoint_is_disabled(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(
+        "trackmaniarl.commands.training._offline_training_spec",
+        lambda args: (Path("run.yaml"), object(), ()),
+    )
+    monkeypatch.setattr(
+        "trackmaniarl.commands.training._run_offline_pretraining",
+        lambda *args: SimpleNamespace(updates=7, checkpoints=()),
+    )
+
+    _offline_pretrain(SimpleNamespace())
+
+    assert capsys.readouterr().out == (
+        "Offline pretraining complete: updates=7, final checkpoint disabled.\n"
+    )
 
 
 def _offline_pretrain_args() -> list[str]:

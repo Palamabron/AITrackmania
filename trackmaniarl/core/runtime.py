@@ -52,7 +52,8 @@ def _instantiate(spec: ComponentSpec, **injected: Any) -> Any:
     try:
         return factory(**kwargs)
     except TypeError as exc:
-        raise TypeError(f"Cannot instantiate {spec.class_path} with {kwargs}: {exc}") from exc
+        safe_kwargs = _redact_config(kwargs)
+        raise TypeError(f"Cannot instantiate {spec.class_path} with {safe_kwargs}: {exc}") from exc
 
 
 def _require(name: str, value: Any, contract: type[Any]) -> None:
@@ -179,6 +180,7 @@ class ResolvedRun:
     logger: RunLogger
     checkpoint_codec: CheckpointCodec
     evaluator: Evaluator | None
+    base_dir: Path = Path(".")
 
 
 def resolve_run(spec: RunSpec, *, base_dir: str | Path = ".") -> ResolvedRun:
@@ -256,12 +258,13 @@ class _RunResolver:
         return CompositeRunLogger(logger, *additional)
 
     def _instantiate_additional_logger(self, component: ComponentSpec) -> Any:
-        return _instantiate(
-            component,
-            run_dir=self.run_dir,
-            run_id=self.spec.run_id,
-            config=_redact_config(self.spec.model_dump(mode="json")),
-        )
+        injected = {
+            "run_dir": self.run_dir,
+            "run_id": self.spec.run_id,
+            "config": _redact_config(self.spec.model_dump(mode="json")),
+        }
+        kwargs = injected | component.kwargs
+        return _instantiate(component.model_copy(update={"kwargs": kwargs}))
 
     def _instantiate_evaluator(self) -> Any | None:
         component = self.spec.components.evaluator
@@ -305,11 +308,12 @@ class _RunResolver:
             logger=self.logger,
             checkpoint_codec=self.checkpoint_codec,
             evaluator=self.evaluator,
+            base_dir=self.project_dir,
         )
 
 
 def prepare_run(run: ResolvedRun) -> None:
-    """Seed process RNGs and create the immutable run manifest once."""
+    """Seed process RNGs and create the immutable config manifest once."""
 
     random.seed(run.spec.seed)
     import numpy as np
@@ -318,9 +322,17 @@ def prepare_run(run: ResolvedRun) -> None:
     np.random.seed(run.spec.seed)
     torch.manual_seed(run.spec.seed)
     # Import here to keep data/contracts importable without observability cycles.
-    from trackmaniarl.observability.artifacts import write_run_manifest
+    from trackmaniarl.observability.artifacts import ensure_run_manifest
 
-    write_run_manifest(run)
+    ensure_run_manifest(run)
+
+
+def record_run_attempt(run: ResolvedRun) -> None:
+    """Record environment details after learner initialization has resolved execution."""
+
+    from trackmaniarl.observability.artifacts import record_run_attempt as record
+
+    record(run)
 
 
 def validate_resolved_run(run: ResolvedRun) -> dict[str, float]:

@@ -330,5 +330,5 @@ def _training_batch(assembly: _BatchAssembly) -> TrainingBatch:
         transition_ids=build.transition_ids,
         importance_weights=weights,
         masks=build.masks,
-        metadata={**dict(build.metadata or {}), **_behavior_metadata(transitions)},
+        metadata={**_behavior_metadata(transitions), **dict(build.metadata or {})},
     )

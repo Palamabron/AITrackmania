@@ -6,7 +6,7 @@ or offline-supervised lifecycle is executed. The same commands work in
 PowerShell, bash, WSL and CI.
 
 ```bash
-uv tool install "trackmaniarl==2.0.0rc1"
+uv tool install --index https://download.pytorch.org/whl/cpu --with "torch==2.11.0+cpu" "trackmaniarl==2.0.0rc1"
 trackmaniarl init my-trackmania-agent --template trackmania
 cd my-trackmania-agent
 uv sync
@@ -36,7 +36,8 @@ components:
         kwargs: {input_dim: 256}
       head:
         class_path: trackmaniarl.models.heads:ImplicitQuantileHead
-        kwargs: {feature_dim: 256, action_count: 78, cosine_count: 64, dueling: true}
+        kwargs:
+          config: {feature_dim: 256, action_count: 78, cosine_count: 64, dueling: true}
       strategy:
         class_path: trackmaniarl.models.strategies:RandomQuantileStrategy
         kwargs: {train_quantile_count: 32, target_quantile_count: 32}
@@ -105,6 +106,35 @@ online expected values for action selection, then asks the target model only
 for the distribution of `a*`. Objectives must explicitly request all-action
 tensors.
 
+### Composite model constructor reference
+
+`CompositeValueModelFactory` requires four nested `ComponentSpec` values:
+`encoder`, `temporal`, `head`, and `strategy`. Config-wrapper components place
+their fields below `kwargs.config`; direct-signature components place fields
+directly below `kwargs`.
+
+| Component | Accepted configuration |
+| --- | --- |
+| `LidarSensorEncoder` | `kwargs.config` requires no field but must match the pipeline: `telemetry_dim=20`, `spatial_bins=0`, `lidar_channels=4`, `telemetry_group_dims=null`, `telemetry_layer_norm=true`, `base_telemetry_dim=null`, `auxiliary_remaining_distance_index=null`, `auxiliary_progress_index=null`, `auxiliary_start_progress=0`, `auxiliary_residual_scale=null`, `hidden_dim=192`, `output_dim=256`, `masked_telemetry_indices=[]`. |
+| `MlpSensorEncoder` | Direct `input_dim`, `output_dim`, and `hidden_dim=256`; all dimensions are positive. |
+| `ConvolutionalSensorEncoder` | Direct `channels`, `output_dim`, and `hidden_dim=128`; all dimensions are positive. |
+| `IdentityTemporalCore` | Direct positive `input_dim`; burn-in must be zero. |
+| `GruTemporalCore` | Direct positive `input_dim` and `hidden_dim`. |
+| `MambaTemporalCore` | Direct positive `input_dim`; `hidden_dim=null` means input width, `d_state=16`, `d_conv=4`, `expand=2`, and `backend=auto|native|torch`. |
+| `ScalarQHead` | Direct positive `feature_dim`, positive `action_count`, and `mode=standard|dueling`. |
+| `FixedQuantileHead` | `kwargs.config` requires positive `feature_dim` and `action_count`; `quantile_count=32` (at least two), `dueling=false`. |
+| `ImplicitQuantileHead` | `kwargs.config` requires positive `feature_dim` and `action_count`; `cosine_count=64`, `dueling=false`. |
+| `ScalarValueStrategy` | No kwargs. |
+| `FixedQuantileStrategy` | `quantile_count=32`, at least two and equal to the fixed head count. |
+| `RandomQuantileStrategy` | `train_quantile_count=64`, `target_quantile_count=64`, `evaluation_quantile_count=32`; each at least two. |
+| `LearnedFractionStrategy` | Positive `feature_dim`; `fraction_count=32` (at least two), `entropy_coefficient=1e-3` (non-negative). |
+
+The lidar encoder's auxiliary fields split additional telemetry from
+`base_telemetry_dim`: remaining distance and progress may be routed through a
+residual auxiliary branch, with the optional start offset and residual scale.
+Masked indices are zeroed before encoding. Leave those fields at their defaults
+unless the feature schema intentionally adds compatible auxiliary values.
+
 ### Mamba backend selection
 
 ```yaml
@@ -157,11 +187,19 @@ class SpeedFeaturePipeline:
     def transform_observation(self, observation: Any) -> np.ndarray:
         return np.asarray([observation["speed"]], dtype=np.float32)
 
-    def collate(self, transitions: list[Transition]) -> dict[str, np.ndarray]:
+    def collate(self, transitions: list[Transition]) -> dict[str, Any]:
         return {
-            "observations": np.stack([item.observation for item in transitions]),
+            "_trackmaniarl_batch_collated": True,
+            "observations": np.stack(
+                [self.transform_observation(item.observation) for item in transitions]
+            ),
             "actions": np.asarray([item.action for item in transitions]),
             "rewards": np.asarray([item.reward for item in transitions], dtype=np.float32),
+            "next_observations": np.stack(
+                [self.transform_observation(item.next_observation) for item in transitions]
+            ),
+            "terminated": np.asarray([item.terminated for item in transitions], dtype=np.bool_),
+            "truncated": np.asarray([item.truncated for item in transitions], dtype=np.bool_),
         }
 ```
 
@@ -224,9 +262,15 @@ off-policy runtime:
 - pre-2.0 checkpoints are rejected; warm-start accepts current compressed
   checkpoints only.
 
-The local on-policy `Trainer` used by PPO persists a separate schema 1.0 state
-containing its learner, replay store, sampler and counters. Do not pass that
-checkpoint to distributed `resume` or `learner --checkpoint`.
+The local on-policy `Trainer` used by PPO persists a separate schema 2.0 state
+containing its semantic run fingerprint, learner, replay store, sampler and
+counters. Do not pass that checkpoint to distributed `resume` or
+`learner --checkpoint`. Exact resume does not reload the original warm-start
+artifact. The run fingerprint includes effective component parameters, every
+Python source file in both the declared and resolved component packages, and
+configured geometry and pace-reference file contents. Logging choices,
+`run_id`, artifact locations and evaluation map file locations do not define
+training identity.
 
 Stable RL component names are `encoder`, `temporal`, `head` and `strategy`
 under `online` and `target`. Mamba's resolved kernel backend is runtime metadata
@@ -278,6 +322,27 @@ checklist.
 | `trackmaniarl.observability` | manifest, JSONL events, artifacts and optional adapters |
 | `trackmaniarl.experiments` | evaluation suites and study strategies |
 | `trackmaniarl.project` | generated local extension project |
+
+The package-root exports below are the supported Python import surface for 2.0.
+Anything prefixed with `_`, or absent from these exports and the documented
+component paths, is internal and may change between release candidates.
+
+| Import root | Supported exports |
+| --- | --- |
+| `trackmaniarl.core` | contracts (`Learner`, `OfflineSupervisedLearner`, `Policy`, `BehaviorPolicy`, `ExploratoryPolicy`, `ReplicablePolicy`, `ModelFactory`, `ReplayStore`, `Sampler`, `FeaturePipeline`, `EnvironmentFactory`, `Evaluator`, `RunLogger`, `CheckpointCodec`); data (`Transition`, `Trajectory`, `TrainingBatch`, `BatchRequest`, `PriorityUpdate`, `EpisodeArtifact`); RunSpec/evaluation models; replay implementations; `ResolvedRun`, `resolve_run`, `validate_resolved_run`, `Trainer`, `TrainingResult`. |
+| `trackmaniarl.algorithms` | `DiscreteValueLearner`, `SoftActorCritic`, `RandomizedEnsembleSAC`, `TruncatedQuantileCritic`, `ProximalPolicyOptimization`, experimental `StableDiscreteSoftActorCritic`, Torch execution models, and adaptive clipping types. |
+| `trackmaniarl.models` | composite model/factory and frame adapter; Gaussian/categorical/PPO actors; continuous and quantile critics; general geometry encoders; SimBaV2 blocks and projection helper. Composable value heads, strategies, and temporal cores use the documented `trackmaniarl.models.heads`, `.strategies`, and `.temporal` paths. |
+| `trackmaniarl.trackmania` | environment config/factory, lidar and telemetry pipelines, lidar encoder, telemetry TQC factory/evaluator, collector types, action-table builder, and boundary/trajectory recording helpers. Behavior-cloning APIs live under the documented `.imitation_learning` path. |
+| `trackmaniarl.experiments` | `EvaluationResult`, `aggregate_results`, `StudySpec`, `StudyRunner`, and `FallbackStrategy`; orchestration dependencies are optional. |
+| `trackmaniarl.observability` | `AsyncEpisodeWriter`, `write_run_manifest`, and optional `WandbTracker`. |
+| `trackmaniarl.distributed` | lazy `ActorRuntime` and `Coordinator` exports; importing/using them requires the `distributed` extra. |
+
+`StudySpec` describes a bounded reproducible parameter study; `StudyRunner`
+executes its strategy, and `FallbackStrategy` provides deterministic local
+selection when an optional external orchestrator is not used. Evaluation
+results are aggregated independently of training. Collector and asset helpers
+are lower-level building blocks for custom Trackmania workflows; the CLI is the
+recommended path for ordinary recording and evaluation.
 
 Older module locations are internal migration details, not documented runtime
 API or compatibility targets.

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import random
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -33,11 +33,25 @@ class _WindowScan:
 
 
 @dataclass(frozen=True, slots=True)
+class _WindowCandidates:
+    store: ReplayStore
+    ordered: list[int]
+    request: BatchRequest
+    length: int
+
+
+@dataclass(frozen=True, slots=True)
 class _SequenceEdge:
     previous_id: int
     transition_id: int
     previous: Transition
     transition: Transition
+
+
+@dataclass(frozen=True, slots=True)
+class _LinkedHistory:
+    history_ids: Callable[[int, int], list[int]]
+    is_n_step_eligible: Callable[[int, int], bool]
 
 
 @dataclass(frozen=True, slots=True)
@@ -109,6 +123,9 @@ class SequenceSampler:
                 f"Need {request.batch_size} valid sequences, replay has {len(starts)}"
             )
         chosen = self._rng.sample(starts, request.batch_size)
+        linked = _linked_history(store)
+        if linked is not None:
+            return [linked.history_ids(final_id, length) for final_id in chosen]
         return [list(range(start, start + length)) for start in chosen]
 
     def _make_sequence_batch(self, selection: _SelectedSequences, length: int) -> TrainingBatch:
@@ -131,13 +148,8 @@ class SequenceSampler:
         if index.cached_starts is not None:
             return index.cached_starts
         ordered = store.available_ids() if index.ordered is None else index.ordered
-        if len(ordered) < length:
-            raise RuntimeError(f"Need at least {length} transitions for sequence sampling")
-        transitions = store.get(ordered)
-        available = dict(zip(ordered, transitions, strict=True))
-        starts = _sequence_window_starts(
-            _WindowScan(ordered, transitions, available, request, length)
-        )
+        candidates = _WindowCandidates(store, ordered, request, length)
+        starts = _uncached_window_starts(candidates)
         self._cache_starts(_CacheUpdate(store, request_key, index, starts))
         return starts
 
@@ -176,6 +188,42 @@ class SequenceSampler:
     def load_state_dict(self, state: Mapping[str, Any]) -> None:
         self._rng.setstate(state["rng"])
         self._reset_cache()
+
+
+def _linked_history(store: ReplayStore) -> _LinkedHistory | None:
+    history_ids = getattr(store, "history_ids", None)
+    is_n_step_eligible = getattr(store, "is_n_step_eligible", None)
+    if not callable(history_ids) or not callable(is_n_step_eligible):
+        return None
+    return _LinkedHistory(history_ids, is_n_step_eligible)
+
+
+def _uncached_window_starts(candidates: _WindowCandidates) -> list[int]:
+    if len(candidates.ordered) < candidates.length:
+        raise RuntimeError(f"Need at least {candidates.length} transitions for sequence sampling")
+    linked = _linked_history(candidates.store)
+    if linked is not None:
+        return _linked_window_starts(candidates, linked)
+    transitions = candidates.store.get(candidates.ordered)
+    available = dict(zip(candidates.ordered, transitions, strict=True))
+    return _sequence_window_starts(
+        _WindowScan(
+            candidates.ordered,
+            transitions,
+            available,
+            candidates.request,
+            candidates.length,
+        )
+    )
+
+
+def _linked_window_starts(candidates: _WindowCandidates, linked: _LinkedHistory) -> list[int]:
+    return [
+        transition_id
+        for transition_id in candidates.ordered
+        if linked.is_n_step_eligible(transition_id, candidates.request.n_step)
+        and len(set(linked.history_ids(transition_id, candidates.length))) == candidates.length
+    ]
 
 
 def _sequence_window_starts(scan: _WindowScan) -> list[int]:

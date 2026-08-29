@@ -11,13 +11,15 @@ import pytest
 
 from tests.integration.runtime.core_runtime_support import runtime_spec
 from trackmaniarl.core.runtime import (
+    _instantiate,
     _redact_config,
+    _RunResolver,
     _TrainingComponents,
     _validate_training_contract,
     resolve_run,
     validate_resolved_run,
 )
-from trackmaniarl.core.spec import RunSpec
+from trackmaniarl.core.spec import ComponentSpec, RunSpec
 
 
 @dataclass(frozen=True, slots=True)
@@ -133,6 +135,28 @@ def test_remote_tracker_config_redacts_nested_secrets() -> None:
         "metadata": {"api_key": "<redacted>", "label": "safe"},
         "items": [{"password": "<redacted>"}],
     }
+    component = ComponentSpec(
+        class_path="trackmaniarl.core.builtins:IdentityFeaturePipeline",
+        kwargs={"api_token": "private"},
+    )
+    with pytest.raises(TypeError) as error:
+        _instantiate(component)
+    assert "private" not in str(error.value)
+    assert "<redacted>" in str(error.value)
+
+
+def test_additional_logger_receives_descriptive_run_identity(tmp_path: Path) -> None:
+    resolver = object.__new__(_RunResolver)
+    resolver.spec = runtime_spec(tmp_path)
+    resolver.run_dir = tmp_path / "run"
+    component = ComponentSpec(
+        class_path="tests.integration.runtime.core_runtime_support:CapturingLogger"
+    )
+
+    logger = resolver._instantiate_additional_logger(component)
+
+    assert logger.kwargs["run_id"] == "smoke"
+    assert logger.kwargs["run_dir"] == tmp_path / "run"
 
 
 def test_runtime_rejects_mismatched_trackmania_reward_discount(tmp_path: Path) -> None:

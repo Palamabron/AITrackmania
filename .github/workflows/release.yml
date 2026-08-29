@@ -12,6 +12,8 @@ concurrency:
 permissions: {}
 
 env:
+  TORCH_CPU_INDEX: https://download.pytorch.org/whl/cpu
+  TORCH_CPU_VERSION: 2.11.0+cpu
   UV_VERSION: "0.12.5"
 
 jobs:
@@ -21,6 +23,8 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: read
+    env:
+      VGAMEPAD_SKIP_VIGEMBUS_INSTALL: "true"
     strategy:
       fail-fast: false
       matrix:
@@ -39,53 +43,26 @@ jobs:
           python-version: "3.12"
           enable-cache: true
 
-      - name: Install locked development dependencies on Linux
-        if: runner.os == 'Linux'
-        run: uv sync --locked --group dev
+      - name: Export locked development requirements without CUDA Torch
+        run: uv export --quiet --locked --group dev --prune torch --no-header --no-annotate --no-emit-project --output-file .ci-dev-requirements.txt
 
-      - name: Install locked development dependencies and verify CPU Torch on Windows
-        if: runner.os == 'Windows'
-        shell: pwsh
-        env:
-          TORCH_CPU_INDEX: https://download.pytorch.org/whl/cpu
-          TORCH_CPU_VERSION: 2.11.0+cpu
-          VGAMEPAD_SKIP_VIGEMBUS_INSTALL: "true"
-        run: |
-          uv sync --locked --group dev --no-install-package torch
-          uv run --no-sync --index "$env:TORCH_CPU_INDEX" --with "torch==$env:TORCH_CPU_VERSION" python -c "import torch; assert torch.__version__ == '2.11.0+cpu', torch.__version__; assert torch.version.cuda is None, torch.version.cuda"
+      - name: Verify exact CPU Torch resolution
+        run: uv run --isolated --no-project --no-config --index "${{ env.TORCH_CPU_INDEX }}" --index-strategy unsafe-best-match --with "torch==${{ env.TORCH_CPU_VERSION }}" --with-requirements .ci-dev-requirements.txt python -c "import os, torch; assert torch.__version__ == os.environ['TORCH_CPU_VERSION'], torch.__version__; assert torch.version.cuda is None, torch.version.cuda"
 
       - name: Verify lock file
         run: uv lock --check
 
       - name: Verify formatting
-        run: uv run --no-sync ruff format --check .
+        run: uv run --isolated --no-project --no-config --index "${{ env.TORCH_CPU_INDEX }}" --index-strategy unsafe-best-match --with "torch==${{ env.TORCH_CPU_VERSION }}" --with-requirements .ci-dev-requirements.txt ruff format --check .
 
       - name: Run Ruff
-        run: uv run --no-sync ruff check .
+        run: uv run --isolated --no-project --no-config --index "${{ env.TORCH_CPU_INDEX }}" --index-strategy unsafe-best-match --with "torch==${{ env.TORCH_CPU_VERSION }}" --with-requirements .ci-dev-requirements.txt ruff check .
 
-      - name: Run strict mypy on Linux
-        if: runner.os == 'Linux'
-        run: uv run --no-sync mypy --strict trackmaniarl
+      - name: Run strict mypy with CPU Torch
+        run: uv run --isolated --no-project --no-config --index "${{ env.TORCH_CPU_INDEX }}" --index-strategy unsafe-best-match --with "torch==${{ env.TORCH_CPU_VERSION }}" --with-requirements .ci-dev-requirements.txt mypy --strict trackmaniarl
 
-      - name: Run strict mypy with CPU Torch on Windows
-        if: runner.os == 'Windows'
-        shell: pwsh
-        env:
-          TORCH_CPU_INDEX: https://download.pytorch.org/whl/cpu
-          TORCH_CPU_VERSION: 2.11.0+cpu
-        run: uv run --no-sync --index "$env:TORCH_CPU_INDEX" --with "torch==$env:TORCH_CPU_VERSION" mypy --strict trackmaniarl
-
-      - name: Run full test suite on Linux
-        if: runner.os == 'Linux'
-        run: uv run --no-sync pytest
-
-      - name: Run full test suite with CPU Torch on Windows
-        if: runner.os == 'Windows'
-        shell: pwsh
-        env:
-          TORCH_CPU_INDEX: https://download.pytorch.org/whl/cpu
-          TORCH_CPU_VERSION: 2.11.0+cpu
-        run: uv run --no-sync --index "$env:TORCH_CPU_INDEX" --with "torch==$env:TORCH_CPU_VERSION" pytest
+      - name: Run full test suite with CPU Torch
+        run: uv run --isolated --no-project --no-config --index "${{ env.TORCH_CPU_INDEX }}" --index-strategy unsafe-best-match --with "torch==${{ env.TORCH_CPU_VERSION }}" --with-requirements .ci-dev-requirements.txt pytest
 
   build:
     name: Build release bytes
@@ -106,27 +83,29 @@ jobs:
           python-version: "3.12"
           enable-cache: true
 
-      - name: Install locked build dependencies
-        run: uv sync --locked --group dev
-
       - name: Build distributables once
         run: uv build
 
       - name: Stage wheel and dependency metadata for the SBOM
         shell: bash
         run: |
-          uv run python - <<'PY'
+          uv run --isolated --no-project --index "$TORCH_CPU_INDEX" --with "torch==$TORCH_CPU_VERSION" --with ./dist/*.whl python - <<'PY'
           import shutil
-          import sysconfig
           import zipfile
+          from importlib.metadata import distributions
           from pathlib import Path, PurePosixPath
 
           target = Path("sbom-root")
           target.mkdir()
-          site_packages = Path(sysconfig.get_paths()["purelib"])
-          for metadata in site_packages.glob("*.dist-info"):
+          metadata_paths = {
+              Path(distribution.locate_file(part.parts[0])).resolve()
+              for distribution in distributions()
+              for part in distribution.files or ()
+              if len(part.parts) == 2 and part.parts[0].endswith(".dist-info")
+          }
+          for metadata in sorted(metadata_paths):
               if not metadata.name.lower().startswith("trackmaniarl-"):
-                  shutil.copytree(metadata, target / metadata.name)
+                  shutil.copytree(metadata, target / metadata.name, dirs_exist_ok=True)
           wheel = next(Path("dist").glob("*.whl"))
           with zipfile.ZipFile(wheel) as archive:
               for member in archive.namelist():
@@ -155,7 +134,7 @@ jobs:
           upload-release-assets: false
 
       - name: Validate release and write checksums
-        run: uv run python scripts/check_distribution.py --tag "${{ github.ref_name }}" --write-checksums
+        run: uv run --isolated --no-project python scripts/check_distribution.py --tag "${{ github.ref_name }}" --write-checksums
 
       - name: Upload the canonical release distribution
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -191,21 +170,6 @@ jobs:
           python-version: "3.12"
           enable-cache: true
 
-      - name: Install locked verification dependencies on Linux
-        if: runner.os == 'Linux'
-        run: uv sync --locked --group dev
-
-      - name: Install locked verification dependencies and verify CPU Torch on Windows
-        if: runner.os == 'Windows'
-        shell: pwsh
-        env:
-          TORCH_CPU_INDEX: https://download.pytorch.org/whl/cpu
-          TORCH_CPU_VERSION: 2.11.0+cpu
-          VGAMEPAD_SKIP_VIGEMBUS_INSTALL: "true"
-        run: |
-          uv sync --locked --group dev --no-install-package torch
-          uv run --no-sync --index "$env:TORCH_CPU_INDEX" --with "torch==$env:TORCH_CPU_VERSION" python -c "import torch; assert torch.__version__ == '2.11.0+cpu', torch.__version__; assert torch.version.cuda is None, torch.version.cuda"
-
       - name: Download the canonical release distribution
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -214,33 +178,42 @@ jobs:
           digest-mismatch: error
 
       - name: Verify distribution contents and checksums
-        run: uv run --no-sync python scripts/check_distribution.py --tag "${{ github.ref_name }}" --verify-checksums
+        run: uv run --isolated --no-project python scripts/check_distribution.py --tag "${{ github.ref_name }}" --verify-checksums
 
       - name: Verify wheel CLI on Linux
         if: runner.os == 'Linux'
         shell: bash
+        env:
+          TORCH_CPU_INDEX: https://download.pytorch.org/whl/cpu
+          TORCH_CPU_VERSION: 2.11.0+cpu
         run: |
           wheel="$(realpath "$GITHUB_WORKSPACE"/dist/*.whl)"
           cd "$(mktemp -d)"
-          uv run --isolated --no-project --with "$wheel" trackmaniarl --help
+          uv run --isolated --no-project --index "$TORCH_CPU_INDEX" --with "torch==$TORCH_CPU_VERSION" --with "$wheel" trackmaniarl --help
 
       - name: Verify wheel import on Linux
         if: runner.os == 'Linux'
         shell: bash
+        env:
+          TORCH_CPU_INDEX: https://download.pytorch.org/whl/cpu
+          TORCH_CPU_VERSION: 2.11.0+cpu
         run: |
           wheel="$(realpath "$GITHUB_WORKSPACE"/dist/*.whl)"
           cd "$(mktemp -d)"
-          uv run --isolated --no-project --with "$wheel" python -c "import trackmaniarl; print(trackmaniarl.__version__)"
+          uv run --isolated --no-project --index "$TORCH_CPU_INDEX" --with "torch==$TORCH_CPU_VERSION" --with "$wheel" python -c "import torch, trackmaniarl; assert torch.version.cuda is None, torch.version.cuda; print(trackmaniarl.__version__)"
 
       - name: Verify generated project on Linux
         if: runner.os == 'Linux'
         shell: bash
+        env:
+          TORCH_CPU_INDEX: https://download.pytorch.org/whl/cpu
+          TORCH_CPU_VERSION: 2.11.0+cpu
         run: |
           wheel="$(realpath "$GITHUB_WORKSPACE"/dist/*.whl)"
           test_dir="$(mktemp -d)"
           agent_dir="$test_dir/agent"
           cd "$test_dir"
-          uv run --isolated --no-project --with "$wheel" trackmaniarl init "$agent_dir"
+          uv run --isolated --no-project --index "$TORCH_CPU_INDEX" --with "torch==$TORCH_CPU_VERSION" --with "$wheel" trackmaniarl init "$agent_dir"
           uv lock --directory "$agent_dir" --find-links "$GITHUB_WORKSPACE/dist"
 
       - name: Verify wheel CLI and generated project on Windows

@@ -19,12 +19,6 @@ from tests.unit._composite_value_fixtures import (
 )
 from trackmaniarl.algorithms.value_based import DiscreteValueLearner
 from trackmaniarl.algorithms.value_based.batches import ValueBatchView
-from trackmaniarl.algorithms.value_based.objectives import (
-    DemonstrationCrossEntropyObjective,
-    DemonstrationMarginObjective,
-    ValueObjective,
-    ValueObjectiveContext,
-)
 from trackmaniarl.core.contracts import PolicyMode
 from trackmaniarl.core.data import PriorityUpdate, TrainingBatch
 from trackmaniarl.models.composite import BatchLayout, FrameBatchAdapter
@@ -187,25 +181,6 @@ def test_value_learner_rejects_invalid_policy_action_contracts() -> None:
     for policy_action_ids in ((), (0, 0), (-1, 0)):
         _assert_rejects_invalid_policy_action_ids(policy_action_ids)
     _assert_rejects_policy_action_outside_model()
-
-
-def _assert_demonstration_objective_rejects_masked_action(objective: ValueObjective) -> None:
-    context = ValueObjectiveContext(
-        expected_values=torch.tensor([[[1.0, 2.0, 3.0]]]),
-        actions=torch.tensor([[2]]),
-        valid=torch.ones((1, 1), dtype=torch.bool),
-        metadata={"demo_flags": (True,)},
-        action_mask=torch.tensor([True, True, False]),
-    )
-
-    with pytest.raises(ValueError, match="excluded by policy_action_ids"):
-        objective.loss(context)
-
-
-def test_demonstration_objectives_reject_masked_expert_actions() -> None:
-    objectives = (DemonstrationMarginObjective(), DemonstrationCrossEntropyObjective())
-    for objective in objectives:
-        _assert_demonstration_objective_rejects_masked_action(objective)
 
 
 def _assert_value_strategy_updates_from_sequence_batch(kind: str) -> None:

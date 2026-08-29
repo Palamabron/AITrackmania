@@ -150,6 +150,8 @@ def _run_senders(clients: list[Client]) -> None:
 
 
 def _assert_result(coordinator: Coordinator, run: ResolvedRun, logger: _Logger) -> None:
+    assert isinstance(run.learner, _SlowLearner)
+    assert run.learner.manifest_present_at_setup
     assert coordinator.counters.transitions == 16
     assert len(run.replay_store) == 16
     assert coordinator.counters.updates == 3

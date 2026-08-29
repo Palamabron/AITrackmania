@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 
@@ -62,6 +62,8 @@ class _TransitionBatch:
 class _TransitionStep:
     index: int
     source_action: int
+    steering_switch: bool
+    steering_switch_distance: int
     next_frame: np.ndarray
     observation: Any
 
@@ -99,7 +101,7 @@ def demonstration_transitions(
 def _prepare_transition_batch(
     request: _TransitionRequest, demonstration: Demonstration
 ) -> _TransitionBatch:
-    frames, actions = _resampled_transitions(demonstration, request.config)
+    frames, actions = resample_demonstration_for_environment(demonstration, request.config)
     reward = _reward(request.config, request.geometry, len(actions))
     _reset_transition_state(request, reward, frames[0])
     _, table = build_brake_tap_action_table()
@@ -125,7 +127,7 @@ def _transition_context(
     )
 
 
-def _resampled_transitions(
+def resample_demonstration_for_environment(
     demonstration: Demonstration, config: TrackmaniaEnvironmentConfig
 ) -> tuple[np.ndarray, np.ndarray]:
     return resample_demonstration(
@@ -185,13 +187,31 @@ def _build_transitions(batch: _TransitionBatch) -> tuple[list[Transition], str |
     prepared = batch.context.pipeline.transform_observation(batch.frames[0])
     transitions: list[Transition] = []
     final_reason: str | None = None
-    pairs = zip(batch.actions, batch.frames[1:], strict=True)
-    for index, (action, next_frame) in enumerate(pairs):
-        step = _TransitionStep(index, int(action), next_frame, prepared)
+    steering = batch.actions // 6
+    switches = np.r_[False, steering[1:] != steering[:-1]]
+    distances = _switch_distances(switches)
+    pairs = zip(batch.actions, switches, distances, batch.frames[1:], strict=True)
+    for index, (action, steering_switch, distance, next_frame) in enumerate(pairs):
+        step = _TransitionStep(
+            index, int(action), bool(steering_switch), int(distance), next_frame, prepared
+        )
         transition, prepared, result = _convert_transition(batch.context, step)
         transitions.append(transition)
         final_reason = result.reason
     return transitions, final_reason
+
+
+def _switch_distances(switches: np.ndarray) -> np.ndarray:
+    count = len(switches)
+    indices = np.flatnonzero(switches)
+    if not len(indices):
+        return np.full(count, count, dtype=np.int64)
+    positions = np.arange(count)
+    insertion = np.searchsorted(indices, positions)
+    left = indices[np.maximum(insertion - 1, 0)]
+    right = indices[np.minimum(insertion, len(indices) - 1)]
+    distances = np.minimum(np.abs(positions - left), np.abs(right - positions))
+    return cast(np.ndarray, distances)
 
 
 def _convert_transition(
@@ -238,15 +258,17 @@ def _transition_record(context: _TransitionContext, scored: _ScoredStep) -> Tran
         next_observation=scored.next_observation,
         terminated=scored.result.terminated,
         truncated=False,
-        info=_transition_info(context.finish_time_s),
+        info=_transition_info(context, scored),
         episode_id=context.episode_id,
         step=scored.step.index,
     )
 
 
-def _transition_info(finish_time_s: float) -> dict[str, object]:
+def _transition_info(context: _TransitionContext, scored: _ScoredStep) -> dict[str, object]:
     return {
         "source": "demo",
         "is_demo": True,
-        "sampling/projected_lap_time_s": finish_time_s,
+        "demonstration_steering_switch": scored.step.steering_switch,
+        "demonstration_steering_switch_distance": scored.step.steering_switch_distance,
+        "sampling/projected_lap_time_s": context.finish_time_s,
     }

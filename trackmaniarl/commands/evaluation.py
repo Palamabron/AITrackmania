@@ -82,7 +82,12 @@ def _evaluate_checkpoint(
 
 def _load_checkpoint(run: ResolvedRun, checkpoint_path: Path) -> None:
     run.learner.setup(
-        {"seed": run.spec.seed, "run_dir": run.run_dir, "model_factory": run.model_factory}
+        {
+            "seed": run.spec.seed,
+            "run_dir": run.run_dir,
+            "model_factory": run.model_factory,
+            "restoring_checkpoint": True,
+        }
     )
     checkpoint = run.checkpoint_codec.load(checkpoint_path)
     learner_state = _training_learner_state(checkpoint)

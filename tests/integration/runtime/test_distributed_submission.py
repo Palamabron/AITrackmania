@@ -15,6 +15,7 @@ from tests.integration.runtime.distributed_runtime_support import (
     _transition,
     _TransitionSpec,
 )
+from trackmaniarl.distributed.actor_metrics import summarize_episode
 from trackmaniarl.distributed.coordinator import (
     Coordinator,
 )
@@ -66,9 +67,7 @@ def _close(coordinator: Coordinator) -> None:
 
 
 def _malformed_payload(coordinator: Coordinator, malformation: str) -> dict[str, Any]:
-    transition = transition_to_wire(_transition(_TransitionSpec("actor", 0, 1.0)))
-    payload = _base_payload(0)
-    payload["transitions"] = [transition]
+    payload, transition = _payload_with_transition()
     match malformation:
         case "transitions_not_list":
             payload["transitions"] = {}
@@ -78,14 +77,43 @@ def _malformed_payload(coordinator: Coordinator, malformation: str) -> dict[str,
             transition["action"] = b"not-a-numeric-pytree"
         case "incomplete_episode":
             _set_incomplete_episode(payload)
+        case "missing_time_attack_reward":
+            _set_episode_without_time_attack_reward(payload)
+        case "missing_evaluation_snapshot":
+            _set_evaluation_without_snapshot(payload)
         case _:
             _set_invalid_snapshot(coordinator, payload)
     return payload
 
 
+def _payload_with_transition() -> tuple[dict[str, Any], dict[str, Any]]:
+    transition = transition_to_wire(_transition(_TransitionSpec("actor", 0, 1.0)))
+    payload = _base_payload(0)
+    payload["transitions"] = [transition]
+    return payload, transition
+
+
 def _set_incomplete_episode(payload: dict[str, Any]) -> None:
     payload["transitions"] = []
     payload["episodes"] = [{"finished": True, "finish_time_s": 1.0}]
+
+
+def _set_episode_without_time_attack_reward(payload: dict[str, Any]) -> None:
+    payload["transitions"] = []
+    summary = summarize_episode(
+        0.0,
+        {"policy_version": 0, "termination_reason": "finished", "race_time_ms": 1_000.0},
+        1,
+    )
+    summary.pop("reward/time_attack_terminal")
+    payload["episodes"] = [summary]
+
+
+def _set_evaluation_without_snapshot(payload: dict[str, Any]) -> None:
+    payload["transitions"] = []
+    payload["evaluations"] = [
+        {"finished": True, "finish_time_s": 1.0, "policy_version": 1, "steps": 1}
+    ]
 
 
 def _set_invalid_snapshot(coordinator: Coordinator, payload: dict[str, Any]) -> None:
@@ -129,6 +157,8 @@ def test_malformed_rollout_is_rejected_before_wal_append(tmp_path: Path) -> None
         "non_finite_reward",
         "invalid_action",
         "incomplete_episode",
+        "missing_time_attack_reward",
+        "missing_evaluation_snapshot",
         "invalid_evaluation_snapshot",
     )
     for malformation in malformations:
@@ -188,6 +218,7 @@ def _stale_evaluation_payload(coordinator: Coordinator) -> dict[str, Any]:
     payload["evaluations"] = [
         {"finished": True, "finish_time_s": 36.0, "steps": 1, "policy_version": 0}
     ]
+    payload["evaluation_snapshot"] = coordinator.codec.encode({"model": {}})
     return payload
 
 

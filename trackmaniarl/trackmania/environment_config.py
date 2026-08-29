@@ -19,6 +19,7 @@ from trackmaniarl.trackmania.telemetry import (
 
 _FINITE_REWARD_NAMES = (
     "crash_distance",
+    "finish_progress",
     "minimum_progress_per_window_m",
     "terminal_failure_penalty",
     "collision_penalty",
@@ -42,6 +43,7 @@ _FINITE_REWARD_NAMES = (
 
 _REWARD_KWARG_NAMES = (
     "crash_distance",
+    "finish_progress",
     "no_progress_steps",
     "slow_progress_window_steps",
     "minimum_progress_per_window_m",
@@ -51,6 +53,7 @@ _REWARD_KWARG_NAMES = (
     "minimum_finish_steps",
     "nearest_forward_points",
     "nearest_backward_points",
+    "limit_progress_by_kinematics",
     "time_penalty_per_second",
     "max_time_delta_s",
     "maximum_race_time_s",
@@ -93,6 +96,7 @@ class TrackmaniaEnvironmentConfig(BaseModel):
     position_indices: tuple[int, int, int] = DEFAULT_POSITION_INDICES
     velocity_indices: tuple[int, int, int] = DEFAULT_VELOCITY_INDICES
     crash_distance: float = Field(default=25.0, gt=0)
+    finish_progress: float = Field(default=0.995, gt=0.0, le=1.0)
     no_progress_steps: int = Field(default=200, ge=1)
     slow_progress_window_steps: int = Field(default=80, ge=2)
     minimum_progress_per_window_m: float = Field(default=2.0, ge=0.0)
@@ -102,6 +106,7 @@ class TrackmaniaEnvironmentConfig(BaseModel):
     minimum_finish_steps: int = Field(default=50, ge=1)
     nearest_forward_points: int = Field(default=500, ge=1)
     nearest_backward_points: int = Field(default=10, ge=0)
+    limit_progress_by_kinematics: bool = True
     time_penalty_per_second: float = Field(default=0.1, ge=0.0)
     max_time_delta_s: float = Field(default=1.0, gt=0.0)
     maximum_race_time_s: float | None = Field(default=None, gt=0.0)

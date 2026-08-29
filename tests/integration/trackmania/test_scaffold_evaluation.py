@@ -96,6 +96,85 @@ class _RawPolicy:
         return 0.0
 
 
+class _StatefulPolicy:
+    def __init__(self) -> None:
+        self.state = 0
+        self.actions: list[int] = []
+
+    def act(self, observation: object, mode: PolicyMode = PolicyMode.ONLINE) -> int:
+        del observation
+        assert mode is PolicyMode.EVALUATION
+        action = self.state
+        self.actions.append(action)
+        self.state += 1
+        return action
+
+    def reset_episode(self) -> None:
+        self.state = 0
+
+
+class _RecordingEnvironment:
+    def __init__(self) -> None:
+        self.reset_count = 0
+        self.actions: list[int] = []
+
+    def reset(self, *, seed: int | None = None) -> tuple[float, dict[str, object]]:
+        del seed
+        self.reset_count += 1
+        return 0.0, {}
+
+    def step(self, action: object) -> tuple[float, float, bool, bool, dict[str, str]]:
+        self.actions.append(int(action))
+        return 0.0, 0.0, True, False, {"termination_reason": "no_progress"}
+
+    def close(self) -> None:
+        pass
+
+
+class _RecordingFactory:
+    def __init__(self) -> None:
+        self.environment = _RecordingEnvironment()
+
+    def create(self, *, seed: int, evaluation_map: object) -> _RecordingEnvironment:
+        del seed, evaluation_map
+        return self.environment
+
+
+class _CollisionEnvironment:
+    def __init__(self) -> None:
+        self.steps = 0
+
+    def reset(self, *, seed: int | None = None) -> tuple[float, dict[str, object]]:
+        del seed
+        self.steps = 0
+        return 0.0, {}
+
+    def step(self, action: object) -> tuple[float, float, bool, bool, dict[str, object]]:
+        del action
+        self.steps += 1
+        if self.steps == 1:
+            return (
+                0.0,
+                0.0,
+                False,
+                False,
+                {
+                    "termination_reason": "",
+                    "collision_detected": True,
+                },
+            )
+        return 0.0, 0.0, True, False, {"termination_reason": "no_progress"}
+
+    def close(self) -> None:
+        pass
+
+
+class _CollisionFactory:
+    def create(self, *, seed: int, evaluation_map: object) -> _CollisionEnvironment:
+        del seed, evaluation_map
+        return _CollisionEnvironment()
+
+
 class _Geometry:
     def __init__(self, path: Path, expected_map_uid: str) -> None:
         del path, expected_map_uid
@@ -213,3 +292,29 @@ def test_trackmania_evaluator_passes_raw_observation_to_opt_in_policy(
     request = EvaluatorRuntimeRequest(suite, _RawFactory(raw), _PreparedPipeline())
     metrics = TrackmaniaEvaluator(request).evaluate(_RawPolicy(raw))
     assert metrics["eval/finish_rate"] == 0.0
+
+
+def test_trackmania_evaluator_prewarms_policy_before_a_fresh_trial(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _patch_geometry(monkeypatch)
+    factory = _RecordingFactory()
+    policy = _StatefulPolicy()
+    request = EvaluatorRuntimeRequest(
+        _evaluation_suite(tmp_path, trials_per_map=2), factory, _IdentityPipeline()
+    )
+    TrackmaniaEvaluator(request).evaluate(policy)
+    assert factory.environment.reset_count == 3
+    assert policy.actions == [0, 0, 0]
+    assert factory.environment.actions == [0, 0]
+
+
+def test_trackmania_evaluator_counts_detected_collision_as_a_crash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _patch_geometry(monkeypatch)
+    request = EvaluatorRuntimeRequest(
+        _evaluation_suite(tmp_path), _CollisionFactory(), _IdentityPipeline()
+    )
+    metrics = TrackmaniaEvaluator(request).evaluate(_EvaluationPolicy())
+    assert metrics["eval/crash_rate"] == 1.0

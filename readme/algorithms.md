@@ -21,7 +21,7 @@ the fragment replaces them. See the [configuration guide](configuration.md),
 | Algorithm | Current status and public entry point | Action and training contract | Replay and sequences | Execution | Checkpoint and warm start |
 | --- | --- | --- | --- | --- | --- |
 | Standard Q / DQN | Supported scalar composition of `DiscreteValueLearner`; built-in key `discrete_value` | Discrete indices; off-policy online RL; the learner still uses a Double-DQN target | Uniform or prioritized replay; single-step or contiguous sequences | Local and distributed | Exact v2 learner/replay/sampler resume; named composite submodule warm start |
-| Double + Dueling | Supported behavior of the unified learner plus `dueling: true`; not a separate class | Discrete indices; online network selects and target network evaluates | Same as scalar Q | Local and distributed | Same as unified scalar Q |
+| Double + Dueling | Supported behavior of the unified learner plus `ScalarQHead(mode: dueling)`; not a separate class | Discrete indices; online network selects and target network evaluates | Same as scalar Q | Local and distributed | Same as unified scalar Q |
 | QR-DQN | Supported composition of `DiscreteValueLearner` | Discrete distributional value learning with fixed quantile locations | Uniform or prioritized replay; single-step or sequences | Local and distributed | Exact v2 resume and composite warm start |
 | IQN | Supported composition of `DiscreteValueLearner`; generated Trackmania default | Discrete implicit quantile value learning; optional upper-CVaR action evaluation | Uniform or prioritized replay; single-step or sequences | Local and distributed | Exact v2 resume and composite warm start |
 | FQF | Supported composition of `DiscreteValueLearner` | Discrete learned-fraction distributional value learning | Uniform or prioritized replay; single-step or sequences | Local and distributed | Exact v2 resume, fraction optimizer state, and composite warm start |
@@ -113,13 +113,14 @@ components:
     kwargs:
       encoder:
         class_path: trackmaniarl.trackmania.encoders:LidarSensorEncoder
-        kwargs: {output_dim: 256}
+        kwargs:
+          config: {output_dim: 256}
       temporal:
         class_path: trackmaniarl.models.temporal:IdentityTemporalCore
         kwargs: {input_dim: 256}
       head:
         class_path: trackmaniarl.models.heads:ScalarQHead
-        kwargs: {feature_dim: 256, action_count: 78, dueling: false}
+        kwargs: {feature_dim: 256, action_count: 78, mode: standard}
       strategy:
         class_path: trackmaniarl.models.strategies:ScalarValueStrategy
   replay_store:
@@ -163,7 +164,7 @@ components:
     kwargs:
       head:
         class_path: trackmaniarl.models.heads:ScalarQHead
-        kwargs: {feature_dim: 256, action_count: 78, dueling: true}
+        kwargs: {feature_dim: 256, action_count: 78, mode: dueling}
       strategy:
         class_path: trackmaniarl.models.strategies:ScalarValueStrategy
 ```
@@ -198,10 +199,11 @@ components:
       head:
         class_path: trackmaniarl.models.heads:FixedQuantileHead
         kwargs:
-          feature_dim: 256
-          action_count: 78
-          quantile_count: 32
-          dueling: true
+          config:
+            feature_dim: 256
+            action_count: 78
+            quantile_count: 32
+            dueling: true
       strategy:
         class_path: trackmaniarl.models.strategies:FixedQuantileStrategy
         kwargs: {quantile_count: 32}
@@ -243,7 +245,8 @@ components:
     kwargs:
       head:
         class_path: trackmaniarl.models.heads:ImplicitQuantileHead
-        kwargs: {feature_dim: 256, action_count: 78, cosine_count: 64, dueling: true}
+        kwargs:
+          config: {feature_dim: 256, action_count: 78, cosine_count: 64, dueling: true}
       strategy:
         class_path: trackmaniarl.models.strategies:RandomQuantileStrategy
         kwargs:
@@ -289,7 +292,8 @@ components:
     kwargs:
       head:
         class_path: trackmaniarl.models.heads:ImplicitQuantileHead
-        kwargs: {feature_dim: 256, action_count: 78, cosine_count: 64, dueling: true}
+        kwargs:
+          config: {feature_dim: 256, action_count: 78, cosine_count: 64, dueling: true}
       strategy:
         class_path: trackmaniarl.models.strategies:LearnedFractionStrategy
         kwargs: {feature_dim: 256, fraction_count: 32, entropy_coefficient: 1.0e-3}
@@ -640,10 +644,11 @@ components:
   feature_pipeline:
     class_path: trackmaniarl.trackmania.features:LidarFeaturePipeline
     kwargs:
-      geometry_path: assets/trackmaniarl-test.geometry.npz
-      expected_map_uid: REPLACE_WITH_TEST_3_UID
-      history_length: 8
-      include_control_inputs: false
+      config:
+        geometry_path: assets/trackmaniarl-test.geometry.npz
+        expected_map_uid: REPLACE_WITH_TEST_3_UID
+        history_length: 8
+        include_control_inputs: false
   replay_store:
     class_path: trackmaniarl.core.replay:InMemoryReplayStore
   sampler:
@@ -754,9 +759,9 @@ components:
     kwargs:
       objectives:
         - class_path: trackmaniarl.algorithms.value_based:DemonstrationMarginObjective
-          kwargs: {margin: 0.8, weight: 1.0}
+          kwargs: {margin: 0.8, weight: 1.0, steering_switch_weight: 1.0}
         - class_path: trackmaniarl.algorithms.value_based:DemonstrationCrossEntropyObjective
-          kwargs: {weight: 0.1}
+          kwargs: {weight: 0.1, steering_switch_weight: 1.0}
   sampler:
     class_path: trackmaniarl.core.replay:PrioritizedSampler
     kwargs: {alpha: 0.6, beta: 0.4}

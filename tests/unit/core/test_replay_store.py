@@ -4,12 +4,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 import pytest
 
-from trackmaniarl.core.data import BatchRequest, Transition
+from trackmaniarl.core.data import BatchRequest, PriorityUpdate, Transition
 from trackmaniarl.core.replay import InMemoryReplayStore, _n_step_transition
 from trackmaniarl.core.replay.n_step import _NStepInput
 
@@ -266,6 +266,14 @@ def _transition_with_next(next_observation: dict[str, Any]) -> Transition:
 def _mutate_observation(observation: dict[str, Any]) -> None:
     observation["array"][:] = 99.0
     observation["nested"][0][:] = 99.0
+
+
+def test_priority_updates_require_finite_scalar_values() -> None:
+    with pytest.raises(TypeError, match="scalar real numbers"):
+        PriorityUpdate([0], cast(Any, [[1.0]]))
+    for priority in (float("nan"), float("inf"), -float("inf")):
+        with pytest.raises(ValueError, match="priorities must be finite"):
+            PriorityUpdate([0], [priority])
 
 
 def test_truncation_stops_reward_accumulation_but_keeps_bootstrap() -> None:

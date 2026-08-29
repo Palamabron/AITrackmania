@@ -116,6 +116,19 @@ def test_replay_keeps_next_observation_for_an_out_of_order_episode_link() -> Non
     assert transition.next_observation == 1.0
 
 
+def test_replay_checkpoint_relinks_incomplete_out_of_order_episode() -> None:
+    store = InMemoryReplayStore()
+    terminal = store.append(_transition(2, _Boundary.TERMINATED))
+    restored = InMemoryReplayStore()
+    restored.load_state_dict(store.state_dict())
+
+    first = restored.append(_transition(0))
+    second = restored.append(_transition(1))
+
+    assert restored.n_step_ids(first, 3) == [first, second, terminal]
+    assert restored.history_ids(terminal, 3) == [first, second, terminal]
+
+
 def test_replay_checkpoint_restores_into_a_larger_capacity_store() -> None:
     store = InMemoryReplayStore(capacity=4)
     for step in range(6):

@@ -265,6 +265,76 @@ def test_value_learner_persists_adaptive_gradient_clipper_state() -> None:
     _assert_clipper_state_equal(learner, restored)
 
 
+@dataclass(frozen=True)
+class _EvaluatedCheckpointCase:
+    learner: DiscreteValueLearner
+    evaluated: dict[str, torch.Tensor]
+    checkpoint: dict[str, Any]
+
+
+def _evaluated_checkpoint_case() -> _EvaluatedCheckpointCase:
+    learner = DiscreteValueLearner(_value_model("iqn"))
+    learner.setup({"seed": 7})
+    learner.update(_batch())
+    exported = learner.policy().export_state()
+    evaluated = {name: value.detach().clone() for name, value in exported.items()}
+    changed_name = next(name for name, value in evaluated.items() if value.is_floating_point())
+    evaluated[changed_name].add_(0.25)
+    return _EvaluatedCheckpointCase(learner, evaluated, learner.state_dict_for_policy(evaluated))
+
+
+def _assert_checkpoint_models(case: _EvaluatedCheckpointCase) -> None:
+    expected_modules = case.learner._module_state_from_flat(case.evaluated)
+    for module_name, module_state in expected_modules.items():
+        for name, expected in module_state.items():
+            torch.testing.assert_close(
+                case.checkpoint["online"][module_name][name], expected, rtol=0.0, atol=0.0
+            )
+            torch.testing.assert_close(
+                case.checkpoint["target"][module_name][name], expected, rtol=0.0, atol=0.0
+            )
+
+
+def _assert_restored_policy(
+    restored: DiscreteValueLearner, expected: Mapping[str, torch.Tensor]
+) -> None:
+    restored_policy = restored.policy().export_state()
+    assert restored_policy.keys() == expected.keys()
+    for name, value in expected.items():
+        torch.testing.assert_close(restored_policy[name], value, rtol=0.0, atol=0.0)
+    _assert_model_state_equal(restored.target_model, expected)
+
+
+def test_iqn_builds_resumable_exact_evaluated_policy_checkpoint() -> None:
+    case = _evaluated_checkpoint_case()
+    assert case.learner.optimizer.state
+    assert case.checkpoint["optimizers"]["main"]["state"] == {}
+    assert case.checkpoint["optimizers"]["strategy"] is None
+    _assert_checkpoint_models(case)
+
+    restored = DiscreteValueLearner(_value_model("iqn"))
+    restored.setup({"seed": 11})
+    restored.load_state_dict(case.checkpoint)
+
+    assert not restored.optimizer.state
+    _assert_restored_policy(restored, case.evaluated)
+
+
+def test_evaluated_checkpoint_preserves_temporarily_frozen_optimizer_membership() -> None:
+    learner = DiscreteValueLearner(_value_model("iqn"))
+    learner.setup({"seed": 7})
+    next(learner.model.encoder.parameters()).requires_grad_(False)
+    evaluated = learner.policy().export_state()
+
+    checkpoint = learner.state_dict_for_policy(evaluated)
+    restored = DiscreteValueLearner(_value_model("iqn"))
+    restored.setup({"seed": 11})
+    restored.load_state_dict(checkpoint)
+
+    assert not restored.optimizer.state
+    _assert_restored_policy(restored, evaluated)
+
+
 def test_value_learner_resume_restores_scaler_before_deterministic_continuation() -> None:
     batch = _batch()
     learner = DiscreteValueLearner(_scalar_model())

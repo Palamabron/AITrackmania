@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="https://raw.githubusercontent.com/Palamabron/TrackmaniaRL/main/docs/assets/trackmaniarl-logo.png" alt="TrackmaniaRL logo" width="520">
+</p>
+
 # TrackmaniaRL
 
 [![PyPI](https://img.shields.io/pypi/v/TrackmaniaRL?color=blue)](https://pypi.org/project/TrackmaniaRL/)
@@ -11,8 +15,8 @@ Trackmania 2020. It combines ready-to-use algorithms, replay buffers, model
 families and Trackmania telemetry with explicit interfaces for replacing any
 component in an experiment.
 
-This checkout is the `2.0.0rc1` release candidate and requires Python 3.12 or
-newer. The [PyPI page](https://pypi.org/project/TrackmaniaRL/) reports the latest
+This checkout is the `2.0.0rc1` release candidate and supports Python 3.12. The
+[PyPI page](https://pypi.org/project/TrackmaniaRL/) reports the latest
 published package; if it still reports a 1.x version, use the
 [source setup](https://github.com/Palamabron/TrackmaniaRL/blob/main/readme/development.md#repository-setup)
 for the RunSpec 2.0 API documented here.
@@ -58,7 +62,7 @@ component paths.
 Install the published CLI with [uv](https://docs.astral.sh/uv/):
 
 ```bash
-uv tool install "trackmaniarl==2.0.0rc1"
+uv tool install --index https://download.pytorch.org/whl/cpu --with "torch==2.11.0+cpu" "trackmaniarl==2.0.0rc1"
 trackmaniarl init my-trackmania-agent --template trackmania
 cd my-trackmania-agent
 uv sync
@@ -86,8 +90,15 @@ need:
 ```bash
 uv add "trackmaniarl==2.0.0rc1"
 uv add "trackmaniarl[distributed]==2.0.0rc1"
-uv add "trackmaniarl[all]==2.0.0rc1"
+uv add "trackmaniarl[trackmania,distributed]==2.0.0rc1" "vgamepad @ git+https://github.com/Palamabron/vgamepad@5f3435df3f8a0e658feb58b207d9137cdb5183cd"
 ```
+
+The CPU Torch override keeps the short-lived scaffolding tool lightweight; the
+generated Trackmania project selects the tested CUDA index independently. For
+an existing Trackmania project, add the Trackmania extra and vetted `vgamepad`
+source in the same resolver transaction shown above, then retain that direct
+source until its required installation fix is released upstream. The `all`
+extra cannot carry repository-local uv source pins into another project.
 
 | Extra | Adds |
 | --- | --- |
@@ -136,7 +147,7 @@ source with the index matching their host; macOS uses the normal PyPI wheel and
 can use MPS. `device: auto` resolves CUDA, ROCm, MPS or CPU from the installed
 Torch build.
 
-## Runtime model
+## Off-policy runtime model
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/Palamabron/TrackmaniaRL/main/docs/diagrams/runtime-architecture-preview.png" alt="TrackmaniaRL runtime architecture: configuration creates actors and learner; actors send durable rollouts to replay, and learner updates publish policy snapshots" width="900">
@@ -180,10 +191,10 @@ ssh -N -L 8787:127.0.0.1:8787 TRAINING_MACHINE
 uv run trackmaniarl actor run.yaml --connect 127.0.0.1:8787 --actor-id PC-1
 ```
 
-The handshake rejects mismatched run fingerprints, map UIDs, geometry hashes
-and feature/action contracts. Rollouts use Protobuf/gRPC with Zstandard
-compression, and policy state is transferred with safetensors rather than
-pickle.
+The handshake rejects mismatched run fingerprints, map UIDs, geometry and pace
+reference contents, custom component package source, and feature/action
+contracts. Rollouts use Protobuf/gRPC with Zstandard compression, and policy
+state is transferred with safetensors rather than pickle.
 
 The token authenticates participants but does not encrypt traffic. Never expose
 the gRPC port directly; keep the listener on loopback and use SSH, WireGuard or
@@ -226,8 +237,9 @@ The stable contracts in `trackmaniarl.core` include `Learner`,
 generated extension project, so offline validation does not require Trackmania
 or optional game dependencies.
 
-Every run writes a redacted immutable manifest, local JSONL events, checkpoints
-and bounded compressed episode artifacts. Only the learner needs W&B
+Every run writes a redacted immutable config manifest, per-attempt environment
+and execution provenance, local JSONL events, checkpoints and bounded compressed
+episode artifacts. Only the learner needs W&B
 credentials; `WANDB_API_KEY` can be supplied through the environment or project
 `.env`.
 
@@ -241,7 +253,7 @@ Clone the repository and install the development group:
 
 ```bash
 git clone https://github.com/Palamabron/TrackmaniaRL.git
-cd AITrackmania
+cd TrackmaniaRL
 uv sync --group dev
 uv run poe fmt
 uv run poe types

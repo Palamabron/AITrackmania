@@ -29,16 +29,28 @@ class _OfflineRun:
     started_at: float
 
 
+@dataclass(frozen=True, slots=True)
+class _OfflineProgress:
+    run: _OfflineRun
+    index: int
+    summary: Mapping[str, float]
+
+
 def import_demonstrations(coordinator: Coordinator) -> None:
     if not coordinator.demo_paths:
         return
     loader = _demonstration_loader(coordinator)
-    logger.info("Importing %d demonstration file(s) into replay...", len(coordinator.demo_paths))
+    total = len(coordinator.demo_paths)
+    print(f"Importing {total} demonstration file(s) into replay...", flush=True)
     imported = _DemonstrationImport()
-    for path in coordinator.demo_paths:
+    for index, path in enumerate(coordinator.demo_paths, start=1):
         count, finish_time = _import_demonstration(coordinator, loader, path)
         imported.transitions += count
         imported.finish_times.append(finish_time)
+        print(
+            f"Demonstration import: {index}/{total}, {count} transitions, {path.name}",
+            flush=True,
+        )
     _log_demonstration_import(coordinator, imported)
 
 
@@ -62,10 +74,10 @@ def _import_demonstration(
 
 
 def _log_demonstration_import(coordinator: Coordinator, imported: _DemonstrationImport) -> None:
-    logger.info(
-        "Demonstration import complete: %d transitions from %d file(s)",
-        imported.transitions,
-        len(coordinator.demo_paths),
+    print(
+        "Demonstration import complete: "
+        f"{imported.transitions} transitions from {len(coordinator.demo_paths)} file(s)",
+        flush=True,
     )
     payload = {
         "files": len(coordinator.demo_paths),
@@ -104,13 +116,24 @@ def _run_offline_updates(run: _OfflineRun) -> list[Mapping[str, float]]:
     if callable(begin):
         begin()
     try:
-        return [_offline_update(run, index) for index in range(1, run.updates + 1)]
+        return _offline_update_loop(run)
     finally:
         if callable(end):
             end()
 
 
-def _offline_update(run: _OfflineRun, index: int) -> Mapping[str, float]:
+def _offline_update_loop(run: _OfflineRun) -> list[Mapping[str, float]]:
+    metrics: list[Mapping[str, float]] = []
+    interval = min(25, run.updates)
+    for index in range(1, run.updates + 1):
+        metrics.append(_offline_update(run))
+        if index % interval == 0 or index == run.updates:
+            window = metrics[-interval:]
+            _report_offline_progress(_OfflineProgress(run, index, _mean_metrics(window)))
+    return metrics
+
+
+def _offline_update(run: _OfflineRun) -> Mapping[str, float]:
     coordinator = run.coordinator
     spec = coordinator.run.spec.training
     request = spec.batch_request(beta=spec.replay_beta(0))
@@ -120,10 +143,39 @@ def _offline_update(run: _OfflineRun, index: int) -> Mapping[str, float]:
     if priorities is not None:
         coordinator.run.sampler.update_priorities(priorities)
     coordinator.counters.updates += 1
-    interval = min(25, run.updates)
-    if index % interval == 0 or index == run.updates:
-        logger.info("Offline pretraining progress: updates=%d/%d", index, run.updates)
     return values
+
+
+def _report_offline_progress(progress: _OfflineProgress) -> None:
+    coordinator = progress.run.coordinator
+    payload = _offline_progress_payload(progress)
+    coordinator.run.logger.log(
+        "train/offline_pretrain_progress", payload, step=coordinator.counters.updates
+    )
+    print(_offline_progress_message(progress, payload), flush=True)
+
+
+def _offline_progress_payload(progress: _OfflineProgress) -> dict[str, float]:
+    elapsed = perf_counter() - progress.run.started_at
+    rate = progress.index / max(elapsed, 1e-9)
+    return {
+        **progress.summary,
+        "debug/offline_progress_fraction": progress.index / progress.run.updates,
+        "timing/offline_updates_per_s": rate,
+        "timing/offline_eta_s": (progress.run.updates - progress.index) / rate,
+    }
+
+
+def _offline_progress_message(progress: _OfflineProgress, payload: Mapping[str, float]) -> str:
+    loss = float(progress.summary.get("loss/total", float("nan")))
+    accuracy = float(progress.summary.get("debug/demo_accuracy", float("nan")))
+    rate = payload["timing/offline_updates_per_s"]
+    eta = payload["timing/offline_eta_s"]
+    fraction = 100.0 * progress.index / progress.run.updates
+    return (
+        f"Offline pretraining: {progress.index}/{progress.run.updates} ({fraction:.1f}%), "
+        f"loss={loss:.4f}, demo_accuracy={accuracy:.3f}, {rate:.1f} update/s, ETA={eta:.1f}s"
+    )
 
 
 def _mean_metrics(metrics: list[Mapping[str, float]]) -> dict[str, float]:
@@ -141,9 +193,9 @@ def _log_offline_pretraining(run: _OfflineRun, summary: Mapping[str, float]) -> 
         "duration_s": duration,
     }
     coordinator.run.logger.log("train/offline_pretrain", payload, step=coordinator.counters.updates)
-    logger.info(
-        "Offline pretraining complete: updates=%d, replay=%d, duration=%.1fs",
-        run.updates,
-        len(coordinator.run.replay_store),
-        duration,
+    print(
+        "Offline pretraining complete: "
+        f"updates={run.updates}, replay={len(coordinator.run.replay_store)}, "
+        f"duration={duration:.1f}s",
+        flush=True,
     )

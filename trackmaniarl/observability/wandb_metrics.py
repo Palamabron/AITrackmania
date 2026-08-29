@@ -31,6 +31,11 @@ _DEBUG_METRICS = {
     "bootstrap_discount_mean",
     "bootstrap_zero_fraction",
     "demonstration_action_accuracy",
+    "demo_accuracy",
+    "demo_sample_fraction",
+    "demo_steady_accuracy",
+    "demo_steering_switch_accuracy",
+    "demo_steering_switch_fraction",
     "gradient_clip_coefficient",
     "gradient_clipped_fraction",
     "gradient_norm",
@@ -38,6 +43,7 @@ _DEBUG_METRICS = {
     "importance_weight_mean",
     "importance_weight_min",
     "n_step_return_mean",
+    "offline_progress_fraction",
     "q_selected_abs_max",
     "q_selected_max",
     "q_selected_mean",
@@ -53,6 +59,12 @@ _DEBUG_METRICS = {
     "td_abs_max",
     "td_abs_mean",
 }
+_REPLAY_METRICS = {
+    "demo_sample_fraction",
+    "expert_demo_active_fraction",
+    "expert_demo_sample_fraction",
+    "expert_demo_target_fraction",
+}
 _TIMING_METRICS = {
     "backward_s",
     "checkpoint_snapshot_s",
@@ -62,6 +74,8 @@ _TIMING_METRICS = {
     "learner_update_s",
     "logging_s",
     "optimizer_s",
+    "offline_eta_s",
+    "offline_updates_per_s",
     "policy_publish_s",
     "replay_sample_s",
     "replay_wait_s",
@@ -180,6 +194,39 @@ _IMITATION_METRICS = {
     "transition_accuracy",
     "weighted_accuracy",
 }
+_EXPERT_METRICS = {
+    "action_switch_recall",
+    "count",
+    "demonstrations/count",
+    "demonstrations/completed",
+    "elapsed_s",
+    "eta_s",
+    "exact_action_accuracy",
+    "expert_action_steady_step_exact_accuracy",
+    "expert_action_switch_count",
+    "expert_action_switch_step_exact_accuracy",
+    "expert_steering_steady_step_accuracy",
+    "expert_steering_switch_count",
+    "expert_steering_switch_step_accuracy",
+    "policy_action_switch_count",
+    "policy_steering_switch_count",
+    "steering_bin_accuracy",
+    "steering_switch_recall",
+    "switch_comparison_count",
+}
+_LEADER_METRICS = {
+    "exact_policy",
+    "finish_rate",
+    "finish_time_best_s",
+    "finish_time_mean_s",
+    "finish_time_median_s",
+    "finished_trials",
+    "policy_version",
+    "release_qualified",
+    "reliable_qualified",
+    "shared_with_reliable",
+    "trials",
+}
 _IGNORED_REMOTE_EVENTS = {
     "actor/heartbeat",
     "eval/progress_bin",
@@ -236,13 +283,15 @@ def _update_metrics(payload: Mapping[str, Any]) -> dict[str, Any]:
             values[_flat_name("learner", key)] = value
         elif prefix == "debug" and suffix in _DEBUG_METRICS:
             values[_flat_name("learner", suffix)] = value
+        elif prefix == "replay" and suffix in _REPLAY_METRICS:
+            values[_flat_name("replay", suffix)] = value
         elif prefix == "timing" and suffix in _TIMING_METRICS:
             values[_flat_name("performance", suffix)] = value
     return values
 
 
 def _event_metrics(event: str, payload: Mapping[str, Any]) -> dict[str, Any]:
-    if event == "train/update":
+    if event in {"train/update", "train/offline_pretrain", "train/offline_pretrain_progress"}:
         return _update_metrics(payload)
     if event == "train/episode":
         return _selected(payload, _EPISODE_METRICS, "episode")
@@ -251,11 +300,20 @@ def _event_metrics(event: str, payload: Mapping[str, Any]) -> dict[str, Any]:
     if event in {"bc/train", "bc/validation"}:
         phase = event.removeprefix("bc/")
         return _selected(payload, _IMITATION_METRICS, f"imitation_{phase}")
+    if event in {"diagnose/expert", "diagnose/expert_progress"}:
+        return _selected(payload, _EXPERT_METRICS, "expert")
+    if event in {"eval/best_checkpoint", "eval/fastest_checkpoint"}:
+        return _leader_metrics(event, payload)
     if event == "distributed/policy_published":
         return _policy_publish_metrics(payload)
     if event == "train/checkpoint":
         return _checkpoint_metrics(payload)
     return {}
+
+
+def _leader_metrics(event: str, payload: Mapping[str, Any]) -> dict[str, Any]:
+    kind = event.removeprefix("eval/").removesuffix("_checkpoint")
+    return _selected(payload, _LEADER_METRICS, f"checkpoint_{kind}")
 
 
 def _policy_publish_metrics(payload: Mapping[str, Any]) -> dict[str, Any]:

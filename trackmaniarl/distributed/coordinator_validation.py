@@ -51,10 +51,12 @@ def _validate_evaluation_snapshot(
     snapshot = value["evaluation_snapshot"]
     if not isinstance(snapshot, bytes):
         raise TypeError("evaluation_snapshot must be bytes")
-    if not snapshot:
-        return
     if not evaluations:
-        raise ValueError("evaluation_snapshot requires evaluations")
+        if snapshot:
+            raise ValueError("evaluation_snapshot requires evaluations")
+        return
+    if not snapshot:
+        raise ValueError("evaluations require an evaluation_snapshot")
     policy_state = codec.decode(snapshot)
     if not isinstance(policy_state, Mapping):
         raise TypeError("evaluation_snapshot must decode to a mapping")
@@ -314,6 +316,7 @@ _EPISODE_NUMERIC_FIELDS = {
     "collision/count",
     "collision/detected_count",
     "reward/terminal",
+    "reward/time_attack_terminal",
     "velocity/ratio_mean",
     "velocity/ratio_max",
     "race_time_s",

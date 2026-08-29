@@ -4,7 +4,7 @@ RunSpec `2.0` selects explicit components. The core coordinates them, reusable
 learning mechanisms remain game-independent, and Trackmania-specific telemetry,
 geometry and controls stay in `trackmaniarl.trackmania`.
 
-## Runtime data flow
+## Off-policy runtime data flow
 
 <p align="center">
   <img src="../docs/diagrams/runtime-architecture-preview.svg" alt="TrackmaniaRL 2.0 runtime architecture" width="900">
@@ -115,10 +115,11 @@ component executes Python module code. The lifecycle is:
 1. parse RunSpec and resolve paths;
 2. instantiate components and validate contracts;
 3. seed Python, NumPy and Torch before model construction;
-4. write immutable run/execution manifests;
-5. collect or ingest data and perform the appropriate update lifecycle;
-6. evaluate, checkpoint and publish policy state;
-7. close files, processes, sockets and game controls.
+4. create or validate the immutable config manifest before learner setup;
+5. append resolved environment/execution provenance for the initialized attempt;
+6. collect or ingest data and perform the appropriate update lifecycle;
+7. evaluate, checkpoint and publish policy state;
+8. close files, processes, sockets and game controls.
 
 `validate` uses `Learner.update` for RL and
 `OfflineSupervisedLearner.validation_update` for supervised learners. Both paths
@@ -140,15 +141,21 @@ requires an exact architecture fingerprint and complete state. A Mamba kernel
 backend may differ because `native` and `torch` share parameters and the backend
 is excluded from the architecture fingerprint.
 
-The single-process `Trainer` used by PPO has its own schema 1.0 checkpoint with
-learner, replay, sampler and local counters. It is resumed through `Trainer` and
-is not interchangeable with a distributed schema 2.0 checkpoint.
+The single-process `Trainer` used by PPO has its own schema 2.0 checkpoint with
+a semantic run fingerprint, learner, replay, sampler and local counters. It is
+resumed through `Trainer` and is not interchangeable with a distributed schema
+2.0 checkpoint. The run fingerprint binds effective component parameters, the
+full Python source trees of each declared and resolved component package, and
+the contents of configured geometry and pace-reference assets. Moving a run or
+renaming its artifact directory does not change that identity.
 
 Warm-start is deliberately weaker than resume. It loads selected named
 submodules, copies only exact name/shape/dtype matches, reports every match and
 mismatch, and fails on zero matches or missing required tensors. Prefix
 remapping and partial-shape copying are unsupported. Pre-2.0 checkpoints are
-rejected instead of being translated implicitly.
+rejected instead of being translated implicitly. Exact resume restores the
+checkpoint state directly and does not require the original warm-start file to
+remain present.
 
 BC checkpoints use their own v2 schema and bind to an immutable dataset
 fingerprint. `bc-best-validation.pt` is a policy candidate;
@@ -179,7 +186,7 @@ participants but does not encrypt transport; remote operation requires an SSH,
 WireGuard or equivalent encrypted tunnel.
 
 Distributed participants must match protocol version, architecture/run
-fingerprint, map UID, geometry hash and feature/action contracts.
+fingerprint, map UID, semantic asset contents and feature/action contracts.
 
 ## Trackmania integration boundary
 

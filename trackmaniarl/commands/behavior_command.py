@@ -26,7 +26,7 @@ from trackmaniarl.commands.helpers import (
     _learner_context,
     _recovery_contract,
 )
-from trackmaniarl.core.runtime import ResolvedRun, prepare_run, resolve_run
+from trackmaniarl.core.runtime import ResolvedRun, prepare_run, record_run_attempt, resolve_run
 from trackmaniarl.core.spec import EvaluationSuiteSpec, RunSpec
 from trackmaniarl.trackmania.demonstrations import load_demonstration, resolve_demonstration_paths
 from trackmaniarl.trackmania.environment import (
@@ -105,6 +105,7 @@ def _run_bc_training(context: _BehaviorContext, args: argparse.Namespace) -> Non
 def _behavior_context(run: ResolvedRun, spec: RunSpec, paths: tuple[Path, ...]) -> _BehaviorContext:
     prepare_run(run)
     run.learner.setup(_learner_context(run))
+    record_run_attempt(run)
     model = getattr(run.learner, "model", None)
     action_ids = _compact_action_ids(spec)
     if model is None or tuple(model.action_ids) != action_ids:

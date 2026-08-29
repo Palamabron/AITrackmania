@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from copy import deepcopy
 from dataclasses import dataclass
-from typing import Any, Unpack, cast
+from typing import Any, Unpack
 
 import torch
 from torch import nn
@@ -26,7 +26,9 @@ from trackmaniarl.algorithms.sac_support import (
     continuous_batch,
     entropy_state,
     freeze_modules,
+    quantile_batch_output,
     restore_entropy_state,
+    scalar_batch_output,
     unfreeze_modules,
 )
 from trackmaniarl.core.contracts import ModelContract
@@ -157,9 +159,11 @@ class TruncatedQuantileCritic(TorchLearnerBase):
         target_critics = self._target_critics()
         with torch.no_grad():
             next_actions, next_log_probabilities = self.model.actor(batch.next_observations)
-            target_quantiles = self._sorted_target_quantiles(
-                batch.next_observations, next_actions, target_critics
+            batch_size = batch.rewards.shape[0]
+            next_log_probabilities = scalar_batch_output(
+                next_log_probabilities, "actor log probabilities", batch_size
             )
+            target_quantiles = self._sorted_target_quantiles(batch, next_actions, target_critics)
             target_quantiles = _truncate_quantile_mixture(
                 target_quantiles,
                 critic_count=len(target_critics),
@@ -168,18 +172,39 @@ class TruncatedQuantileCritic(TorchLearnerBase):
             result = batch.rewards[:, None] + batch.discounts[:, None] * (
                 target_quantiles - alpha * next_log_probabilities[:, None]
             )
-            return cast(torch.Tensor, result)
+            return result
 
     @staticmethod
     def _sorted_target_quantiles(
-        observations: torch.Tensor, actions: torch.Tensor, critics: Any
+        batch: SACBatch,
+        actions: torch.Tensor,
+        critics: Any,
     ) -> torch.Tensor:
-        values = torch.cat([critic(observations, actions) for critic in critics], dim=1)
+        batch_size = batch.rewards.shape[0]
+        values = torch.cat(
+            [
+                quantile_batch_output(
+                    critic(batch.next_observations, actions),
+                    f"target critic {index} output",
+                    batch_size,
+                )
+                for index, critic in enumerate(critics)
+            ],
+            dim=1,
+        )
         return values.sort(dim=1).values
 
     def _critic_step(self, batch: SACBatch, alpha: torch.Tensor) -> _TQCCriticStep:
         targets = self._target_quantiles(batch, alpha)
-        predictions = [critic(batch.observations, batch.actions) for critic in self.critics]
+        batch_size = batch.rewards.shape[0]
+        predictions = [
+            quantile_batch_output(
+                critic(batch.observations, batch.actions),
+                f"critic {index} output",
+                batch_size,
+            )
+            for index, critic in enumerate(self.critics)
+        ]
         losses = torch.stack(
             [quantile_huber_loss(prediction, targets) for prediction in predictions]
         ).sum(dim=0)
@@ -190,13 +215,26 @@ class TruncatedQuantileCritic(TorchLearnerBase):
     ) -> tuple[torch.Tensor, torch.Tensor]:
         freeze_modules(self.critics)
         policy_actions, log_probabilities = self.model.actor(batch.observations)
-        policy_values = torch.cat(
-            [critic(batch.observations, policy_actions) for critic in self.critics], dim=1
-        ).mean(dim=1)
+        batch_size = batch.rewards.shape[0]
+        log_probabilities = scalar_batch_output(
+            log_probabilities, "actor log probabilities", batch_size
+        )
+        policy_values = self._policy_values(batch, policy_actions)
         actor_loss = (alpha * log_probabilities - policy_values).mean()
         self._optimize(actor_loss, self.actor_optimizer)
         unfreeze_modules(self.critics)
         return actor_loss, log_probabilities
+
+    def _policy_values(self, batch: SACBatch, actions: torch.Tensor) -> torch.Tensor:
+        quantiles = [
+            quantile_batch_output(
+                critic(batch.observations, actions),
+                f"critic {index} output",
+                batch.rewards.shape[0],
+            )
+            for index, critic in enumerate(self.critics)
+        ]
+        return torch.cat(quantiles, dim=1).mean(dim=1)
 
     def _entropy_loss(self, actions: torch.Tensor, log_probabilities: torch.Tensor) -> torch.Tensor:
         alpha_loss = torch.zeros((), device=self.device)

@@ -73,7 +73,11 @@ def _restore_case(tmp_path: Path) -> _RestoreCase:
 def _restore_run(parts: _RestoreParts) -> SimpleNamespace:
     return SimpleNamespace(
         spec=SimpleNamespace(
-            distributed=SimpleNamespace(max_message_bytes=1024 * 1024), evaluation=None
+            distributed=SimpleNamespace(
+                max_message_bytes=1024 * 1024,
+                max_update_credit=512,
+            ),
+            evaluation=None,
         ),
         run_dir=parts.tmp_path / "weights-only",
         learner=parts.learner,
@@ -112,6 +116,50 @@ def test_coordinator_reset_replay_restores_only_learner_state(tmp_path: Path) ->
     assert case.replay.restored is None
     assert case.sampler.restored is None
     assert case.coordinator.counters == _Counters()
+
+
+def test_coordinator_restores_evaluation_leaders(
+    tmp_path: Path,
+) -> None:
+    case = _restore_case(tmp_path)
+    checkpoint = case.coordinator.run.checkpoint_codec.load(tmp_path / "checkpoint.pt")
+    checkpoint["distributed"]["best_evaluation_rank"] = (1.0, -38.0, 0.8)
+    checkpoint["distributed"]["fastest_evaluation_rank"] = (-36.8, 0.2, -36.8)
+
+    try:
+        case.coordinator.restore_checkpoint(tmp_path / "checkpoint.pt")
+    finally:
+        case.coordinator._close_runtime()
+
+    assert case.coordinator._best_evaluation == (1.0, -38.0, 0.8)
+    assert case.coordinator._fastest_evaluation == (-36.8, 0.2, -36.8)
+
+
+def test_coordinator_accepts_checkpoint_without_evaluation_leaders(tmp_path: Path) -> None:
+    case = _restore_case(tmp_path)
+
+    try:
+        case.coordinator.restore_checkpoint(tmp_path / "checkpoint.pt")
+    finally:
+        case.coordinator._close_runtime()
+
+    assert case.coordinator._best_evaluation is None
+    assert case.coordinator._fastest_evaluation is None
+
+
+@pytest.mark.parametrize("invalid_rank", [(1.0, "-38.0", 0.8), (1.0, True, 0.8)])
+def test_coordinator_rejects_non_real_evaluation_leader_rank(
+    tmp_path: Path, invalid_rank: tuple[object, object, object]
+) -> None:
+    case = _restore_case(tmp_path)
+    checkpoint = case.coordinator.run.checkpoint_codec.load(tmp_path / "checkpoint.pt")
+    checkpoint["distributed"]["best_evaluation_rank"] = invalid_rank
+
+    try:
+        with pytest.raises(TypeError, match="must contain three numbers"):
+            case.coordinator.restore_checkpoint(tmp_path / "checkpoint.pt")
+    finally:
+        case.coordinator._close_runtime()
 
 
 def _wire_coordinator(tmp_path: Path) -> Coordinator:

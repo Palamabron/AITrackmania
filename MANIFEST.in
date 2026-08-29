@@ -5,6 +5,7 @@ include LICENSE
 include NOTICE
 include SECURITY.md
 recursive-include readme *.md
+recursive-include docs/assets *.png
 recursive-include docs/diagrams *.md *.spec.json *.py *.excalidraw *.svg *.png *.html
 recursive-include scripts *.py
 recursive-include tests *.py

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from math import isfinite
 from pathlib import Path
 from typing import Any, Literal
 
@@ -13,6 +14,18 @@ from trackmaniarl.core.data import BatchRequest
 DEFAULT_EVALUATION_TIME_BUCKETS_S: tuple[float, ...] = (40.0, 38.0, 36.0)
 
 
+def _require_finite_values[T](value: T) -> T:
+    if isinstance(value, float) and not isfinite(value):
+        raise ValueError("configuration values must be finite")
+    if isinstance(value, dict):
+        for item in value.values():
+            _require_finite_values(item)
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            _require_finite_values(item)
+    return value
+
+
 class ComponentSpec(BaseModel):
     """A locally installed project component selected by import path."""
 
@@ -20,6 +33,11 @@ class ComponentSpec(BaseModel):
 
     class_path: str = Field(pattern=r"^[A-Za-z_]\w*(\.[A-Za-z_]\w*)*:[A-Za-z_]\w*$")
     kwargs: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("kwargs")
+    @classmethod
+    def _finite_kwargs(cls, value: dict[str, Any]) -> dict[str, Any]:
+        return _require_finite_values(value)
 
 
 class ComponentsSpec(BaseModel):
@@ -63,6 +81,7 @@ class TrainingSpec(BaseModel):
     offline_pretrain_updates: int = Field(default=0, ge=0)
     updates_per_transition: float = Field(default=1.0, gt=0.0)
     checkpoint_interval_updates: PositiveInt | None = 1_000
+    checkpoint_keep_last: PositiveInt | None = None
     save_final_checkpoint: bool = True
     metrics_interval_updates: PositiveInt = 50
     per_beta_final: float | None = Field(default=None, ge=0.0, le=1.0)
@@ -96,6 +115,7 @@ class TrainingSpec(BaseModel):
         *,
         batch_size: int | None = None,
         beta: float | None = None,
+        transition_count: int = 0,
     ) -> BatchRequest:
         """Build the sole replay request used by the local runtime."""
 
@@ -105,6 +125,7 @@ class TrainingSpec(BaseModel):
             beta=self.beta if beta is None else beta,
             n_step=self.n_step,
             gamma=self.gamma,
+            transition_count=transition_count,
         )
 
     def replay_beta(self, transitions: int) -> float | None:
@@ -225,6 +246,11 @@ class RunSpec(BaseModel):
     distributed: DistributedSpec = Field(default_factory=DistributedSpec)
     evaluation: EvaluationSuiteSpec | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("metadata")
+    @classmethod
+    def _finite_metadata(cls, value: dict[str, Any]) -> dict[str, Any]:
+        return _require_finite_values(value)
 
     @model_validator(mode="after")
     def _evaluation_schedule_is_active(self) -> RunSpec:

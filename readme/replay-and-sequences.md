@@ -53,6 +53,20 @@ For sequence learning, runtime validation requires
 `n_step < sequence_length`. N-step return construction and the learner use the
 same gamma from the `BatchRequest`.
 
+### Store and sampler constructor reference
+
+| Component | `kwargs` | Effect |
+| --- | --- | --- |
+| `InMemoryReplayStore` | `capacity=100000` | Positive number of resident transitions. FIFO eviction preserves protected demonstrations only while they occupy less than half the store. |
+| `UniformSampler` | `seed=RunSpec.seed` | Uniform eligible transition sampling. The runtime injects the feature pipeline and seed. |
+| `SequenceSampler` | `sequence_length` required; `seed=RunSpec.seed` | Uniform full-history windows. Its length must equal `training.sequence_length`. |
+| `OnPolicySequenceSampler` | `seed=RunSpec.seed` | Consumes each complete PPO rollout once and rejects ordinary off-policy batches. |
+| `DemoMixSampler` | `min_demo_fraction=0`, `max_demo_fraction=1`, `seed=RunSpec.seed` | Bounds the per-batch demonstration fraction; requires `0 <= min <= max <= 1` and supports only single-step replay. |
+| `PrioritizedSampler` | fields below; `seed=RunSpec.seed` | Proportional PER, optional uniform mixing, elite boost and expert stratification; supports single steps and full recurrent histories. |
+
+Do not put `pipeline` in YAML. The runtime injects the configured feature
+pipeline into every sampler that declares that constructor parameter.
+
 ## Proportional prioritized replay
 
 TrackmaniaRL implements proportional [Prioritized Experience
@@ -103,10 +117,15 @@ These are sampling controls, not reward terms:
 | `elite_priority_boost` | `1.0` | Multiplies elite proportional weight after `p ** alpha`; must be at least 1. |
 | `expert_demo_time_s` | `null` | A demo transition at or below this projected-lap threshold enters the expert stratum. Positive seconds. |
 | `expert_fraction` | `0.0` | Rounded fraction of each batch drawn from the expert stratum. Requires `expert_demo_time_s`; both expert and non-expert pools must satisfy the requested counts. |
+| `expert_fraction_final` | `null` | Optional final forced expert fraction. Configure it together with `expert_fraction_anneal_transitions`. |
+| `expert_fraction_anneal_transitions` | `null` | Number of collected online transitions over which the forced fraction changes linearly from `expert_fraction` to `expert_fraction_final`. |
 
 Elite boosting composes with `uniform_mix`. When expert stratification is
 active, reported sampling probabilities include the selected stratum fraction,
 so importance weights correct the distribution that was actually used.
+After an annealed quota reaches zero, expert transitions remain protected in
+replay and may still be selected naturally by PER; they are no longer forced
+into every batch.
 
 `DemoMixSampler` is simpler: `min_demo_fraction` and `max_demo_fraction` bound
 the number of transitions marked by `info.is_demo` or `info.source == "demo"`.
@@ -144,7 +163,7 @@ n-step target. Intermediate learning positions stop before the unavailable
 right edge. GRU and Mamba temporal cores reconstruct state from the sampled
 observations; recurrent state is not stored in replay.
 
-`components.feature_pipeline.kwargs.history_length` and replay sequences are
+`components.feature_pipeline.kwargs.config.history_length` and replay sequences are
 two different ways to supply history. Runtime validation rejects both values
 above one because that would stack a history of histories. For GRU/Mamba replay
 set feature `history_length: 1`; for a feed-forward model using a fixed feature
@@ -163,7 +182,8 @@ version metadata and soft/hard policy-lag controls. Important differences are:
 - recurrent states are reconstructed from observations rather than stored;
 - overlap arises from sampled windows rather than a fixed actor unroll schedule;
 - the priority mixture is `0.9 max + 0.1 mean`, not claimed paper equivalence;
-- R2D2 value rescaling is not part of the learner;
+- signed-square-root value rescaling is available as an opt-in learner setting,
+  but the package does not claim the paper's complete rescaling setup;
 - actor and learner scheduling, network architecture and optimizer defaults are
   TrackmaniaRL contracts rather than the paper's exact configuration.
 
@@ -201,7 +221,7 @@ training:
 ```
 
 Select `ImplicitQuantileHead` plus `RandomQuantileStrategy` for IQN, or
-`FractionProposalHead` plus `FractionProposalStrategy` for FQF as shown in the
+`ImplicitQuantileHead` plus `LearnedFractionStrategy` for FQF as shown in the
 [algorithm recipes](algorithms.md). The replay contract is the same.
 
 ### GRU or Mamba with sequence PER
@@ -218,9 +238,10 @@ components:
   feature_pipeline:
     class_path: trackmaniarl.trackmania.features:LidarFeaturePipeline
     kwargs:
-      geometry_path: assets/my-map.geometry.npz
-      expected_map_uid: my-map-uid
-      history_length: 1
+      config:
+        geometry_path: assets/my-map.geometry.npz
+        expected_map_uid: my-map-uid
+        history_length: 1
 
 training:
   batch_size: 32

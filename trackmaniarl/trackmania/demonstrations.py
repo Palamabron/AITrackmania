@@ -30,6 +30,7 @@ from trackmaniarl.trackmania.demonstration_recording import (
 from trackmaniarl.trackmania.demonstration_transitions import (
     DemonstrationTransitionContext,
     demonstration_transitions,
+    resample_demonstration_for_environment,
 )
 
 __all__ = [
@@ -52,6 +53,7 @@ __all__ = [
     "record_demonstration_session",
     "reject_outliers",
     "resample_demonstration",
+    "resample_demonstration_for_environment",
     "resolve_demonstration_paths",
     "save_demonstration",
     "validate_demonstration",

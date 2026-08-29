@@ -184,7 +184,7 @@ def _register_diagnostics(commands: CommandParsers) -> None:
     diagnose = commands.add_parser("diagnose", help="offline policy diagnostics")
     subcommands = diagnose.add_subparsers(dest="diagnose_command", required=True)
     expert = subcommands.add_parser(
-        "expert", help="score complete demonstrations with the unmasked IQN action head"
+        "expert", help="score resampled demonstrations with the configured IQN action head"
     )
     expert.add_argument("config", type=Path)
     expert.add_argument("checkpoint", type=Path)

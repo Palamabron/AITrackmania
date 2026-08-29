@@ -22,10 +22,13 @@ _METRIC_AXES = (
     "env/transitions",
     "env/episode",
     "eval/batch",
-    "system/elapsed_s",
+    "expert/transitions",
+    "runtime/elapsed_s",
 )
 _METRIC_PATTERNS = {
     "trainer/update": (
+        "checkpoint_best/*",
+        "checkpoint_fastest/*",
         "imitation_train/*",
         "imitation_validation/*",
         "learner/*",
@@ -36,7 +39,8 @@ _METRIC_PATTERNS = {
     "env/transitions": ("pipeline/*",),
     "env/episode": ("episode/*",),
     "eval/batch": ("evaluation/*",),
-    "system/elapsed_s": ("health/*", "system/*"),
+    "expert/transitions": ("expert/*",),
+    "runtime/elapsed_s": ("health/*", "system/*"),
 }
 _HEALTH_COUNTERS = {
     "actor/timeout": "actor_timeouts",
@@ -253,7 +257,7 @@ class WandbTracker:
     def _add_axes(self, values: dict[str, Any], context: _EventContext) -> None:
         if not values:
             return
-        values["system/elapsed_s"] = monotonic() - self._started_at
+        values["runtime/elapsed_s"] = monotonic() - self._started_at
         values.update(self._event_axis(context))
         transitions = context.payload.get("transitions", self._latest_ingest.get("transitions"))
         if transitions is not None:
@@ -267,6 +271,8 @@ class WandbTracker:
         if context.name in {"eval/summary", "eval/suite"}:
             self._evaluation_batches += 1
             return {"eval/batch": self._evaluation_batches}
+        if context.name in {"diagnose/expert", "diagnose/expert_progress"}:
+            return {"expert/transitions": int(context.payload.get("count", 0))}
         return {"trainer/update": int(context.step or 0)}
 
     def _record_drop(self) -> None:

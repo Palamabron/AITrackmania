@@ -77,6 +77,7 @@ All fields below are stable built-in environment fields under
 | Field | Type/default; range | Exact effect and tuning risk |
 | --- | --- | --- |
 | `crash_distance` | float `25.0` m; `>0` | Maximum local trajectory distance before `off_track`. Too small rejects valid corner cuts; too large admits another nearby branch. |
+| `finish_progress` | float `0.995`; `(0,1]` | Minimum accepted metric-lap fraction for a valid finish signal. Lower values tolerate sparse finish geometry but admit larger shortcuts; `1.0` requires the projected path to reach its end. |
 | `no_progress_steps` | int `200`; `>=1` | Terminal after this many decisions without a higher accepted index. It is cadence-dependent. |
 | `slow_progress_window_steps` | int `80`; `>=2` | Length of the rolling metric-progress terminal window. |
 | `minimum_progress_per_window_m` | float `2.0` m; `>=0` | Minimum progress required in that window. Zero disables slow-progress failure in practice. |
@@ -86,6 +87,7 @@ All fields below are stable built-in environment fields under
 | `minimum_finish_steps` | int `50`; `>=1` | Earliest decision at which finish UI can terminate successfully. |
 | `nearest_forward_points` | int `500`; `>=1` | Local forward projection window in geometry points. Too small loses fast movement; too large makes folded tracks more ambiguous. |
 | `nearest_backward_points` | int `10`; `>=0` | Backward search allowance for localization only; accepted progress remains monotonic. |
+| `limit_progress_by_kinematics` | bool `true` | Caps accepted reward progress by displacement and an elapsed-time speed bound. Disable only when a custom adapter intentionally teleports; this is separate from the feature-pipeline option with the same name. |
 | `time_penalty_per_second` | float `0.1`; `>=0` | Negative reward per accepted race-clock second. |
 | `max_time_delta_s` | float `1.0` s; `>0` | Per-step clock cap for time-scaled reward and the no-clock movement allowance. Too small undercounts real stalls; too large makes telemetry gaps dominate. |
 | `maximum_race_time_s` | float/null `null`; `>0` | Optional `time_limit` failure terminal in physical seconds. |
@@ -113,8 +115,9 @@ and opposing neighbouring segments that produce a zero local tangent are
 rejected when the geometry or reward is constructed.
 
 Nearest-point search is local: it includes a bounded number of points behind
-and ahead of the current monotonic index. Progress never decreases. A candidate
-advance is also capped by physical displacement and elapsed time:
+and ahead of the current monotonic index. Progress never decreases. When
+`limit_progress_by_kinematics` is enabled, a candidate advance is also capped by
+physical displacement and elapsed time:
 
 ```text
 accepted_motion <= min(position_displacement,

@@ -6,7 +6,9 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from trackmaniarl.core.checkpoints import prune_checkpoint_family
 from trackmaniarl.core.data import PriorityUpdate
+from trackmaniarl.core.fingerprint import run_fingerprint
 from trackmaniarl.core.runtime import ResolvedRun
 from trackmaniarl.core.training_loop import run_training
 from trackmaniarl.core.training_support import (
@@ -19,8 +21,10 @@ from trackmaniarl.core.training_support import (
 )
 from trackmaniarl.core.training_support import episode_metrics as _extract_episode_metrics
 
-_CHECKPOINT_SCHEMA_VERSION = "1.0"
-_CHECKPOINT_KEYS = frozenset({"schema_version", "learner", "replay_store", "sampler", "counters"})
+_CHECKPOINT_SCHEMA_VERSION = "2.0"
+_CHECKPOINT_KEYS = frozenset(
+    {"schema_version", "run_fingerprint", "learner", "replay_store", "sampler", "counters"}
+)
 _COUNTER_KEYS = frozenset(
     {"transitions", "updates", "episodes", "fractional_updates", "next_episode_index"}
 )
@@ -35,6 +39,7 @@ class Trainer:
         self.run = run
         self.environment_factory = run.environment_factory
         self.resume_checkpoint = Path(resume_checkpoint) if resume_checkpoint is not None else None
+        self.fingerprint = run_fingerprint(run.spec, run.base_dir)
         self.on_policy = bool(getattr(run.learner, "on_policy", False))
         self._validate_on_policy_run()
 
@@ -80,6 +85,7 @@ class Trainer:
             self._log_checkpoint_failure(path, exc, counters)
             raise
         self._checkpoint_completed(path, counters)
+        self._apply_checkpoint_retention(path, counters)
         return path
 
     def _checkpoint_state(self, counters: TrainingCounters) -> dict[str, Any]:
@@ -93,6 +99,7 @@ class Trainer:
         stored.next_episode_index = self._next_episode_index(counters.episodes)
         return {
             "schema_version": _CHECKPOINT_SCHEMA_VERSION,
+            "run_fingerprint": self.fingerprint,
             "learner": self.run.learner.state_dict(),
             "replay_store": None if self.on_policy else _state_dict(self.run.replay_store),
             "sampler": None if self.on_policy else _state_dict(self.run.sampler),
@@ -112,6 +119,21 @@ class Trainer:
         self._log("train/checkpoint_completed", {"path": str(path)}, counters)
         print(f"Checkpoint saved: {path}", flush=True)
 
+    def _apply_checkpoint_retention(self, path: Path, counters: TrainingCounters) -> None:
+        keep = self.run.spec.training.checkpoint_keep_last
+        if keep is None:
+            return
+        result = prune_checkpoint_family(path, self.run.run_dir / "checkpoints", keep)
+        if not result.removed:
+            return
+        removed = [str(item) for item in result.removed]
+        self._log(
+            "train/checkpoint_retention",
+            {"family": result.family, "removed_count": len(removed), "paths": removed},
+            counters,
+        )
+        print(f"Checkpoint retention removed: {', '.join(removed)}", flush=True)
+
     def _checkpoint_path(self, update: int) -> Path:
         return self.run.run_dir / "checkpoints" / f"update-{update:08d}.pt"
 
@@ -129,6 +151,8 @@ class Trainer:
         self._validate_checkpoint_keys(state)
         if state["schema_version"] != _CHECKPOINT_SCHEMA_VERSION:
             raise ValueError("Unsupported training checkpoint schema")
+        if state["run_fingerprint"] != self.fingerprint:
+            raise ValueError("Training checkpoint run fingerprint mismatch")
         learner_state = state["learner"]
         counters = state["counters"]
         if not isinstance(learner_state, Mapping):

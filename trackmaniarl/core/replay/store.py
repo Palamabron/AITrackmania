@@ -26,7 +26,15 @@ from trackmaniarl.core.replay.store_support import _is_demo as _is_demo
 from trackmaniarl.core.replay.store_support import (
     _is_incremental_store as _is_incremental_store,
 )
-from trackmaniarl.core.replay.store_support import _TreeColumns
+from trackmaniarl.core.replay.store_support import _ReplayChange, _TreeColumns
+
+
+@dataclass(frozen=True, slots=True)
+class _EvictedSlot:
+    transition_id: TransitionId
+    previous_id: TransitionId | None
+    next_id: TransitionId | None
+    resurrected: Transition | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,7 +43,7 @@ class _AppendContext:
     slot: int
     episode_code: int
     previous_id: TransitionId
-    evicted: TransitionId | None
+    evicted: _EvictedSlot | None
 
 
 class InMemoryReplayStore:
@@ -80,9 +88,7 @@ class InMemoryReplayStore:
         self._size = 0
         self._lock = RLock()
         self._revision = 0
-        self._changes: deque[tuple[int, TransitionId, TransitionId | None]] = deque(
-            maxlen=min(self.capacity, 65_536)
-        )
+        self._changes: deque[tuple[int, _ReplayChange]] = deque(maxlen=min(self.capacity, 65_536))
 
     def append(self, transition: Transition) -> TransitionId:
         """Append one transition; demonstrations displaced by the ring are re-appended."""
@@ -98,23 +104,26 @@ class InMemoryReplayStore:
         previous_id = self._previous_transition(transition, episode_code)
         transition_id = self._next_index
         slot = transition_id % self.capacity
-        evicted, resurrected = self._evict_slot(slot)
+        evicted = self._evict_slot(slot)
         context = _AppendContext(transition_id, slot, episode_code, previous_id, evicted)
         self._allocate_columns(transition)
         self._write_transition(context, transition)
         self._write_transition_metadata(context, transition)
         self._complete_append(context, transition)
+        resurrected = None if evicted is None else evicted.resurrected
         return transition_id, resurrected
 
-    def _evict_slot(self, slot: int) -> tuple[TransitionId | None, Transition | None]:
+    def _evict_slot(self, slot: int) -> _EvictedSlot | None:
         evicted = int(self._ids[slot]) if self._ids[slot] >= 0 else None
         if evicted is None:
-            return None, None
+            return None
+        previous_id = _optional_transition_id(self._previous_ids[slot])
+        next_id = _optional_transition_id(self._next_ids[slot])
         resurrected = self._protected_demo(evicted, slot)
         self._info.pop(evicted, None)
         self._next_overrides.pop(evicted, None)
         self._release_episode_reference(int(self._episode_codes[slot]))
-        return evicted, resurrected
+        return _EvictedSlot(evicted, previous_id, next_id, resurrected)
 
     def _protected_demo(self, evicted: TransitionId, slot: int) -> Transition | None:
         if not self._demo_flags[slot]:
@@ -163,7 +172,14 @@ class InMemoryReplayStore:
         self._next_index += 1
         self._size = min(self.capacity, self._size + 1)
         self._revision += 1
-        self._changes.append((self._revision, context.transition_id, context.evicted))
+        evicted = context.evicted
+        change = _ReplayChange(
+            appended=context.transition_id,
+            evicted=None if evicted is None else evicted.transition_id,
+            evicted_previous=None if evicted is None else evicted.previous_id,
+            evicted_next=None if evicted is None else evicted.next_id,
+        )
+        self._changes.append((self._revision, change))
 
     def _resurrectable_transition(self, transition_id: TransitionId, slot: int) -> Transition:
         resurrected = self._transition(transition_id)
@@ -319,9 +335,7 @@ class InMemoryReplayStore:
     def demo_flags(self, transition_ids: list[TransitionId]) -> list[bool]:
         return store_queries.demo_flags(self, transition_ids)
 
-    def changes_since(
-        self, revision: int | None
-    ) -> tuple[int, list[tuple[TransitionId, TransitionId | None]] | None]:
+    def changes_since(self, revision: int | None) -> tuple[int, list[_ReplayChange] | None]:
         return store_queries.changes_since(self, revision)
 
     def _is_n_step_eligible_locked(self, transition_id: TransitionId, n_step: int) -> bool:
@@ -331,3 +345,7 @@ class InMemoryReplayStore:
         self, transition_id: TransitionId, n_step: int
     ) -> list[TransitionId]:
         return store_queries._predecessor_ids_locked(self, transition_id, n_step)
+
+
+def _optional_transition_id(value: np.int64) -> TransitionId | None:
+    return int(value) if value >= 0 else None
