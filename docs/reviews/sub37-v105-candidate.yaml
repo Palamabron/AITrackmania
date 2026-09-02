@@ -12,6 +12,7 @@ distributed:
   policy_refresh_s: 1.0
   heartbeat_s: 5.0
   actor_timeout_s: 30.0
+  actor_stall_timeout_s: 300.0          # F015: stop (then hard-exit) an actor whose collection thread made no step for 5 min
   max_inflight_chunks: 2
   spool_max_bytes: 2147483648
   soft_policy_lag_updates: 250
@@ -47,6 +48,7 @@ components:
             exploration_hold_steps: 6          # F007: 300 ms exploratory holds (human action run length median 160 ms, mean 324 ms)
             switch_q_margin: 0.0
             global_exploration_probability: 0.5  # F038: half the exploration events are neighbour-steering moves instead of uniform
+            exploration_weights_preset: expert_keyboard  # F008: expert action marginals instead of 45% brake / 80% intermediate steering
       online_quantile_distortion: neutral
       evaluation_quantile_distortion: neutral
       upper_cvar_alpha: 0.25

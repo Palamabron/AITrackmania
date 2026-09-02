@@ -11,6 +11,7 @@ from typing import Any, cast
 import numpy as np
 import torch
 
+import trackmaniarl.distributed.actor_watchdog as actor_watchdog
 from trackmaniarl.core.contracts import PolicyMode, ReplicablePolicy
 from trackmaniarl.core.data import Transition
 from trackmaniarl.core.pytree import tree_map
@@ -158,7 +159,7 @@ def _take_training_step(
     started = monotonic()
     action, policy_info = _sample_policy(state.policy, state.prepared)
     inference_s = monotonic() - started
-    next_observation, reward, terminated, truncated, info = context.environment.step(action)
+    next_observation, reward, terminated, truncated, info = _step_environment(context, action)
     final_step = step_index == context.runtime.spec.training.max_episode_steps - 1
     return PolicyStep(
         step_index,
@@ -171,6 +172,12 @@ def _take_training_step(
         cast(Mapping[str, Any], info),
         inference_s,
     )
+
+
+def _step_environment(context: CollectionContext, action: Any) -> Any:
+    result = context.environment.step(action)
+    actor_watchdog.touch(context.runtime)
+    return result
 
 
 def _sample_policy(policy: ReplicablePolicy, observation: Any) -> tuple[Any, Mapping[str, Any]]:

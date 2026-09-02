@@ -15,11 +15,13 @@ from trackmaniarl.distributed.actor_requests import (
     SpoolRequest,
     TelemetryFailure,
 )
+from trackmaniarl.distributed.actor_watchdog import ProgressWatchdog
 from trackmaniarl.distributed.codec import WireCodec
 
 
 class CollectionRuntime(Protocol):
     spec: RunSpec
+    watchdog: ProgressWatchdog
     actor_id: str
     session_id: str
     stop: Event

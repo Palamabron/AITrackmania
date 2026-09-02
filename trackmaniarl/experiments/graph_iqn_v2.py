@@ -12,6 +12,8 @@ unchanged, but:
   heading relative to the local track tangent;
 * express every scalar in O(1) units (m/s / 100, rad/s / 3, m/s^2 / 50) instead
   of mixing km/h, metres and [-1, 1] curvature in one LayerNorm;
+* keep the asset's virtual finish extension for the lookahead (v1 discarded it, so
+  the last ~110 m of every lap saw all 44 points stacked on the finish station);
 * stop masking the previous control (v1 zeroed it in both the pipeline and the
   encoder) and drop the LayerNorm in front of the SimbaV2 backbone so its shift
   channel keeps the input magnitude.
@@ -36,6 +38,7 @@ from torch import nn
 from trackmaniarl.experiments.graph_iqn import BoundaryGraphFeaturePipeline
 from trackmaniarl.models.backbones import SimbaV2Backbone
 from trackmaniarl.models.track_graphs import TrackNeighborGraph
+from trackmaniarl.trackmania.geometry import BoundaryGeometry
 
 SPEED_SCALE_MPS = 100.0
 LATERAL_SCALE_MPS = 20.0
@@ -90,6 +93,20 @@ class BoundaryGraphFeaturePipelineV2(BoundaryGraphFeaturePipeline):
     def reset_episode(self) -> None:
         super().reset_episode()
         self._last_yaw: float | None = None
+
+    def _install_geometry(self, geometry: BoundaryGeometry) -> None:
+        super()._install_geometry(geometry)
+        # Keep the asset's virtual finish extension for the lookahead so the last
+        # ~110 m do not collapse onto the finish station; the nearest search and
+        # progress stay on the recorded part (reward_center == center[:recorded]).
+        self._left, self._center, self._right = geometry.left, geometry.center, geometry.right
+        self._reward_distance = self._distance
+        self._distance = self._cumulative_distance(geometry.center)
+
+    def _lookahead_indices(self, nearest: int) -> np.ndarray:
+        targets = self._reward_distance[nearest] + 2.5 * np.arange(1, 45, dtype=np.float32)
+        indices = np.searchsorted(self._distance, targets).clip(0, len(self._distance) - 1)
+        return np.asarray(indices, dtype=np.int64)
 
     def transform_observation(self, observation: Any) -> dict[str, torch.Tensor]:
         if isinstance(observation, Mapping):

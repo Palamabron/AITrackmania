@@ -37,6 +37,7 @@ class TrackmaniaActionSelectorConfig:
     exploration_hold_steps: int = 1
     switch_q_margin: float = 0.0
     global_exploration_probability: float = 0.15
+    exploration_weights_preset: str = "throttle_biased"
 
     @classmethod
     def from_mapping(cls, values: Mapping[str, Any]) -> Self:
@@ -74,7 +75,9 @@ class TrackmaniaActionSelector:
 
     def _configure(self, config: TrackmaniaActionSelectorConfig) -> None:
         self.action_ids = config.action_ids
-        self.weights = torch.from_numpy(select_brake_tap_exploration_weights(config.action_ids))
+        self.weights = torch.from_numpy(
+            select_exploration_weights(config.action_ids, config.exploration_weights_preset)
+        )
         self.minimum_action_hold_steps = config.minimum_action_hold_steps
         self.exploration_hold_steps = config.exploration_hold_steps
         self.switch_q_margin = config.switch_q_margin
@@ -231,6 +234,59 @@ def build_brake_tap_exploration_weights() -> np.ndarray:
         steering_weight = 1.0 - 0.6 * abs(float(steer))
         weights.append(mode_weight * steering_weight)
     return np.asarray(weights, dtype=np.float32)
+
+
+# Marginals measured on 10 expert keyboard laps (36.6-37.4 s): gas on 83%, brake 5.5%,
+# steering exactly 0 / +1 / -1 on 35% / 37% / 28% of frames, never intermediate, never a tap.
+EXPERT_KEYBOARD_MODE_WEIGHTS: dict[tuple[float, float], float] = {
+    (1.0, 0.0): 0.83 * 0.94,
+    (1.0, 1.0): 0.83 * 0.05,
+    (1.0, BRAKE_TAP_SENTINEL): 0.83 * 0.01,
+    (0.0, 0.0): 0.17 * 0.94,
+    (0.0, 1.0): 0.17 * 0.05,
+    (0.0, BRAKE_TAP_SENTINEL): 0.17 * 0.01,
+}
+
+
+def _expert_steering_weight(steer: float) -> float:
+    if steer == 0.0:
+        return 0.35
+    if abs(steer) == 1.0:
+        return 0.31
+    return 0.005
+
+
+def build_expert_keyboard_exploration_weights() -> np.ndarray:
+    """Return exploration weights shaped like the expert's action marginals."""
+
+    _, table = build_brake_tap_action_table()
+    return np.asarray(
+        [
+            EXPERT_KEYBOARD_MODE_WEIGHTS[(float(gas), float(brake))]
+            * _expert_steering_weight(float(steer))
+            for gas, brake, steer in table
+        ],
+        dtype=np.float32,
+    )
+
+
+EXPLORATION_WEIGHT_PRESETS = {
+    "throttle_biased": build_brake_tap_exploration_weights,
+    "expert_keyboard": build_expert_keyboard_exploration_weights,
+}
+
+
+def select_exploration_weights(action_ids: tuple[int, ...] | None, preset: str) -> np.ndarray:
+    """Return the preset exploration weights aligned with a compact action subset."""
+
+    builder = EXPLORATION_WEIGHT_PRESETS.get(preset)
+    if builder is None:
+        raise ValueError(
+            f"unknown exploration weights preset {preset!r}; "
+            f"choose one of {sorted(EXPLORATION_WEIGHT_PRESETS)}"
+        )
+    weights = builder()
+    return weights if action_ids is None else weights[list(action_ids)]
 
 
 def select_brake_tap_actions(action_ids: tuple[int, ...] | None) -> tuple[int, list[np.ndarray]]:

@@ -14,6 +14,7 @@ from typing import Any, Protocol
 
 import grpc
 
+import trackmaniarl.distributed.actor_watchdog as actor_watchdog
 from trackmaniarl.core.contracts import ExploratoryPolicy, ReplicablePolicy
 from trackmaniarl.distributed.actor_errors import ActorBackgroundError
 from trackmaniarl.distributed.actor_spool import SpoolRuntime
@@ -22,11 +23,13 @@ from trackmaniarl.distributed.actor_transport import (
     PolicyReference,
     is_retryable_rpc_error,
 )
+from trackmaniarl.distributed.actor_watchdog import ProgressWatchdog
 
 logger = logging.getLogger(__name__)
 
 
 class BackgroundRuntime(SpoolRuntime, Protocol):
+    watchdog: ProgressWatchdog
     target: str
     stop_reason: str
     force_refresh: threading.Event
@@ -248,6 +251,8 @@ def heartbeat_loop(runtime: BackgroundRuntime) -> None:
     while not runtime.stop.wait(runtime.spec.distributed.heartbeat_s):
         try:
             _send_heartbeat(runtime)
+            if _stop_on_collection_stall(runtime):
+                return
         except grpc.RpcError as exc:
             if is_retryable_rpc_error(exc):
                 continue
@@ -271,6 +276,18 @@ def _send_heartbeat(runtime: BackgroundRuntime) -> None:
     if response["stop"]:
         runtime.stop_reason = "learner requested stop"
         runtime.stop.set()
+
+
+def _stop_on_collection_stall(runtime: BackgroundRuntime) -> bool:
+    watchdog = actor_watchdog.watchdog_of(runtime)
+    if watchdog is None:
+        return False
+    error = actor_watchdog.stall(watchdog, runtime.spec.distributed.actor_stall_timeout_s)
+    if error is None:
+        return False
+    runtime._stop_from_thread("collection watchdog", error)
+    actor_watchdog.terminate_after_grace(actor_watchdog.STALL_EXIT_GRACE_S)
+    return True
 
 
 def stop_from_thread(runtime: BackgroundRuntime, stage: str, exc: BaseException) -> None:

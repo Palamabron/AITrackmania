@@ -97,8 +97,8 @@ inputs and inference); revisit only if 2 does not make lap time visible in the r
   Fixed opt-in by `graph_iqn_v2.py` in this PR.
 * `trackmaniarl/experiments/graph_iqn.py:317-323`: the pipeline slices the asset to
   `recorded_count` and discards the 60-point (120 m) finish extension, so the lookahead collapses
-  onto the finish station for the last 1.3 s of every lap (measured, F027). Follow-up: keep the
-  extension for the lookahead (reward keeps using the recorded part).
+  onto the finish station for the last 1.3 s of every lap (measured, F027). **Fixed in
+  `graph_iqn_v2.py`**: the v2 pipeline keeps the extension for the lookahead only.
 * `trackmaniarl/core/replay/store_materialization.py:101-112`: n-step returns are not truncated at
   exploratory actions (F035). Follow-up: `act_with_info` → `explored` flag column → truncate.
 * `trackmaniarl/algorithms/optimization.py:66`: adaptive clipper at `clip_factor` 1.0 (F043).
@@ -112,10 +112,12 @@ inputs and inference); revisit only if 2 does not make lap time visible in the r
 * **Silent actor stall (the v104f "crash").** Heartbeats come from a separate thread
   (`actor_background.py:247-273`) that keeps the actor "alive" while the collection thread is
   blocked (here: in the evaluation reset after episode 401); the learner only logs on updates, so
-  4.37 h passed with no data and no alarm (`coordinator_learning.py:84-94`, F015). Fix: heartbeat
-  carries `last_step_age_s`; coordinator emits `health/seconds_since_last_ingest` and treats
-  "heartbeating but no transitions for 2× the max episode length" as an actor fault; launcher
-  restarts a dead actor instead of stopping the learner.
+  4.37 h passed with no data and no alarm (`coordinator_learning.py:84-94`, F015).
+  **Partly fixed in this PR**: `distributed.actor_stall_timeout_s` (opt-in) makes the heartbeat
+  thread compare the age of the last environment step (`actor_watchdog.py`) and, past the limit,
+  request a stop and hard-exit the actor 60 s later, so the launcher sees a dead actor and the
+  learner shuts down with a final checkpoint instead of idling. Follow-ups: `health/seconds_since_last_ingest`
+  on the coordinator and a launcher that restarts a dead actor instead of stopping the learner.
 * `trackmaniarl/core/builtins.py:171-183`: checkpoint temp stays 0 bytes for the whole pickle phase
   and was never unlinked on failure (F016). **Fixed in this PR** (try/finally unlink).
   Follow-ups: the launcher should wait for `train/checkpoint_completed` before `terminate()`
@@ -213,9 +215,9 @@ re-derive `finish_reward` = per-step reward / (1−γ). Expected Q scale ≈ 70-
 
 * Exploration: ε on a *transition* schedule 0.30 → 0.01 over 500k, `exploration_hold_steps` 6
   (300 ms, between the expert's median and mean action run length), neighbour-steering exploration
-  for half the events. Follow-up code: make the mode/steering weights of
-  `build_brake_tap_exploration_weights` configurable and set them to the expert marginals
-  (gas 0.83, brake 0.05, steer 0 / ±1 ≈ 0.35 / 0.33 / 0.28, no intermediate steering); truncate
+  for half the events. **In this PR**: `exploration_weights_preset: expert_keyboard`
+  (`actions.py`) draws exploratory actions from the expert marginals (gas 0.83, brake 0.05,
+  steer 0 / ±1 ≈ 0.35 / 0.31 / 0.31, intermediate steering and taps ≈ 0). Follow-up: truncate
   n-step targets at exploratory steps.
 * Evaluation: 5-trial medians of a deterministic policy have ≥ 2.4 s spread and no confirmation
   re-run (F039). Protocol: 2 trials every 50 episodes while training; when a batch beats the leader,

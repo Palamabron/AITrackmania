@@ -157,6 +157,7 @@ class DistributedSpec(BaseModel):
     policy_refresh_s: float = Field(default=5.0, gt=0.0)
     heartbeat_s: float = Field(default=5.0, gt=0.0)
     actor_timeout_s: float = Field(default=20.0, gt=0.0)
+    actor_stall_timeout_s: float | None = Field(default=None, gt=0.0)
     max_inflight_chunks: PositiveInt = 4
     spool_max_bytes: PositiveInt = 2 * 1024**3
     max_message_bytes: PositiveInt = 16 * 1024**2

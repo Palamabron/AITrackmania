@@ -15,7 +15,7 @@ from trackmaniarl.experiments.graph_iqn_v2 import (
 from trackmaniarl.trackmania.geometry import GEOMETRY_ASSET_VERSION
 
 
-def _dense_geometry(path: Path) -> Path:
+def _dense_geometry(path: Path, recorded: int = 300) -> Path:
     positions = np.zeros((300, 3), dtype=np.float32)
     positions[:, 0] = np.arange(300, dtype=np.float32) * 0.5
     np.savez_compressed(
@@ -27,7 +27,7 @@ def _dense_geometry(path: Path) -> Path:
         center=positions,
         right=positions + np.array([0.0, 0.0, 1.0], dtype=np.float32),
         spacing_m=np.array(0.5),
-        recorded_count=np.array(len(positions)),
+        recorded_count=np.array(recorded),
     )
     return path
 
@@ -146,3 +146,16 @@ def test_v2_encoder_shape_and_sensitivity_to_control_echo() -> None:
 
     assert baseline.shape == (2, 192)
     assert not torch.allclose(baseline, with_echo)
+
+
+def test_v2_lookahead_uses_the_finish_extension(tmp_path: Path) -> None:
+    pipeline = BoundaryGraphFeaturePipelineV2(
+        _dense_geometry(tmp_path / "g.npz", recorded=200), "test-map"
+    )
+    pipeline.reset_episode()
+    last_recorded_x = 199 * 0.5
+    track = pipeline.transform_observation(_frame({"t": 0.0, "x": last_recorded_x, "speed": 50.0}))
+    forward_offsets = track["track"][1, 1::2]
+
+    assert forward_offsets.max() == pytest.approx(149.5 - last_recorded_x, abs=0.6)
+    assert torch.isfinite(track["physics"]).all()
