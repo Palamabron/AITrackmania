@@ -248,12 +248,12 @@ UID, and fails when any configured acceptance threshold is missed:
 uv run trackmaniarl benchmark run.yaml artifacts/trackmania-iqn-lidar/checkpoints/distributed-update-XXXXXXXX.pt
 ```
 
-The remaining manual release gate is a four-hour Windows soak on the real game,
-with periodic checkpoints and at least one successful `trackmaniarl resume`.
-Run the final benchmark against the newer post-resume checkpoint, then generate
-`soak-report.json` with `scripts/verify_soak.py`; the verifier requires that
-`evaluation.json` be bound to that checkpoint and rejects every telemetry or
-controller error. A failed benchmark or soak blocks release.
+For a TrackMania-facing release, run the Windows smoke preflight and the
+configured benchmark on the real game. Treat telemetry or controller errors as
+a release blocker. A multi-hour Windows soak with a resumed checkpoint is
+recommended when changing runtime, transport or checkpointing behavior; use
+`scripts/verify_soak.py` to produce `soak-report.json` for that extended
+evidence.
 
 ## Connection troubleshooting
 

@@ -175,12 +175,13 @@ gh attestation verify "$ARTIFACT" --repo "$REPOSITORY" --signer-workflow "$REPOS
 uvx --from pypi-attestations==0.0.30 pypi-attestations verify pypi --repository "https://github.com/$REPOSITORY" "pypi:<distribution-filename>"
 ```
 
-### Four-hour Windows soak evidence
+### Optional extended Windows soak evidence
 
-Run this gate on a real Windows TrackMania host with the first-party
+Run this extended validation on a real Windows TrackMania host with the first-party
 `OpenPlanetEnvironmentFactory`, the signed plugin in School Mode and the map UID
-and geometry used by deterministic evaluation. Do not substitute fake actors or
-the bounded smoke test.
+and geometry used by deterministic evaluation. Use it for changes to runtime,
+transport or checkpoint durability; it is not required for every library
+release. Do not substitute fake actors or the bounded smoke test.
 
 1. Start a normal local run and keep the same code revision and `run_id` for the
    whole soak. Wait for a `train/checkpoint_completed` event before stopping it
@@ -189,7 +190,7 @@ the bounded smoke test.
    artifacts/<run-id>/checkpoints/<checkpoint>.pt`. Continue until a newer
    checkpoint completes, then stop the learner and actor. The sum of `elapsed_s`
    maxima across all process segments, excluding time between processes, must
-   be at least four hours.
+   be at least four hours when performing the extended soak.
 3. Run `uv run trackmaniarl benchmark run.yaml
    artifacts/<run-id>/checkpoints/<newer-checkpoint>.pt`. The configured release
    thresholds must pass and the resulting `evaluation.json` must contain no
