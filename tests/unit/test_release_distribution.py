@@ -135,7 +135,8 @@ def test_release_builds_once_and_verifies_canonical_bytes() -> None:
     assert "--write-checksums" in build_commands
     assert "--verify-checksums" in verify_commands
     assert "trackmaniarl --help" in verify_commands
-    assert "import torch, trackmaniarl" in verify_commands
+    assert "import importlib.metadata as m, os, torch, trackmaniarl" in verify_commands
+    assert "trackmaniarl.__version__ == installed == expected" in verify_commands
     assert "trackmaniarl init" in verify_commands
     assert "uv lock" in verify_commands
 

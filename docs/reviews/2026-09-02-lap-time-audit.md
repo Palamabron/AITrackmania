@@ -1,4 +1,4 @@
-# Lap-time audit of TrackmaniaRL 2.0 (PR #29) and the v104f setup
+# Lap-time audit of the RunSpec 2.0 branch (PR #29) and the v104f setup
 
 Date: 2026-09-02. Scope: the `feature/trackmaniarl-2.0-modular-refactor` branch at 7254afc and the
 live baseline `sub37-iqn-gnn-simba-v104f-s17-online-scratch` (IQN + neighbour-GNN + SimbaV2, from scratch,
@@ -311,7 +311,7 @@ Each cycle:
 * Exploration collapse: ε was still 0.139 at the end of v104f.
 * OOM / gRPC size limits / W&B exceptions as the crash cause: replay is 0.5 GB at 356k, all
   payloads < 6 MB of a 16 MiB cap, the tracker is fire-and-forget.
-* `velocity_to_mps_scale` / `limit_progress_by_kinematics` defaults changed on the 2.0 branch, but
+* `velocity_to_mps_scale` / `limit_progress_by_kinematics` defaults changed on the RunSpec 2.0 branch, but
   v104f sets both explicitly (1.0 / false): no effect on the project; template users beware.
 * Windowed nearest-point search losing the car: 0 mismatches vs brute force over 6,953 expert
   decision frames; the lookahead always contained the braking apex (max 73 m of 110 m).

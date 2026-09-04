@@ -188,7 +188,7 @@ def _collate_array_box(space: spaces.Box, values: Sequence[Any], path: str) -> t
 
 
 class TransitionFeaturePipeline:
-    """Collate finite standard transitions for TrackmaniaRL 2.0 learners."""
+    """Collate finite standard transitions for RunSpec 2.0 learners."""
 
     def __init__(self, observation_space: gymnasium.Space[Any] | None = None) -> None:
         self.observation_space = observation_space

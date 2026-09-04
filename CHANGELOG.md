@@ -1,6 +1,6 @@
 # Changelog
 
-## 2.0.0rc1 - 2026-08-28
+## 1.1.0 - 2026-09-04
 
 - Require RunSpec API 2.0 and compose discrete value models from a frame-only
   encoder, temporal core, head and value strategy.
@@ -100,6 +100,22 @@
 - Validate documented component constructor kwargs and public configuration
   field coverage, correct the RunSpec examples and defaults, and distinguish the
   off-policy architecture diagrams from the local PPO lifecycle.
+- Add a bounded actor-stall watchdog and fail closed when Trackmania stops
+  producing environment steps instead of leaving the learner running forever.
+- Add opt-in keyboard-informed exploration, body-frame GraphV2 observations and
+  directional predecessor/successor graph message passing for lap-time experiments.
+- Label completed online episodes with their measured finish pace and support
+  optional elite replay weighting without discarding prioritized-replay TD errors.
+- Validate episode ownership, outcome and finish-time semantics before durable
+  ingest, including the case where an episode summary arrives before its chunks.
+- Persist elite replay labels in checkpoint schema v2, restore schema v1 safely,
+  and expose elite replay activity through local and W&B metrics.
+- Let an unpacked source tree report an unknown development version when package
+  metadata is absent; built wheels still require the exact release metadata.
+- Package only the reviewed release scripts in source archives so ignored local
+  helpers and caches cannot enter an sdist through a broad file pattern.
+- Add a measured lap-time audit and an opt-in sub-37 candidate configuration;
+  experimental performance claims remain separate from the library release gate.
 
 ## 1.0.4 - 2026-08-19
 

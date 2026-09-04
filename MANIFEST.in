@@ -7,6 +7,9 @@ include SECURITY.md
 recursive-include readme *.md
 recursive-include docs/assets *.png
 recursive-include docs/diagrams *.md *.spec.json *.py *.excalidraw *.svg *.png *.html
-recursive-include scripts *.py
+include scripts/check_distribution.py scripts/fetch_analysis.py scripts/fetch_analysis_metrics.py
+include scripts/iteration_report.py scripts/iteration_report_rendering.py scripts/reward_point_plotting.py
+include scripts/soak_benchmark.py scripts/soak_evidence.py scripts/soak_report.py
+include scripts/soak_report_types.py scripts/soak_types.py scripts/verify_soak.py
 recursive-include tests *.py
 recursive-include trackmaniarl/project/openplanet *.as *.md *.toml

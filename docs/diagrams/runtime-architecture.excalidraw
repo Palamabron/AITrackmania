@@ -33,11 +33,11 @@
       "locked": false,
       "fontSize": 32,
       "fontFamily": 1,
-      "text": "TrackmaniaRL 2.0 off-policy runtime",
+      "text": "RunSpec 2.0 off-policy runtime",
       "textAlign": "left",
       "verticalAlign": "middle",
       "containerId": null,
-      "originalText": "TrackmaniaRL 2.0 off-policy runtime",
+      "originalText": "RunSpec 2.0 off-policy runtime",
       "autoResize": false,
       "lineHeight": 1.25
     },

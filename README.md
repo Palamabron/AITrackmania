@@ -15,11 +15,12 @@ Trackmania 2020. It combines ready-to-use algorithms, replay buffers, model
 families and Trackmania telemetry with explicit interfaces for replacing any
 component in an experiment.
 
-This checkout is the `2.0.0rc1` release candidate and supports Python 3.12. The
-[PyPI page](https://pypi.org/project/TrackmaniaRL/) reports the latest
-published package; if it still reports a 1.x version, use the
-[source setup](https://github.com/Palamabron/TrackmaniaRL/blob/main/readme/development.md#repository-setup)
-for the RunSpec 2.0 API documented here.
+This checkout is TrackmaniaRL `1.1.0` and supports Python 3.12. This package
+release introduces the breaking RunSpec 2.0 runtime and checkpoint contract;
+follow the [migration guide](https://github.com/Palamabron/TrackmaniaRL/blob/main/readme/migration-2.0.md)
+before reusing a 1.0 project or checkpoint. Pin `trackmaniarl==1.1.0` exactly
+during this transition; a compatible 1.x dependency range cannot express this
+intentional breaking boundary.
 
 ## What you get
 
@@ -62,7 +63,7 @@ component paths.
 Install the published CLI with [uv](https://docs.astral.sh/uv/):
 
 ```bash
-uv tool install --index https://download.pytorch.org/whl/cpu --with "torch==2.11.0+cpu" "trackmaniarl==2.0.0rc1"
+uv tool install --index https://download.pytorch.org/whl/cpu --with "torch==2.11.0+cpu" "trackmaniarl==1.1.0"
 trackmaniarl init my-trackmania-agent --template trackmania
 cd my-trackmania-agent
 uv sync
@@ -88,9 +89,9 @@ To add the SDK to an existing Python project instead, choose only the extras you
 need:
 
 ```bash
-uv add "trackmaniarl==2.0.0rc1"
-uv add "trackmaniarl[distributed]==2.0.0rc1"
-uv add "trackmaniarl[trackmania,distributed]==2.0.0rc1" "vgamepad @ git+https://github.com/Palamabron/vgamepad@5f3435df3f8a0e658feb58b207d9137cdb5183cd"
+uv add "trackmaniarl==1.1.0"
+uv add "trackmaniarl[distributed]==1.1.0"
+uv add "trackmaniarl[trackmania,distributed]==1.1.0" "vgamepad @ git+https://github.com/Palamabron/vgamepad@5f3435df3f8a0e658feb58b207d9137cdb5183cd"
 ```
 
 The CPU Torch override keeps the short-lived scaffolding tool lightweight; the

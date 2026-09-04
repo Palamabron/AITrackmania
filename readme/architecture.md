@@ -1,4 +1,4 @@
-# TrackmaniaRL 2.0 architecture
+# RunSpec 2.0 architecture
 
 RunSpec `2.0` selects explicit components. The core coordinates them, reusable
 learning mechanisms remain game-independent, and Trackmania-specific telemetry,
@@ -7,7 +7,7 @@ geometry and controls stay in `trackmaniarl.trackmania`.
 ## Off-policy runtime data flow
 
 <p align="center">
-  <img src="../docs/diagrams/runtime-architecture-preview.svg" alt="TrackmaniaRL 2.0 runtime architecture" width="900">
+  <img src="../docs/diagrams/runtime-architecture-preview.svg" alt="RunSpec 2.0 runtime architecture" width="900">
 </p>
 
 [Editable source](../docs/diagrams/runtime-architecture.excalidraw) ·
@@ -152,10 +152,10 @@ renaming its artifact directory does not change that identity.
 Warm-start is deliberately weaker than resume. It loads selected named
 submodules, copies only exact name/shape/dtype matches, reports every match and
 mismatch, and fails on zero matches or missing required tensors. Prefix
-remapping and partial-shape copying are unsupported. Pre-2.0 checkpoints are
-rejected instead of being translated implicitly. Exact resume restores the
-checkpoint state directly and does not require the original warm-start file to
-remain present.
+remapping and partial-shape copying are unsupported. Checkpoints from before the
+RunSpec 2.0 boundary are rejected instead of being translated implicitly. Exact
+resume restores the checkpoint state directly and does not require the original
+warm-start file to remain present.
 
 BC checkpoints use their own v2 schema and bind to an immutable dataset
 fingerprint. `bc-best-validation.pt` is a policy candidate;

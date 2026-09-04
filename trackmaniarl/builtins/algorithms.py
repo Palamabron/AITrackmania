@@ -1,4 +1,4 @@
-"""Lazy catalogue of first-class TrackmaniaRL 2.0 learners."""
+"""Lazy catalogue of first-class RunSpec 2.0 learners."""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""Ready-to-use TrackmaniaRL 2.0 algorithms, model families, replay and feature components."""
+"""Ready-to-use RunSpec 2.0 algorithms, model families, replay and feature components."""
 
 from trackmaniarl.builtins.algorithms import algorithm_class
 from trackmaniarl.builtins.features import GymnasiumObservationCollator, TransitionFeaturePipeline

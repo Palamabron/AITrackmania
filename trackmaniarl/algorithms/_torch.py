@@ -1,4 +1,4 @@
-"""Shared torch implementation details for TrackmaniaRL 2.0 learners."""
+"""Shared torch implementation details for RunSpec 2.0 learners."""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""CPU contract checks for the first-class TrackmaniaRL 2.0 learners."""
+"""CPU contract checks for the first-class RunSpec 2.0 learners."""
 
 from __future__ import annotations
 

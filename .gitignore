@@ -6,6 +6,7 @@
 # Local AI assistant instructions
 AGENTS.md
 CLAUDE.md
+.codex/
 
 # Vagrant
 .vagrant/

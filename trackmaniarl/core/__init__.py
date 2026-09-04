@@ -1,4 +1,4 @@
-"""Stable contracts and local training runtime for TrackmaniaRL 2.0."""
+"""Stable contracts and local training runtime for RunSpec 2.0."""
 
 from typing import Any
 

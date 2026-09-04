@@ -14,7 +14,7 @@ and include:
 
 Do not access other users' systems or data while investigating. The maintainer
 will acknowledge a complete report, assess severity and coordinate a fix and
-disclosure. Security fixes target the current `2.0` release-candidate line.
+disclosure. Security fixes target the current `1.1` release line.
 
 ## Trust boundaries
 

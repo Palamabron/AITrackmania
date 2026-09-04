@@ -1,5 +1,5 @@
 {
-  "title": "TrackmaniaRL 2.0 off-policy runtime",
+  "title": "RunSpec 2.0 off-policy runtime",
   "subtitle": "Accepted rollouts are durable before acknowledgement; only a checkpointed contiguous WAL frontier may be pruned.",
   "width": 1200,
   "height": 1060,

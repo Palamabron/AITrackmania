@@ -6,7 +6,7 @@ or offline-supervised lifecycle is executed. The same commands work in
 PowerShell, bash, WSL and CI.
 
 ```bash
-uv tool install --index https://download.pytorch.org/whl/cpu --with "torch==2.11.0+cpu" "trackmaniarl==2.0.0rc1"
+uv tool install --index https://download.pytorch.org/whl/cpu --with "torch==2.11.0+cpu" "trackmaniarl==1.1.0"
 trackmaniarl init my-trackmania-agent --template trackmania
 cd my-trackmania-agent
 uv sync
@@ -323,9 +323,9 @@ checklist.
 | `trackmaniarl.experiments` | evaluation suites and study strategies |
 | `trackmaniarl.project` | generated local extension project |
 
-The package-root exports below are the supported Python import surface for 2.0.
+The package-root exports below are the supported Python import surface for RunSpec 2.0.
 Anything prefixed with `_`, or absent from these exports and the documented
-component paths, is internal and may change between release candidates.
+component paths, is internal and may change between package releases.
 
 | Import root | Supported exports |
 | --- | --- |

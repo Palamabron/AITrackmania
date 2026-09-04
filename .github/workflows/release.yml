@@ -200,7 +200,7 @@ jobs:
         run: |
           wheel="$(realpath "$GITHUB_WORKSPACE"/dist/*.whl)"
           cd "$(mktemp -d)"
-          uv run --isolated --no-project --index "$TORCH_CPU_INDEX" --with "torch==$TORCH_CPU_VERSION" --with "$wheel" python -c "import torch, trackmaniarl; assert torch.version.cuda is None, torch.version.cuda; print(trackmaniarl.__version__)"
+          uv run --isolated --no-project --index "$TORCH_CPU_INDEX" --with "torch==$TORCH_CPU_VERSION" --with "$wheel" python -c "import importlib.metadata as m, os, torch, trackmaniarl; expected = os.environ['GITHUB_REF_NAME'].removeprefix('v'); installed = m.version('TrackmaniaRL'); assert torch.version.cuda is None, torch.version.cuda; assert trackmaniarl.__version__ == installed == expected, (trackmaniarl.__version__, installed, expected)"
 
       - name: Verify generated project on Linux
         if: runner.os == 'Linux'
@@ -229,7 +229,7 @@ jobs:
           $agentDir = Join-Path $testDir.FullName "agent"
           Push-Location $testDir.FullName
           try {
-            uv run --isolated --no-project --index "$env:TORCH_CPU_INDEX" --with "torch==$env:TORCH_CPU_VERSION" --with "$wheel" python -c "import torch, trackmaniarl; assert torch.version.cuda is None, torch.version.cuda; print(trackmaniarl.__version__)"
+            uv run --isolated --no-project --index "$env:TORCH_CPU_INDEX" --with "torch==$env:TORCH_CPU_VERSION" --with "$wheel" python -c "import importlib.metadata as m, os, torch, trackmaniarl; expected = os.environ['GITHUB_REF_NAME'].removeprefix('v'); installed = m.version('TrackmaniaRL'); assert torch.version.cuda is None, torch.version.cuda; assert trackmaniarl.__version__ == installed == expected, (trackmaniarl.__version__, installed, expected)"
             uv run --isolated --no-project --index "$env:TORCH_CPU_INDEX" --with "torch==$env:TORCH_CPU_VERSION" --with "$wheel" trackmaniarl --help
             uv run --isolated --no-project --index "$env:TORCH_CPU_INDEX" --with "torch==$env:TORCH_CPU_VERSION" --with "$wheel" trackmaniarl init "$agentDir"
           } finally {
