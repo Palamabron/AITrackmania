@@ -1,0 +1,71 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="960" viewBox="0 0 1200 960">
+<defs><marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="context-stroke"/></marker><filter id="shadow" x="-20%" y="-20%" width="140%" height="140%"><feDropShadow dx="0" dy="2" stdDeviation="3" flood-opacity=".14"/></filter></defs>
+<rect width="100%" height="100%" fill="#ffffff"/>
+<text x="55" y="61" text-anchor="start" font-family="Inter,Arial,sans-serif" font-size="32" fill="#111827"><tspan x="55" dy="0">Composable discrete-value model</tspan></text>
+<text x="55" y="99" text-anchor="start" font-family="Inter,Arial,sans-serif" font-size="18" fill="#64748b"><tspan x="55" dy="0">Scalar Q, QR-DQN, IQN and FQF share one sequence-safe learner; head and strategy determine the value</tspan><tspan x="55" dy="22.5">representation.</tspan></text>
+<rect x="40" y="145" width="1120" height="220" rx="14" fill="#dbeafe" fill-opacity=".35" stroke="#1864ab" stroke-width="1.5" stroke-dasharray="8 7"/>
+<text x="58" y="174" text-anchor="start" font-family="Inter,Arial,sans-serif" font-size="19" fill="#1864ab"><tspan x="58" dy="0">Representation path</tspan></text>
+<rect x="40" y="395" width="440" height="360" rx="14" fill="#cffafe" fill-opacity=".35" stroke="#087f8c" stroke-width="1.5" stroke-dasharray="8 7"/>
+<text x="58" y="424" text-anchor="start" font-family="Inter,Arial,sans-serif" font-size="19" fill="#087f8c"><tspan x="58" dy="0">Head + strategy</tspan></text>
+<rect x="510" y="395" width="650" height="400" rx="14" fill="#ede9fe" fill-opacity=".35" stroke="#7048e8" stroke-width="1.5" stroke-dasharray="8 7"/>
+<text x="528" y="424" text-anchor="start" font-family="Inter,Arial,sans-serif" font-size="19" fill="#7048e8"><tspan x="528" dy="0">Double-DQN update</tspan></text>
+<polyline points="290,255.0 350,255.0" fill="none" stroke="#1864ab" stroke-width="2.5" marker-end="url(#arrow)"/>
+<polyline points="570,255.0 630,255.0" fill="none" stroke="#1864ab" stroke-width="2.5" marker-end="url(#arrow)"/>
+<polyline points="850,255.0 910,255.0" fill="none" stroke="#2b8a3e" stroke-width="2.5" marker-end="url(#arrow)"/>
+<polyline points="1020,305 1020,380 160,380 160,465" fill="none" stroke="#087f8c" stroke-width="2.5" marker-end="url(#arrow)"/>
+<polyline points="1020,305 1045,305 1045,385 367,385 367,465" fill="none" stroke="#7048e8" stroke-width="2.5" marker-end="url(#arrow)"/>
+<polyline points="160,570 160,600 275,600 275,625" fill="none" stroke="#087f8c" stroke-width="2.5" marker-end="url(#arrow)"/>
+<polyline points="367,570 367,600 275,600 275,625" fill="none" stroke="#7048e8" stroke-width="2.5" marker-end="url(#arrow)"/>
+<polyline points="375,672 500,672 500,517 540,517" fill="none" stroke="#2b8a3e" stroke-width="2.5" marker-end="url(#arrow)"/>
+<polyline points="375,650 480,650 480,440 832,440 832,465" fill="none" stroke="#1864ab" stroke-width="2.5" marker-end="url(#arrow)"/>
+<polyline points="920,517.5 950,517.5" fill="none" stroke="#1864ab" stroke-width="2.5" marker-end="url(#arrow)"/>
+<polyline points="627,570 627,600 832,600 832,625" fill="none" stroke="#2b8a3e" stroke-width="2.5" marker-end="url(#arrow)"/>
+<polyline points="1040,570 1040,600 832,600 832,625" fill="none" stroke="#7048e8" stroke-width="2.5" marker-end="url(#arrow)"/>
+<polyline points="920,677.5 540,677.5" fill="none" stroke="#c92a2a" stroke-width="2.5" marker-end="url(#arrow)"/>
+<polyline points="627,720 627,775 1040,775 1040,720" fill="none" stroke="#7048e8" stroke-width="2.5" stroke-dasharray="8 7" marker-end="url(#arrow)"/>
+<rect x="744" y="753" width="176" height="25" rx="5" fill="#ffffff" fill-opacity=".92"/>
+<text x="832.0" y="770" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#7048e8"><tspan x="832.0" dy="0">after step</tspan></text>
+<rect x="70" y="205" width="220" height="100" rx="12" fill="#f1f5f9" stroke="#475569" stroke-width="2.5" filter="url(#shadow)"/>
+<text x="180.0" y="237.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="20" fill="#111827"><tspan x="180.0" dy="0">Sequence batch</tspan></text>
+<text x="180.0" y="265.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#475569"><tspan x="180.0" dy="0">n-step · masks ·</tspan><tspan x="180.0" dy="22.5">burn-in</tspan></text>
+<rect x="350" y="205" width="220" height="100" rx="12" fill="#dbeafe" stroke="#1864ab" stroke-width="2.5" filter="url(#shadow)"/>
+<text x="460.0" y="248.75" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="20" fill="#111827"><tspan x="460.0" dy="0">Frame adapter</tspan></text>
+<text x="460.0" y="276.75" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#475569"><tspan x="460.0" dy="0">[B,T,…] → [B·T,…]</tspan></text>
+<rect x="630" y="205" width="220" height="100" rx="12" fill="#dcfce7" stroke="#2b8a3e" stroke-width="2.5" filter="url(#shadow)"/>
+<text x="740.0" y="248.75" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="20" fill="#111827"><tspan x="740.0" dy="0">Sensor encoder</tspan></text>
+<text x="740.0" y="276.75" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#475569"><tspan x="740.0" dy="0">independent frames</tspan></text>
+<rect x="910" y="205" width="220" height="100" rx="12" fill="#ede9fe" stroke="#7048e8" stroke-width="2.5" filter="url(#shadow)"/>
+<text x="1020.0" y="237.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="20" fill="#111827"><tspan x="1020.0" dy="0">Temporal core</tspan></text>
+<text x="1020.0" y="265.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#475569"><tspan x="1020.0" dy="0">Identity · GRU ·</tspan><tspan x="1020.0" dy="22.5">Mamba</tspan></text>
+<rect x="70" y="465" width="180" height="105" rx="12" fill="#cffafe" stroke="#087f8c" stroke-width="2.5" filter="url(#shadow)"/>
+<text x="160.0" y="500.0" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="20" fill="#111827"><tspan x="160.0" dy="0">Value head</tspan></text>
+<text x="160.0" y="528.0" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#475569"><tspan x="160.0" dy="0">scalar · QR ·</tspan><tspan x="160.0" dy="22.5">IQN/FQF</tspan></text>
+<rect x="285" y="465" width="165" height="105" rx="12" fill="#ede9fe" stroke="#7048e8" stroke-width="2.5" filter="url(#shadow)"/>
+<text x="367.5" y="492" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="20" fill="#111827"><tspan x="367.5" dy="0">Value</tspan><tspan x="367.5" dy="25.0">strategy</tspan></text>
+<text x="367.5" y="545" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#475569"><tspan x="367.5" dy="0">support ·</tspan><tspan x="367.5" dy="22.5">expectation</tspan></text>
+<rect x="175" y="625" width="200" height="95" rx="12" fill="#ffedd5" stroke="#d97706" stroke-width="2.5" filter="url(#shadow)"/>
+<text x="275.0" y="655.0" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="20" fill="#111827"><tspan x="275.0" dy="0">Action values</tspan></text>
+<text x="275.0" y="683.0" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#475569"><tspan x="275.0" dy="0">[..., quantiles,</tspan><tspan x="275.0" dy="22.5">actions]</tspan></text>
+<rect x="540" y="465" width="175" height="105" rx="12" fill="#dcfce7" stroke="#2b8a3e" stroke-width="2.5" filter="url(#shadow)"/>
+<text x="627.5" y="492" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="20" fill="#111827"><tspan x="627.5" dy="0">Current</tspan><tspan x="627.5" dy="25.0">action</tspan></text>
+<text x="627.5" y="545" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#475569"><tspan x="627.5" dy="0">selected</tspan><tspan x="627.5" dy="22.5">distribution</tspan></text>
+<rect x="745" y="465" width="175" height="105" rx="12" fill="#dbeafe" stroke="#1864ab" stroke-width="2.5" filter="url(#shadow)"/>
+<text x="832.5" y="492" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="20" fill="#111827"><tspan x="832.5" dy="0">Online next</tspan><tspan x="832.5" dy="25.0">state</tspan></text>
+<text x="832.5" y="545" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#475569"><tspan x="832.5" dy="0">all actions →</tspan><tspan x="832.5" dy="22.5">argmax</tspan></text>
+<rect x="950" y="465" width="180" height="105" rx="12" fill="#ede9fe" stroke="#7048e8" stroke-width="2.5" filter="url(#shadow)"/>
+<text x="1040.0" y="492" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="20" fill="#111827"><tspan x="1040.0" dy="0">Target next</tspan><tspan x="1040.0" dy="25.0">state</tspan></text>
+<text x="1040.0" y="545" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#475569"><tspan x="1040.0" dy="0">evaluate</tspan><tspan x="1040.0" dy="22.5">selected argmax</tspan></text>
+<rect x="540" y="625" width="175" height="105" rx="12" fill="#ffedd5" stroke="#d97706" stroke-width="2.5" filter="url(#shadow)"/>
+<text x="627.5" y="660.0" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="20" fill="#111827"><tspan x="627.5" dy="0">Optimizers</tspan></text>
+<text x="627.5" y="688.0" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#475569"><tspan x="627.5" dy="0">main · FQF</tspan><tspan x="627.5" dy="22.5">fraction</tspan></text>
+<rect x="745" y="625" width="175" height="105" rx="12" fill="#fee2e2" stroke="#c92a2a" stroke-width="2.5" filter="url(#shadow)"/>
+<text x="832.5" y="652" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="20" fill="#111827"><tspan x="832.5" dy="0">Loss +</tspan><tspan x="832.5" dy="25.0">priority</tspan></text>
+<text x="832.5" y="705" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#475569"><tspan x="832.5" dy="0">TD/quantile</tspan><tspan x="832.5" dy="22.5">loss · PER</tspan></text>
+<rect x="950" y="625" width="180" height="105" rx="12" fill="#ede9fe" stroke="#7048e8" stroke-width="2.5" filter="url(#shadow)"/>
+<text x="1040.0" y="660.0" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="20" fill="#111827"><tspan x="1040.0" dy="0">Target sync</tspan></text>
+<text x="1040.0" y="688.0" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#475569"><tspan x="1040.0" dy="0">parameters +</tspan><tspan x="1040.0" dy="22.5">buffers</tspan></text>
+<rect x="75" y="815" width="1050" height="60" rx="10" fill="#cffafe" stroke="#087f8c" stroke-width="1.5"/>
+<text x="89" y="846" text-anchor="start" font-family="Inter,Arial,sans-serif" font-size="18" fill="#1f2937"><tspan x="89" dy="0">Valid pairs: ScalarQ + Scalar · FixedQuantile + Fixed · ImplicitQuantile + Random (IQN) or Learned</tspan><tspan x="89" dy="22.5">fractions (FQF).</tspan></text>
+<rect x="75" y="885" width="1050" height="65" rx="10" fill="#fee2e2" stroke="#c92a2a" stroke-width="1.5"/>
+<text x="89" y="916" text-anchor="start" font-family="Inter,Arial,sans-serif" font-size="18" fill="#1f2937"><tspan x="89" dy="0">Expectation owns the quantile axis. Selected-action priorities add a singleton action axis and are</tspan><tspan x="89" dy="22.5">validated before backward.</tspan></text>
+</svg>

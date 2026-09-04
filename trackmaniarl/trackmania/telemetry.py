@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import socket
 import struct
+from collections.abc import Callable
 from dataclasses import dataclass
 from time import monotonic, sleep
+from typing import Never
 
 import numpy as np
 
 DEFAULT_TELEMETRY_FIELD_COUNT = 33
-"""Number of float32 values emitted by the supported TrackmaniaRL_GrabData plugin."""
+"""Number of float32 values emitted by TrackmaniaRL Connect / SAC_GetData 2.4.0."""
 
 DEFAULT_POSITION_INDICES = (4, 5, 6)
 """``api.Position`` X/Y/Z offsets in the supported 33-field telemetry packet."""
@@ -24,27 +26,35 @@ class TelemetryFrame:
     """One validated OpenPlanet packet represented as immutable float values."""
 
     values: np.ndarray
+    skipped_frames: int = 0
 
     def __post_init__(self) -> None:
         if self.values.ndim != 1 or not np.isfinite(self.values).all():
             raise ValueError("Telemetry must be a finite one-dimensional float vector")
+        if isinstance(self.skipped_frames, bool) or not isinstance(self.skipped_frames, int):
+            raise TypeError("skipped_frames must be an integer")
+        if self.skipped_frames < 0:
+            raise ValueError("skipped_frames must be non-negative")
+
+
+@dataclass(frozen=True, slots=True)
+class OpenPlanetClientConfig:
+    host: str = "127.0.0.1"
+    port: int = 9000
+    timeout_s: float = 10.0
 
 
 class OpenPlanetClient:
     """Synchronous latest-frame client with explicit packet and timeout validation."""
 
-    def __init__(
-        self,
-        host: str = "127.0.0.1",
-        port: int = 9000,
-        *,
-        field_count: int = DEFAULT_TELEMETRY_FIELD_COUNT,
-        timeout_s: float = 10.0,
-    ) -> None:
-        if port < 1 or field_count < 1 or timeout_s <= 0:
-            raise ValueError("port, field_count, and timeout_s must be positive")
-        self.host, self.port, self.field_count, self.timeout_s = host, port, field_count, timeout_s
-        self._packet = struct.Struct("<" + "f" * field_count)
+    def __init__(self, config: OpenPlanetClientConfig | None = None) -> None:
+        config = config or OpenPlanetClientConfig()
+        if config.port < 1 or config.timeout_s <= 0:
+            raise ValueError("port and timeout_s must be positive")
+        self.host = config.host
+        self.port = config.port
+        self.timeout_s = config.timeout_s
+        self._packet = struct.Struct("<" + "f" * DEFAULT_TELEMETRY_FIELD_COUNT)
         self._socket: socket.socket | None = None
         self._buffer = bytearray()
 
@@ -62,18 +72,18 @@ class OpenPlanetClient:
         data and retain only its most recent complete frame.  A trailing
         partial frame remains buffered for the next call.
         """
-        return self._read(drain_queued=True)
+        return self._read(self._read_latest_connected)
 
     def read_next(self) -> TelemetryFrame:
         """Return the oldest complete frame without dropping queued telemetry."""
 
-        return self._read(drain_queued=False)
+        return self._read(self._read_next_connected)
 
-    def _read(self, *, drain_queued: bool) -> TelemetryFrame:
+    def _read(self, read_connected: Callable[[], TelemetryFrame]) -> TelemetryFrame:
         reconnect_deadline = monotonic() + self.timeout_s
         while True:
             try:
-                return self._read_connected(drain_queued=drain_queued)
+                return read_connected()
             except ConnectionError as error:
                 self.close()
                 remaining_s = reconnect_deadline - monotonic()
@@ -84,42 +94,57 @@ class OpenPlanetClient:
                     ) from error
                 sleep(min(0.1, remaining_s))
 
-    def _read_connected(self, *, drain_queued: bool) -> TelemetryFrame:
+    def _read_next_connected(self) -> TelemetryFrame:
+        return self._frame(self._receive_packet(), skipped_frames=0)
+
+    def _read_latest_connected(self) -> TelemetryFrame:
+        packet = self._receive_packet()
+        peer_closed = self._drain_queued_frames()
+        packet, skipped_frames = self._take_latest_packet(packet)
+        frame = self._frame(packet, skipped_frames)
+        if peer_closed:
+            self.close()
+        return frame
+
+    def _receive_packet(self) -> bytes:
         self.connect()
         assert self._socket is not None
         while len(self._buffer) < self._packet.size:
             try:
                 chunk = self._socket.recv(self._packet.size - len(self._buffer))
             except TimeoutError as error:
-                self.close()
-                raise TimeoutError(
-                    "OpenPlanet accepted the telemetry connection but sent no complete "
-                    f"{self._packet.size}-byte frame within {self.timeout_s:g}s. "
-                    "In OpenPlanet, disable every legacy TrackmaniaRL_GrabData plugin, keep only "
-                    "TrackmaniaRL_GrabData_IQN enabled, reload it, then enter the loaded map with "
-                    "a visible vehicle."
-                ) from error
+                self._raise_receive_timeout(error)
             if not chunk:
                 self.close()
                 raise ConnectionError("OpenPlanet closed the telemetry connection")
             self._buffer.extend(chunk)
-        packet = self._take_oldest_packet()
-        peer_closed = False
-        if drain_queued:
-            peer_closed = self._drain_queued_frames()
-            while len(self._buffer) >= self._packet.size:
-                packet = self._take_oldest_packet()
+        return self._take_oldest_packet()
+
+    def _raise_receive_timeout(self, error: TimeoutError) -> Never:
+        self.close()
+        raise TimeoutError(
+            "OpenPlanet accepted the telemetry connection but sent no complete "
+            f"{self._packet.size}-byte frame within {self.timeout_s:g}s. "
+            "In Openplanet Plugin Manager, keep only the signed TrackmaniaRL Connect "
+            "(SAC_GetData) 2.4.0 plugin enabled, enable School Mode, then enter the "
+            "configured local map with a visible vehicle."
+        ) from error
+
+    def _take_latest_packet(self, packet: bytes) -> tuple[bytes, int]:
+        skipped_frames = 0
+        while len(self._buffer) >= self._packet.size:
+            packet = self._take_oldest_packet()
+            skipped_frames += 1
+        return packet, skipped_frames
+
+    def _frame(self, packet: bytes, skipped_frames: int) -> TelemetryFrame:
         values = np.asarray(self._packet.unpack(packet), dtype=np.float32)
         self._validate_grab_data(values)
-        if peer_closed:
-            self.close()
-        return TelemetryFrame(values)
+        return TelemetryFrame(values, skipped_frames=skipped_frames)
 
     def _validate_grab_data(self, values: np.ndarray) -> None:
-        """Apply domain checks for the supported 33-field TrackmaniaRL_GrabData schema."""
+        """Apply domain checks for the supported 33-field SAC_GetData schema."""
 
-        if self.field_count != DEFAULT_TELEMETRY_FIELD_COUNT:
-            return
         speed = float(values[16])
         if not 0.0 <= speed <= 2_500.0:
             raise ValueError(f"telemetry speed is outside the valid range: {speed}")
@@ -137,21 +162,23 @@ class OpenPlanetClient:
 
         assert self._socket is not None
         previous_timeout = self._socket.gettimeout()
-        peer_closed = False
         self._socket.setblocking(False)
         try:
-            while True:
-                try:
-                    chunk = self._socket.recv(64 * 1024)
-                except BlockingIOError:
-                    break
-                if not chunk:
-                    peer_closed = True
-                    break
-                self._buffer.extend(chunk)
+            peer_closed = self._receive_available()
         finally:
             self._socket.settimeout(previous_timeout)
         return peer_closed
+
+    def _receive_available(self) -> bool:
+        assert self._socket is not None
+        while True:
+            try:
+                chunk = self._socket.recv(64 * 1024)
+            except BlockingIOError:
+                return False
+            if not chunk:
+                return True
+            self._buffer.extend(chunk)
 
     def close(self) -> None:
         if self._socket is not None:

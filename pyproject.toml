@@ -1,10 +1,10 @@
 [build-system]
-requires = ["setuptools>=83"]
+requires = ["setuptools==83.0.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "TrackmaniaRL"
-version = "1.0.4"
+version = "1.1.0"
 description = "Reinforcement-learning library for training agents in Trackmania 2020"
 readme = "README.md"
 license = "MIT"
@@ -30,7 +30,7 @@ classifiers = [
     "Topic :: Games/Entertainment",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
-requires-python = ">=3.12"
+requires-python = ">=3.12,<3.13"
 dependencies = [
     "pydantic>=2.0",
     "numpy>=1.24",
@@ -38,6 +38,7 @@ dependencies = [
     "tensordict>=0.6",
     "gymnasium>=0.29",
     "PyYAML>=6.0",
+    "zstandard>=0.23",
 ]
 
 [project.optional-dependencies]
@@ -45,15 +46,7 @@ orchestrator = [
     "google-genai>=2.2.0",
     "optuna>=3.0",
 ]
-algorithms = [
-    "einops>=0.7",
-    "gymnasium>=0.29",
-    "loguru>=0.7",
-    "pandas>=2.0",
-    "torchrl>=0.11",
-]
 trackmania = [
-    "gymnasium>=0.29",
     "libevdev>=0.13; sys_platform == 'linux'",
     "vgamepad>=0.1.0; sys_platform == 'win32' or sys_platform == 'linux'",
 ]
@@ -64,17 +57,20 @@ distributed = [
     "grpcio>=1.66",
     "protobuf>=5.27",
     "safetensors>=0.4.5",
-    "zstandard>=0.23",
-    "libevdev>=0.13; sys_platform == 'linux'",
-    "vgamepad>=0.1.0; sys_platform == 'win32' or sys_platform == 'linux'",
-]
-explain = [
-    "captum>=0.7",
-]
-vision = [
-    "torchvision>=0.15",
 ]
 mamba = [
+    "causal-conv1d>=1.4; sys_platform == 'linux'",
+    "mamba-ssm>=2.2; sys_platform == 'linux'",
+]
+all = [
+    "google-genai>=2.2.0",
+    "optuna>=3.0",
+    "libevdev>=0.13; sys_platform == 'linux'",
+    "vgamepad>=0.1.0; sys_platform == 'win32' or sys_platform == 'linux'",
+    "wandb>=0.15.8",
+    "grpcio>=1.66",
+    "protobuf>=5.27",
+    "safetensors>=0.4.5",
     "causal-conv1d>=1.4; sys_platform == 'linux'",
     "mamba-ssm>=2.2; sys_platform == 'linux'",
 ]
@@ -82,17 +78,20 @@ mamba = [
 [tool.uv]
 default-groups = ["dev"]
 no-build-isolation-package = ["causal-conv1d", "mamba-ssm"]
+constraint-dependencies = [
+    "torch==2.11.0+cu128; sys_platform == 'win32' or sys_platform == 'linux'",
+    "torch==2.11.0; sys_platform != 'win32' and sys_platform != 'linux'",
+]
 
 [tool.uv.extra-build-dependencies]
 causal-conv1d = ["torch", "setuptools", "wheel", "packaging", "ninja"]
 mamba-ssm = ["torch", "setuptools", "wheel", "packaging", "ninja"]
 
 [tool.uv.sources]
-# TrackMania hosts on Windows and Linux use the tested CUDA wheels. Other
-# platforms use the CPU index and can override it for ROCm or another backend.
+# TrackMania training hosts use the tested CUDA wheels. Other platforms use
+# their native PyTorch package and can override it for another backend.
 torch = [
     { index = "pytorch-cuda", marker = "sys_platform == 'win32' or sys_platform == 'linux'" },
-    { index = "pytorch-cpu", marker = "sys_platform != 'win32' and sys_platform != 'linux'" },
 ]
 vgamepad = { git = "https://github.com/Palamabron/vgamepad", rev = "5f3435df3f8a0e658feb58b207d9137cdb5183cd" }
 
@@ -108,51 +107,35 @@ explicit = true
 
 [dependency-groups]
 dev = [
-    "einops>=0.7",
-    "gymnasium>=0.29",
-    "loguru>=0.7",
     "mypy>=1.8",
-    "pandas>=2.0",
     "poethepoet>=0.36",
-    "pyinstrument",
     "ruff>=0.4",
     "pytest>=7.0",
-    "torchrl>=0.11",
     "types-PyYAML",
     "grpcio>=1.66",
     "protobuf>=5.27",
     "safetensors>=0.4.5",
-    "zstandard>=0.23",
     "libevdev>=0.13; sys_platform == 'linux'",
     "vgamepad>=0.1.0; sys_platform == 'win32' or sys_platform == 'linux'",
     "wandb>=0.15.8",
+    "matplotlib>=3.10.8",
+    "plotly>=7.0.0",
 ]
 
 [project.scripts]
 trackmaniarl = "trackmaniarl.__main__:entrypoint"
 
 [project.urls]
-Homepage = "https://github.com/Palamabron/AITrackmania"
-Repository = "https://github.com/Palamabron/AITrackmania"
-Documentation = "https://github.com/Palamabron/AITrackmania/tree/main/readme"
-Issues = "https://github.com/Palamabron/AITrackmania/issues"
-Changelog = "https://github.com/Palamabron/AITrackmania/blob/main/CHANGELOG.md"
-Security = "https://github.com/Palamabron/AITrackmania/blob/main/SECURITY.md"
+Homepage = "https://github.com/Palamabron/TrackmaniaRL"
+Repository = "https://github.com/Palamabron/TrackmaniaRL"
+Documentation = "https://github.com/Palamabron/TrackmaniaRL/tree/main/readme"
+Issues = "https://github.com/Palamabron/TrackmaniaRL/issues"
+Changelog = "https://github.com/Palamabron/TrackmaniaRL/blob/main/CHANGELOG.md"
+Security = "https://github.com/Palamabron/TrackmaniaRL/blob/main/SECURITY.md"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = [
-    "trackmaniarl",
-    "trackmaniarl.algorithms*",
-    "trackmaniarl.builtins*",
-    "trackmaniarl.core*",
-    "trackmaniarl.distributed*",
-    "trackmaniarl.experiments*",
-    "trackmaniarl.models*",
-    "trackmaniarl.observability*",
-    "trackmaniarl.project*",
-    "trackmaniarl.trackmania*",
-]
+include = ["trackmaniarl*"]
 exclude = ["tests*"]
 
 [tool.setuptools.package-data]
@@ -173,24 +156,38 @@ select = [
     "W",    # pycodestyle warnings
     "UP",   # pyupgrade
     "B",    # flake8-bugbear (common bug patterns)
+    "ANN",  # require annotations on every function signature
     "SIM",  # flake8-simplify (simplifiable constructs)
     "RUF",  # ruff-specific rules
     "C4",   # flake8-comprehensions (unnecessary list/dict/set calls)
     "PT",   # flake8-pytest-style (test files)
+    "TID",  # enforce absolute imports
+    "FBT001",  # reject boolean positional parameters
+    "FBT002",  # reject boolean default parameters
+    "PLR0913", # cap caller-visible arguments
 ]
 ignore = [
+    "ANN401",  # Any is required at dynamic plugin and PyTree boundaries
     "N999",  # allow PascalCase module names (e.g. trackmaniarl/custom/models/Sophy.py)
     "N812",  # allow F for torch.nn.functional (PyTorch convention)
 ]
 # RUF022 (__all__ sort) defaults to "unsafe"; allow it under `ruff check --fix` / `uv run poe fmt`.
 extend-safe-fixes = ["RUF022"]
 
+[tool.ruff.lint.pylint]
+max-args = 3
+
 [tool.pytest.ini_options]
+addopts = [
+    "--basetemp=.pytest-cache/tmp",
+    "--strict-config",
+    "--strict-markers",
+]
+cache_dir = ".pytest-cache/cache"
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
-addopts = "--basetemp=.pytest-tmp"
 
 [tool.poe.tasks]
 fmt = [
@@ -211,8 +208,6 @@ check_untyped_defs = true
 
 [[tool.mypy.overrides]]
 module = [
-    "captum",
-    "captum.*",
     "google",
     "google.*",
     "grpc",

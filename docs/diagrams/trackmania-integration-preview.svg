@@ -1,0 +1,75 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="1025" viewBox="0 0 1200 1025">
+<defs><marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="context-stroke"/></marker><filter id="shadow" x="-20%" y="-20%" width="140%" height="140%"><feDropShadow dx="0" dy="2" stdDeviation="3" flood-opacity=".14"/></filter></defs>
+<rect width="100%" height="100%" fill="#ffffff"/>
+<text x="55" y="61" text-anchor="start" font-family="Inter,Arial,sans-serif" font-size="32" fill="#111827"><tspan x="55" dy="0">Trackmania and Openplanet integration</tspan></text>
+<text x="55" y="99" text-anchor="start" font-family="Inter,Arial,sans-serif" font-size="18" fill="#64748b"><tspan x="55" dy="0">The signed plugin observes the game; TrackmaniaRL validates the session, builds features and controls the car</tspan><tspan x="55" dy="22.5">through a separate local backend.</tspan></text>
+<rect x="35" y="145" width="245" height="655" rx="14" fill="#dbeafe" fill-opacity=".35" stroke="#1864ab" stroke-width="1.5" stroke-dasharray="8 7"/>
+<text x="53" y="174" text-anchor="start" font-family="Inter,Arial,sans-serif" font-size="19" fill="#1864ab"><tspan x="53" dy="0">Trackmania 2020 ·</tspan><tspan x="53" dy="23.75">School Mode</tspan></text>
+<rect x="310" y="145" width="280" height="655" rx="14" fill="#ffedd5" fill-opacity=".35" stroke="#d97706" stroke-width="1.5" stroke-dasharray="8 7"/>
+<text x="328" y="174" text-anchor="start" font-family="Inter,Arial,sans-serif" font-size="19" fill="#d97706"><tspan x="328" dy="0">Signed Openplanet</tspan><tspan x="328" dy="23.75">plugin</tspan></text>
+<rect x="620" y="145" width="330" height="655" rx="14" fill="#dcfce7" fill-opacity=".35" stroke="#2b8a3e" stroke-width="1.5" stroke-dasharray="8 7"/>
+<text x="638" y="174" text-anchor="start" font-family="Inter,Arial,sans-serif" font-size="19" fill="#2b8a3e"><tspan x="638" dy="0">TrackmaniaRL adapter</tspan></text>
+<rect x="980" y="145" width="185" height="655" rx="14" fill="#ede9fe" fill-opacity=".35" stroke="#7048e8" stroke-width="1.5" stroke-dasharray="8 7"/>
+<text x="998" y="174" text-anchor="start" font-family="Inter,Arial,sans-serif" font-size="19" fill="#7048e8"><tspan x="998" dy="0">Separate</tspan><tspan x="998" dy="23.75">control path</tspan></text>
+<polyline points="255,272.5 340,272.5" fill="none" stroke="#1864ab" stroke-width="2.5" marker-end="url(#arrow)"/>
+<rect x="209.5" y="232.5" width="176" height="25" rx="5" fill="#ffffff" fill-opacity=".92"/>
+<text x="297.5" y="249.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#1864ab"><tspan x="297.5" dy="0">inspect</tspan></text>
+<polyline points="255,472.5 340,472.5" fill="none" stroke="#1864ab" stroke-width="2.5" marker-end="url(#arrow)"/>
+<rect x="209.5" y="432.5" width="176" height="25" rx="5" fill="#ffffff" fill-opacity=".92"/>
+<text x="297.5" y="449.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#1864ab"><tspan x="297.5" dy="0">observe</tspan></text>
+<polyline points="450,325 450,420" fill="none" stroke="#d97706" stroke-width="2.5" marker-end="url(#arrow)"/>
+<polyline points="560,272 585,272 585,697 560,697" fill="none" stroke="#d97706" stroke-width="2.5" marker-end="url(#arrow)"/>
+<polyline points="560,697 605,697 605,272 660,272" fill="none" stroke="#c92a2a" stroke-width="2.5" marker-end="url(#arrow)"/>
+<rect x="517" y="348" width="176" height="25" rx="5" fill="#ffffff" fill-opacity=".92"/>
+<text x="605.0" y="365" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#c92a2a"><tspan x="605.0" dy="0">verify</tspan></text>
+<polyline points="560,472.5 660,472.5" fill="none" stroke="#d97706" stroke-width="2.5" marker-end="url(#arrow)"/>
+<polyline points="785,325 785,600" fill="none" stroke="#c92a2a" stroke-width="2.5" marker-end="url(#arrow)"/>
+<rect x="762" y="528" width="176" height="25" rx="5" fill="#ffffff" fill-opacity=".92"/>
+<text x="850.0" y="545" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#c92a2a"><tspan x="850.0" dy="0">open gate</tspan></text>
+<polyline points="785,525 785,600" fill="none" stroke="#2b8a3e" stroke-width="2.5" marker-end="url(#arrow)"/>
+<polyline points="785,705 785,710" fill="none" stroke="#2b8a3e" stroke-width="2.5" marker-end="url(#arrow)"/>
+<polyline points="1072,405 1072,520" fill="none" stroke="#7048e8" stroke-width="2.5" marker-end="url(#arrow)"/>
+<polyline points="1072,625 1072,820 20,820 20,697 60,697" fill="none" stroke="#7048e8" stroke-width="2.5" marker-end="url(#arrow)"/>
+<rect x="457" y="798" width="176" height="25" rx="5" fill="#ffffff" fill-opacity=".92"/>
+<text x="545.0" y="815" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#7048e8"><tspan x="545.0" dy="0">local input only</tspan></text>
+<rect x="60" y="220" width="195" height="105" rx="12" fill="#dbeafe" stroke="#1864ab" stroke-width="2.5" filter="url(#shadow)"/>
+<text x="157.5" y="255.0" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="20" fill="#111827"><tspan x="157.5" dy="0">Active map</tspan></text>
+<text x="157.5" y="283.0" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#475569"><tspan x="157.5" dy="0">UID · player ·</tspan><tspan x="157.5" dy="22.5">readiness</tspan></text>
+<rect x="60" y="420" width="195" height="105" rx="12" fill="#dbeafe" stroke="#1864ab" stroke-width="2.5" filter="url(#shadow)"/>
+<text x="157.5" y="455.0" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="20" fill="#111827"><tspan x="157.5" dy="0">Vehicle state</tspan></text>
+<text x="157.5" y="483.0" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#475569"><tspan x="157.5" dy="0">race · pose ·</tspan><tspan x="157.5" dy="22.5">controls</tspan></text>
+<rect x="60" y="650" width="195" height="95" rx="12" fill="#ede9fe" stroke="#7048e8" stroke-width="2.5" filter="url(#shadow)"/>
+<text x="157.5" y="680.0" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="20" fill="#111827"><tspan x="157.5" dy="0">Game input</tspan></text>
+<text x="157.5" y="708.0" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#475569"><tspan x="157.5" dy="0">steer · gas ·</tspan><tspan x="157.5" dy="22.5">brake</tspan></text>
+<rect x="340" y="220" width="220" height="105" rx="12" fill="#ffedd5" stroke="#d97706" stroke-width="2.5" filter="url(#shadow)"/>
+<text x="450.0" y="247" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="20" fill="#111827"><tspan x="450.0" dy="0">TrackmaniaRL</tspan><tspan x="450.0" dy="25.0">Connect</tspan></text>
+<text x="450.0" y="300" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#475569"><tspan x="450.0" dy="0">SAC_GetData ·</tspan><tspan x="450.0" dy="22.5">signed 2.4.0</tspan></text>
+<rect x="340" y="420" width="220" height="105" rx="12" fill="#ffedd5" stroke="#d97706" stroke-width="2.5" filter="url(#shadow)"/>
+<text x="450.0" y="455.0" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="20" fill="#111827"><tspan x="450.0" dy="0">Telemetry :9000</tspan></text>
+<text x="450.0" y="483.0" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#475569"><tspan x="450.0" dy="0">33 little-endian</tspan><tspan x="450.0" dy="22.5">float32 per tick</tspan></text>
+<rect x="340" y="650" width="220" height="95" rx="12" fill="#ffedd5" stroke="#d97706" stroke-width="2.5" filter="url(#shadow)"/>
+<text x="450.0" y="680.0" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="20" fill="#111827"><tspan x="450.0" dy="0">Session :9001</tspan></text>
+<text x="450.0" y="708.0" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#475569"><tspan x="450.0" dy="0">JSONL protocol 2 ·</tspan><tspan x="450.0" dy="22.5">map · ready</tspan></text>
+<rect x="660" y="220" width="250" height="105" rx="12" fill="#fee2e2" stroke="#c92a2a" stroke-width="2.5" filter="url(#shadow)"/>
+<text x="785.0" y="255.0" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="20" fill="#111827"><tspan x="785.0" dy="0">Live preflight</tspan></text>
+<text x="785.0" y="283.0" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#475569"><tspan x="785.0" dy="0">schema · UID ·</tspan><tspan x="785.0" dy="22.5">readiness · hashes</tspan></text>
+<rect x="660" y="420" width="250" height="105" rx="12" fill="#dcfce7" stroke="#2b8a3e" stroke-width="2.5" filter="url(#shadow)"/>
+<text x="785.0" y="466.25" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="20" fill="#111827"><tspan x="785.0" dy="0">Telemetry client</tspan></text>
+<text x="785.0" y="494.25" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#475569"><tspan x="785.0" dy="0">framing · value checks</tspan></text>
+<rect x="660" y="600" width="250" height="105" rx="12" fill="#dcfce7" stroke="#2b8a3e" stroke-width="2.5" filter="url(#shadow)"/>
+<text x="785.0" y="635.0" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="20" fill="#111827"><tspan x="785.0" dy="0">Features + reward</tspan></text>
+<text x="785.0" y="663.0" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#475569"><tspan x="785.0" dy="0">lidar · geometry ·</tspan><tspan x="785.0" dy="22.5">pace · safety</tspan></text>
+<rect x="660" y="710" width="250" height="80" rx="12" fill="#cffafe" stroke="#087f8c" stroke-width="2.5" filter="url(#shadow)"/>
+<text x="785.0" y="737" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="20" fill="#111827"><tspan x="785.0" dy="0">Transition</tspan></text>
+<text x="785.0" y="765" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#475569"><tspan x="785.0" dy="0">contract IDs · policy</tspan><tspan x="785.0" dy="22.5">version</tspan></text>
+<rect x="995" y="300" width="155" height="105" rx="12" fill="#ede9fe" stroke="#7048e8" stroke-width="2.5" filter="url(#shadow)"/>
+<text x="1072.5" y="327" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="20" fill="#111827"><tspan x="1072.5" dy="0">Policy</tspan><tspan x="1072.5" dy="25.0">action</tspan></text>
+<text x="1072.5" y="380" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#475569"><tspan x="1072.5" dy="0">validated</tspan><tspan x="1072.5" dy="22.5">action table</tspan></text>
+<rect x="995" y="520" width="155" height="105" rx="12" fill="#ede9fe" stroke="#7048e8" stroke-width="2.5" filter="url(#shadow)"/>
+<text x="1072.5" y="555.0" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="20" fill="#111827"><tspan x="1072.5" dy="0">Controller</tspan></text>
+<text x="1072.5" y="583.0" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#475569"><tspan x="1072.5" dy="0">vgamepad or</tspan><tspan x="1072.5" dy="22.5">keyboard</tspan></text>
+<rect x="75" y="855" width="1050" height="65" rx="10" fill="#ffedd5" stroke="#d97706" stroke-width="1.5"/>
+<text x="89" y="886" text-anchor="start" font-family="Inter,Arial,sans-serif" font-size="18" fill="#1f2937"><tspan x="89" dy="0">Plugin boundary: no track geometry, boundary extraction, map-file loader, controller, timestamp or</tspan><tspan x="89" dy="22.5">version handshake.</tspan></text>
+<rect x="75" y="940" width="1050" height="70" rx="10" fill="#f1f5f9" stroke="#475569" stroke-width="1.5"/>
+<text x="89" y="971" text-anchor="start" font-family="Inter,Arial,sans-serif" font-size="18" fill="#1f2937"><tspan x="89" dy="0">Exact BoundaryGeometry still comes from a map-bound, checksummed asset; Openplanet placement metadata</tspan><tspan x="89" dy="22.5">is not an ordered drivable boundary.</tspan></text>
+</svg>

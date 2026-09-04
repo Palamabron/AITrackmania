@@ -2,12 +2,23 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
 
 import numpy as np
 
+from trackmaniarl.trackmania.geometry_types import GeometryBuildRequest
+
 GEOMETRY_ASSET_VERSION = "1"
+type _LineTriple = tuple[np.ndarray, np.ndarray, np.ndarray]
+
+
+@dataclass(frozen=True, slots=True)
+class _CurvatureProjection:
+    origin: np.ndarray
+    corridor: np.ndarray
+    denominator: np.ndarray
 
 
 def file_sha256(path: str | Path) -> str:
@@ -46,6 +57,18 @@ def _validate_geometry_points(points: np.ndarray) -> np.ndarray:
     return values
 
 
+def _validate_reward_line(points: np.ndarray) -> None:
+    segments = np.diff(points, axis=0)
+    lengths = np.linalg.norm(segments, axis=1)
+    if np.any(lengths <= 0.0):
+        raise ValueError("geometry reward line contains adjacent duplicate points")
+    directions = segments / lengths[:, None]
+    if len(directions) > 1 and np.any(
+        np.linalg.norm(directions[:-1] + directions[1:], axis=1) <= 1.0e-6
+    ):
+        raise ValueError("geometry reward line contains a zero-length local tangent")
+
+
 def _segment_lengths(points: np.ndarray) -> np.ndarray:
     return np.asarray(np.linalg.norm(np.diff(points, axis=0), axis=1), dtype=np.float64)
 
@@ -63,14 +86,10 @@ def _resample(points: np.ndarray, count: int) -> np.ndarray:
     )
 
 
-def _resample_matching(
-    left: np.ndarray,
-    right: np.ndarray,
-    center: np.ndarray,
-    count: int,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+def _resample_matching(lines: _LineTriple, count: int) -> _LineTriple:
     """Re-sample paired boundaries uniformly along the centerline arc length."""
 
+    left, right, center = lines
     arc = np.r_[0.0, np.cumsum(_segment_lengths(center))]
     if float(arc[-1]) <= 1e-4:
         raise ValueError("centerline has zero arc length")
@@ -105,29 +124,32 @@ def _smooth_polyline(points: np.ndarray, window: int) -> np.ndarray:
     return out.astype(np.float32)
 
 
-def _minimum_curvature_line(
-    left: np.ndarray,
-    right: np.ndarray,
-    center: np.ndarray,
-    *,
-    iterations: int = 256,
-    edge_margin_fraction: float = 0.12,
-) -> np.ndarray:
+def _minimum_curvature_line(left: np.ndarray, right: np.ndarray, center: np.ndarray) -> np.ndarray:
+    edge_margin_fraction = 0.12
     line = np.asarray(center, dtype=np.float64).copy()
     inner_left = left + edge_margin_fraction * (right - left)
     inner_right = right + edge_margin_fraction * (left - right)
     corridor = np.asarray(inner_right - inner_left, dtype=np.float64)
     origin = np.asarray(inner_left, dtype=np.float64)
     denominator = np.square(corridor).sum(axis=1).clip(min=1e-8)
+    projection = _CurvatureProjection(origin, corridor, denominator)
     closed = _is_closed_loop(center)
-    for _ in range(iterations):
-        neighbors = 0.5 * (np.roll(line, 1, axis=0) + np.roll(line, -1, axis=0))
-        candidate = 0.35 * line + 0.65 * neighbors
-        fraction = np.sum((candidate - origin) * corridor, axis=1) / denominator
-        line = origin + np.clip(fraction, 0.0, 1.0)[:, None] * corridor
+    for _ in range(256):
+        line = _curvature_iteration(line, projection)
         if not closed:
             line[[0, -1]] = center[[0, -1]]
     return np.asarray(line, dtype=np.float32)
+
+
+def _curvature_iteration(line: np.ndarray, projection: _CurvatureProjection) -> np.ndarray:
+    neighbors = 0.5 * (np.roll(line, 1, axis=0) + np.roll(line, -1, axis=0))
+    candidate = 0.35 * line + 0.65 * neighbors
+    fraction = (
+        np.sum((candidate - projection.origin) * projection.corridor, axis=1)
+        / projection.denominator
+    )
+    result = projection.origin + np.clip(fraction, 0.0, 1.0)[:, None] * projection.corridor
+    return np.asarray(result, dtype=np.float64)
 
 
 def _is_closed_loop(center: np.ndarray) -> bool:
@@ -161,16 +183,10 @@ def _extend_polyline(points: np.ndarray, *, count: int, spacing_m: float) -> np.
     return np.concatenate([points, extra.astype(np.float32)], axis=0)
 
 
-def _extend_open_finish(
-    left: np.ndarray,
-    right: np.ndarray,
-    center: np.ndarray,
-    *,
-    lookahead_points: int,
-    spacing_m: float,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+def _extend_open_finish(lines: _LineTriple, lookahead_points: int, spacing_m: float) -> _LineTriple:
     """Extrapolate past the finish so lidar look-ahead keeps seeing new samples."""
 
+    left, right, center = lines
     return (
         _extend_polyline(left, count=lookahead_points, spacing_m=spacing_m),
         _extend_polyline(right, count=lookahead_points, spacing_m=spacing_m),
@@ -192,13 +208,7 @@ def _orient_opposite_boundary(reference: np.ndarray, opposite: np.ndarray) -> np
     return np.ascontiguousarray(opposite[::-1])
 
 
-def _pair_opposite_boundary(
-    reference: np.ndarray,
-    opposite: np.ndarray,
-    *,
-    forward_window: int = 256,
-    backward_window: int = 64,
-) -> np.ndarray:
+def _pair_opposite_boundary(reference: np.ndarray, opposite: np.ndarray) -> np.ndarray:
     """Pair each resampled reference point with a locally nearest opposite point.
 
     Global nearest-neighbour snaps across parallel map sections and places the
@@ -206,16 +216,8 @@ def _pair_opposite_boundary(
     bounded window so matches stay continuous along the driven boundary.
     """
 
-    if forward_window < 1 or backward_window < 0:
-        raise ValueError("pairing windows must be non-negative (forward_window >= 1)")
     oriented = _orient_opposite_boundary(reference, opposite)
-    indices = np.empty(len(reference), dtype=np.intp)
-    indices[0] = _nearest_index(reference[0], oriented)
-    for index in range(1, len(reference)):
-        previous = int(indices[index - 1])
-        start = max(0, previous - backward_window)
-        stop = min(len(oriented), previous + forward_window + 1)
-        indices[index] = start + _nearest_index(reference[index], oriented[start:stop])
+    indices = _paired_indices(reference, oriented)
     paired = np.asarray(oriented[indices], dtype=np.float32)
     widths = np.linalg.norm(reference - paired, axis=1)
     if float(np.quantile(widths, 0.1)) <= 0.1:
@@ -223,75 +225,22 @@ def _pair_opposite_boundary(
     return paired
 
 
-def build_geometry_asset(
-    output: str | Path,
-    left_recording: str | Path,
-    right_recording: str | Path,
-    *,
-    map_uid: str,
-    map_path: str | Path,
-    spacing_m: float = 2.0,
-    smooth_window: int = 5,
-    lookahead_points: int = 60,
-) -> Path:
-    """Clean, arc-resample and pair two manually recorded map boundaries."""
+def _paired_indices(reference: np.ndarray, oriented: np.ndarray) -> np.ndarray:
+    indices = np.empty(len(reference), dtype=np.intp)
+    indices[0] = _nearest_index(reference[0], oriented)
+    for index in range(1, len(reference)):
+        previous = int(indices[index - 1])
+        start = max(0, previous - 64)
+        stop = min(len(oriented), previous + 257)
+        indices[index] = start + _nearest_index(reference[index], oriented[start:stop])
+    return indices
 
-    if not map_uid:
-        raise ValueError("map_uid is required")
-    if spacing_m <= 0.0:
-        raise ValueError("spacing_m must be positive")
-    if smooth_window < 1 or smooth_window % 2 == 0:
-        raise ValueError("smooth_window must be a positive odd integer")
-    if lookahead_points < 0:
-        raise ValueError("lookahead_points must be non-negative")
-    left = _clean_boundary(np.load(left_recording))
-    right = _clean_boundary(np.load(right_recording))
-    left_length = float(_segment_lengths(left).sum())
-    count = max(2, round(left_length / spacing_m) + 1)
-    left = _resample(left, count)
-    right = _pair_opposite_boundary(left, right)
-    center = (left + right) / 2.0
-    # Midpoints of a left-arc sample are not uniform on bends (inner/outer path
-    # lengths differ). Re-parameterize the triple by centerline arc length so
-    # reward/lidar index steps stay ~constant in metres.
-    center_length = float(_segment_lengths(center).sum())
-    count = max(2, round(center_length / spacing_m) + 1)
-    left, right, center = _resample_matching(left, right, center, count)
-    if smooth_window > 1:
-        left = _smooth_polyline(left, smooth_window)
-        right = _smooth_polyline(right, smooth_window)
-        center = (left + right) / 2.0
-        left, right, center = _resample_matching(left, right, center, count)
-    widths = np.linalg.norm(left - right, axis=1)
-    if not np.isfinite(center).all() or float(np.median(widths)) <= 0.1:
-        raise ValueError("paired boundaries are degenerate or overlap")
-    recorded_count = len(center)
-    if lookahead_points > 0 and not _is_closed_loop(center):
-        left, right, center = _extend_open_finish(
-            left,
-            right,
-            center,
-            lookahead_points=lookahead_points,
-            spacing_m=spacing_m,
-        )
-    target = Path(output)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    source_map_sha256 = file_sha256(map_path)
-    np.savez_compressed(
-        target,
-        version=np.asarray(GEOMETRY_ASSET_VERSION),
-        map_uid=np.asarray(map_uid),
-        map_sha256=np.asarray(source_map_sha256),
-        left=left,
-        center=center.astype(np.float32),
-        right=right,
-        spacing_m=np.asarray(spacing_m, dtype=np.float32),
-        smooth_window=np.asarray(smooth_window, dtype=np.int32),
-        recorded_count=np.asarray(recorded_count, dtype=np.int32),
-        left_sha256=np.asarray(file_sha256(left_recording)),
-        right_sha256=np.asarray(file_sha256(right_recording)),
-    )
-    return target
+
+def build_geometry_asset(request: GeometryBuildRequest) -> Path:
+    """Clean, arc-resample and pair two manually recorded map boundaries."""
+    from trackmaniarl.trackmania.geometry_build import build
+
+    return build(request)
 
 
 class BoundaryGeometry:
@@ -299,25 +248,45 @@ class BoundaryGeometry:
 
     def __init__(self, path: str | Path, *, expected_map_uid: str | None = None) -> None:
         self.path = Path(path)
+        self._load_asset()
+        self._validate_asset(expected_map_uid)
+        self.sha256 = file_sha256(self.path)
+        self._initialize_racing_line()
+
+    def _load_asset(self) -> None:
         with np.load(self.path, allow_pickle=False) as data:
-            required = {"version", "map_uid", "left", "center", "right", "spacing_m"}
-            missing = required - set(data.files)
-            if missing:
-                raise ValueError(f"geometry asset is missing keys: {sorted(missing)}")
+            self._validate_archive_files(data.files)
             self.version = str(data["version"].item())
             self.map_uid = str(data["map_uid"].item())
             self.left = _validate_geometry_points(data["left"])
             self.center = _validate_geometry_points(data["center"])
             self.right = _validate_geometry_points(data["right"])
             self.spacing_m = float(data["spacing_m"].item())
-            self.map_sha256 = str(data.get("map_sha256", np.asarray("")).item())
-            recorded = (
-                data["recorded_count"].item()
-                if "recorded_count" in data.files
-                else len(self.center)
-            )
-            self.recorded_count = int(recorded)
-        if self.version != GEOMETRY_ASSET_VERSION or self.spacing_m <= 0.0:
+            self.map_sha256 = str(data["map_sha256"].item())
+            self.recorded_count = int(data["recorded_count"].item())
+
+    @staticmethod
+    def _validate_archive_files(files: list[str]) -> None:
+        required = {
+            "version",
+            "map_uid",
+            "map_sha256",
+            "left",
+            "center",
+            "right",
+            "spacing_m",
+            "recorded_count",
+        }
+        missing = required - set(files)
+        if missing:
+            raise ValueError(f"geometry asset is missing keys: {sorted(missing)}")
+
+    def _validate_asset(self, expected_map_uid: str | None) -> None:
+        if (
+            self.version != GEOMETRY_ASSET_VERSION
+            or not np.isfinite(self.spacing_m)
+            or self.spacing_m <= 0.0
+        ):
             raise ValueError("unsupported or invalid geometry asset")
         if not (len(self.left) == len(self.center) == len(self.right)):
             raise ValueError("geometry asset boundaries must have equal lengths")
@@ -327,15 +296,18 @@ class BoundaryGeometry:
         center_length = float(np.linalg.norm(np.diff(self.center, axis=0), axis=1).sum())
         if float(np.median(widths)) <= 0.1 or center_length <= 0.1:
             raise ValueError("geometry asset contains degenerate boundaries or centerline")
+        _validate_reward_line(self.reward_center)
         if expected_map_uid is not None and self.map_uid != expected_map_uid:
             raise ValueError("geometry asset map UID does not match evaluation map")
-        self.sha256 = file_sha256(self.path)
+
+    def _initialize_racing_line(self) -> None:
         recorded = slice(0, self.recorded_count)
         self._racing_line = _minimum_curvature_line(
             self.left[recorded],
             self.right[recorded],
             self.center[recorded],
         )
+        _validate_reward_line(self._racing_line)
 
     @property
     def reward_center(self) -> np.ndarray:

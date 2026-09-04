@@ -1,4 +1,4 @@
-"""Local artifacts, tracker adapters, profiling, and attribution helpers."""
+"""Local artifacts and optional tracker adapters."""
 
 from trackmaniarl.observability.artifacts import AsyncEpisodeWriter, write_run_manifest
 from trackmaniarl.observability.trackers import WandbTracker

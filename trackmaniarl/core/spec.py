@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from math import isfinite
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, PositiveInt, field_validator, model_validator
@@ -13,19 +14,36 @@ from trackmaniarl.core.data import BatchRequest
 DEFAULT_EVALUATION_TIME_BUCKETS_S: tuple[float, ...] = (40.0, 38.0, 36.0)
 
 
+def _require_finite_values[T](value: T) -> T:
+    if isinstance(value, float) and not isfinite(value):
+        raise ValueError("configuration values must be finite")
+    if isinstance(value, dict):
+        for item in value.values():
+            _require_finite_values(item)
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            _require_finite_values(item)
+    return value
+
+
 class ComponentSpec(BaseModel):
     """A locally installed project component selected by import path."""
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, allow_inf_nan=False)
 
     class_path: str = Field(pattern=r"^[A-Za-z_]\w*(\.[A-Za-z_]\w*)*:[A-Za-z_]\w*$")
     kwargs: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("kwargs")
+    @classmethod
+    def _finite_kwargs(cls, value: dict[str, Any]) -> dict[str, Any]:
+        return _require_finite_values(value)
 
 
 class ComponentsSpec(BaseModel):
     """The required components for a complete training run."""
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, allow_inf_nan=False)
 
     learner: ComponentSpec
     environment: ComponentSpec | None = None
@@ -50,7 +68,7 @@ class ComponentsSpec(BaseModel):
 class TrainingSpec(BaseModel):
     """Bounded off-policy training schedule executed by ``trackmaniarl train``."""
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, allow_inf_nan=False)
 
     total_transitions: PositiveInt = 10_000
     max_episode_steps: PositiveInt = 2_000
@@ -63,6 +81,7 @@ class TrainingSpec(BaseModel):
     offline_pretrain_updates: int = Field(default=0, ge=0)
     updates_per_transition: float = Field(default=1.0, gt=0.0)
     checkpoint_interval_updates: PositiveInt | None = 1_000
+    checkpoint_keep_last: PositiveInt | None = None
     save_final_checkpoint: bool = True
     metrics_interval_updates: PositiveInt = 50
     per_beta_final: float | None = Field(default=None, ge=0.0, le=1.0)
@@ -96,6 +115,7 @@ class TrainingSpec(BaseModel):
         *,
         batch_size: int | None = None,
         beta: float | None = None,
+        transition_count: int = 0,
     ) -> BatchRequest:
         """Build the sole replay request used by the local runtime."""
 
@@ -105,6 +125,7 @@ class TrainingSpec(BaseModel):
             beta=self.beta if beta is None else beta,
             n_step=self.n_step,
             gamma=self.gamma,
+            transition_count=transition_count,
         )
 
     def replay_beta(self, transitions: int) -> float | None:
@@ -115,10 +136,20 @@ class TrainingSpec(BaseModel):
         return self.beta + fraction * (self.per_beta_final - self.beta)
 
 
+class ActorExecutionSpec(BaseModel):
+    """Optional execution override for the actor-local policy replica."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, allow_inf_nan=False)
+
+    device: Literal["auto", "cuda", "rocm", "mps", "cpu"] = "cpu"
+    precision: Literal["auto", "bfloat16", "float16", "float32"] = "float32"
+    torch_threads: PositiveInt | None = None
+
+
 class DistributedSpec(BaseModel):
     """Actor/learner exchange settings shared by local and remote runtimes."""
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, allow_inf_nan=False)
 
     port: int = Field(default=8787, ge=1, le=65535)
     rollout_chunk_transitions: PositiveInt = 128
@@ -126,6 +157,7 @@ class DistributedSpec(BaseModel):
     policy_refresh_s: float = Field(default=5.0, gt=0.0)
     heartbeat_s: float = Field(default=5.0, gt=0.0)
     actor_timeout_s: float = Field(default=20.0, gt=0.0)
+    actor_stall_timeout_s: float | None = Field(default=None, gt=0.0)
     max_inflight_chunks: PositiveInt = 4
     spool_max_bytes: PositiveInt = 2 * 1024**3
     max_message_bytes: PositiveInt = 16 * 1024**2
@@ -136,6 +168,8 @@ class DistributedSpec(BaseModel):
     epsilon_start: float = Field(default=0.5, ge=0.0, le=1.0)
     epsilon_final: float = Field(default=0.05, ge=0.0, le=1.0)
     epsilon_decay_transitions: PositiveInt = 1_500_000
+    epsilon_decay_updates: PositiveInt | None = None
+    actor_execution: ActorExecutionSpec | None = None
     token_env: str = Field(default="TRACKMANIARL_DISTRIBUTED_TOKEN", min_length=1)
 
     @field_validator("epsilon_profiles")
@@ -149,7 +183,7 @@ class DistributedSpec(BaseModel):
 class EvaluationMapSpec(BaseModel):
     """Immutable local map and geometry asset used by TrackMania evaluation."""
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, allow_inf_nan=False)
 
     id: str = Field(min_length=1, pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
     map_path: Path
@@ -160,11 +194,11 @@ class EvaluationMapSpec(BaseModel):
 class EvaluationSuiteSpec(BaseModel):
     """Versioned local-map suite; game engine seeds are intentionally absent."""
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, allow_inf_nan=False)
 
     name: str = Field(min_length=1)
     version: str = Field(min_length=1)
-    maps: tuple[EvaluationMapSpec, ...] = ()
+    maps: tuple[EvaluationMapSpec, ...] = Field(min_length=1)
     trials_per_map: PositiveInt = 1
     time_buckets_s: tuple[float, ...] = DEFAULT_EVALUATION_TIME_BUCKETS_S
     target_median_s: float | None = None
@@ -202,29 +236,39 @@ class EvaluationSuiteSpec(BaseModel):
 class RunSpec(BaseModel):
     """All user-controlled configuration for one TrackMania RL run."""
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, allow_inf_nan=False)
 
-    api_version: str = "1.2"
+    api_version: Literal["2.0"]
     run_id: str = Field(min_length=1, pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
     seed: int = 0
-    artifacts_dir: Path = Path("artifacts")
+    artifacts_dir: Path = Field(default_factory=lambda: Path("artifacts"))
     components: ComponentsSpec
     training: TrainingSpec = Field(default_factory=TrainingSpec)
     distributed: DistributedSpec = Field(default_factory=DistributedSpec)
     evaluation: EvaluationSuiteSpec | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
-    @field_validator("api_version")
+    @field_validator("metadata")
     @classmethod
-    def _api_version(cls, value: str) -> str:
-        if value != "1.2":
-            raise ValueError("RunSpec api_version must be '1.2'")
-        return value
+    def _finite_metadata(cls, value: dict[str, Any]) -> dict[str, Any]:
+        return _require_finite_values(value)
+
+    @model_validator(mode="after")
+    def _evaluation_schedule_is_active(self) -> RunSpec:
+        cadence = self.training.evaluate_every_episodes
+        stop_enabled = self.training.evaluation_stop_min_finish_rate is not None
+        if cadence is not None and self.components.evaluator is None:
+            raise ValueError("scheduled evaluation requires components.evaluator")
+        if stop_enabled and cadence is None:
+            raise ValueError("evaluation stop requires training.evaluate_every_episodes")
+        if stop_enabled and self.components.evaluator is None:
+            raise ValueError("evaluation stop requires components.evaluator")
+        if stop_enabled and self.evaluation is None:
+            raise ValueError("evaluation stop requires an evaluation suite")
+        return self
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> RunSpec:
-        """Load and validate a YAML run description without importing legacy config."""
-
         config_path = Path(path)
         with config_path.open(encoding="utf-8") as file:
             data = yaml.safe_load(file)

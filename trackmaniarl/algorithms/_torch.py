@@ -1,32 +1,43 @@
-"""Shared torch implementation details for TrackmaniaRL 1.0 learners."""
+"""Shared torch implementation details for RunSpec 2.0 learners."""
 
 from __future__ import annotations
 
-import json
 import random
 from collections.abc import Mapping
 from contextlib import AbstractContextManager
 from copy import deepcopy
 from dataclasses import replace
 from pathlib import Path
-from typing import Any, Protocol, cast
+from typing import Any, Literal, Protocol, TypedDict, Unpack, cast
 
 import numpy as np
 import torch
 from torch import nn
 
 from trackmaniarl.algorithms.execution import (
-    RequestedDevice,
     ResolvedTorchExecution,
     TorchExecutionConfig,
     resolve_torch_execution,
 )
+from trackmaniarl.algorithms.torch_batches import transform_batch
+from trackmaniarl.core.contracts import PolicyMode
 from trackmaniarl.core.data import TrainingBatch
-from trackmaniarl.core.pytree import sanitize_finite, tree_map, tree_to_device
+from trackmaniarl.core.pytree import sanitize_finite, tree_collate, tree_map, tree_to_device
+
+type _TransferMode = Literal["blocking", "non_blocking"]
 
 
-def backward(loss: Any) -> None:
-    cast(Any, loss).backward()
+class TorchLearnerOptions(TypedDict, total=False):
+    model_factory: Any | None
+    execution: TorchExecutionConfig | Mapping[str, Any] | None
+    seed: int
+
+
+def _execution_config(options: TorchLearnerOptions) -> TorchExecutionConfig:
+    execution = options.get("execution")
+    if isinstance(execution, Mapping):
+        execution = TorchExecutionConfig(**execution)
+    return execution or TorchExecutionConfig()
 
 
 class _GradScaler(Protocol):
@@ -38,24 +49,24 @@ class _GradScaler(Protocol):
 
     def update(self) -> None: ...
 
+    def state_dict(self) -> dict[str, Any]: ...
+
+    def load_state_dict(self, state: dict[str, Any]) -> None: ...
+
 
 class TorchPolicy:
     """Inference adapter that makes deterministic policy behavior explicit."""
 
-    def __init__(self, actor: nn.Module, device: torch.device, *, discrete: bool = False) -> None:
+    def __init__(self, actor: nn.Module, device: torch.device) -> None:
         self.actor = deepcopy(actor).to(device).eval()
         self.device = device
-        self.discrete = discrete
 
-    def act(self, observation: Any, *, deterministic: bool = False) -> Any:
-        prepared = tree_to_device(sanitize_finite(observation), self.device)
-        if not isinstance(prepared, torch.Tensor):
-            raise TypeError(
-                "Bundled torch policies require a tensor observation from the feature pipeline"
-            )
+    def act(self, observation: Any, mode: PolicyMode = PolicyMode.ONLINE) -> Any:
+        batched = tree_to_device(tree_collate([sanitize_finite(observation)]), self.device)
         with torch.no_grad():
-            output = self.actor(prepared, deterministic=deterministic)
+            output = self.actor(batched, mode=mode)
         action = output[0] if isinstance(output, tuple) else output
+        action = action[0]
         return action.detach().cpu().numpy()
 
     def export_state(self) -> Mapping[str, Any]:
@@ -65,46 +76,72 @@ class TorchPolicy:
         self.actor.load_state_dict(state)
 
 
+def evaluated_actor_state(
+    state: Mapping[str, Any], model: nn.Module, policy_state: Mapping[str, Any]
+) -> dict[str, Any]:
+    actor = cast(Any, model).actor
+    if set(policy_state) != set(actor.state_dict()):
+        raise ValueError("evaluated policy state does not match the learner actor")
+    result = deepcopy(dict(state))
+    for name in ("model", "target_model"):
+        module_state = dict(cast(Mapping[str, Any], result[name]))
+        for key, value in policy_state.items():
+            module_state[f"actor.{key}"] = deepcopy(value)
+        result[name] = module_state
+    return result
+
+
 class TorchLearnerBase:
     """Base class for learners backed by a supplied torch model or model factory."""
 
     def __init__(
         self,
         model: nn.Module | None = None,
-        *,
-        model_factory: Any | None = None,
-        device: str | None = None,
-        execution: TorchExecutionConfig | Mapping[str, Any] | None = None,
-        seed: int = 0,
+        **options: Unpack[TorchLearnerOptions],
     ) -> None:
         # User supplied model bundles intentionally expose algorithm-specific members
         # (actor/q1/q2, critics, q_values). The factory boundary is therefore dynamic.
         self.model: Any = model
-        self.model_factory = model_factory
-        if execution is not None and device is not None:
-            raise ValueError("Use execution.device instead of combining execution with device")
-        if isinstance(execution, Mapping):
-            execution = TorchExecutionConfig(**execution)
-        requested = cast(RequestedDevice, device or "auto")
-        self.execution = execution or TorchExecutionConfig(device=requested)
+        self.model_factory = options.get("model_factory")
+        self.execution = _execution_config(options)
         self.device = torch.device("cpu")
         self.resolved_execution: ResolvedTorchExecution | None = None
         self.scaler: _GradScaler | None = None
         self._transfer_stream: torch.cuda.Stream | None = None
         self.run_dir: Path | None = None
-        self.seed = seed
+        self._restoring_checkpoint = False
+        self.seed = options.get("seed", 0)
 
     def setup(self, context: Mapping[str, Any]) -> None:
+        self._setup_runtime(context)
+        self._seed_runtime(context)
+        self._build_model(context)
+        self._setup_scaler()
+        self._setup_model()
+
+    def _setup_runtime(self, context: Mapping[str, Any]) -> None:
         run_dir = context.get("run_dir")
         self.run_dir = Path(run_dir) if run_dir is not None else None
+        restoring = context.get("restoring_checkpoint", False)
+        if not isinstance(restoring, bool):
+            raise TypeError("restoring_checkpoint must be a bool")
+        self._restoring_checkpoint = restoring
         self.resolved_execution = resolve_torch_execution(self.execution)
         self.device = self.resolved_execution.torch_device
+        torch.use_deterministic_algorithms(self.execution.deterministic)
+        if torch.cuda.is_available():
+            torch.backends.cudnn.deterministic = self.execution.deterministic
+            torch.backends.cudnn.benchmark = not self.execution.deterministic
+
+    def _seed_runtime(self, context: Mapping[str, Any]) -> None:
         seed = int(context.get("seed", self.seed))
         random.seed(seed)
         np.random.seed(seed)
         torch.manual_seed(seed)
         if torch.cuda.is_available():
             torch.cuda.manual_seed_all(seed)
+
+    def _build_model(self, context: Mapping[str, Any]) -> None:
         if self.model is None:
             factory = self.model_factory or context.get("model_factory")
             if factory is None:
@@ -114,13 +151,16 @@ class TorchLearnerBase:
                 raise TypeError("model_factory must expose build()")
             self.model = build()
         self.model.to(self.device)
+
+    def _setup_scaler(self) -> None:
+        if self.resolved_execution is None:
+            raise RuntimeError("Learner execution must resolve before scaler setup")
         self.scaler = cast(Any, torch.amp).GradScaler(
             self.device.type,
             enabled=self.resolved_execution.scaler_enabled,
         )
         if self.resolved_execution.backend in {"cuda", "rocm"}:
             self._transfer_stream = cast(Any, torch.cuda).Stream(device=self.device)
-        self._setup_model()
 
     def autocast(self) -> AbstractContextManager[Any]:
         if self.resolved_execution is None:
@@ -146,50 +186,42 @@ class TorchLearnerBase:
             return {
                 "requested_device": self.execution.device,
                 "requested_precision": self.execution.precision,
-                "compile_requested": self.execution.compile,
-                "compile_mode": self.execution.compile_mode,
+                "deterministic": self.execution.deterministic,
                 "resolved": False,
             }
         return {"resolved": True, **self.resolved_execution.manifest()}
-
-    def _record_execution_result(self) -> None:
-        if self.run_dir is None or self.resolved_execution is None:
-            return
-        path = self.run_dir / "manifest.json"
-        if not path.is_file():
-            return
-        manifest = json.loads(path.read_text(encoding="utf-8"))
-        manifest["torch_execution"] = dict(self.execution_manifest())
-        temporary = path.with_suffix(".json.tmp")
-        temporary.write_text(
-            json.dumps(manifest, indent=2, sort_keys=True, default=str),
-            encoding="utf-8",
-        )
-        temporary.replace(path)
 
     def _setup_model(self) -> None:
         raise NotImplementedError
 
     def _batch(self, batch: TrainingBatch) -> TrainingBatch:
+        self._validate_batch_layout(batch)
         event = batch.metadata.get("_trackmaniarl_transfer_event")
         if event is not None:
             torch.cuda.current_stream(self.device).wait_event(event)
-            event.synchronize()
-            started = batch.metadata.get("_trackmaniarl_transfer_started")
-            if started is None:
-                raise RuntimeError("Prepared CUDA batch is missing its transfer start event")
             return replace(
                 batch,
                 metadata={
-                    **batch.metadata,
-                    "_trackmaniarl_host_to_device_s": float(started.elapsed_time(event)) / 1_000.0,
+                    key: value
+                    for key, value in batch.metadata.items()
+                    if key
+                    not in {
+                        "_trackmaniarl_transfer_event",
+                        "_trackmaniarl_transfer_started",
+                    }
                 },
             )
-        return self._move_batch(batch, non_blocking=False)
+        return self._move_batch(batch, "blocking")
+
+    def _validate_batch_layout(self, batch: TrainingBatch) -> None:
+        if getattr(self, "supports_sequence_training", None) is not False:
+            return
+        configured = batch.metadata.get("sequence_length")
+        rewards_are_sequential = isinstance(batch.rewards, torch.Tensor) and batch.rewards.ndim > 1
+        if (isinstance(configured, int) and configured > 1) or rewards_are_sequential:
+            raise ValueError(f"{type(self).__name__} requires sequence_length=1")
 
     def prepare_batch(self, batch: TrainingBatch) -> TrainingBatch:
-        """Pin and stage one batch on a dedicated accelerator transfer stream."""
-
         if self._transfer_stream is None:
             return batch
         pinned = self._pin_batch(batch)
@@ -197,7 +229,7 @@ class TorchLearnerBase:
         event = cast(Any, torch.cuda).Event(enable_timing=True)
         with torch.cuda.stream(self._transfer_stream):
             started.record()
-            staged = self._move_batch(pinned, non_blocking=True)
+            staged = self._move_batch(pinned, "non_blocking")
             event.record()
         return replace(
             staged,
@@ -208,37 +240,11 @@ class TorchLearnerBase:
             },
         )
 
-    def _move_batch(self, batch: TrainingBatch, *, non_blocking: bool) -> TrainingBatch:
-        return TrainingBatch(
-            data=tree_to_device(batch.data, self.device, non_blocking=non_blocking),
-            observations=tree_to_device(batch.observations, self.device, non_blocking=non_blocking),
-            actions=tree_to_device(batch.actions, self.device, non_blocking=non_blocking),
-            rewards=tree_to_device(batch.rewards, self.device, non_blocking=non_blocking),
-            next_observations=tree_to_device(
-                batch.next_observations, self.device, non_blocking=non_blocking
-            ),
-            terminated=tree_to_device(batch.terminated, self.device, non_blocking=non_blocking),
-            truncated=tree_to_device(batch.truncated, self.device, non_blocking=non_blocking),
-            bootstrap_discounts=tree_to_device(
-                batch.bootstrap_discounts, self.device, non_blocking=non_blocking
-            ),
-            transition_ids=batch.transition_ids,
-            importance_weights=(
-                tree_to_device(
-                    batch.importance_weights,
-                    self.device,
-                    non_blocking=non_blocking,
-                )
-                if batch.importance_weights is not None
-                else None
-            ),
-            masks=(
-                tree_to_device(batch.masks, self.device, non_blocking=non_blocking)
-                if batch.masks is not None
-                else None
-            ),
-            metadata=batch.metadata,
-        )
+    def _move_batch(self, batch: TrainingBatch, mode: _TransferMode) -> TrainingBatch:
+        def move(value: Any) -> Any:
+            return tree_to_device(value, self.device, mode=mode)
+
+        return transform_batch(batch, move)
 
     @staticmethod
     def _pin_batch(batch: TrainingBatch) -> TrainingBatch:
@@ -254,22 +260,7 @@ class TorchLearnerBase:
                 value,
             )
 
-        return TrainingBatch(
-            data=pin(batch.data),
-            observations=pin(batch.observations),
-            actions=pin(batch.actions),
-            rewards=pin(batch.rewards),
-            next_observations=pin(batch.next_observations),
-            terminated=pin(batch.terminated),
-            truncated=pin(batch.truncated),
-            bootstrap_discounts=pin(batch.bootstrap_discounts),
-            transition_ids=batch.transition_ids,
-            importance_weights=(
-                pin(batch.importance_weights) if batch.importance_weights is not None else None
-            ),
-            masks=pin(batch.masks) if batch.masks is not None else None,
-            metadata=batch.metadata,
-        )
+        return transform_batch(batch, pin)
 
     @staticmethod
     def _tensor(value: Any, name: str) -> torch.Tensor:
@@ -287,14 +278,29 @@ class TorchLearnerBase:
             state["cuda"] = torch.cuda.get_rng_state_all()
         return state
 
+    def _scaler_state(self) -> dict[str, Any]:
+        if self.scaler is None:
+            raise RuntimeError("Learner setup() must be called before checkpointing")
+        return self.scaler.state_dict()
+
+    def _restore_scaler(self, state: object) -> None:
+        if self.scaler is None:
+            raise RuntimeError("Learner setup() must be called before restoring")
+        if not isinstance(state, Mapping):
+            raise ValueError("checkpoint is missing gradient scaler state")
+        self.scaler.load_state_dict(dict(state))
+
     @staticmethod
-    def _restore_rng(state: Mapping[str, Any]) -> None:
-        if "python" in state:
-            random.setstate(state["python"])
-        if "numpy" in state:
-            np.random.set_state(state["numpy"])
-        if "torch" in state:
-            torch.set_rng_state(state["torch"])
+    def _restore_rng(state: object) -> None:
+        if not isinstance(state, Mapping):
+            raise ValueError("checkpoint is missing RNG state")
+        required = {"python", "numpy", "torch"}
+        missing = required - state.keys()
+        if missing:
+            raise ValueError(f"checkpoint RNG state is missing: {', '.join(sorted(missing))}")
+        random.setstate(state["python"])
+        np.random.set_state(state["numpy"])
+        torch.set_rng_state(state["torch"])
         if torch.cuda.is_available() and "cuda" in state:
             torch.cuda.set_rng_state_all(state["cuda"])
 

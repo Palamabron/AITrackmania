@@ -1,0 +1,50 @@
+{
+  "title": "RunSpec 2.0 off-policy runtime",
+  "subtitle": "Accepted rollouts are durable before acknowledgement; only a checkpointed contiguous WAL frontier may be pruned.",
+  "width": 1200,
+  "height": 1060,
+  "zones": [
+    {"id": "configuration", "label": "Resolve once", "x": 40, "y": 145, "w": 1120, "h": 150, "color": "blue"},
+    {"id": "actor", "label": "Actor · local process or remote game host", "x": 40, "y": 325, "w": 300, "h": 480, "color": "green"},
+    {"id": "durability", "label": "Authenticated durable ingest", "x": 370, "y": 325, "w": 250, "h": 480, "color": "orange"},
+    {"id": "learner-zone", "label": "Learner process", "x": 650, "y": 325, "w": 510, "h": 480, "color": "purple"}
+  ],
+  "nodes": [
+    {"id": "runspec", "label": "RunSpec 2.0", "detail": "strict YAML · explicit components", "x": 80, "y": 185, "w": 270, "h": 85, "color": "blue"},
+    {"id": "resolve", "label": "Resolve contracts", "detail": "seed · imports · fingerprint", "x": 465, "y": 185, "w": 270, "h": 85, "color": "cyan"},
+    {"id": "manifest", "label": "Immutable manifest", "detail": "map · geometry · feature/action IDs", "x": 850, "y": 185, "w": 270, "h": 85, "color": "slate"},
+    {"id": "policy", "label": "Frozen actor policy", "detail": "one version per episode", "x": 70, "y": 385, "w": 240, "h": 100, "color": "green"},
+    {"id": "game", "label": "Game adapter", "detail": "telemetry → features → transition", "x": 70, "y": 535, "w": 240, "h": 100, "color": "green"},
+    {"id": "spool", "label": "Durable actor spool", "detail": "retry until accepted", "x": 70, "y": 685, "w": 240, "h": 100, "color": "orange"},
+    {"id": "grpc", "label": "Loopback gRPC", "detail": "token · size · fingerprint", "x": 390, "y": 385, "w": 210, "h": 100, "color": "red"},
+    {"id": "wal", "label": "SQLite WAL", "detail": "accepted rows ordered by ID", "x": 390, "y": 535, "w": 210, "h": 100, "color": "orange"},
+    {"id": "frontier", "label": "Applied frontier", "detail": "contiguous replay commit", "x": 390, "y": 685, "w": 210, "h": 100, "color": "orange"},
+    {"id": "replay", "label": "Replay + sampler", "detail": "uniform · PER · sequence", "x": 680, "y": 385, "w": 200, "h": 100, "color": "purple"},
+    {"id": "batch", "label": "Typed batch", "detail": "n-step · masks · IDs", "x": 930, "y": 385, "w": 200, "h": 100, "color": "cyan"},
+    {"id": "learner", "label": "Learner update", "detail": "validate → backward → step", "x": 680, "y": 535, "w": 200, "h": 100, "color": "purple"},
+    {"id": "checkpoint", "label": "Checkpoint", "detail": "state · RNG · WAL frontier", "x": 930, "y": 535, "w": 200, "h": 100, "color": "blue"},
+    {"id": "snapshot", "label": "Policy snapshot", "detail": "portable tensor state", "x": 680, "y": 685, "w": 200, "h": 100, "color": "purple"},
+    {"id": "events", "label": "Run evidence", "detail": "JSONL · W&B · artifacts", "x": 930, "y": 685, "w": 200, "h": 100, "color": "slate"}
+  ],
+  "edges": [
+    {"id": "e-runspec-resolve", "from": "runspec", "to": "resolve", "label": "parse", "color": "blue"},
+    {"id": "e-resolve-manifest", "from": "resolve", "to": "manifest", "label": "record", "color": "cyan"},
+    {"id": "e-policy-game", "from": "policy", "to": "game", "points": [[190,485],[190,535]], "label": "action", "label_at": [250,525], "color": "green"},
+    {"id": "e-game-spool", "from": "game", "to": "spool", "points": [[190,635],[190,685]], "label": "rollout", "label_at": [250,675], "color": "orange"},
+    {"id": "e-spool-grpc", "from": "spool", "to": "grpc", "points": [[310,735],[350,735],[350,435],[390,435]], "label": "submit", "label_at": [350,525], "color": "orange"},
+    {"id": "e-grpc-wal", "from": "grpc", "to": "wal", "points": [[495,485],[495,535]], "label": "persist, then ACK", "label_at": [495,525], "color": "red"},
+    {"id": "e-wal-frontier", "from": "wal", "to": "frontier", "points": [[495,635],[495,685]], "label": "apply in order", "label_at": [495,675], "color": "orange"},
+    {"id": "e-wal-replay", "from": "wal", "to": "replay", "points": [[600,585],[640,585],[640,435],[680,435]], "color": "orange"},
+    {"id": "e-replay-batch", "from": "replay", "to": "batch", "color": "purple"},
+    {"id": "e-batch-learner", "from": "batch", "to": "learner", "points": [[1030,485],[1030,510],[780,510],[780,535]], "color": "purple"},
+    {"id": "e-learner-checkpoint", "from": "learner", "to": "checkpoint", "color": "blue"},
+    {"id": "e-frontier-checkpoint", "from": "frontier", "to": "checkpoint", "points": [[600,735],[635,735],[635,825],[1030,825],[1030,635]], "label": "capture; prune after save", "label_at": [825,825], "color": "orange", "style": "dashed"},
+    {"id": "e-learner-snapshot", "from": "learner", "to": "snapshot", "points": [[780,635],[780,685]], "color": "purple"},
+    {"id": "e-learner-events", "from": "learner", "to": "events", "points": [[880,585],[905,585],[905,735],[930,735]], "color": "slate"},
+    {"id": "e-snapshot-policy", "from": "snapshot", "to": "policy", "points": [[680,735],[650,735],[650,855],[25,855],[25,435],[70,435]], "label": "activate next episode", "label_at": [300,855], "color": "purple", "style": "dashed"}
+  ],
+  "notes": [
+    {"id": "runtime-invariant", "text": "Invariant: acknowledged chunks remain recoverable until the exact applied frontier is inside a durable checkpoint.", "x": 85, "y": 890, "w": 1030, "h": 58, "color": "red"},
+    {"id": "runtime-scope", "text": "PPO is a separate local on-policy lifecycle; it never enters this actor/WAL/replay path.", "x": 85, "y": 970, "w": 1030, "h": 52, "color": "slate"}
+  ]
+}

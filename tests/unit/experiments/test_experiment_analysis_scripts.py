@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import argparse
 import importlib.util
 import sys
 from collections.abc import Iterable, Mapping
@@ -65,21 +64,16 @@ def test_create_api_rejects_an_incomplete_sdk(monkeypatch: pytest.MonkeyPatch) -
         FETCH._create_api(30)
 
 
-def test_explicit_run_does_not_read_the_experiment_registry(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    def fail_if_called() -> list[dict[str, Any]]:
-        raise AssertionError("explicit W&B runs must not query the registry")
-
-    monkeypatch.setattr(FETCH, "_read_registry", fail_if_called)
-    args = argparse.Namespace(
-        run=["entity/project/run"],
-        exp_id="",
-        entity="unused",
-        project="unused",
+def test_analysis_fetch_requires_explicit_runs() -> None:
+    args = FETCH.FetchArguments(
+        runs=["entity/project/run"],
+        timeout=30,
+        policy=FETCH.FetchPolicy(False, 0.0),
     )
 
     assert FETCH._requests_from_args(args) == [FETCH.RunRequest("entity/project/run", "run")]
+    with pytest.raises(ValueError, match="at least one --run"):
+        FETCH._requests_from_args(FETCH.FetchArguments([], 30, FETCH.FetchPolicy(False, 0.0)))
 
 
 def test_analyze_run_normalizes_trackmaniarl_history() -> None:

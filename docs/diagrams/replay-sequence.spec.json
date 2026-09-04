@@ -1,0 +1,58 @@
+{
+  "title": "Recurrent replay sequence, n-step target and PER feedback",
+  "subtitle": "A sampled anchor is eligible only when its full episode-local history and n-step horizon are available; burn-in is context, not a loss region.",
+  "width": 1700,
+  "height": 1150,
+  "zones": [
+    {"id": "eligibility", "label": "Replay eligibility", "x": 45, "y": 130, "w": 400, "h": 750, "color": "blue"},
+    {"id": "sequence", "label": "Sequence unroll", "x": 470, "y": 130, "w": 520, "h": 750, "color": "green"},
+    {"id": "targets", "label": "Value target", "x": 1015, "y": 130, "w": 300, "h": 750, "color": "purple"},
+    {"id": "per", "label": "Prioritized replay feedback", "x": 1340, "y": 130, "w": 315, "h": 750, "color": "orange"}
+  ],
+  "nodes": [
+    {"id": "replay-ids", "label": "Replay transitions", "detail": "interleaved actor IDs", "x": 85, "y": 190, "w": 320, "h": 105, "color": "slate"},
+    {"id": "episode-contract", "label": "Episode-local chain", "detail": "same episode + step\nno boundary crossing", "x": 85, "y": 380, "w": 320, "h": 115, "color": "red"},
+    {"id": "eligible-anchor", "label": "Eligible anchor", "detail": "L unique history IDs + complete n-step horizon", "x": 85, "y": 585, "w": 320, "h": 115, "color": "blue"},
+    {"id": "sample-weight", "label": "Sampled anchor weight", "detail": "normalized IS weight", "x": 85, "y": 760, "w": 320, "h": 90, "color": "orange"},
+
+    {"id": "window", "label": "Sequence window", "detail": "t0 … tL−1; priority anchor = tL−1", "x": 510, "y": 190, "w": 440, "h": 105, "color": "green"},
+    {"id": "burn-in", "label": "Burn-in [0, B)", "detail": "state update only\ndetached gradient", "x": 510, "y": 385, "w": 205, "h": 120, "color": "slate"},
+    {"id": "learning-region", "label": "Learning positions", "detail": "B … L−n−1 plus final anchor", "x": 745, "y": 385, "w": 205, "h": 120, "color": "cyan"},
+    {"id": "valid-mask", "label": "Validity mask", "detail": "valid loss positions only", "x": 510, "y": 610, "w": 205, "h": 105, "color": "blue"},
+    {"id": "target-history", "label": "Target history", "detail": "next window keeps context", "x": 745, "y": 610, "w": 205, "h": 105, "color": "purple"},
+    {"id": "sequence-loss", "label": "Per-position loss", "detail": "value regression\nper valid position", "x": 625, "y": 765, "w": 215, "h": 90, "color": "green"},
+
+    {"id": "double-q", "label": "Double-Q bootstrap", "detail": "online selects\ntarget evaluates", "x": 1045, "y": 210, "w": 240, "h": 115, "color": "cyan"},
+    {"id": "n-step", "label": "n-step target", "detail": "Gₜ = Σ γⁱ rₜ₊ᵢ + γᵏ Qtarget(sₜ₊ₖ)", "x": 1045, "y": 425, "w": 240, "h": 145, "color": "purple"},
+    {"id": "terminal-bootstrap", "label": "Bootstrap contract", "detail": "terminated: zero\ntruncated: bootstrap", "x": 1045, "y": 690, "w": 240, "h": 115, "color": "red"},
+
+    {"id": "td-error", "label": "Absolute value error", "detail": "one |TD| per trained position", "x": 1375, "y": 205, "w": 245, "h": 110, "color": "red"},
+    {"id": "aggregate-priority", "label": "Sequence priority", "detail": "p = 0.9 · max(|TD|) + 0.1 · mean(|TD|)", "x": 1375, "y": 405, "w": 245, "h": 135, "color": "orange"},
+    {"id": "sampling-probability", "label": "Sampling probability", "detail": "p^alpha + optional\nuniform/elite mix", "x": 1375, "y": 630, "w": 245, "h": 120, "color": "green"},
+    {"id": "importance", "label": "Importance correction", "detail": "w = (N · P)^−beta\nnormalized by max", "x": 1375, "y": 760, "w": 245, "h": 110, "color": "blue"}
+  ],
+  "edges": [
+    {"id": "e-replay-episode", "from": "replay-ids", "to": "episode-contract", "points": [[245,295],[245,380]], "color": "slate"},
+    {"id": "e-episode-anchor", "from": "episode-contract", "to": "eligible-anchor", "points": [[245,495],[245,585]], "color": "red"},
+    {"id": "e-anchor-window", "from": "eligible-anchor", "to": "window", "points": [[405,642],[455,642],[455,340],[730,340],[730,295]], "label": "sample history", "label_at": [575,340], "color": "blue"},
+    {"id": "e-weight-loss", "from": "sample-weight", "to": "sequence-loss", "points": [[405,805],[480,805],[480,915],[732,915],[732,855]], "color": "orange"},
+    {"id": "e-window-burn", "from": "window", "to": "burn-in", "points": [[620,295],[620,385]], "color": "slate"},
+    {"id": "e-window-learning", "from": "window", "to": "learning-region", "points": [[840,295],[840,385]], "color": "green"},
+    {"id": "e-burn-learning", "from": "burn-in", "to": "learning-region", "label": "hidden state", "color": "slate"},
+    {"id": "e-mask-learning", "from": "valid-mask", "to": "learning-region", "points": [[612,610],[612,560],[847,560],[847,505]], "color": "blue"},
+    {"id": "e-target-history-target", "from": "target-history", "to": "n-step", "points": [[950,662],[995,662],[995,497],[1045,497]], "color": "purple"},
+    {"id": "e-learning-target", "from": "learning-region", "to": "n-step", "points": [[950,445],[990,445],[990,497],[1045,497]], "color": "green"},
+    {"id": "e-double-target", "from": "double-q", "to": "n-step", "points": [[1165,325],[1165,425]], "color": "cyan"},
+    {"id": "e-bootstrap-target", "from": "terminal-bootstrap", "to": "n-step", "points": [[1165,690],[1165,570]], "color": "red"},
+    {"id": "e-target-loss", "from": "n-step", "to": "sequence-loss", "points": [[1045,497],[1000,497],[1000,915],[732,915],[732,855]], "color": "purple"},
+    {"id": "e-loss-td", "from": "sequence-loss", "to": "td-error", "points": [[840,817],[1010,817],[1010,350],[1345,350],[1345,260],[1375,260]], "color": "red"},
+    {"id": "e-td-priority", "from": "td-error", "to": "aggregate-priority", "points": [[1497,315],[1497,405]], "color": "red"},
+    {"id": "e-priority-probability", "from": "aggregate-priority", "to": "sampling-probability", "points": [[1497,540],[1497,630]], "color": "orange"},
+    {"id": "e-probability-importance", "from": "sampling-probability", "to": "importance", "points": [[1497,750],[1497,760]], "color": "green"},
+    {"id": "e-importance-weight", "from": "importance", "to": "sample-weight", "points": [[1497,870],[1497,945],[60,945],[60,805],[85,805]], "label": "next sampled batch", "label_at": [775,945], "color": "orange", "style": "dashed"}
+  ],
+  "notes": [
+    {"id": "sequence-invariant", "text": "Validated before training: n_step < sequence_length, burn_in < sequence_length, and sequence replay cannot be combined with a feature pipeline that already stacks history.", "x": 85, "y": 990, "w": 1530, "h": 62, "color": "red"},
+    {"id": "r2d2-scope", "text": "Scope: R2D2-style recurrent replay. The package reconstructs episode-local histories and burn-in, but does not claim the complete distributed R2D2 system.", "x": 85, "y": 1065, "w": 1530, "h": 70, "color": "slate"}
+  ]
+}

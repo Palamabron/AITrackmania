@@ -2,156 +2,31 @@
 
 from __future__ import annotations
 
-import json
-import os
-from collections.abc import Callable, Sequence
-from dataclasses import dataclass, replace
+from collections.abc import Callable, Iterator, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from statistics import median
 from typing import Any, Literal
 
 import numpy as np
 
-from trackmaniarl.core.contracts import Policy
+from trackmaniarl.core.contracts import Policy, PolicyMode
 from trackmaniarl.trackmania.demonstrations import load_demonstration
 from trackmaniarl.trackmania.guidance import TrajectoryTrackingDemonstrationPolicy
-
-SCHEDULE_FORMAT = "trackmaniarl-trajectory-schedule-v1"
-
-
-@dataclass(frozen=True, slots=True)
-class SlowControlWindow:
-    """A contiguous interval where the expert releases gas or applies brake."""
-
-    first_segment: int
-    stop_segment: int
-
-
-@dataclass(frozen=True, slots=True)
-class TrajectorySchedule:
-    """Run-length encoded expert controls with optimizable switch boundaries."""
-
-    boundaries: np.ndarray
-    segment_controls: np.ndarray
-    boundary_offsets: np.ndarray
-
-    def __post_init__(self) -> None:
-        boundaries = np.asarray(self.boundaries, dtype=np.int64).copy()
-        controls = np.asarray(self.segment_controls, dtype=np.float32).copy()
-        offsets = np.asarray(self.boundary_offsets, dtype=np.int64).copy()
-        if boundaries.ndim != 1 or len(boundaries) < 2:
-            raise ValueError("trajectory schedule requires at least one control segment")
-        segment_count = len(boundaries) - 1
-        if controls.shape != (segment_count, 3):
-            raise ValueError("trajectory schedule controls must have shape (segments, 3)")
-        if offsets.shape != (max(0, segment_count - 1),):
-            raise ValueError("trajectory schedule requires one offset per internal boundary")
-        if boundaries[0] != 0 or np.any(np.diff(boundaries) <= 0):
-            raise ValueError("trajectory schedule boundaries must start at zero and increase")
-        if not np.isfinite(controls).all():
-            raise ValueError("trajectory schedule controls must be finite")
-        object.__setattr__(self, "boundaries", boundaries)
-        object.__setattr__(self, "segment_controls", controls)
-        object.__setattr__(self, "boundary_offsets", offsets)
-        self.effective_boundaries()
-
-    @classmethod
-    def from_controls(cls, controls: np.ndarray) -> TrajectorySchedule:
-        values = np.asarray(controls, dtype=np.float32)
-        if values.ndim != 2 or values.shape[1] != 3 or not len(values):
-            raise ValueError("trajectory controls must have shape (steps, 3)")
-        changes = np.flatnonzero(np.any(values[1:] != values[:-1], axis=1)) + 1
-        boundaries = np.concatenate(([0], changes, [len(values)])).astype(np.int64)
-        return cls(
-            boundaries,
-            values[boundaries[:-1]],
-            np.zeros(max(0, len(boundaries) - 2), dtype=np.int64),
-        )
-
-    @property
-    def step_count(self) -> int:
-        return int(self.boundaries[-1])
-
-    def effective_boundaries(self) -> np.ndarray:
-        effective = self.boundaries.copy()
-        effective[1:-1] += self.boundary_offsets
-        if np.any(np.diff(effective) <= 0):
-            raise ValueError("trajectory boundary offsets collapse a control segment")
-        return effective
-
-    def materialize(self) -> np.ndarray:
-        durations = np.diff(self.effective_boundaries())
-        controls = np.repeat(self.segment_controls, durations, axis=0)
-        if controls.shape != (self.step_count, 3):
-            raise AssertionError("trajectory schedule changed its total duration")
-        return controls
-
-    def source_controls(self) -> np.ndarray:
-        return np.repeat(self.segment_controls, np.diff(self.boundaries), axis=0)
-
-    def slow_windows(self, *, minimum_ticks: int = 3) -> tuple[SlowControlWindow, ...]:
-        if minimum_ticks < 1:
-            raise ValueError("minimum_ticks must be positive")
-        slow = (self.segment_controls[:, 0] < 0.5) | (self.segment_controls[:, 1] > 0.5)
-        boundaries = self.effective_boundaries()
-        windows: list[SlowControlWindow] = []
-        first = 0
-        while first < len(slow):
-            if not slow[first]:
-                first += 1
-                continue
-            stop = first + 1
-            while stop < len(slow) and slow[stop]:
-                stop += 1
-            if int(boundaries[stop] - boundaries[first]) >= minimum_ticks:
-                windows.append(SlowControlWindow(first, stop))
-            first = stop
-        return tuple(windows)
-
-    def shorten(
-        self,
-        window: SlowControlWindow,
-        side: Literal["start", "end"],
-        ticks: int,
-    ) -> TrajectorySchedule:
-        if ticks < 1:
-            raise ValueError("trajectory shortening must use a positive tick count")
-        segment_count = len(self.segment_controls)
-        if not 0 <= window.first_segment < window.stop_segment <= segment_count:
-            raise ValueError("slow-control window lies outside the trajectory schedule")
-        boundary = window.first_segment if side == "start" else window.stop_segment
-        if boundary in {0, segment_count}:
-            raise ValueError("the first or last control window cannot be shortened on this side")
-        offsets = self.boundary_offsets.copy()
-        offsets[boundary - 1] += ticks if side == "start" else -ticks
-        return replace(self, boundary_offsets=offsets)
-
-    def save(self, path: str | Path) -> Path:
-        target = Path(path)
-        if target.suffix.lower() != ".npz":
-            target = target.with_suffix(".npz")
-        target.parent.mkdir(parents=True, exist_ok=True)
-        temporary = target.with_name(f"{target.stem}.tmp.npz")
-        np.savez_compressed(
-            temporary,
-            format=np.asarray(SCHEDULE_FORMAT),
-            boundaries=self.boundaries,
-            segment_controls=self.segment_controls,
-            boundary_offsets=self.boundary_offsets,
-        )
-        os.replace(temporary, target)
-        return target
-
-    @classmethod
-    def load(cls, path: str | Path) -> TrajectorySchedule:
-        with np.load(path, allow_pickle=False) as data:
-            if str(data["format"].item()) != SCHEDULE_FORMAT:
-                raise ValueError("unsupported trajectory schedule format")
-            return cls(
-                boundaries=np.asarray(data["boundaries"], dtype=np.int64),
-                segment_controls=np.asarray(data["segment_controls"], dtype=np.float32),
-                boundary_offsets=np.asarray(data["boundary_offsets"], dtype=np.int64),
-            )
+from trackmaniarl.trackmania.guidance_tracking import (
+    TrajectoryTrackingConfig,
+    TrajectoryTrackingReference,
+)
+from trackmaniarl.trackmania.trajectory_journal import append_trajectory_record
+from trackmaniarl.trackmania.trajectory_schedule import (
+    SCHEDULE_FORMAT as SCHEDULE_FORMAT,
+)
+from trackmaniarl.trackmania.trajectory_schedule import (
+    SlowControlWindow as SlowControlWindow,
+)
+from trackmaniarl.trackmania.trajectory_schedule import (
+    TrajectorySchedule as TrajectorySchedule,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -167,6 +42,54 @@ class TrajectoryTrackerConfig:
     minimum_correction_steps: int = 4
     reversal_neutral_steps: int = 2
 
+    def tracking_config(self) -> TrajectoryTrackingConfig:
+        return TrajectoryTrackingConfig(
+            self.action_lead_steps,
+            self.action_lead_ms,
+            self.lateral_gain,
+            self.heading_gain,
+            self.lateral_velocity_gain,
+            self.steering_threshold,
+            self.steering_release_threshold,
+            self.preview_ms,
+            self.minimum_correction_steps,
+            self.reversal_neutral_steps,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class _SearchRequest:
+    window: SlowControlWindow
+    side: Literal["start", "end"]
+    ticks: int
+
+
+@dataclass(frozen=True, slots=True)
+class _CandidateEvaluation:
+    candidate: TrajectorySchedule
+    outcomes: tuple[TrajectorySearchOutcome, ...]
+    accepted: bool
+
+
+@dataclass(slots=True)
+class _SearchState:
+    incumbent: TrajectorySchedule
+    outcomes: tuple[TrajectorySearchOutcome, ...]
+    median_time_s: float
+    trial: int
+    records: list[TrajectorySearchRecord]
+
+
+@dataclass(slots=True)
+class _TrialState:
+    observation: Any
+    progress_pct: float = 0.0
+
+
+@dataclass(frozen=True, slots=True)
+class _TrialUpdate:
+    outcome: TrajectorySearchOutcome | None = None
+
 
 def build_scheduled_policy(
     demonstration_path: str | Path,
@@ -174,24 +97,23 @@ def build_scheduled_policy(
     config: TrajectoryTrackerConfig | None = None,
 ) -> TrajectoryTrackingDemonstrationPolicy:
     demonstration = load_demonstration(demonstration_path)
-    if schedule.step_count != len(demonstration.controls):
-        raise ValueError("trajectory schedule and demonstration lengths do not match")
-    if not np.array_equal(schedule.source_controls(), demonstration.controls):
-        raise ValueError("trajectory schedule was created from a different demonstration")
+    _validate_schedule(schedule, demonstration.controls)
     selected = config or TrajectoryTrackerConfig()
+    return _tracking_policy(demonstration.frames[:-1], schedule.materialize(), selected)
+
+
+def _validate_schedule(schedule: TrajectorySchedule, controls: np.ndarray) -> None:
+    if schedule.step_count != len(controls):
+        raise ValueError("trajectory schedule and demonstration lengths do not match")
+    if not np.array_equal(schedule.source_controls(), controls):
+        raise ValueError("trajectory schedule was created from a different demonstration")
+
+
+def _tracking_policy(
+    frames: np.ndarray, controls: np.ndarray, config: TrajectoryTrackerConfig
+) -> TrajectoryTrackingDemonstrationPolicy:
     return TrajectoryTrackingDemonstrationPolicy(
-        demonstration.frames[:-1],
-        schedule.materialize(),
-        action_lead_steps=selected.action_lead_steps,
-        action_lead_ms=selected.action_lead_ms,
-        lateral_gain=selected.lateral_gain,
-        heading_gain=selected.heading_gain,
-        lateral_velocity_gain=selected.lateral_velocity_gain,
-        steering_threshold=selected.steering_threshold,
-        steering_release_threshold=selected.steering_release_threshold,
-        preview_ms=selected.preview_ms,
-        minimum_correction_steps=selected.minimum_correction_steps,
-        reversal_neutral_steps=selected.reversal_neutral_steps,
+        TrajectoryTrackingReference(frames, controls), config.tracking_config()
     )
 
 
@@ -200,30 +122,39 @@ def run_trajectory_trial(
     policy: Policy,
     max_episode_steps: int,
 ) -> TrajectorySearchOutcome:
-    """Evaluate one schedule without invoking a learner or checkpoint stack."""
-
     if max_episode_steps < 1:
         raise ValueError("max_episode_steps must be positive")
-    progress_pct = 0.0
+    state = _TrialState(None)
     try:
-        observation, _ = environment.reset(seed=0)
-        reset_policy = getattr(policy, "reset_episode", None)
-        if callable(reset_policy):
-            reset_policy()
+        state.observation = _reset_trial(environment, policy)
         for _ in range(max_episode_steps):
-            action = policy.act(observation, deterministic=True)
-            observation, _, terminated, truncated, info = environment.step(action)
-            progress_pct = float(info.get("progress_pct", progress_pct))
-            if not (terminated or truncated):
-                continue
-            finished = info.get("termination_reason") == "finished"
-            race_time_ms = float(info.get("race_time_ms", 0.0))
-            finish_time_s = race_time_ms / 1_000.0 if finished and race_time_ms > 0.0 else None
-            return TrajectorySearchOutcome(finished, finish_time_s, progress_pct)
+            update = _trial_step(environment, policy, state)
+            if update.outcome is not None:
+                return update.outcome
     except (TimeoutError, ConnectionError) as exc:
         error = f"{type(exc).__name__}: {exc}"
-        return TrajectorySearchOutcome(False, None, progress_pct, error)
-    return TrajectorySearchOutcome(False, None, progress_pct)
+        return TrajectorySearchOutcome(False, None, state.progress_pct, error)
+    return TrajectorySearchOutcome(False, None, state.progress_pct)
+
+
+def _reset_trial(environment: Any, policy: Policy) -> Any:
+    observation, _ = environment.reset(seed=0)
+    reset_policy = getattr(policy, "reset_episode", None)
+    if callable(reset_policy):
+        reset_policy()
+    return observation
+
+
+def _trial_step(environment: Any, policy: Policy, state: _TrialState) -> _TrialUpdate:
+    action = policy.act(state.observation, PolicyMode.EVALUATION)
+    state.observation, _, terminated, truncated, info = environment.step(action)
+    state.progress_pct = float(info.get("progress_pct", state.progress_pct))
+    if not (terminated or truncated):
+        return _TrialUpdate()
+    finished = info.get("termination_reason") == "finished"
+    race_time_ms = float(info.get("race_time_ms", 0.0))
+    finish_time_s = race_time_ms / 1_000.0 if finished and race_time_ms > 0.0 else None
+    return _TrialUpdate(TrajectorySearchOutcome(finished, finish_time_s, state.progress_pct))
 
 
 @dataclass(frozen=True, slots=True)
@@ -295,55 +226,106 @@ class SafeTrajectoryOptimizer:
         initial: TrajectorySchedule,
         evaluate: Callable[[TrajectorySchedule], TrajectorySearchOutcome],
     ) -> TrajectorySearchResult:
-        records: list[TrajectorySearchRecord] = []
+        state = self._initial_state(initial, evaluate)
+        if state.median_time_s <= self.config.target_time_s:
+            return self._state_result(state)
+        return self._search(initial, evaluate, state)
+
+    def _initial_state(
+        self,
+        initial: TrajectorySchedule,
+        evaluate: Callable[[TrajectorySchedule], TrajectorySearchOutcome],
+    ) -> _SearchState:
         baseline = self._evaluate_many(initial, evaluate, self.config.baseline_trials)
         self._require_robust_baseline(baseline)
-        incumbent, incumbent_outcomes = initial, baseline
-        incumbent_time = _median_finished(baseline)
-        trial = len(baseline)
-        self._checkpoint(incumbent)
-        if incumbent_time <= self.config.target_time_s:
-            return self._result(incumbent, incumbent_outcomes, records)
+        self._checkpoint(initial)
+        return _SearchState(initial, baseline, _median_finished(baseline), len(baseline), [])
+
+    def _search(
+        self,
+        initial: TrajectorySchedule,
+        evaluate: Callable[[TrajectorySchedule], TrajectorySearchOutcome],
+        state: _SearchState,
+    ) -> TrajectorySearchResult:
+        for request, candidate in self._candidate_schedules(initial, state):
+            if state.trial >= self.config.max_trials:
+                return self._state_result(state)
+            evaluation = self._evaluate_candidate(candidate, evaluate, state)
+            self._record_evaluation(state, request, evaluation)
+            if evaluation.accepted:
+                self._accept_candidate(state, evaluation)
+                if state.median_time_s <= self.config.target_time_s:
+                    return self._state_result(state)
+        return self._state_result(state)
+
+    def _candidate_schedules(
+        self, initial: TrajectorySchedule, state: _SearchState
+    ) -> Iterator[tuple[_SearchRequest, TrajectorySchedule]]:
+        for request in self._search_requests(initial):
+            try:
+                candidate = state.incumbent.shorten(request.window, request.side, request.ticks)
+            except ValueError:
+                continue
+            yield request, candidate
+
+    def _search_requests(self, initial: TrajectorySchedule) -> Iterator[_SearchRequest]:
+        windows = initial.slow_windows(minimum_ticks=self.config.minimum_window_ticks)
         for ticks in self.config.shortening_ticks:
-            for window in initial.slow_windows(minimum_ticks=self.config.minimum_window_ticks):
-                for side in ("start", "end"):
-                    if trial >= self.config.max_trials:
-                        return self._result(incumbent, incumbent_outcomes, records)
-                    try:
-                        candidate = incumbent.shorten(window, side, ticks)
-                    except ValueError:
-                        continue
-                    screening = evaluate(candidate)
-                    trial += 1
-                    accepted = False
-                    outcomes: tuple[TrajectorySearchOutcome, ...] = (screening,)
-                    if self._promising(screening, incumbent_time):
-                        remaining = self.config.max_trials - trial
-                        confirmation_count = min(self.config.confirmation_trials - 1, remaining)
-                        confirmations = self._evaluate_many(candidate, evaluate, confirmation_count)
-                        trial += len(confirmations)
-                        outcomes += confirmations
-                        accepted = self._confirmed(outcomes, incumbent_time)
-                    for outcome in outcomes:
-                        records.append(
-                            TrajectorySearchRecord(
-                                trial=len(records) + self.config.baseline_trials + 1,
-                                kind="shorten_slow_window",
-                                window=window,
-                                side=side,
-                                ticks=ticks,
-                                accepted=accepted,
-                                outcome=outcome,
-                            )
-                        )
-                        self._journal(records[-1])
-                    if accepted:
-                        incumbent, incumbent_outcomes = candidate, outcomes
-                        incumbent_time = _median_finished(outcomes)
-                        self._checkpoint(incumbent)
-                        if incumbent_time <= self.config.target_time_s:
-                            return self._result(incumbent, incumbent_outcomes, records)
-        return self._result(incumbent, incumbent_outcomes, records)
+            for window in windows:
+                yield _SearchRequest(window, "start", ticks)
+                yield _SearchRequest(window, "end", ticks)
+
+    def _evaluate_candidate(
+        self,
+        candidate: TrajectorySchedule,
+        evaluate: Callable[[TrajectorySchedule], TrajectorySearchOutcome],
+        state: _SearchState,
+    ) -> _CandidateEvaluation:
+        screening = evaluate(candidate)
+        state.trial += 1
+        outcomes: tuple[TrajectorySearchOutcome, ...] = (screening,)
+        if self._promising(screening, state.median_time_s):
+            outcomes += self._confirm_candidate(candidate, evaluate, state)
+        accepted = self._confirmed(outcomes, state.median_time_s)
+        return _CandidateEvaluation(candidate, outcomes, accepted)
+
+    def _confirm_candidate(
+        self,
+        candidate: TrajectorySchedule,
+        evaluate: Callable[[TrajectorySchedule], TrajectorySearchOutcome],
+        state: _SearchState,
+    ) -> tuple[TrajectorySearchOutcome, ...]:
+        remaining = self.config.max_trials - state.trial
+        count = min(self.config.confirmation_trials - 1, remaining)
+        confirmations = self._evaluate_many(candidate, evaluate, count)
+        state.trial += len(confirmations)
+        return confirmations
+
+    def _record_evaluation(
+        self, state: _SearchState, request: _SearchRequest, evaluation: _CandidateEvaluation
+    ) -> None:
+        for outcome in evaluation.outcomes:
+            record = TrajectorySearchRecord(
+                trial=len(state.records) + self.config.baseline_trials + 1,
+                kind="shorten_slow_window",
+                window=request.window,
+                side=request.side,
+                ticks=request.ticks,
+                accepted=evaluation.accepted,
+                outcome=outcome,
+            )
+            state.records.append(record)
+            self._journal(record)
+
+    def _accept_candidate(self, state: _SearchState, evaluation: _CandidateEvaluation) -> None:
+        state.incumbent = evaluation.candidate
+        state.outcomes = evaluation.outcomes
+        state.median_time_s = _median_finished(evaluation.outcomes)
+        self._checkpoint(state.incumbent)
+
+    @staticmethod
+    def _state_result(state: _SearchState) -> TrajectorySearchResult:
+        return SafeTrajectoryOptimizer._result(state.incumbent, state.outcomes, state.records)
 
     @staticmethod
     def _evaluate_many(
@@ -382,28 +364,7 @@ class SafeTrajectoryOptimizer:
     def _journal(self, record: TrajectorySearchRecord) -> None:
         if self.config.journal_path is None:
             return
-        target = self.config.journal_path
-        target.parent.mkdir(parents=True, exist_ok=True)
-        payload = {
-            "trial": record.trial,
-            "kind": record.kind,
-            "window": (
-                [record.window.first_segment, record.window.stop_segment]
-                if record.window is not None
-                else None
-            ),
-            "side": record.side,
-            "ticks": record.ticks,
-            "accepted": record.accepted,
-            "outcome": {
-                "finished": record.outcome.finished,
-                "finish_time_s": record.outcome.finish_time_s,
-                "progress_pct": record.outcome.progress_pct,
-                "error": record.outcome.error,
-            },
-        }
-        with target.open("a", encoding="utf-8") as stream:
-            stream.write(json.dumps(payload, sort_keys=True) + "\n")
+        append_trajectory_record(self.config.journal_path, record)
 
     @staticmethod
     def _result(

@@ -1,5 +1,122 @@
 # Changelog
 
+## 1.1.0 - 2026-09-04
+
+- Require RunSpec API 2.0 and compose discrete value models from a frame-only
+  encoder, temporal core, head and value strategy.
+- Make generated starter model initialization follow the declared run seed and
+  expose the composed discrete-value learner through the public built-in registry.
+  Generated projects now partition PyTorch CPU and CUDA indexes by platform so
+  a fresh `uv sync` resolves from both an editable checkout and a release wheel.
+- Add one `DiscreteValueLearner` for Standard Q, QR-DQN, IQN and FQF, including
+  selected-action Double-DQN targets and an isolated FQF fraction optimizer.
+- Add portable Mamba selective scan with `auto`, `native` and Pure PyTorch
+  backends sharing one checkpoint-compatible parameter layout.
+- Add checkpoint schema 2.0, architecture fingerprints and safe
+  named-submodule warm-start reports. The unified `DiscreteValueLearner` is the
+  sole scalar Q, QR-DQN, IQN and FQF training path.
+- Persist AMP scaler state for every Torch learner, reject unsupported sequence
+  configurations before training, and make composite priority validation
+  atomic with the optimizer update.
+- Make uniform and prioritized sequence replay share one raw-context/n-step
+  contract, cache valid sequence windows by replay revision and correct TQC and
+  upper-CVaR reduction semantics.
+- Make the authenticated SQLite WAL the ordered source of truth, bind
+  checkpoints to journal identity and a contiguous applied frontier, retain
+  conflict receipts after pruning and fsync durable state before deletion.
+- Snapshot mutable transition trees on ingest, make on-policy partial resumes
+  fail closed, honor final-checkpoint policy and stop evaluation only after
+  consecutive successful target batches.
+- Make behavior-cloning splits disjoint, seed model construction, aggregate
+  weighted validation correctly, quality-gate recordings and support exact BC
+  resume bound to an immutable dataset manifest.
+- Tensorize behavior-cloning data once, use the shared Torch execution policy,
+  remove per-update CUDA transfer synchronization and reduce logging/replay
+  bookkeeping overhead.
+- Remove speculative full-batch prefetch that regressed learner throughput;
+  the final paired RTX 4090 microbenchmark improved IQN updates/s by 1.28x for
+  the MLP fixture and 1.41x for the lidar fixture under the recorded noisy
+  workload, with the same direction in an interleaved repeat.
+- Fail Trackmania startup closed on telemetry, protocol, readiness, map UID and
+  geometry mismatches, and make actor startup failures terminate nonzero
+  instead of leaving the learner waiting indefinitely.
+- Add bounded asynchronous W&B projection with semantic axes and health events
+  while keeping the local JSONL stream authoritative.
+- Rename the public offline-learning package from the too-narrow
+  `trackmaniarl.trackmania.behavior_cloning` to
+  `trackmaniarl.trackmania.imitation_learning`; BC class and CLI names remain
+  precise, while DAgger and recovery artifacts now have an accurate namespace.
+- Rewrite architecture, SDK, Trackmania, imitation-learning and development
+  documentation for 2.0 and regenerate the editable runtime, model-composition,
+  imitation-learning and local/remote deployment diagrams. Add explicit
+  Trackmania integration and checkpoint/resume diagrams; remove the decorative
+  extension-workflow diagram in favor of the concise SDK checklist.
+- Reject non-finite RunSpec values, malformed geometry and pace profiles,
+  backward reward clocks and physically unreachable progress jumps. Require the
+  built-in reward discount to equal `training.gamma`, report terminal and
+  time-attack reward components without double counting, and use the documented
+  OpenPlanet velocity conversion for pace and projected-velocity diagnostics.
+- Sample recurrent replay only from complete, unique, episode-local histories;
+  preserve n-step boundaries and elite weighting in both optimized and fallback
+  PER paths. Resume now snapshots replay and sampler state before asynchronous
+  checkpoint serialization.
+- Align generated online control and demonstration aggregation to a 50 ms,
+  repeat-one decision grid; support recurrent BC inference, make failed
+  closed-loop BC gates exit nonzero by default, bind stitched trajectories to
+  control alignment and limit BC-to-RL warm start to encoder/temporal modules.
+- Require BC recovery artifacts bound to map UID, geometry, timing, control
+  alignment and a verified source demonstration digest, with DAgger checkpoint
+  hashes retained for audit. Synthetic counterfactual states are now
+  episode-independent instead of pretending to be a dynamically reachable
+  sequence.
+- Route PPO through the local on-policy trainer, correct Trackmania TQC action
+  bounds, validate policy action masks and export evaluated actor state for SAC,
+  REDQ-SAC, TQC and stable-discrete-SAC-inspired learners.
+- Validate authenticated rollout semantics before WAL append. Actor spools now
+  fsync before atomic publication, recover orphaned temporary files, reject a
+  single chunk larger than the spool cap and retry only transient gRPC status
+  codes; permanent failures retain queued data and stop the actor loudly.
+- Apply the 32-character distributed-token minimum in every public runtime
+  entry point, keep the game-free starter free of controller dependencies and
+  make Zstandard a core checkpoint dependency.
+- Gate tagged publishing on formatting, Ruff, strict types and the full test
+  suite, then compare every packaged source file byte-for-byte with the release
+  checkout before upload. Package metadata and README links now use the
+  canonical `Palamabron/TrackmaniaRL` repository URL.
+- Package every `trackmaniarl` subpackage, keep base CLI/import paths independent
+  of optional gRPC modules, pin the build backend and test the wheel against the
+  complete source tree. CI actions are commit-pinned with least privilege and
+  CPU-only quality gates avoid downloading the CUDA development stack.
+- Correct recurrent replay after eviction, interleaved actor episodes and
+  terminal-first checkpoint restore while keeping eviction refresh bounded by
+  sequence length. Validate finite scalar priorities before sampler mutation.
+- Correct SAC, REDQ-SAC and TQC scalar/quantile shapes, preserve structured
+  observation PyTrees and batch single CHW observations during policy inference.
+- Bind local exact resume and distributed handshakes to the semantic RunSpec,
+  declared and resolved component-package source, and geometry/pace-reference
+  contents. Suppress obsolete warm-start loading during state restoration and
+  record resolved execution separately for every process attempt. Pytest now
+  uses an ignored repository-local base temp directory on Windows.
+- Validate documented component constructor kwargs and public configuration
+  field coverage, correct the RunSpec examples and defaults, and distinguish the
+  off-policy architecture diagrams from the local PPO lifecycle.
+- Add a bounded actor-stall watchdog and fail closed when Trackmania stops
+  producing environment steps instead of leaving the learner running forever.
+- Add opt-in keyboard-informed exploration, body-frame GraphV2 observations and
+  directional predecessor/successor graph message passing for lap-time experiments.
+- Label completed online episodes with their measured finish pace and support
+  optional elite replay weighting without discarding prioritized-replay TD errors.
+- Validate episode ownership, outcome and finish-time semantics before durable
+  ingest, including the case where an episode summary arrives before its chunks.
+- Persist elite replay labels in checkpoint schema v2, restore schema v1 safely,
+  and expose elite replay activity through local and W&B metrics.
+- Let an unpacked source tree report an unknown development version when package
+  metadata is absent; built wheels still require the exact release metadata.
+- Package only the reviewed release scripts in source archives so ignored local
+  helpers and caches cannot enter an sdist through a broad file pattern.
+- Add a measured lap-time audit and an opt-in sub-37 candidate configuration;
+  experimental performance claims remain separate from the library release gate.
+
 ## 1.0.4 - 2026-08-19
 
 - Use absolute GitHub image URLs in the package README so architecture diagrams
@@ -75,4 +192,4 @@
 - The distributed actor freezes one policy snapshot per training episode, so episode metrics measure a single policy version instead of a refresh mixture.
 - IQN policies report the greedy action gap; episode and evaluation summaries log `q_margin/mean`, `q_margin/min` and `q_margin/start_mean`.
 - Evaluation batches aggregate into `eval/summary`, and strictly better batches write an immediate best-eval checkpoint (`eval/best_checkpoint`).
-- Replay checkpoints can restore into a larger configured capacity, enabling resume-with-bigger-buffer experiments; see `docs/v27-deterministic-stability.md`.
+- Replay checkpoints can restore into a larger configured capacity, enabling resume-with-bigger-buffer experiments.

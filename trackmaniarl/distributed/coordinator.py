@@ -2,220 +2,75 @@
 
 from __future__ import annotations
 
-import logging
-import os
-from collections.abc import Callable, Mapping
-from concurrent.futures import Future, ThreadPoolExecutor
-from copy import deepcopy
-from dataclasses import dataclass, field, replace
+from collections.abc import Iterator, Mapping
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from queue import Empty, Full, Queue
-from statistics import fmean, median
+from queue import Queue
 from threading import RLock
-from time import monotonic, perf_counter, sleep
-from typing import Any, cast
+from time import monotonic
+from typing import Any
 
 import grpc
 from google.protobuf.wrappers_pb2 import BytesValue
 
-from trackmaniarl.core.contracts import ReplicablePolicy
-from trackmaniarl.core.data import BatchRequest, TrainingBatch
-from trackmaniarl.core.runtime import ResolvedRun, prepare_run, resolve_run
-from trackmaniarl.core.spec import DEFAULT_EVALUATION_TIME_BUCKETS_S, RunSpec
+from trackmaniarl.core.runtime import ResolvedRun
+from trackmaniarl.core.spec import DEFAULT_EVALUATION_TIME_BUCKETS_S
 from trackmaniarl.core.training import TrainingResult
+from trackmaniarl.distributed import (
+    coordinator_checkpoint,
+    coordinator_evaluation,
+    coordinator_ingest,
+    coordinator_leaders,
+    coordinator_learning,
+    coordinator_policy,
+    coordinator_rpc,
+    coordinator_runtime,
+    coordinator_support,
+)
 from trackmaniarl.distributed.codec import WireCodec
+from trackmaniarl.distributed.coordinator_types import CoordinatorConfig, ReplayRestoreMode
 from trackmaniarl.distributed.journal import RolloutJournal
 from trackmaniarl.distributed.protocol import (
-    PROTOCOL_VERSION,
-    SERVICE,
-    authenticate,
-    deserialize_message,
+    require_distributed_token,
     require_loopback_bind,
-    run_fingerprint,
-    serialize_message,
-    transition_from_wire,
 )
-from trackmaniarl.trackmania.diagnostics import aggregate_progress_bins
-
-logger = logging.getLogger(__name__)
-
-_ROLLOUT_QUEUE_MAXSIZE = 64
-
-
-def _bucket_key(bucket: float) -> str:
-    return f"sub_{bucket:g}"
-
-
-def _evaluation_rank(
-    finish_rate: float, median_time_s: float, required_finish_rate: float
-) -> tuple[float, float, float]:
-    """Rank release-qualified policies by time, otherwise by reliability."""
-
-    if finish_rate >= required_finish_rate:
-        return 1.0, -median_time_s, finish_rate
-    return 0.0, finish_rate, -median_time_s
-
-
-@dataclass(slots=True)
-class _Counters:
-    transitions: int = 0
-    episodes: int = 0
-    finishes: int = 0
-    best_finish_time_s: float = 0.0
-    evaluations: int = 0
-    evaluation_finishes: int = 0
-    evaluation_bucket_finishes: dict[str, int] = field(default_factory=dict)
-    updates: int = 0
-    update_credit: float = 0.0
-    journal_watermark: int = 0
-    policy_version: int = 0
-    actor_sequences: dict[str, int] = field(default_factory=dict)
-
-
-@dataclass(frozen=True, slots=True)
-class _PendingRollout:
-    value: Mapping[str, Any]
-    row_id: int
-    enqueued_at: float
-
-
-@dataclass(frozen=True, slots=True)
-class _PreparedBatch:
-    batch: TrainingBatch
-    preparation_s: float
-
-
-class _BatchPrefetcher:
-    def __init__(self, run: ResolvedRun) -> None:
-        self.run = run
-        self.prepare = getattr(run.learner, "prepare_batch", None)
-        self.enabled = bool(getattr(run.sampler, "thread_safe_prefetch", False))
-        self.executor = (
-            ThreadPoolExecutor(max_workers=1, thread_name_prefix="trackmaniarl-batch-prefetch")
-            if self.enabled
-            else None
-        )
-        self.pending: Future[_PreparedBatch] | None = None
-
-    def next(self, request: BatchRequest) -> tuple[TrainingBatch, float, float]:
-        waited_at = perf_counter()
-        prepared = self.pending.result() if self.pending is not None else self._prepare(request)
-        wait_s = perf_counter() - waited_at
-        if self.executor is not None:
-            self.pending = self.executor.submit(self._prepare, request)
-        return prepared.batch, prepared.preparation_s, wait_s
-
-    def _prepare(self, request: BatchRequest) -> _PreparedBatch:
-        started = perf_counter()
-        batch = self.run.sampler.sample(self.run.replay_store, request)
-        if callable(self.prepare):
-            batch = self.prepare(batch)
-        return _PreparedBatch(batch, perf_counter() - started)
-
-    def close(self) -> None:
-        if self.executor is not None:
-            self.executor.shutdown(wait=True, cancel_futures=True)
-
-
-class _MetricAccumulator:
-    def __init__(self) -> None:
-        self.values: dict[str, float] = {}
-        self.maximums: dict[str, float] = {}
-        self.count = 0
-
-    def add(self, metrics: Mapping[str, float]) -> None:
-        for key, value in metrics.items():
-            numeric = float(value)
-            if key.endswith("_max"):
-                self.maximums[key] = max(self.maximums.get(key, numeric), numeric)
-            else:
-                self.values[key] = self.values.get(key, 0.0) + numeric
-        self.count += 1
-
-    def flush(self) -> dict[str, float]:
-        if self.count == 0:
-            return {}
-        output = {key: value / self.count for key, value in self.values.items()}
-        output.update(self.maximums)
-        self.values.clear()
-        self.maximums.clear()
-        self.count = 0
-        return output
-
-
-class _AsyncCheckpointWriter:
-    def __init__(self, codec: Any) -> None:
-        self.codec = codec
-        self.executor = ThreadPoolExecutor(
-            max_workers=1, thread_name_prefix="trackmaniarl-checkpoint"
-        )
-        self.pending: Any = None
-
-    def submit(
-        self,
-        state: Mapping[str, Any],
-        path: Path,
-        on_saved: Callable[[], None] | None = None,
-    ) -> None:
-        self.wait()
-        self.pending = self.executor.submit(self._save, state, path, on_saved)
-
-    def _save(
-        self,
-        state: Mapping[str, Any],
-        path: Path,
-        on_saved: Callable[[], None] | None,
-    ) -> None:
-        self.codec.save(state, path)
-        if on_saved is not None:
-            on_saved()
-
-    def wait(self) -> None:
-        if self.pending is not None:
-            self.pending.result()
-            self.pending = None
-
-    def close(self) -> None:
-        self.wait()
-        self.executor.shutdown(wait=True, cancel_futures=False)
 
 
 class Coordinator:
     """Own the replay, learner and network-facing rollout journal."""
 
-    def __init__(
-        self,
-        run: ResolvedRun,
-        *,
-        bind: str,
-        token: str,
-        fingerprint: str,
-        resume_checkpoint: Path | None = None,
-        reset_replay: bool = False,
-        external_stop: Any | None = None,
-        demo_paths: tuple[Path, ...] = (),
-    ) -> None:
+    def __init__(self, run: ResolvedRun, config: CoordinatorConfig) -> None:
+        require_distributed_token(config.token)
         if getattr(run.learner, "on_policy", False):
             raise ValueError(
                 "Distributed training does not support on-policy learners; "
                 "use trackmaniarl train for PPO"
             )
+        self._configure(run, config)
+        self._initialize_transport()
+        self._initialize_metrics()
+        self._initialize_evaluation()
+
+    def _configure(self, run: ResolvedRun, config: CoordinatorConfig) -> None:
+        self.token = config.token
         self.run = run
-        self.bind = require_loopback_bind(bind)
-        self.token = token
-        self.fingerprint = fingerprint
-        self.resume_checkpoint = resume_checkpoint
-        self.reset_replay = reset_replay
-        self.external_stop = external_stop
-        self.demo_paths = demo_paths
+        self.bind = require_loopback_bind(config.bind)
+        self.fingerprint = config.fingerprint
+        self.resume_checkpoint = config.resume_checkpoint
+        self.restore_mode = config.restore_mode
+        self.external_stop = config.external_stop
+        self.demo_paths = config.demo_paths
         self.codec = WireCodec(run.spec.distributed.max_message_bytes)
         self.journal = RolloutJournal(run.run_dir / "distributed" / "rollouts.sqlite3")
-        self.counters = _Counters()
+        self.counters = coordinator_support._Counters()
+
+    def _initialize_transport(self) -> None:
         self._lock = RLock()
         self._policy_payload = b""
         self._last_policy_publish = 0.0
         self._last_policy_update = -1
         self._server: grpc.Server | None = None
+        self._bound_port: int | None = None
         self._rpc_executor: ThreadPoolExecutor | None = None
         self._checkpoints: list[Path] = []
         self._last_progress_print = 0
@@ -224,1102 +79,191 @@ class Coordinator:
         self._evaluation_due: set[str] = set()
         self._last_ingest_at = monotonic()
         self._started_at = monotonic()
-        self._rollouts: Queue[_PendingRollout] = Queue(maxsize=_ROLLOUT_QUEUE_MAXSIZE)
-        evaluation = getattr(run.spec, "evaluation", None)
-        self._time_buckets = (
-            evaluation.time_buckets_s
-            if evaluation is not None
-            else DEFAULT_EVALUATION_TIME_BUCKETS_S
+        self._rollouts: Queue[tuple[int, float]] = Queue(
+            maxsize=coordinator_support.ROLLOUT_QUEUE_MAXSIZE
         )
-        self._metrics = _MetricAccumulator()
+        self._journal_enqueued_at: dict[int, float] = {}
+
+    def _initialize_metrics(self) -> None:
+        self._metrics = coordinator_support._MetricAccumulator()
         self._metric_window_started = monotonic()
         self._last_metric_credit = 0.0
         self._growing_credit_windows = 0
         self._last_logging_s = 0.0
         self._last_metric_transitions = 0
+
+    def _initialize_evaluation(self) -> None:
+        evaluation = self.run.spec.evaluation
+        self._time_buckets = (
+            evaluation.time_buckets_s
+            if evaluation is not None
+            else DEFAULT_EVALUATION_TIME_BUCKETS_S
+        )
         self._best_evaluation: tuple[float, float, float] | None = None
+        self._fastest_evaluation: tuple[float, float, float] | None = None
         self._evaluation_policy_states: dict[int, Mapping[str, Any]] = {}
-        self._consecutive_evaluation_failures = 0
+        self._consecutive_evaluation_passes = 0
         self._evaluation_stop_reason: str | None = None
         self._recovering = False
-        self._checkpoint_writer = _AsyncCheckpointWriter(run.checkpoint_codec)
+        self._checkpoint_writer = coordinator_support._AsyncCheckpointWriter(
+            self.run.checkpoint_codec
+        )
+
+    @property
+    def bound_port(self) -> int:
+        if self._bound_port is None:
+            raise RuntimeError("distributed learner has not bound its gRPC port")
+        return self._bound_port
 
     def run_forever(self) -> TrainingResult:
-        self._prepare_training()
-        if self.resume_checkpoint is not None:
-            logger.info("Restoring checkpoint: %s", self.resume_checkpoint)
-            self.restore_checkpoint(self.resume_checkpoint, reset_replay=self.reset_replay)
-            restored = (
-                "learner state only; replay and runtime counters reset"
-                if self.reset_replay
-                else "full state"
-            )
-            logger.info(
-                "Checkpoint restored (%s): transitions=%d, updates=%d",
-                restored,
-                self.counters.transitions,
-                self.counters.updates,
-            )
-        elif self.journal.has_rows():
-            raise RuntimeError(
-                f"run_id {self.run.spec.run_id!r} has prior rollout data in "
-                f"{self.journal.path}; resume with --checkpoint or choose a new run_id"
-            )
-        self._import_demonstrations()
-        if self.resume_checkpoint is None or self.demo_paths:
-            self._offline_pretrain()
-        self._publish_policy(force=True)
-        self._start_server()
-        logger.info(
-            "Async learner ready (pid=%d): run_id=%s, gRPC bind=%s, target_transitions=%d",
-            os.getpid(),
-            self.run.spec.run_id,
-            self.bind,
-            self.run.spec.training.total_transitions,
-        )
-        try:
-            self._learn()
-            if self.run.spec.training.save_final_checkpoint:
-                self._checkpoints.append(self._checkpoint())
-            self._checkpoint_writer.wait()
-            return TrainingResult(
-                self.counters.episodes,
-                self.counters.transitions,
-                self.counters.updates,
-                tuple(self._checkpoints),
-                None,
-            )
-        except KeyboardInterrupt:
-            if self.run.spec.training.save_final_checkpoint:
-                self._checkpoints.append(self._checkpoint())
-            self._checkpoint_writer.wait()
-            raise
-        finally:
-            if self._server is not None:
-                self._server.stop(grace=2).wait(timeout=5)
-            if self._rpc_executor is not None:
-                self._rpc_executor.shutdown(wait=True, cancel_futures=True)
-            self._checkpoint_writer.close()
-            self.journal.close()
+        return coordinator_runtime.run_forever(self)
 
     def run_offline_pretraining(self) -> TrainingResult:
         """Train only from configured demonstrations without opening the actor server."""
 
-        if self.run.spec.training.offline_pretrain_updates == 0:
-            raise ValueError("offline pretraining requires offline_pretrain_updates > 0")
-        if not self.demo_paths:
-            raise ValueError("offline pretraining requires at least one demonstration")
-        checkpoints: list[Path] = []
-        try:
-            self._prepare_training()
-            if self.journal.has_rows():
-                raise RuntimeError(
-                    f"run_id {self.run.spec.run_id!r} has prior rollout data in "
-                    f"{self.journal.path}; choose a new run_id"
-                )
-            self._import_demonstrations()
-            self._offline_pretrain()
-            checkpoints.append(self._checkpoint())
-            self._checkpoint_writer.wait()
-            return TrainingResult(
-                self.counters.episodes,
-                self.counters.transitions,
-                self.counters.updates,
-                tuple(checkpoints),
-                None,
-            )
-        finally:
-            self._checkpoint_writer.close()
-            self.journal.close()
+        return coordinator_runtime.run_offline_pretraining(self)
+
+    def _log_run_failure(self, phase: str, exc: BaseException) -> None:
+        coordinator_runtime.log_run_failure(self, phase, exc)
+
+    def _close_runtime(self) -> None:
+        coordinator_runtime.close_runtime(self)
 
     def _prepare_training(self) -> None:
-        self.run.learner.setup(
-            {
-                "seed": self.run.spec.seed,
-                "run_dir": self.run.run_dir,
-                "model_factory": self.run.model_factory,
-            }
-        )
-        prepare_run(self.run)
-        self._log_execution()
+        coordinator_runtime.prepare_training(self)
 
     def _start_server(self) -> None:
-        options = (
-            ("grpc.max_receive_message_length", self.run.spec.distributed.max_message_bytes),
-            ("grpc.max_send_message_length", self.run.spec.distributed.max_message_bytes),
-        )
-        executor = ThreadPoolExecutor(max_workers=8, thread_name_prefix="trackmaniarl-grpc")
-        server = grpc.server(executor, options=options)
-        handlers = {
-            "Register": grpc.unary_unary_rpc_method_handler(
-                self._register,
-                request_deserializer=deserialize_message,
-                response_serializer=serialize_message,
-            ),
-            "Submit": grpc.unary_unary_rpc_method_handler(
-                self._submit,
-                request_deserializer=deserialize_message,
-                response_serializer=serialize_message,
-            ),
-            "Policy": grpc.unary_unary_rpc_method_handler(
-                self._policy,
-                request_deserializer=deserialize_message,
-                response_serializer=serialize_message,
-            ),
-            "Heartbeat": grpc.unary_unary_rpc_method_handler(
-                self._heartbeat,
-                request_deserializer=deserialize_message,
-                response_serializer=serialize_message,
-            ),
-        }
-        server.add_generic_rpc_handlers((grpc.method_handlers_generic_handler(SERVICE, handlers),))
-        if server.add_insecure_port(self.bind) == 0:
-            executor.shutdown(wait=False, cancel_futures=True)
-            raise RuntimeError(f"could not bind distributed learner to {self.bind}")
-        server.start()
-        self._server = server
-        self._rpc_executor = executor
+        coordinator_rpc.start_server(self)
 
     def _import_demonstrations(self) -> None:
-        if not self.demo_paths:
-            return
-        factory = self.run.environment_factory
-        loader = getattr(factory, "load_demonstration", None)
-        if not callable(loader):
-            raise ValueError("configured environment does not support replay demonstrations")
-        logger.info("Importing %d demonstration file(s) into replay...", len(self.demo_paths))
-        imported = 0
-        finish_times: list[float] = []
-        for path in self.demo_paths:
-            transitions = loader(path, self.run.feature_pipeline)
-            for transition in transitions:
-                self.run.replay_store.append(transition)
-            imported += len(transitions)
-            finish_times.append(float(transitions[0].info["sampling/projected_lap_time_s"]))
-            logger.info("Imported demonstration %s: %d transitions", path, len(transitions))
-        logger.info(
-            "Demonstration import complete: %d transitions from %d file(s)",
-            imported,
-            len(self.demo_paths),
-        )
-        self.run.logger.log(
-            "train/demonstrations",
-            {
-                "files": len(self.demo_paths),
-                "transitions": imported,
-                "best_finish_time_s": min(finish_times),
-                "replay_size": len(self.run.replay_store),
-            },
-            step=self.counters.updates,
-        )
+        coordinator_learning.import_demonstrations(self)
 
     def _offline_pretrain(self) -> None:
-        updates = self.run.spec.training.offline_pretrain_updates
-        if updates == 0:
-            return
-        if not self.demo_paths:
-            raise ValueError("offline_pretrain_updates requires at least one demonstration")
-        spec = self.run.spec.training
-        footprint = spec.batch_size * spec.sequence_length + spec.n_step - 1
-        if len(self.run.replay_store) < footprint:
-            raise RuntimeError(
-                "offline demonstration replay is too small for the configured batch footprint"
-            )
-        started = perf_counter()
-        metrics: list[Mapping[str, float]] = []
-        progress_interval = min(25, updates)
-        begin = getattr(self.run.learner, "begin_offline_pretraining", None)
-        end = getattr(self.run.learner, "end_offline_pretraining", None)
-        if callable(begin):
-            begin()
-        try:
-            for index in range(1, updates + 1):
-                batch = self.run.sampler.sample(
-                    self.run.replay_store, spec.batch_request(beta=spec.replay_beta(0))
-                )
-                result = self.run.learner.update(batch)
-                values, priorities = result if isinstance(result, tuple) else (result, None)
-                if priorities is not None:
-                    self.run.sampler.update_priorities(priorities)
-                self.counters.updates += 1
-                metrics.append(values)
-                if index % progress_interval == 0 or index == updates:
-                    logger.info("Offline pretraining progress: updates=%d/%d", index, updates)
-        finally:
-            if callable(end):
-                end()
-        summary = {
-            key: fmean(float(values[key]) for values in metrics if key in values)
-            for key in {key for values in metrics for key in values}
-        }
-        self.run.logger.log(
-            "train/offline_pretrain",
-            {
-                **summary,
-                "updates": updates,
-                "replay_size": len(self.run.replay_store),
-                "duration_s": perf_counter() - started,
-            },
-            step=self.counters.updates,
-        )
-        logger.info(
-            "Offline pretraining complete: updates=%d, replay=%d, duration=%.1fs",
-            updates,
-            len(self.run.replay_store),
-            perf_counter() - started,
-        )
+        coordinator_learning.offline_pretrain(self)
 
     def _request(
-        self, request: BytesValue, context: grpc.ServicerContext[Any, Any]
+        self,
+        request: BytesValue,
+        context: grpc.ServicerContext[Any, Any],
     ) -> Mapping[str, Any]:
-        authenticate(context, self.token)
-        value = self.codec.decode(request.value)
-        if not isinstance(value, Mapping):
-            context.abort(grpc.StatusCode.INVALID_ARGUMENT, "request must be a mapping")
-        if value.get("protocol_version") != PROTOCOL_VERSION:
-            context.abort(grpc.StatusCode.FAILED_PRECONDITION, "protocol version mismatch")
-        if value.get("fingerprint") != self.fingerprint:
-            context.abort(grpc.StatusCode.FAILED_PRECONDITION, "run fingerprint mismatch")
-        return cast(Mapping[str, Any], value)
+        return coordinator_rpc.request(self, request, context)
 
-    def _response(self, value: Mapping[str, Any]) -> BytesValue:
-        return BytesValue(value=self.codec.encode(value))
+    def _response(
+        self,
+        value: Mapping[str, Any],
+        context: grpc.ServicerContext[Any, Any],
+    ) -> BytesValue:
+        return coordinator_rpc.response(self, value, context)
 
-    def _register(self, request: BytesValue, context: grpc.ServicerContext[Any, Any]) -> BytesValue:
-        value = self._request(request, context)
-        actor_id = str(value["actor_id"])
-        with self._lock:
-            self._last_heartbeats[actor_id] = monotonic()
-            self._timed_out_actors.discard(actor_id)
-        profile = self.journal.actor_profile(
-            actor_id, len(self.run.spec.distributed.epsilon_profiles)
-        )
-        self.run.logger.log(
-            "actor/registered",
-            {
-                "actor_id": actor_id,
-                "session_id": value["session_id"],
-                "epsilon_profile": profile,
-            },
-            step=self.counters.updates,
-        )
-        with self._lock:
-            return self._response(
-                {
-                    "accepted": True,
-                    "policy_version": self.counters.policy_version,
-                    "epsilon": self._epsilon(profile),
-                    "stop": self._should_stop(),
-                }
-            )
+    def _log_rollout_rejected(
+        self,
+        value: Mapping[str, Any],
+        rejection: coordinator_support._RolloutRejection,
+    ) -> None:
+        coordinator_rpc.log_rollout_rejected(self, value, rejection)
 
-    def _submit(self, request: BytesValue, context: grpc.ServicerContext[Any, Any]) -> BytesValue:
-        value = self._request(request, context)
-        policy_version = int(value["policy_version"])
-        with self._lock:
-            lag = max(0, self.counters.updates - policy_version)
-            stop = self._should_stop()
-        if lag > self.run.spec.distributed.hard_policy_lag_updates:
-            return self._response(
-                {
-                    "accepted": False,
-                    "reason": "hard_policy_lag",
-                    "force_refresh": True,
-                    "stop": stop,
-                }
-            )
-        if self._rollouts.full():
-            return self._response({"accepted": False, "reason": "backpressure", "stop": stop})
-        session_id = str(value["session_id"])
-        sequence = int(value["sequence"])
-        row_id, inserted = self.journal.append(session_id, sequence, request.value)
-        if inserted:
-            try:
-                self._rollouts.put_nowait(_PendingRollout(value, row_id, monotonic()))
-            except Full:
-                self.journal.discard(session_id, sequence)
-                return self._response({"accepted": False, "reason": "backpressure", "stop": stop})
-        with self._lock:
-            actor_id = str(value["actor_id"])
-            evaluate = actor_id in self._evaluation_due
-            self._evaluation_due.discard(actor_id)
-            evaluation_version = self.counters.policy_version
-            evaluation_snapshot = self._policy_payload if evaluate else b""
-            if evaluate:
-                policy_state = self.codec.decode(evaluation_snapshot)
-                if not isinstance(policy_state, Mapping):
-                    raise ValueError("published policy snapshot must decode to a mapping")
-                self._evaluation_policy_states[evaluation_version] = _snapshot_value(policy_state)
-                while len(self._evaluation_policy_states) > 16:
-                    self._evaluation_policy_states.pop(next(iter(self._evaluation_policy_states)))
-        return self._response(
-            {
-                "accepted": True,
-                "duplicate": not inserted,
-                "force_refresh": lag > self.run.spec.distributed.soft_policy_lag_updates,
-                "stop": stop,
-                "policy_lag_updates": lag,
-                "evaluate": evaluate,
-                "evaluation_policy_version": evaluation_version,
-                "evaluation_snapshot": evaluation_snapshot,
-            }
-        )
+    def _log_wal_error(self, operation: str, exc: BaseException) -> None:
+        coordinator_ingest.log_wal_error(self, operation, exc)
 
-    def _policy(self, request: BytesValue, context: grpc.ServicerContext[Any, Any]) -> BytesValue:
-        value = self._request(request, context)
-        profile = self.journal.actor_profile(
-            str(value["actor_id"]), len(self.run.spec.distributed.epsilon_profiles)
-        )
-        with self._lock:
-            current = int(value.get("current_version", -1))
-            return self._response(
-                {
-                    "policy_version": self.counters.policy_version,
-                    "snapshot": self._policy_payload
-                    if current != self.counters.policy_version
-                    else b"",
-                    "epsilon": self._epsilon(profile),
-                    "stop": self._should_stop(),
-                }
-            )
+    def _journal_rows(self, watermark: int, operation: str) -> Iterator[tuple[int, bytes]]:
+        return coordinator_ingest.journal_rows(self, watermark, operation)
+
+    def _decode_journal_payload(self, payload: bytes, operation: str) -> Mapping[str, Any]:
+        return coordinator_ingest.decode_journal_payload(self, payload, operation)
+
+    def _register(
+        self,
+        request: BytesValue,
+        context: grpc.ServicerContext[Any, Any],
+    ) -> BytesValue:
+        return coordinator_rpc.register(self, request, context)
+
+    def _submit(
+        self,
+        request: BytesValue,
+        context: grpc.ServicerContext[Any, Any],
+    ) -> BytesValue:
+        return coordinator_rpc.submit(self, request, context)
+
+    def _policy(
+        self,
+        request: BytesValue,
+        context: grpc.ServicerContext[Any, Any],
+    ) -> BytesValue:
+        return coordinator_rpc.policy(self, request, context)
 
     def _heartbeat(
-        self, request: BytesValue, context: grpc.ServicerContext[Any, Any]
+        self,
+        request: BytesValue,
+        context: grpc.ServicerContext[Any, Any],
     ) -> BytesValue:
-        value = self._request(request, context)
-        actor_id = str(value["actor_id"])
-        with self._lock:
-            self._last_heartbeats[actor_id] = monotonic()
-            self._timed_out_actors.discard(actor_id)
-        self.run.logger.log(
-            "actor/heartbeat",
-            {
-                "actor_id": actor_id,
-                "policy_version": value["policy_version"],
-                "spool_bytes": value["spool_bytes"],
-            },
-            step=self.counters.updates,
-        )
-        return self._response({"stop": self._should_stop()})
+        return coordinator_rpc.heartbeat(self, request, context)
 
     def _epsilon(self, profile: int) -> float:
-        spec = self.run.spec.distributed
-        fraction = min(1.0, self.counters.transitions / spec.epsilon_decay_transitions)
-        scheduled = spec.epsilon_start + fraction * (spec.epsilon_final - spec.epsilon_start)
-        return scheduled * spec.epsilon_profiles[profile]
+        return coordinator_rpc.epsilon(self, profile)
 
     def _ingest(self, value: Mapping[str, Any], row_id: int) -> None:
-        transitions = [transition_from_wire(item) for item in value["transitions"]]
-        now = monotonic()
-        elapsed = max(now - self._last_ingest_at, 1e-6)
-        ingest_fps = len(transitions) / elapsed
-        self._last_ingest_at = now
-        before = self.counters.transitions
-        for transition in transitions:
-            replay_info = self._replay_info(transition.info)
-            self.run.replay_store.append(replace(transition, info=replay_info))
-        self.counters.transitions += len(transitions)
-        ready = self.run.spec.training.warmup_transitions
-        newly_trainable = max(0, self.counters.transitions - ready) - max(0, before - ready)
-        self.counters.update_credit = min(
-            self.run.spec.distributed.max_update_credit,
-            self.counters.update_credit
-            + newly_trainable * self.run.spec.training.updates_per_transition,
-        )
-        self.counters.journal_watermark = max(self.counters.journal_watermark, row_id)
-        session_id = str(value["session_id"])
-        self.counters.actor_sequences[session_id] = max(
-            self.counters.actor_sequences.get(session_id, -1),
-            int(value["sequence"]),
-        )
-        for summary in value.get("episodes", []):
-            self.counters.episodes += 1
-            finished = bool(summary["finished"])
-            finish_time_s = float(summary["finish_time_s"])
-            if finished:
-                self.counters.finishes += 1
-                if (
-                    self.counters.best_finish_time_s == 0.0
-                    or finish_time_s < self.counters.best_finish_time_s
-                ):
-                    self.counters.best_finish_time_s = finish_time_s
-            if not self._recovering:
-                self._log_episode(value, summary)
-                interval = self.run.spec.training.evaluate_every_episodes
-                if interval is not None and self.counters.episodes % interval == 0:
-                    with self._lock:
-                        self._evaluation_due.add(str(value["actor_id"]))
-        evaluations = [dict(summary) for summary in value.get("evaluations", [])]
-        evaluation_snapshot = value.get("evaluation_snapshot", b"")
-        if evaluations and evaluation_snapshot:
-            if not isinstance(evaluation_snapshot, bytes):
-                raise ValueError("evaluation snapshot must be bytes")
-            policy_state = self.codec.decode(evaluation_snapshot)
-            if not isinstance(policy_state, Mapping):
-                raise ValueError("evaluation snapshot must decode to a mapping")
-            versions = {int(summary.get("policy_version", 0)) for summary in evaluations}
-            if len(versions) != 1:
-                raise ValueError("evaluation snapshot cannot cover mixed policy versions")
-            with self._lock:
-                self._evaluation_policy_states[versions.pop()] = _snapshot_value(policy_state)
-        for summary in evaluations:
-            self.counters.evaluations += 1
-            finished = bool(summary["finished"])
-            finish_time_s = float(summary["finish_time_s"])
-            self.counters.evaluation_finishes += int(finished)
-            bucket_metrics: dict[str, float] = {}
-            for bucket in self._time_buckets:
-                key = _bucket_key(bucket)
-                hit = finished and finish_time_s < bucket
-                count = self.counters.evaluation_bucket_finishes.get(key, 0) + int(hit)
-                self.counters.evaluation_bucket_finishes[key] = count
-                bucket_metrics[key] = float(hit)
-                bucket_metrics[f"{key}_rate"] = count / self.counters.evaluations
-            if not self._recovering:
-                self.run.logger.log(
-                    "eval/episode",
-                    {
-                        **summary,
-                        "index": self.counters.evaluations,
-                        "finish_rate": self.counters.evaluation_finishes
-                        / self.counters.evaluations,
-                        **bucket_metrics,
-                        "actor_id": value["actor_id"],
-                    },
-                    step=self.counters.updates,
-                )
-        if evaluations and not self._recovering:
-            self._finish_evaluation_batch(evaluations)
-        if not self._recovering:
-            self.run.logger.log(
-                "distributed/ingest",
-                {
-                    "actor_id": value["actor_id"],
-                    "chunk_transitions": len(transitions),
-                    "transitions": self.counters.transitions,
-                    "replay_size": len(self.run.replay_store),
-                    "ingest_fps": ingest_fps,
-                    "policy_lag_updates": max(
-                        0, self.counters.updates - int(value["policy_version"])
-                    ),
-                    "utd": self.counters.updates
-                    / max(
-                        1,
-                        self.counters.transitions - self.run.spec.training.warmup_transitions,
-                    ),
-                    "queue_delay_s": max(0.0, now - float(value.get("_enqueued_at", now))),
-                    "rollout_queue_depth": self._rollouts.qsize(),
-                },
-                step=self.counters.updates,
-            )
-
-    @staticmethod
-    def _replay_info(info: Mapping[str, Any]) -> dict[str, Any]:
-        replay_info: dict[str, Any] = {}
-        if "is_demo" in info or info.get("source") == "demo":
-            replay_info["is_demo"] = bool(
-                info.get("is_demo", False) or info.get("source") == "demo"
-            )
-        progress = float(info.get("progress_pct", 0.0))
-        race_time_s = float(info.get("race_time_ms", 0.0)) / 1_000.0
-        if progress >= 10.0 and race_time_s > 0.0:
-            replay_info["sampling/projected_lap_time_s"] = race_time_s * 100.0 / progress
-        return replay_info
+        coordinator_ingest.ingest(self, value, row_id)
 
     def _log_episode(self, value: Mapping[str, Any], summary: Mapping[str, Any]) -> None:
-        self.run.logger.log(
-            "train/episode",
-            {
-                **summary,
-                "index": self.counters.episodes,
-                "finish_count": self.counters.finishes,
-                "finish_rate": self.counters.finishes / self.counters.episodes,
-                "best_finish_time_s": self.counters.best_finish_time_s,
-                "actor_id": value["actor_id"],
-                "replay_size": len(self.run.replay_store),
-            },
-            step=self.counters.updates,
-        )
-        progress_bins = _progress_bin_metrics(summary)
-        if progress_bins:
-            self.run.logger.log(
-                "train/progress_bin",
-                progress_bins,
-                step=self.counters.updates,
-            )
-        logger.info(
-            "Actor %s episode %d: progress=%.1f%%, return=%.3f, "
-            "reward(time=%.3f, pace=%.3f, pbrs=%.3f, progress=%.3f, projected_velocity=%.3f, "
-            "projected_speed=%.3f, steering_delta=%.3f, collision=%.3f (%d/%d), "
-            "terminal=%.3f), velocity_ratio(mean=%.3f, max=%.3f), steps=%d, "
-            "race=%.2fs, epsilon=%.3f, policy=%d, q_margin(start=%.2f, min=%.2f), "
-            "termination=%s",
-            value["actor_id"],
-            self.counters.episodes,
-            float(summary["progress_pct"]),
-            float(summary["return"]),
-            float(summary["reward/time"]),
-            float(summary["reward/pace"]),
-            float(summary["reward/pbrs"]),
-            float(summary["reward/progress"]),
-            float(summary["reward/projected_velocity"]),
-            float(summary["reward/projected_speed"]),
-            float(summary["reward/steering_delta"]),
-            float(summary["reward/collision"]),
-            int(summary["collision/count"]),
-            int(summary["collision/detected_count"]),
-            float(summary["reward/terminal"]),
-            float(summary["velocity/ratio_mean"]),
-            float(summary["velocity/ratio_max"]),
-            int(summary["steps"]),
-            float(summary["race_time_s"]),
-            float(summary["exploration_epsilon"]),
-            int(summary.get("policy_version", 0)),
-            float(summary.get("q_margin/start_mean", 0.0)),
-            float(summary.get("q_margin/min", 0.0)),
-            summary["termination"],
-        )
+        coordinator_ingest.log_episode(self, value, summary)
 
     def _learn(self) -> None:
-        spec = self.run.spec.training
-        footprint = spec.batch_size * spec.sequence_length + spec.n_step - 1
-        ready = max(spec.warmup_transitions, footprint)
-        prefetcher = _BatchPrefetcher(self.run)
-        try:
-            while not self._external_stop_requested() and (
-                not self._should_stop()
-                or (
-                    self._evaluation_stop_reason is None
-                    and len(self.run.replay_store) >= ready
-                    and self.counters.update_credit >= 1.0
-                )
-                or not self._rollouts.empty()
-            ):
-                did_update = False
-                self._check_actor_timeouts()
-                # Ingest the whole backlog every iteration: a standing queue
-                # would otherwise train the learner on minutes-old transitions
-                # and inflate the measured actor policy lag by the queue delay.
-                self._drain_rollouts(max(1, self._rollouts.qsize()))
-                if self._evaluation_stop_reason is not None:
-                    break
-                if (
-                    self._can_update()
-                    and len(self.run.replay_store) >= ready
-                    and self.counters.update_credit >= 1.0
-                ):
-                    request = spec.batch_request(beta=spec.replay_beta(self.counters.transitions))
-                    batch, preparation_s, wait_s = prefetcher.next(request)
-                    update_started = perf_counter()
-                    result = self.run.learner.update(batch)
-                    update_finished = perf_counter()
-                    metrics, priorities = result if isinstance(result, tuple) else (result, None)
-                    if priorities is not None:
-                        self.run.sampler.update_priorities(priorities)
-                    self.counters.updates += 1
-                    self.counters.update_credit -= 1.0
-                    did_update = True
-                    self._metrics.add(
-                        {
-                            **metrics,
-                            "timing/replay_sample_s": preparation_s,
-                            "timing/replay_wait_s": wait_s,
-                            "timing/learner_update_s": update_finished - update_started,
-                        }
-                    )
-                    self._emit_metrics_if_ready()
-                    if (
-                        self.counters.updates == 1
-                        or self.counters.updates - self._last_progress_print >= 100
-                    ):
-                        self._last_progress_print = self.counters.updates
-                        logger.info(
-                            "Async training progress: transitions=%d/%d, updates=%d, "
-                            "replay=%d, credit=%.1f",
-                            self.counters.transitions,
-                            spec.total_transitions,
-                            self.counters.updates,
-                            len(self.run.replay_store),
-                            self.counters.update_credit,
-                        )
-                    if (
-                        spec.checkpoint_interval_updates is not None
-                        and self.counters.updates % spec.checkpoint_interval_updates == 0
-                    ):
-                        self._checkpoints.append(self._checkpoint())
-                    self._publish_policy()
-                if not did_update:
-                    sleep(0.005)
-        finally:
-            prefetcher.close()
+        coordinator_learning.learn(self)
 
     def _drain_rollouts(self, limit: int) -> None:
-        for _ in range(limit):
-            try:
-                pending = self._rollouts.get_nowait()
-            except Empty:
-                return
-            value = dict(pending.value)
-            value["_enqueued_at"] = pending.enqueued_at
-            self._ingest(value, pending.row_id)
-            self._rollouts.task_done()
+        coordinator_ingest.drain_rollouts(self, limit)
 
     def _finish_evaluation_batch(self, summaries: list[dict[str, Any]]) -> None:
-        stats = _evaluation_batch_stats(summaries, self._time_buckets)
-        self.run.logger.log("eval/summary", stats, step=self.counters.updates)
-        progress_bins = _progress_bin_metrics(stats)
-        if progress_bins:
-            self.run.logger.log("eval/progress_bin", progress_bins, step=self.counters.updates)
-        logger.info(
-            "Deterministic evaluation @update %d: %d/%d finished, mean=%.2fs, "
-            "best=%.2fs, policy_version=%d",
-            self.counters.updates,
-            int(stats["finished_trials"]),
-            int(stats["trials"]),
-            stats["finish_time_mean_s"],
-            stats["finish_time_best_s"],
-            int(stats["policy_version"]),
-        )
-        self._record_best_evaluation(
-            float(stats["finish_rate"]),
-            float(stats["finish_time_median_s"]),
-            float(stats["finish_time_mean_s"]),
-            int(stats["policy_version"]),
-        )
-        self._record_evaluation_stop(stats)
+        coordinator_evaluation.finish_evaluation_batch(self, summaries)
 
     def _record_evaluation_stop(self, stats: Mapping[str, float]) -> None:
-        training = self.run.spec.training
-        required_finish_rate = getattr(training, "evaluation_stop_min_finish_rate", None)
-        maximum_median_s = getattr(training, "evaluation_stop_median_s", None)
-        required_batches = getattr(training, "evaluation_stop_consecutive_batches", None)
-        if required_finish_rate is None or maximum_median_s is None or required_batches is None:
-            return
-        failed = (
-            stats["finish_rate"] < required_finish_rate
-            or stats["finish_time_median_s"] > maximum_median_s
-        )
-        self._consecutive_evaluation_failures = (
-            self._consecutive_evaluation_failures + 1 if failed else 0
-        )
-        if self._consecutive_evaluation_failures < required_batches:
-            return
-        self._evaluation_stop_reason = (
-            "evaluation gate failed "
-            f"{self._consecutive_evaluation_failures} consecutive times: "
-            f"finish_rate={stats['finish_rate']:.3f}, "
-            f"median_finish_time_s={stats['finish_time_median_s']:.3f}"
-        )
-        self.run.logger.log(
-            "train/early_stop",
-            {
-                "reason": self._evaluation_stop_reason,
-                "consecutive_failures": self._consecutive_evaluation_failures,
-                "finish_rate": stats["finish_rate"],
-                "median_finish_time_s": stats["finish_time_median_s"],
-            },
-            step=self.counters.updates,
-        )
-        logger.warning("Stopping training: %s", self._evaluation_stop_reason)
+        coordinator_evaluation.record_evaluation_stop(self, stats)
 
-    def _record_best_evaluation(
-        self,
-        finish_rate: float,
-        median_time_s: float,
-        mean_time_s: float,
-        policy_version: int,
+    def _record_evaluation_leaders(
+        self, candidate: coordinator_leaders.EvaluationCandidate
     ) -> None:
-        if self._recovering:
-            return
-        suite = getattr(self.run.spec, "evaluation", None)
-        required_finish_rate = 1.0 if suite is None else suite.min_finish_rate
-        if finish_rate < required_finish_rate:
-            return
-        candidate = _evaluation_rank(finish_rate, median_time_s, required_finish_rate)
-        if self._best_evaluation is not None and candidate <= self._best_evaluation:
-            return
-        self._best_evaluation = candidate
-        lock = getattr(self, "_lock", None)
-        if lock is None:
-            policy_state = getattr(self, "_evaluation_policy_states", {}).get(policy_version)
-        else:
-            with lock:
-                policy_state = getattr(self, "_evaluation_policy_states", {}).get(policy_version)
-        path = (
-            self._checkpoint(policy_state=policy_state, policy_version=policy_version)
-            if policy_state is not None
-            else self._checkpoint()
-        )
-        self._checkpoints.append(path)
-        self.run.logger.log(
-            "eval/best_checkpoint",
-            {
-                "finish_rate": finish_rate,
-                "finish_time_median_s": median_time_s,
-                "finish_time_mean_s": mean_time_s,
-                "release_qualified": 1.0,
-                "policy_version": policy_version,
-                "exact_policy": float(policy_state is not None),
-                "path": str(path),
-            },
-            step=self.counters.updates,
-        )
+        coordinator_leaders.record_evaluation_leaders(self, candidate)
 
     def _emit_metrics_if_ready(self) -> None:
-        interval = self.run.spec.training.metrics_interval_updates
-        if self.counters.updates % interval != 0:
-            return
-        now = monotonic()
-        elapsed = max(now - self._metric_window_started, 1e-6)
-        window_transitions = self.counters.transitions - self._last_metric_transitions
-        transitions_per_s = window_transitions / elapsed
-        updates_per_s = interval / elapsed
-        target_updates_per_s = transitions_per_s * self.run.spec.training.updates_per_transition
-        replay_capacity = int(getattr(self.run.replay_store, "capacity", 0))
-        payload: dict[str, object] = {
-            **self._metrics.flush(),
-            "replay_size": len(self.run.replay_store),
-            "replay_fill_fraction": (
-                len(self.run.replay_store) / replay_capacity if replay_capacity else 0.0
-            ),
-            "update_credit": self.counters.update_credit,
-            "rollout_queue_depth": self._rollouts.qsize(),
-            "updates_per_s": updates_per_s,
-            "transitions_per_s": transitions_per_s,
-            "cumulative_transitions_per_s": self.counters.transitions
-            / max(now - self._started_at, 1e-6),
-            "target_updates_per_s": target_updates_per_s,
-            "update_throughput_ratio": updates_per_s / max(target_updates_per_s, 1e-6),
-            "update_backlog_s": self.counters.update_credit / max(updates_per_s, 1e-6),
-            "episodes": self.counters.episodes,
-            "finish_rate": self.counters.finishes / max(1, self.counters.episodes),
-            "per_beta": self.run.spec.training.replay_beta(self.counters.transitions),
-            "timing/logging_s": self._last_logging_s,
-        }
-        execution = getattr(self.run.learner, "execution_manifest", None)
-        if callable(execution):
-            payload["execution"] = dict(execution())
-        try:
-            import torch
-
-            if torch.cuda.is_available():
-                payload["accelerator_memory_bytes"] = torch.cuda.memory_allocated()
-        except ImportError:
-            pass
-        if self.counters.update_credit > self._last_metric_credit:
-            self._growing_credit_windows += 1
-        else:
-            self._growing_credit_windows = 0
-        if self._growing_credit_windows >= 5:
-            payload["warning"] = "update credit has grown for five metric windows"
-        self._last_metric_credit = self.counters.update_credit
-        self._metric_window_started = now
-        self._last_metric_transitions = self.counters.transitions
-        logging_started = perf_counter()
-        self.run.logger.log("train/update", payload, step=self.counters.updates)
-        self._last_logging_s = perf_counter() - logging_started
+        coordinator_learning.emit_metrics_if_ready(self)
 
     def _check_actor_timeouts(self) -> None:
-        now = monotonic()
-        timeout = self.run.spec.distributed.actor_timeout_s
-        with self._lock:
-            heartbeats = tuple(self._last_heartbeats.items())
-        for actor_id, heartbeat in heartbeats:
-            if now - heartbeat <= timeout:
-                continue
-            with self._lock:
-                self._last_heartbeats.pop(actor_id, None)
-                self._timed_out_actors.discard(actor_id)
-            self.run.logger.log(
-                "actor/timeout",
-                {"actor_id": actor_id, "silence_s": now - heartbeat},
-                step=self.counters.updates,
-            )
+        coordinator_learning.check_actor_timeouts(self)
 
     def _has_active_actor(self) -> bool:
-        with self._lock:
-            return bool(set(self._last_heartbeats) - self._timed_out_actors)
+        return coordinator_learning.has_active_actor(self)
 
     def _can_update(self) -> bool:
-        return not self._external_stop_requested() and (
-            self._has_active_actor()
-            or self.counters.transitions >= self.run.spec.training.total_transitions
-        )
+        return coordinator_learning.can_update(self)
 
-    def _publish_policy(self, *, force: bool = False) -> None:
-        now = monotonic()
-        if not force and (
-            self.counters.updates == self._last_policy_update
-            or now - self._last_policy_publish < self.run.spec.distributed.policy_refresh_s
-        ):
-            return
-        publish_started = perf_counter()
-        policy = self.run.learner.policy()
-        if not isinstance(policy, ReplicablePolicy):
-            raise TypeError("distributed training requires learner.policy() to be ReplicablePolicy")
-        payload = self.codec.encode(dict(policy.export_state()))
-        with self._lock:
-            self._policy_payload = payload
-            self.counters.policy_version = self.counters.updates
-        self._last_policy_update = self.counters.updates
-        self._last_policy_publish = now
-        self.run.logger.log(
-            "distributed/policy_published",
-            {
-                "policy_version": self.counters.policy_version,
-                "timing/policy_publish_s": perf_counter() - publish_started,
-            },
-            step=self.counters.updates,
-        )
+    def _publish_policy(
+        self,
+        mode: coordinator_policy.PolicyPublicationMode = (
+            coordinator_policy.PolicyPublicationMode.SCHEDULED
+        ),
+    ) -> None:
+        coordinator_learning.publish_policy(self, mode)
 
     def _should_stop(self) -> bool:
-        return (
-            self.counters.transitions >= self.run.spec.training.total_transitions
-            or getattr(self, "_evaluation_stop_reason", None) is not None
-            or self._external_stop_requested()
-        )
+        return coordinator_learning.should_stop(self)
 
     def _external_stop_requested(self) -> bool:
-        return bool(self.external_stop is not None and self.external_stop.is_set())
+        return coordinator_learning.external_stop_requested(self)
 
     def _checkpoint(
         self,
-        *,
-        policy_state: Mapping[str, Any] | None = None,
-        policy_version: int | None = None,
+        evaluated_policy: coordinator_checkpoint.EvaluatedPolicyCheckpoint | None = None,
     ) -> Path:
-        checkpoint_started = perf_counter()
-        name = (
-            f"best-eval-policy-{policy_version:08d}-at-update-{self.counters.updates:08d}.pt"
-            if policy_state is not None and policy_version is not None
-            else f"distributed-update-{self.counters.updates:08d}.pt"
-        )
-        path = self.run.run_dir / "checkpoints" / name
-        learner_state = self.run.learner.state_dict()
-        if policy_state is not None:
-            exact_state = getattr(self.run.learner, "state_dict_for_policy", None)
-            if not callable(exact_state):
-                raise TypeError("learner cannot build an exact evaluated-policy checkpoint")
-            learner_state = exact_state(policy_state)
-        state = {
-            "schema_version": "2.0",
-            "journal_id": self.journal.identity,
-            "learner": _snapshot_value(learner_state),
-            "replay_store": _state_dict(self.run.replay_store),
-            "sampler": _state_dict(self.run.sampler),
-            "distributed": {
-                "transitions": self.counters.transitions,
-                "episodes": self.counters.episodes,
-                "finishes": self.counters.finishes,
-                "best_finish_time_s": self.counters.best_finish_time_s,
-                "evaluations": self.counters.evaluations,
-                "evaluation_finishes": self.counters.evaluation_finishes,
-                "evaluation_bucket_finishes": dict(self.counters.evaluation_bucket_finishes),
-                "updates": self.counters.updates,
-                "update_credit": self.counters.update_credit,
-                "journal_watermark": self.counters.journal_watermark,
-                "policy_version": self.counters.policy_version,
-                "actor_sequences": dict(self.counters.actor_sequences),
-            },
-            "evaluated_policy_version": policy_version,
-        }
-        watermark = self.counters.journal_watermark
-        self._checkpoint_writer.submit(state, path, lambda: self.journal.prune(watermark))
-        self.run.logger.log(
-            "train/checkpoint",
-            {
-                "path": str(path),
-                "timing/checkpoint_snapshot_s": perf_counter() - checkpoint_started,
-            },
-            step=self.counters.updates,
-        )
-        logger.info("Checkpoint queued: %s", path)
-        return path
+        return coordinator_checkpoint.checkpoint(self, evaluated_policy)
 
-    def restore_checkpoint(self, path: Path, *, reset_replay: bool = False) -> None:
-        """Restore a checkpoint, optionally retaining only the learner state."""
-
-        self._restore(path, reset_replay=reset_replay)
-
-    def _restore(self, path: Path, *, reset_replay: bool) -> None:
-        state = self.run.checkpoint_codec.load(path)
-        if state.get("schema_version") != "2.0":
-            raise ValueError("async runtime only resumes distributed checkpoint schema 2.0")
-        if reset_replay and self.journal.has_rows():
-            raise RuntimeError(
-                f"cannot reset replay while {self.journal.path} contains rollout data; "
-                "choose a new run_id so stale journal rows cannot enter a later resume"
-            )
-        self.run.learner.load_state_dict(state["learner"])
-        if reset_replay:
-            self.counters = _Counters()
-            return
-        distributed = state["distributed"]
-        self.counters = _Counters(**distributed)
-        self.counters.update_credit = min(
-            self.counters.update_credit,
-            float(self.run.spec.distributed.max_update_credit),
-        )
-        checkpoint_journal_id = state.get("journal_id")
-        if checkpoint_journal_id != self.journal.identity:
-            self.counters.journal_watermark = 0
-        _load_state_dict(self.run.replay_store, state["replay_store"])
-        _load_state_dict(self.run.sampler, state["sampler"])
-        self._recover_journal(self.counters.journal_watermark)
+    def restore_checkpoint(
+        self, path: Path, mode: ReplayRestoreMode = ReplayRestoreMode.FULL
+    ) -> None:
+        coordinator_checkpoint.restore_checkpoint(self, path, mode)
 
     def _recover_journal(self, watermark: int) -> None:
-        self._recovering = True
-        try:
-            for row_id, payload in self.journal.rows_after(watermark):
-                value = self.codec.decode(payload)
-                if not isinstance(value, Mapping):
-                    raise ValueError("journal chunk must decode to a mapping")
-                session_id = str(value["session_id"])
-                sequence = int(value["sequence"])
-                if sequence <= self.counters.actor_sequences.get(session_id, -1):
-                    self.counters.journal_watermark = max(self.counters.journal_watermark, row_id)
-                    continue
-                self._ingest(value, row_id)
-        finally:
-            self._recovering = False
+        coordinator_ingest.recover_journal(self, watermark)
 
     def _log_execution(self) -> None:
-        execution = getattr(self.run.learner, "execution_manifest", None)
-        if callable(execution):
-            self.run.logger.log(
-                "train/execution",
-                dict(execution()),
-                step=self.counters.updates,
-            )
-
-
-def learner_process_entry(
-    config_path: str,
-    bind: str,
-    token: str,
-    resume_checkpoint: str | None = None,
-    reset_replay: bool = False,
-    external_stop: Any | None = None,
-    demo_paths: tuple[str, ...] = (),
-) -> None:
-    """Spawn-safe learner entrypoint used by both local and remote launchers."""
-
-    path = Path(config_path).resolve()
-    spec = RunSpec.from_yaml(path)
-    run = resolve_run(spec, base_dir=path.parent)
-    try:
-        Coordinator(
-            run,
-            bind=bind,
-            token=token,
-            fingerprint=run_fingerprint(spec, path.parent),
-            resume_checkpoint=Path(resume_checkpoint) if resume_checkpoint else None,
-            reset_replay=reset_replay,
-            external_stop=external_stop,
-            demo_paths=tuple(Path(item) for item in demo_paths),
-        ).run_forever()
-    finally:
-        run.logger.close()
-
-
-def _evaluation_batch_stats(
-    summaries: list[dict[str, Any]], time_buckets_s: tuple[float, ...]
-) -> dict[str, float]:
-    if not summaries:
-        raise ValueError("deterministic evaluation batch must not be empty")
-    policy_versions = {int(item.get("policy_version", 0)) for item in summaries}
-    if len(policy_versions) != 1:
-        raise ValueError("deterministic evaluation batch mixed policy versions")
-    finished_times = sorted(
-        float(item["finish_time_s"]) for item in summaries if bool(item["finished"])
-    )
-    failure_progress = [
-        float(item.get("progress_pct", 0.0)) for item in summaries if not bool(item["finished"])
-    ]
-    trials = len(summaries)
-    stats = {
-        "trials": float(trials),
-        "finished_trials": float(len(finished_times)),
-        "finish_rate": len(finished_times) / trials,
-        "finish_time_mean_s": fmean(finished_times) if finished_times else 0.0,
-        "finish_time_median_s": median(finished_times) if finished_times else 0.0,
-        "finish_time_best_s": finished_times[0] if finished_times else 0.0,
-        **{
-            f"{_bucket_key(bucket)}_rate": sum(1 for time_s in finished_times if time_s < bucket)
-            / trials
-            for bucket in time_buckets_s
-        },
-        "failure_progress_mean_pct": fmean(failure_progress) if failure_progress else 100.0,
-        "failure_progress_median_pct": median(failure_progress) if failure_progress else 100.0,
-        "failure_progress_best_pct": max(failure_progress) if failure_progress else 100.0,
-        "collision_rate": sum(
-            int(float(item.get("collision/count", 0.0)) > 0.0) for item in summaries
-        )
-        / trials,
-        "off_track_rate": sum(
-            int(str(item.get("termination", "")) == "off_track") for item in summaries
-        )
-        / trials,
-        "telemetry_error_rate": sum(
-            int(str(item.get("termination", "")) == "telemetry_error") for item in summaries
-        )
-        / trials,
-        "projected_velocity_ratio_mean": fmean(
-            float(item.get("velocity/ratio_mean", 0.0)) for item in summaries
-        ),
-        "policy_version": float(policy_versions.pop()),
-        "q_margin_start_mean": fmean(
-            float(item.get("q_margin/start_mean", 0.0)) for item in summaries
-        ),
-    }
-    stats.update(aggregate_progress_bins(_progress_bin_summary(item) for item in summaries))
-    return stats
-
-
-def _progress_bin_summary(summary: Mapping[str, Any]) -> dict[str, dict[str, float]]:
-    bins: dict[str, dict[str, float]] = {}
-    for key, value in summary.items():
-        prefix, separator, suffix = key.partition("progress_bin/")
-        if prefix or not separator:
-            continue
-        name, metric_separator, metric = suffix.partition("/")
-        if not metric_separator:
-            continue
-        bins.setdefault(name, {})[metric] = float(value)
-    return bins
-
-
-def _progress_bin_metrics(summary: Mapping[str, Any]) -> dict[str, float]:
-    return {
-        key.removeprefix("progress_bin/"): float(value)
-        for key, value in summary.items()
-        if key.startswith("progress_bin/")
-    }
-
-
-def _state_dict(component: object) -> Mapping[str, object] | None:
-    method = getattr(component, "state_dict", None)
-    return cast(Mapping[str, object], method()) if callable(method) else None
-
-
-def _load_state_dict(component: object, state: object) -> None:
-    if state is None:
-        return
-    method = getattr(component, "load_state_dict", None)
-    if not callable(method):
-        raise TypeError(f"{type(component).__name__} has no load_state_dict()")
-    method(state)
-
-
-def _snapshot_value(value: Any) -> Any:
-    import torch
-
-    if isinstance(value, torch.Tensor):
-        return value.detach().cpu().clone()
-    if isinstance(value, Mapping):
-        return {key: _snapshot_value(item) for key, item in value.items()}
-    if isinstance(value, list):
-        return [_snapshot_value(item) for item in value]
-    if isinstance(value, tuple):
-        return tuple(_snapshot_value(item) for item in value)
-    return deepcopy(value)
+        coordinator_learning.log_execution(self)

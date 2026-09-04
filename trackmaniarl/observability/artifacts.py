@@ -10,14 +10,15 @@ import sys
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import asdict
 from datetime import UTC, datetime
-from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from trackmaniarl._version import __version__
 from trackmaniarl.core.data import EpisodeArtifact
 
 if TYPE_CHECKING:
     from trackmaniarl.core.runtime import ResolvedRun
+    from trackmaniarl.core.spec import EvaluationMapSpec
 
 
 def _git_revision() -> str | None:
@@ -48,26 +49,42 @@ def _redact(value: Any) -> Any:
     return value
 
 
+def _resume_equivalent_manifest(value: str) -> str:
+    manifest = json.loads(value)
+    manifest.pop("warm_start", None)
+    manifest.pop("torch_execution", None)
+    config = manifest.get("config")
+    if not isinstance(config, dict):
+        return value
+    components = config.get("components")
+    if not isinstance(components, dict):
+        return value
+    learner = components.get("learner")
+    if not isinstance(learner, dict):
+        return value
+    kwargs = learner.get("kwargs")
+    if isinstance(kwargs, dict):
+        kwargs.pop("model_initialization_checkpoint", None)
+    return json.dumps(manifest, indent=2, sort_keys=True, default=str)
+
+
 def _evaluation_assets(run: ResolvedRun) -> list[dict[str, str]]:
     if run.spec.evaluation is None:
         return []
+    return [_evaluation_asset(map_spec) for map_spec in run.spec.evaluation.maps]
+
+
+def _evaluation_asset(map_spec: EvaluationMapSpec) -> dict[str, str]:
     from trackmaniarl.trackmania.geometry import BoundaryGeometry
     from trackmaniarl.trackmania.session import PLUGIN_PROTOCOL_VERSION
 
-    assets: list[dict[str, str]] = []
-    for map_spec in run.spec.evaluation.maps:
-        geometry = BoundaryGeometry(
-            map_spec.geometry_path, expected_map_uid=map_spec.expected_map_uid
-        )
-        assets.append(
-            {
-                "map_id": map_spec.id,
-                "map_uid": map_spec.expected_map_uid,
-                "geometry_sha256": geometry.sha256,
-                "plugin_protocol_version": PLUGIN_PROTOCOL_VERSION,
-            }
-        )
-    return assets
+    geometry = BoundaryGeometry(map_spec.geometry_path, expected_map_uid=map_spec.expected_map_uid)
+    return {
+        "map_id": map_spec.id,
+        "map_uid": map_spec.expected_map_uid,
+        "geometry_sha256": geometry.sha256,
+        "plugin_protocol_version": PLUGIN_PROTOCOL_VERSION,
+    }
 
 
 def _torch_environment() -> dict[str, Any]:
@@ -84,33 +101,62 @@ def _torch_environment() -> dict[str, Any]:
     }
 
 
-def _append_environment_snapshot(run: ResolvedRun) -> None:
-    try:
-        trackmaniarl_version = version("trackmaniarl")
-    except PackageNotFoundError:
-        trackmaniarl_version = "uninstalled"
+def _trackmaniarl_version() -> str:
+    return __version__
+
+
+def _environment_snapshot(run: ResolvedRun) -> dict[str, Any]:
     execution = getattr(run.learner, "execution_manifest", None)
-    snapshot = {
+    return {
         "timestamp_utc": datetime.now(UTC).isoformat(),
         "environment": {
             "python": sys.version,
             "platform": platform.platform(),
-            "trackmaniarl": trackmaniarl_version,
+            "trackmaniarl": _trackmaniarl_version(),
             "git_revision": _git_revision(),
             "torch": _torch_environment(),
         },
         "torch_execution": dict(execution()) if callable(execution) else None,
     }
+
+
+def _append_environment_snapshot(run: ResolvedRun) -> None:
+    snapshot = _environment_snapshot(run)
     attempts = run.run_dir / "manifest-attempts.jsonl"
     with attempts.open("a", encoding="utf-8") as file:
         file.write(json.dumps(snapshot, sort_keys=True, default=str) + "\n")
 
 
-def write_run_manifest(run: ResolvedRun) -> Path:
-    """Write the immutable config manifest and append a per-attempt environment snapshot."""
+def ensure_run_manifest(run: ResolvedRun) -> Path:
+    """Create or validate the immutable config manifest."""
 
     run.run_dir.mkdir(parents=True, exist_ok=True)
-    manifest = {
+    candidate = json.dumps(_run_manifest(run), indent=2, sort_keys=True, default=str)
+    target = run.run_dir / "manifest.json"
+    if _existing_manifest_matches(target, candidate, run.spec.run_id):
+        return target
+    temporary = target.with_suffix(".json.tmp")
+    temporary.write_text(candidate, encoding="utf-8")
+    temporary.replace(target)
+    return target
+
+
+def record_run_attempt(run: ResolvedRun) -> None:
+    """Append environment and resolved execution details for one initialized attempt."""
+
+    _append_environment_snapshot(run)
+
+
+def write_run_manifest(run: ResolvedRun) -> Path:
+    """Create the config manifest and record the current initialized attempt."""
+
+    target = ensure_run_manifest(run)
+    record_run_attempt(run)
+    return target
+
+
+def _run_manifest(run: ResolvedRun) -> dict[str, Any]:
+    return {
         "api_version": run.spec.api_version,
         "run_id": run.spec.run_id,
         "config": _redact(run.spec.model_dump(mode="json")),
@@ -126,21 +172,19 @@ def write_run_manifest(run: ResolvedRun) -> Path:
         },
         "evaluation_assets": _evaluation_assets(run),
     }
-    _append_environment_snapshot(run)
-    target = run.run_dir / "manifest.json"
-    candidate = json.dumps(manifest, indent=2, sort_keys=True, default=str)
-    if target.exists():
-        if target.read_text(encoding="utf-8") != candidate:
-            message = (
-                "Immutable manifest already exists for run_id "
-                f"{run.spec.run_id!r}; choose a new run_id"
-            )
-            raise FileExistsError(message)
-        return target
-    temporary = target.with_suffix(".json.tmp")
-    temporary.write_text(candidate, encoding="utf-8")
-    temporary.replace(target)
-    return target
+
+
+def _existing_manifest_matches(target: Path, candidate: str, run_id: str) -> bool:
+    if not target.exists():
+        return False
+    existing = target.read_text(encoding="utf-8")
+    if existing == candidate:
+        return True
+    if _resume_equivalent_manifest(existing) == _resume_equivalent_manifest(candidate):
+        return True
+    raise FileExistsError(
+        f"Immutable manifest already exists for run_id {run_id!r}; choose a new run_id"
+    )
 
 
 class AsyncEpisodeWriter:

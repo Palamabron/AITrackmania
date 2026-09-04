@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
@@ -24,15 +25,35 @@ class ModelContract(StrEnum):
     CONTINUOUS_ACTOR_VALUE = "continuous_actor_value"
     CONTINUOUS_QUANTILE_ACTOR_CRITIC = "continuous_quantile_actor_critic"
     DISCRETE_ACTOR_CRITIC = "discrete_actor_critic"
-    DISCRETE_QUANTILE = "discrete_quantile"
+    DISCRETE_VALUE = "discrete_value"
     ENSEMBLE_ACTOR_CRITIC = "ensemble_actor_critic"
+
+
+class PolicyMode(StrEnum):
+    ONLINE = "online"
+    EVALUATION = "evaluation"
+
+
+@dataclass(frozen=True, slots=True)
+class ActionSelectionRequest:
+    mode: PolicyMode
+    epsilon: float
+
+
+@dataclass(frozen=True, slots=True)
+class EvaluatorRuntimeRequest:
+    suite: Any | None
+    environment_factory: EnvironmentFactory | None
+    feature_pipeline: FeaturePipeline
+    max_episode_steps: int = 2_000
+    run_dir: str | Path | None = None
 
 
 @runtime_checkable
 class Policy(Protocol):
     """Inference-only policy deployed to a rollout worker."""
 
-    def act(self, observation: Any, *, deterministic: bool = False) -> Any: ...
+    def act(self, observation: Any, mode: PolicyMode = PolicyMode.ONLINE) -> Any: ...
 
 
 @runtime_checkable
@@ -40,7 +61,7 @@ class BehaviorPolicy(Policy, Protocol):
     """Policy that records the behavior statistics required by on-policy learners."""
 
     def act_with_info(
-        self, observation: Any, *, deterministic: bool = False
+        self, observation: Any, mode: PolicyMode = PolicyMode.ONLINE
     ) -> tuple[Any, Mapping[str, Any]]: ...
 
 
@@ -78,6 +99,13 @@ class Learner(Protocol):
 
 
 @runtime_checkable
+class OfflineSupervisedLearner(Learner, Protocol):
+    """Learner with a synthetic validation step distinct from replay training."""
+
+    def validation_update(self, batch: TrainingBatch) -> Mapping[str, float]: ...
+
+
+@runtime_checkable
 class ModelFactory(Protocol):
     """Creates one train-time model from an explicit user component configuration."""
 
@@ -97,6 +125,13 @@ class ReplayStore(Protocol):
     def contains(self, transition_id: TransitionId) -> bool: ...
 
     def __len__(self) -> int: ...
+
+
+@runtime_checkable
+class EpisodePaceReplayStore(Protocol):
+    """Replay capability for relabeling completed online episodes."""
+
+    def label_episode_sampling_pace(self, episode_id: str, finish_time_s: float) -> int: ...
 
 
 @runtime_checkable
@@ -131,9 +166,6 @@ class RunLogger(Protocol):
     def log(self, event: str, payload: Mapping[str, Any], *, step: int | None = None) -> None: ...
 
     def close(self) -> None: ...
-
-
-Tracker = RunLogger
 
 
 @runtime_checkable

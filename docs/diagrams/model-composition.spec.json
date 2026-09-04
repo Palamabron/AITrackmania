@@ -1,0 +1,46 @@
+{
+  "title": "Composable discrete-value model",
+  "subtitle": "Scalar Q, QR-DQN, IQN and FQF share one sequence-safe learner; head and strategy determine the value representation.",
+  "width": 1200,
+  "height": 960,
+  "zones": [
+    {"id": "representation-zone", "label": "Representation path", "x": 40, "y": 145, "w": 1120, "h": 220, "color": "blue"},
+    {"id": "composition-zone", "label": "Head + strategy", "x": 40, "y": 395, "w": 440, "h": 360, "color": "cyan"},
+    {"id": "target-zone", "label": "Double-DQN update", "x": 510, "y": 395, "w": 650, "h": 400, "color": "purple"}
+  ],
+  "nodes": [
+    {"id": "batch", "label": "Sequence batch", "detail": "n-step · masks · burn-in", "x": 70, "y": 205, "w": 220, "h": 100, "color": "slate"},
+    {"id": "adapter", "label": "Frame adapter", "detail": "[B,T,…] → [B·T,…]", "x": 350, "y": 205, "w": 220, "h": 100, "color": "blue"},
+    {"id": "encoder", "label": "Sensor encoder", "detail": "independent frames", "x": 630, "y": 205, "w": 220, "h": 100, "color": "green"},
+    {"id": "temporal", "label": "Temporal core", "detail": "Identity · GRU · Mamba", "x": 910, "y": 205, "w": 220, "h": 100, "color": "purple"},
+    {"id": "head", "label": "Value head", "detail": "scalar · QR · IQN/FQF", "x": 70, "y": 465, "w": 180, "h": 105, "color": "cyan"},
+    {"id": "strategy", "label": "Value strategy", "detail": "support · expectation", "x": 285, "y": 465, "w": 165, "h": 105, "color": "purple"},
+    {"id": "values", "label": "Action values", "detail": "[..., quantiles, actions]", "x": 175, "y": 625, "w": 200, "h": 95, "color": "orange"},
+    {"id": "current", "label": "Current action", "detail": "selected distribution", "x": 540, "y": 465, "w": 175, "h": 105, "color": "green"},
+    {"id": "online", "label": "Online next state", "detail": "all actions → argmax", "x": 745, "y": 465, "w": 175, "h": 105, "color": "blue"},
+    {"id": "target", "label": "Target next state", "detail": "evaluate selected argmax", "x": 950, "y": 465, "w": 180, "h": 105, "color": "purple"},
+    {"id": "optimizer", "label": "Optimizers", "detail": "main · FQF fraction", "x": 540, "y": 625, "w": 175, "h": 105, "color": "orange"},
+    {"id": "loss", "label": "Loss + priority", "detail": "TD/quantile loss · PER", "x": 745, "y": 625, "w": 175, "h": 105, "color": "red"},
+    {"id": "sync", "label": "Target sync", "detail": "parameters + buffers", "x": 950, "y": 625, "w": 180, "h": 105, "color": "purple"}
+  ],
+  "edges": [
+    {"id": "e-batch-adapter", "from": "batch", "to": "adapter", "color": "blue"},
+    {"id": "e-adapter-encoder", "from": "adapter", "to": "encoder", "color": "blue"},
+    {"id": "e-encoder-temporal", "from": "encoder", "to": "temporal", "color": "green"},
+    {"id": "e-temporal-head", "from": "temporal", "to": "head", "points": [[1020,305],[1020,380],[160,380],[160,465]], "color": "cyan"},
+    {"id": "e-temporal-strategy", "from": "temporal", "to": "strategy", "points": [[1020,305],[1045,305],[1045,385],[367,385],[367,465]], "color": "purple"},
+    {"id": "e-head-values", "from": "head", "to": "values", "points": [[160,570],[160,600],[275,600],[275,625]], "color": "cyan"},
+    {"id": "e-strategy-values", "from": "strategy", "to": "values", "points": [[367,570],[367,600],[275,600],[275,625]], "color": "purple"},
+    {"id": "e-values-current", "from": "values", "to": "current", "points": [[375,672],[500,672],[500,517],[540,517]], "color": "green"},
+    {"id": "e-values-online", "from": "values", "to": "online", "points": [[375,650],[480,650],[480,440],[832,440],[832,465]], "color": "blue"},
+    {"id": "e-online-target", "from": "online", "to": "target", "color": "blue"},
+    {"id": "e-current-loss", "from": "current", "to": "loss", "points": [[627,570],[627,600],[832,600],[832,625]], "color": "green"},
+    {"id": "e-target-loss", "from": "target", "to": "loss", "points": [[1040,570],[1040,600],[832,600],[832,625]], "color": "purple"},
+    {"id": "e-loss-optimizer", "from": "loss", "to": "optimizer", "color": "red"},
+    {"id": "e-optimizer-sync", "from": "optimizer", "to": "sync", "points": [[627,720],[627,775],[1040,775],[1040,720]], "label": "after step", "label_at": [832,775], "color": "purple", "style": "dashed"}
+  ],
+  "notes": [
+    {"id": "pairs", "text": "Valid pairs: ScalarQ + Scalar · FixedQuantile + Fixed · ImplicitQuantile + Random (IQN) or Learned fractions (FQF).", "x": 75, "y": 815, "w": 1050, "h": 60, "color": "cyan"},
+    {"id": "axis", "text": "Expectation owns the quantile axis. Selected-action priorities add a singleton action axis and are validated before backward.", "x": 75, "y": 885, "w": 1050, "h": 65, "color": "red"}
+  ]
+}

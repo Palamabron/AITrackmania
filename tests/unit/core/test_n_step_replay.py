@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from enum import Enum
+
 import pytest
 import torch
 
@@ -13,16 +15,23 @@ from trackmaniarl.core.replay import (
     UniformSampler,
     _n_step_transition,
 )
+from trackmaniarl.core.replay.n_step import _NStepInput
 
 
-def _transition(step: int, *, terminated: bool = False, truncated: bool = False) -> Transition:
+class _Boundary(Enum):
+    NONE = "none"
+    TERMINATED = "terminated"
+    TRUNCATED = "truncated"
+
+
+def _transition(step: int, boundary: _Boundary = _Boundary.NONE) -> Transition:
     return Transition(
         observation=float(step),
         action=float(step),
         reward=float(step + 1),
         next_observation=float(step + 1),
-        terminated=terminated,
-        truncated=truncated,
+        terminated=boundary is _Boundary.TERMINATED,
+        truncated=boundary is _Boundary.TRUNCATED,
         episode_id="episode",
         step=step,
     )
@@ -31,11 +40,14 @@ def _transition(step: int, *, terminated: bool = False, truncated: bool = False)
 def test_n_step_return_stops_on_termination_and_does_not_bootstrap() -> None:
     store = InMemoryReplayStore()
     for step in range(3):
-        store.append(_transition(step, terminated=step == 1))
+        boundary = _Boundary.TERMINATED if step == 1 else _Boundary.NONE
+        store.append(_transition(step, boundary))
     transition, discount = _n_step_transition(
-        0,
-        dict(zip(store.available_ids(), store.get(store.available_ids()), strict=True)),
-        BatchRequest(batch_size=1, n_step=3, gamma=0.5),
+        _NStepInput(
+            0,
+            dict(zip(store.available_ids(), store.get(store.available_ids()), strict=True)),
+            BatchRequest(batch_size=1, n_step=3, gamma=0.5),
+        )
     )
     assert transition.reward == 2.0
     assert discount == 0.0
@@ -43,7 +55,7 @@ def test_n_step_return_stops_on_termination_and_does_not_bootstrap() -> None:
 
 def test_truncation_keeps_the_bootstrap_discount() -> None:
     store = InMemoryReplayStore()
-    store.append(_transition(0, truncated=True))
+    store.append(_transition(0, _Boundary.TRUNCATED))
     batch = UniformSampler(IdentityFeaturePipeline(), seed=0).sample(
         store, BatchRequest(batch_size=1, n_step=3, gamma=0.9)
     )
@@ -60,7 +72,7 @@ def test_n_step_sampler_waits_for_a_live_transition_horizon() -> None:
     with pytest.raises(RuntimeError, match="complete n-step"):
         sampler.sample(store, request)
 
-    store.append(_transition(2, terminated=True))
+    store.append(_transition(2, _Boundary.TERMINATED))
     batch = sampler.sample(store, request)
     assert len(batch.transition_ids) == 1
     assert torch.isfinite(batch.rewards).all()
@@ -77,7 +89,7 @@ def test_late_priority_update_for_evicted_id_is_ignored() -> None:
     assert batch.transition_ids == [1]
 
 
-def test_replay_keeps_next_observation_for_an_out_of_order_episode_link() -> None:
+def _out_of_order_store() -> tuple[InMemoryReplayStore, int, int]:
     store = InMemoryReplayStore(capacity=2)
     later = store.append(_transition(1))
     earlier = store.append(_transition(0))
@@ -93,16 +105,35 @@ def test_replay_keeps_next_observation_for_an_out_of_order_episode_link() -> Non
             step=0,
         )
     )
+    return store, earlier, later
+
+
+def test_replay_keeps_next_observation_for_an_out_of_order_episode_link() -> None:
+    store, earlier, later = _out_of_order_store()
 
     assert not store.contains(later)
     transition = store.get([earlier])[0]
     assert transition.next_observation == 1.0
 
 
+def test_replay_checkpoint_relinks_incomplete_out_of_order_episode() -> None:
+    store = InMemoryReplayStore()
+    terminal = store.append(_transition(2, _Boundary.TERMINATED))
+    restored = InMemoryReplayStore()
+    restored.load_state_dict(store.state_dict())
+
+    first = restored.append(_transition(0))
+    second = restored.append(_transition(1))
+
+    assert restored.n_step_ids(first, 3) == [first, second, terminal]
+    assert restored.history_ids(terminal, 3) == [first, second, terminal]
+
+
 def test_replay_checkpoint_restores_into_a_larger_capacity_store() -> None:
     store = InMemoryReplayStore(capacity=4)
     for step in range(6):
-        store.append(_transition(step, terminated=step == 5))
+        boundary = _Boundary.TERMINATED if step == 5 else _Boundary.NONE
+        store.append(_transition(step, boundary))
     state = store.state_dict()
 
     grown = InMemoryReplayStore(capacity=8)
@@ -117,3 +148,42 @@ def test_replay_checkpoint_restores_into_a_larger_capacity_store() -> None:
 
     with pytest.raises(ValueError, match="exceeds"):
         InMemoryReplayStore(capacity=2).load_state_dict(state)
+
+
+def test_replay_checkpoint_rejects_a_non_columnar_format() -> None:
+    state = InMemoryReplayStore().state_dict()
+    state["format"] = "object-map-v0"
+
+    with pytest.raises(ValueError, match="unsupported replay checkpoint format"):
+        InMemoryReplayStore().load_state_dict(state)
+
+
+_REPLAY_FIELDS = (
+    "format",
+    "capacity",
+    "size",
+    "next_index",
+    "episode_names",
+    "next_overrides",
+    "info",
+    "observations",
+    "actions",
+    "rewards",
+    "terminated",
+    "truncated",
+    "episode_codes",
+    "steps",
+    "previous_ids",
+    "next_ids",
+    "sampling_pace",
+)
+
+
+def test_replay_checkpoint_requires_current_schema_fields() -> None:
+    store = InMemoryReplayStore()
+    store.append(_transition(0))
+    for field in _REPLAY_FIELDS:
+        state = store.state_dict()
+        state.pop(field)
+        with pytest.raises(ValueError, match="missing required fields"):
+            InMemoryReplayStore().load_state_dict(state)

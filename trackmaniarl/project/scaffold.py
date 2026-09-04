@@ -2,301 +2,107 @@
 
 from __future__ import annotations
 
-from importlib.metadata import PackageNotFoundError, version
 from importlib.resources import files
+from importlib.resources.abc import Traversable
 from pathlib import Path
 
-
-def _trackmaniarl_requirement(extras: str) -> str:
-    """Use this checkout while developing before the next package release exists."""
-
-    source_root = Path(__file__).resolve().parents[2]
-    if (source_root / "pyproject.toml").is_file():
-        return f"trackmaniarl{extras}"
-    try:
-        installed_version = version("trackmaniarl")
-    except PackageNotFoundError:
-        installed_version = "1.0.3"
-    release = installed_version.split(".", maxsplit=2)
-    major = int(release[0])
-    minor = int(release[1])
-    return f"trackmaniarl{extras}>={installed_version},<{major}.{minor + 1}"
-
-
-def _pyproject(
-    name: str,
-    *,
-    trackmaniarl_extras: str = "",
-    include_trackmania_tasks: bool = False,
-) -> str:
-    return (
-        '[build-system]\nrequires = ["setuptools>=83"]\n'
-        'build-backend = "setuptools.build_meta"\n\n'
-        '[project]\nname = "' + name + '"\nversion = "0.1.0"\n'
-        'requires-python = ">=3.12"\ndependencies = ["'
-        + _trackmaniarl_requirement(trackmaniarl_extras)
-        + '", "torch>=2.4"]\n\n[dependency-groups]\n'
-        'dev = ["mypy>=1.8", "poethepoet>=0.36", "pytest>=7.0", "ruff>=0.4"]\n\n'
-        '[tool.setuptools.packages.find]\nwhere = ["src"]\n'
-        "\n[tool.poe.tasks]\n"
-        'fmt = [{ cmd = "ruff format ." }, { cmd = "ruff check --fix ." }]\n'
-        'types = "mypy --strict src tests"\n'
-        'test = "pytest"\n' + (_trackmania_poe_tasks() if include_trackmania_tasks else "")
-    )
-
-
-def _trackmania_poe_tasks() -> str:
-    command = "trackmaniarl track"
-    return (
-        f'record-left = "{command} record-boundary left assets/trackmaniarl-test-left.npy"\n'
-        f'record-right = "{command} record-boundary right assets/trackmaniarl-test-right.npy"\n'
-        f'build-geometry = "{command} build-geometry assets/trackmaniarl-test.geometry.npz '
-        "--left assets/trackmaniarl-test-left.npy "
-        "--right assets/trackmaniarl-test-right.npy "
-        "--map-uid REPLACE_WITH_TEST_3_UID --map-path maps/trackmaniarl-test.Map.Gbx" + '"\n'
-    )
-
-
-def _uv_options(*, accelerator: bool) -> str:
-    source_root = Path(__file__).resolve().parents[2]
-    trackmaniarl_source = (
-        f'trackmaniarl = {{ path = "{source_root.as_posix()}", editable = true }}\n'
-        if (source_root / "pyproject.toml").is_file()
-        else ""
-    )
-    vgamepad_source = (
-        'vgamepad = { git = "https://github.com/Palamabron/vgamepad", '
-        'rev = "5f3435df3f8a0e658feb58b207d9137cdb5183cd" }\n'
-    )
-    torch_source = (
-        'torch = [{ index = "pytorch-cuda", marker = "sys_platform == \'win32\' or '
-        "sys_platform == 'linux'\" }]\n"
-        if accelerator
-        else ""
-    )
-    index = (
-        "\n[[tool.uv.index]]\n"
-        'name = "pytorch-cuda"\n'
-        'url = "https://download.pytorch.org/whl/cu128"\n'
-        "explicit = true\n"
-        if accelerator
-        else ""
-    )
-    return f"\n[tool.uv.sources]\n{trackmaniarl_source}{vgamepad_source}{torch_source}{index}"
-
-
-def _config(package: str) -> str:
-    return f"""api_version: "1.2"
-run_id: starter
-seed: 0
-artifacts_dir: artifacts
-components:
-  learner: {{class_path: {package}.components:StarterMlpLearner}}
-  environment: {{class_path: {package}.components:StarterEnvironmentFactory}}
-  replay_store:
-    class_path: trackmaniarl.core.replay:InMemoryReplayStore
-    kwargs: {{capacity: 10000}}
-  sampler: {{class_path: trackmaniarl.core.replay:UniformSampler, kwargs: {{seed: 0}}}}
-  feature_pipeline: {{class_path: {package}.components:StarterFeaturePipeline}}
-  logger: {{class_path: trackmaniarl.core.builtins:JsonlRunLogger}}
-  checkpoint_codec: {{class_path: {package}.components:TorchCheckpointCodec}}
-training:
-  total_transitions: 64
-  max_episode_steps: 16
-  batch_size: 8
-  n_step: 1
-  gamma: 0.99
-  warmup_transitions: 8
-  updates_per_transition: 1.0
-  checkpoint_interval_updates: 16
-"""
-
-
-COMPONENTS = '''"""Editable components. Run `trackmaniarl validate run.yaml` after each change."""
-
-from collections.abc import Mapping
-from pathlib import Path
-from typing import Any, cast
-
-import torch
-from torch import nn
-
-from trackmaniarl.core.data import SampleBatch, Transition
-
-
-class StarterFeaturePipeline:
-    """Keep observations as PyTrees; replace this with TrackMania feature extraction."""
-
-    def transform_observation(self, observation: Any) -> Any:
-        return observation
-
-    def collate(self, transitions: list[Transition]) -> dict[str, Any]:
-        return {
-            "observations": [item.observation for item in transitions],
-            "actions": [item.action for item in transitions],
-            "rewards": [item.reward for item in transitions],
-            "next_observations": [item.next_observation for item in transitions],
-            "terminated": [item.terminated for item in transitions],
-            "truncated": [item.truncated for item in transitions],
-        }
-
-
-class StarterEnvironment:
-    """Deterministic stand-in for a real TrackMania adapter during local checks."""
-
-    def __init__(self, seed: int) -> None:
-        self.seed = seed
-        self.step_index = 0
-
-    def reset(self, *, seed: int | None = None) -> tuple[dict[str, float], dict[str, Any]]:
-        self.seed = self.seed if seed is None else seed
-        self.step_index = 0
-        return {"speed": 0.0}, {}
-
-    def step(self, action: float) -> tuple[dict[str, float], float, bool, bool, dict[str, Any]]:
-        self.step_index += 1
-        speed = float(self.step_index)
-        return {"speed": speed}, 1.0 - abs(float(action)), self.step_index >= 8, False, {}
-
-
-class StarterEnvironmentFactory:
-    """Replace with a factory that opens your local TrackMania adapter."""
-
-    def create(self, *, seed: int) -> StarterEnvironment:
-        return StarterEnvironment(seed)
-
-
-class StarterMlpPolicy:
-    """A small MLP policy; replace the scalar input with your real feature vector."""
-
-    def __init__(self, network: nn.Module) -> None:
-        self.network = network
-
-    def act(self, observation: Any, *, deterministic: bool = False) -> float:
-        del deterministic
-        speed = float(observation.get("speed", 0.0))
-        with torch.no_grad():
-            return float(torch.tanh(self.network(torch.tensor([[speed]])).squeeze()).item())
-
-    def export_state(self) -> Mapping[str, Any]:
-        return {"model": self.network.state_dict()}
-
-    def load_state(self, state: Mapping[str, Any]) -> None:
-        self.network.load_state_dict(state["model"])
-
-
-class StarterMlpLearner:
-    """Trainable contract example, not a complete racing algorithm."""
-
-    def __init__(self) -> None:
-        self.network = nn.Sequential(nn.Linear(1, 32), nn.ReLU(), nn.Linear(32, 1))
-        self.optimizer = torch.optim.Adam(self.network.parameters(), lr=1e-3)
-        self._policy = StarterMlpPolicy(self.network)
-
-    def setup(self, context: Mapping[str, Any]) -> None:
-        torch.manual_seed(int(context["seed"]))
-
-    def update(self, batch: SampleBatch) -> Mapping[str, float]:
-        speeds = torch.tensor(
-            [[float(item.get("speed", 0.0))] for item in batch.data["observations"]]
-        )
-        targets = torch.tensor([[float(value)] for value in batch.data["rewards"]])
-        loss = (self.network(speeds) - targets).square().mean()
-        self.optimizer.zero_grad()
-        loss.backward()
-        self.optimizer.step()
-        return {"loss/starter": float(loss.item())}
-
-    def policy(self) -> StarterMlpPolicy:
-        return self._policy
-
-    def state_dict(self) -> Mapping[str, Any]:
-        return {"model": self.network.state_dict(), "optimizer": self.optimizer.state_dict()}
-
-    def load_state_dict(self, state: Mapping[str, Any]) -> None:
-        self.network.load_state_dict(state["model"])
-        self.optimizer.load_state_dict(state["optimizer"])
-
-
-class TorchCheckpointCodec:
-    def save(self, state: Mapping[str, Any], path: Path) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        torch.save(dict(state), path)
-
-    def load(self, path: Path) -> Mapping[str, Any]:
-        return cast(Mapping[str, Any], torch.load(path, map_location="cpu", weights_only=True))
-'''
+from trackmaniarl.project.scaffold_run_templates import _config, _trackmania_config
+from trackmaniarl.project.scaffold_templates import (
+    COMPONENTS,
+    _project_readme,
+    _pyproject,
+    _uv_options,
+)
 
 
 def create_project(directory: str | Path, package: str, *, template: str = "starter") -> Path:
     """Create an installable, editable project without overwriting user files."""
 
+    target, package_dir = _create_directories(directory, package, template)
+    _write_project_metadata(target, package, template)
+    if template == "trackmania":
+        _write_trackmania_assets(target)
+        _copy_openplanet_assets(target)
+    _write_package(target, package_dir, package)
+    return target
+
+
+def _create_directories(directory: str | Path, package: str, template: str) -> tuple[Path, Path]:
     target = Path(directory)
-    package_dir = target / "src" / package
     if target.exists() and any(target.iterdir()):
         raise FileExistsError(f"Refusing to overwrite non-empty directory {target}")
-    package_dir.mkdir(parents=True, exist_ok=True)
     if template not in {"starter", "trackmania"}:
         raise ValueError("template must be 'starter' or 'trackmania'")
-    pyproject = _pyproject(
-        package.replace("_", "-"),
-        trackmaniarl_extras="[trackmania,algorithms,wandb,distributed]"
-        if template == "trackmania"
-        else "[distributed]",
-        include_trackmania_tasks=template == "trackmania",
+    package_dir = target / "src" / package
+    package_dir.mkdir(parents=True, exist_ok=True)
+    return target, package_dir
+
+
+def _write_project_metadata(target: Path, package: str, template: str) -> None:
+    (target / "pyproject.toml").write_text(
+        _generated_pyproject(package, template), encoding="utf-8"
     )
-    pyproject += _uv_options(accelerator=template == "trackmania")
-    (target / "pyproject.toml").write_text(pyproject, encoding="utf-8")
     (target / ".gitignore").write_text(
         ".env\n.venv/\nartifacts/\n__pycache__/\n.pytest_cache/\n.ruff_cache/\n"
         ".mypy_cache/\n*.egg-info/\ndist/\n",
         encoding="utf-8",
     )
     (target / ".env-example").write_text(
-        "TRACKMANIARL_DISTRIBUTED_TOKEN=\nWANDB_API_KEY=\n",
+        "TRACKMANIARL_DISTRIBUTED_TOKEN=\n",
         encoding="utf-8",
     )
+    (target / "README.md").write_text(_project_readme(template), encoding="utf-8")
     config = _config(package) if template == "starter" else _trackmania_config()
     (target / "run.yaml").write_text(config, encoding="utf-8")
-    if template == "trackmania":
-        assets = target / "assets"
-        assets.mkdir()
-        (target / "maps").mkdir()
-        (assets / "trajectory.csv").write_text("0,0,0\n1,0,0\n2,0,0\n", encoding="utf-8")
-        import numpy as np
 
-        boundary = np.asarray([[0, 0, -5], [5, 0, -5], [10, 0, -5]], dtype=np.float32)
-        np.savez_compressed(
-            assets / "trackmaniarl-test.geometry.npz",
-            version=np.asarray("1"),
-            map_uid=np.asarray("REPLACE_WITH_TEST_3_UID"),
-            map_sha256=np.asarray(""),
-            left=boundary,
-            center=boundary + np.asarray([0, 0, 5], dtype=np.float32),
-            right=boundary + np.asarray([0, 0, 10], dtype=np.float32),
-            spacing_m=np.asarray(5.0, dtype=np.float32),
-        )
-        plugin_dir = target / "openplanet"
-        plugin_dir.mkdir()
-        plugin = files("trackmaniarl.project").joinpath("openplanet/TrackmaniaRL_GrabData_IQN.as")
-        (plugin_dir / "TrackmaniaRL_GrabData_IQN.as").write_text(
-            plugin.read_text(encoding="utf-8"), encoding="utf-8"
-        )
-        plugin_info = files("trackmaniarl.project").joinpath("openplanet/info.toml")
-        (plugin_dir / "info.toml").write_text(
-            plugin_info.read_text(encoding="utf-8"), encoding="utf-8"
-        )
-        plugin_readme = files("trackmaniarl.project").joinpath("openplanet/README.md")
-        (plugin_dir / "README.md").write_text(
-            plugin_readme.read_text(encoding="utf-8"), encoding="utf-8"
-        )
-    (target / "run.py").write_text(
-        "from trackmaniarl import RunSpec, Trainer, resolve_run\n\n"
-        "spec = RunSpec.from_yaml('run.yaml')\n"
-        "run = resolve_run(spec)\n"
-        "try:\n    Trainer(run).train()\nfinally:\n    run.logger.close()\n",
-        encoding="utf-8",
+
+def _generated_pyproject(package: str, template: str) -> str:
+    extras = "[trackmania,distributed]" if template == "trackmania" else "[distributed]"
+    project = _pyproject(
+        package.replace("_", "-"),
+        trackmaniarl_extras=extras,
+        template=template,
     )
+    return project + _uv_options(template)
+
+
+def _write_trackmania_assets(target: Path) -> None:
+    import numpy as np
+
+    assets = target / "assets"
+    assets.mkdir()
+    (target / "maps").mkdir()
+    boundary = np.asarray([[0, 0, -5], [5, 0, -5], [10, 0, -5]], dtype=np.float32)
+    np.savez_compressed(
+        assets / "trackmaniarl-test.geometry.npz",
+        version=np.asarray("1"),
+        map_uid=np.asarray("REPLACE_WITH_TEST_3_UID"),
+        map_sha256=np.asarray(""),
+        left=boundary,
+        center=boundary + np.asarray([0, 0, 5], dtype=np.float32),
+        right=boundary + np.asarray([0, 0, 10], dtype=np.float32),
+        spacing_m=np.asarray(5.0, dtype=np.float32),
+        recorded_count=np.asarray(len(boundary), dtype=np.int32),
+    )
+
+
+def _copy_openplanet_assets(target: Path) -> None:
+    plugin_dir = target / "openplanet"
+    plugin_dir.mkdir()
+    resources = files("trackmaniarl.project").joinpath("openplanet")
+    _copy_resource(
+        resources.joinpath("TrackmaniaRL_Connect.as"),
+        plugin_dir / "SAC_GetData-2.4.0-reference.as",
+    )
+    _copy_resource(resources.joinpath("info.toml"), plugin_dir / "info.reference.toml")
+    _copy_resource(resources.joinpath("README.md"), plugin_dir / "README.md")
+
+
+def _copy_resource(resource: Traversable, destination: Path) -> None:
+    destination.write_text(resource.read_text(encoding="utf-8"), encoding="utf-8")
+
+
+def _write_package(target: Path, package_dir: Path, package: str) -> None:
     (package_dir / "__init__.py").write_text("", encoding="utf-8")
     (package_dir / "components.py").write_text(COMPONENTS, encoding="utf-8")
     tests_dir = target / "tests"
@@ -307,79 +113,3 @@ def create_project(directory: str | Path, package: str, *, template: str = "star
         "    assert StarterMlpLearner().policy() is not None\n",
         encoding="utf-8",
     )
-    return target
-
-
-def _trackmania_config() -> str:
-    return """api_version: \"1.2\"
-run_id: trackmania-iqn-lidar-v1
-seed: 0
-artifacts_dir: artifacts
-components:
-  learner:
-    class_path: trackmaniarl.algorithms.implicit_quantile_q_learning:ImplicitQuantileQLearning
-    kwargs:
-      learning_rate: 3.0e-5
-      gradient_clip_norm: 1.0
-      target_update_interval: 5000
-      exploration_epsilon: 1.0
-      exploration_epsilon_final: 0.05
-      exploration_epsilon_decay_updates: 100000
-      execution:
-        device: auto
-        precision: auto
-        compile: false
-        compile_mode: default
-  environment:
-    class_path: trackmaniarl.trackmania.environment:OpenPlanetEnvironmentFactory
-    kwargs:
-      config:
-        trajectory_path: assets/trajectory.csv
-        geometry_path: assets/trackmaniarl-test.geometry.npz
-        expected_map_uid: REPLACE_WITH_TEST_3_UID
-        control_backend: gamepad
-        action_repeat_frames: 4
-        slow_progress_window_steps: 300
-        no_progress_steps: 600
-        minimum_progress_per_window_m: 0.5
-  model_factory:
-    class_path: trackmaniarl.trackmania.iqn:LidarIqnModelFactory
-  replay_store:
-    class_path: trackmaniarl.core.replay:InMemoryReplayStore
-  sampler:
-    class_path: trackmaniarl.core.replay:PrioritizedSampler
-  feature_pipeline:
-    class_path: trackmaniarl.trackmania.features:LidarFeaturePipeline
-    kwargs:
-      geometry_path: assets/trackmaniarl-test.geometry.npz
-      expected_map_uid: REPLACE_WITH_TEST_3_UID
-  evaluator:
-    class_path: trackmaniarl.trackmania.evaluation:TrackmaniaEvaluator
-evaluation:
-  name: trackmaniarl-test
-  version: "1"
-  maps:
-    - id: trackmaniarl-test
-      map_path: maps/trackmaniarl-test.Map.Gbx
-      geometry_path: assets/trackmaniarl-test.geometry.npz
-      expected_map_uid: REPLACE_WITH_TEST_3_UID
-  trials_per_map: 20
-  target_median_s: 37.0
-distributed:
-  epsilon_profiles: [1.0]
-  epsilon_start: 0.5
-  epsilon_final: 0.05
-  epsilon_decay_transitions: 1500000
-training:
-  total_transitions: 2000000
-  batch_size: 512
-  n_step: 3
-  gamma: 0.995
-  beta: 0.4
-  per_beta_final: 1.0
-  per_beta_anneal_transitions: 2000000
-  warmup_transitions: 20000
-  updates_per_transition: 0.25
-  checkpoint_interval_updates: 5000
-  metrics_interval_updates: 50
-"""

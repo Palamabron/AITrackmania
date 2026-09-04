@@ -49,25 +49,28 @@ class AdaptiveGradientClipper(nn.Module):
         trainable = [parameter for parameter in parameters if parameter.grad is not None]
         if not trainable:
             return GradientClipStats(norm=0.0, ema_norm=self._ema_value(), coefficient=1.0)
-        norm = torch.nn.utils.clip_grad_norm_(
-            trainable,
-            max_norm=float("inf"),
-            error_if_nonfinite=True,
-        )
-        current = float(norm.detach())
+        current = self._gradient_norm(trainable)
+        coefficient = self._clip_gradients(trainable, current)
         self._update_ema(current)
-        threshold = self._ema_value() * self.clip_factor
-        coefficient = 1.0
-        if int(self.step_count) > self.warmup_steps and current > threshold:
-            coefficient = threshold / current
-            for parameter in trainable:
-                assert parameter.grad is not None
-                parameter.grad.mul_(coefficient)
-        return GradientClipStats(
-            norm=current,
-            ema_norm=self._ema_value(),
-            coefficient=coefficient,
+        return GradientClipStats(current, self._ema_value(), coefficient)
+
+    @staticmethod
+    def _gradient_norm(parameters: list[nn.Parameter]) -> float:
+        norm = torch.nn.utils.clip_grad_norm_(
+            parameters, max_norm=float("inf"), error_if_nonfinite=True
         )
+        return float(norm.detach())
+
+    def _clip_gradients(self, parameters: list[nn.Parameter], current: float) -> float:
+        has_history = not bool(torch.isnan(self.ema_norm))
+        threshold = self._ema_value() * self.clip_factor
+        if not has_history or int(self.step_count) < self.warmup_steps or current <= threshold:
+            return 1.0
+        coefficient = threshold / current
+        for parameter in parameters:
+            assert parameter.grad is not None
+            parameter.grad.mul_(coefficient)
+        return coefficient
 
     def _update_ema(self, current: float) -> None:
         if torch.isnan(self.ema_norm):

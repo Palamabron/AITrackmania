@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -100,7 +100,14 @@ class _JoinState:
     gaps: tuple[float, float, float]
 
 
-type _TimingContract = tuple[int, float | None, int]
+@dataclass(frozen=True, slots=True)
+class _SplicedData:
+    frames: np.ndarray
+    actions: np.ndarray
+    controls: np.ndarray
+
+
+type _TimingContract = tuple[int, float | None, str, int]
 
 
 def build_fastest_compatible_trajectory(
@@ -165,6 +172,7 @@ def _group_by_timing_contract(
         contract = (
             demonstration.action_repeat_frames,
             demonstration.decision_interval_ms,
+            demonstration.control_alignment,
             demonstration.frames.shape[1],
         )
         groups[contract].append(candidate)
@@ -179,11 +187,9 @@ def _stitch_group(
     baseline = min(candidates, key=lambda item: item.demonstration.finish_time_s)
     boundaries, distances = _progress_boundaries(geometry.reward_center, config.segment_length_m)
     best = _best_join(candidates, (boundaries, distances), config)
-    if (
-        best is None
-        or best.selection_cost_s > baseline.demonstration.finish_time_s - config.minimum_gain_s
-    ):
+    if not _worth_stitching(best, baseline, config):
         return _single_source_result(baseline)
+    assert best is not None
     demonstration = _splice(best)
     return StitchedTrajectory(
         demonstration=demonstration,
@@ -191,6 +197,15 @@ def _stitch_group(
         joins=(best.join,),
         fastest_source_time_s=baseline.demonstration.finish_time_s,
     )
+
+
+def _worth_stitching(
+    best: _JoinCandidate | None,
+    baseline: _Candidate,
+    config: TrajectoryStitchingConfig,
+) -> bool:
+    maximum_cost = baseline.demonstration.finish_time_s - config.minimum_gain_s
+    return best is not None and best.selection_cost_s <= maximum_cost
 
 
 def _progress_boundaries(
@@ -210,8 +225,19 @@ def _best_join(
     progress: tuple[np.ndarray, np.ndarray],
     config: TrajectoryStitchingConfig,
 ) -> _JoinCandidate | None:
+    return min(
+        _join_candidates(candidates, progress, config),
+        key=lambda candidate: candidate.selection_cost_s,
+        default=None,
+    )
+
+
+def _join_candidates(
+    candidates: Sequence[_Candidate],
+    progress: tuple[np.ndarray, np.ndarray],
+    config: TrajectoryStitchingConfig,
+) -> Iterator[_JoinCandidate]:
     boundaries, distances = progress
-    best: _JoinCandidate | None = None
     total_distance = float(distances[-1])
     for boundary_index in range(1, len(boundaries) - 1):
         boundary = _Boundary(
@@ -222,11 +248,8 @@ def _best_join(
         for first in candidates:
             for second in candidates:
                 candidate = _join_at_boundary((first, second), boundary, config)
-                if candidate is not None and (
-                    best is None or candidate.selection_cost_s < best.selection_cost_s
-                ):
-                    best = candidate
-    return best
+                if candidate is not None:
+                    yield candidate
 
 
 def _join_at_boundary(
@@ -240,26 +263,36 @@ def _join_at_boundary(
     state = _join_state(first, second, boundary.progress_index)
     if not _compatible(state, config):
         return None
+    return _join_candidate(state, boundary, config)
+
+
+def _join_candidate(
+    state: _JoinState, boundary: _Boundary, config: TrajectoryStitchingConfig
+) -> _JoinCandidate:
     finish_time = _joined_finish_time(state)
-    join = TrajectoryJoin(
-        progress_m=boundary.progress_m,
-        progress_fraction=boundary.progress_m / boundary.total_distance_m,
-        first_source=first.path,
-        second_source=second.path,
-        first_frame_index=state.first_index,
-        second_frame_index=state.second_index,
-        position_gap_m=state.gaps[0],
-        velocity_gap_mps=state.gaps[1],
-        heading_gap_degrees=state.gaps[2],
-    )
+    join = _trajectory_join(state, boundary)
     return _JoinCandidate(
-        first,
-        second,
+        state.first,
+        state.second,
         state.first_index,
         state.second_index,
         finish_time,
         finish_time + config.switch_penalty_s,
         join,
+    )
+
+
+def _trajectory_join(state: _JoinState, boundary: _Boundary) -> TrajectoryJoin:
+    return TrajectoryJoin(
+        progress_m=boundary.progress_m,
+        progress_fraction=boundary.progress_m / boundary.total_distance_m,
+        first_source=state.first.path,
+        second_source=state.second.path,
+        first_frame_index=state.first_index,
+        second_frame_index=state.second_index,
+        position_gap_m=state.gaps[0],
+        velocity_gap_mps=state.gaps[1],
+        heading_gap_degrees=state.gaps[2],
     )
 
 
@@ -318,23 +351,32 @@ def _joined_finish_time(state: _JoinState) -> float:
 def _splice(join: _JoinCandidate) -> Demonstration:
     first = join.first.demonstration
     second = join.second.demonstration
+    data = _SplicedData(
+        _spliced_frames(join, first, second),
+        np.concatenate((first.actions[: join.first_index], second.actions[join.second_index :])),
+        np.concatenate((first.controls[: join.first_index], second.controls[join.second_index :])),
+    )
+    return _spliced_demonstration(join, data)
+
+
+def _spliced_frames(
+    join: _JoinCandidate, first: Demonstration, second: Demonstration
+) -> np.ndarray:
     tail = second.frames[join.second_index + 1 :].copy()
     time_offset = first.frames[join.first_index, 3] - second.frames[join.second_index, 3]
     tail[:, 3] += time_offset
-    frames = np.concatenate((first.frames[: join.first_index + 1], tail))
-    actions = np.concatenate(
-        (first.actions[: join.first_index], second.actions[join.second_index :])
-    )
-    controls = np.concatenate(
-        (first.controls[: join.first_index], second.controls[join.second_index :])
-    )
+    return np.concatenate((first.frames[: join.first_index + 1], tail))
+
+
+def _spliced_demonstration(join: _JoinCandidate, data: _SplicedData) -> Demonstration:
+    first = join.first.demonstration
     return Demonstration(
         map_uid=first.map_uid,
         geometry_sha256=first.geometry_sha256,
         action_repeat_frames=first.action_repeat_frames,
-        frames=frames,
-        actions=actions,
-        controls=controls,
+        frames=data.frames,
+        actions=data.actions,
+        controls=data.controls,
         finish_time_s=join.finish_time_s,
         decision_interval_ms=first.decision_interval_ms,
         control_alignment=first.control_alignment,

@@ -3,15 +3,19 @@
 from __future__ import annotations
 
 import json
-import shutil
+import os
 import threading
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, BinaryIO, TextIO, cast
 from uuid import uuid4
 
-from trackmaniarl.core.data import SampleBatch, Transition
+from trackmaniarl.core.contracts import PolicyMode
+from trackmaniarl.core.data import TrainingBatch, Transition
+
+_CHECKPOINT_COPY_CHUNK_BYTES = 8 * 1024**2
+_DEFAULT_MAX_DECOMPRESSED_CHECKPOINT_BYTES = 8 * 1024**3
 
 
 class IdentityFeaturePipeline:
@@ -34,8 +38,8 @@ class IdentityFeaturePipeline:
 class ZeroPolicy:
     """Safe policy used only by the synthetic validation path."""
 
-    def act(self, observation: Any, *, deterministic: bool = False) -> float:
-        del observation, deterministic
+    def act(self, observation: Any, mode: PolicyMode = PolicyMode.ONLINE) -> float:
+        del observation, mode
         return 0.0
 
 
@@ -49,7 +53,7 @@ class SmokeLearner:
     def setup(self, context: Mapping[str, Any]) -> None:
         del context
 
-    def update(self, batch: SampleBatch) -> Mapping[str, float]:
+    def update(self, batch: TrainingBatch) -> Mapping[str, float]:
         rewards = batch.data["rewards"]
         self._updates += 1
         return {
@@ -78,6 +82,7 @@ class JsonlRunLogger:
         self._segment_id = uuid4().hex
         self._started_at = datetime.now(UTC)
         self._write_lock = threading.Lock()
+        self._file: TextIO | None = None
 
     def log(self, event: str, payload: Mapping[str, Any], *, step: int | None = None) -> None:
         item = {
@@ -91,14 +96,17 @@ class JsonlRunLogger:
             "step": step,
         }
         line = json.dumps(item, default=str, sort_keys=True) + "\n"
-        with self._write_lock, self._path.open("a", encoding="utf-8") as file:
-            file.write(line)
+        with self._write_lock:
+            if self._file is None:
+                self._file = self._path.open("a", encoding="utf-8")
+            self._file.write(line)
+            self._file.flush()
 
     def close(self) -> None:
-        return None
-
-
-JsonlTracker = JsonlRunLogger
+        with self._write_lock:
+            if self._file is not None:
+                self._file.close()
+                self._file = None
 
 
 class CompositeRunLogger:
@@ -145,25 +153,44 @@ def _load_torch_checkpoint(path: Path) -> Mapping[str, Any]:
         )
 
 
-class TorchCheckpointCodec:
-    """Atomic zstd-streamed Torch checkpoints with legacy uncompressed reads."""
+def _write_zstd_checkpoint(state: Mapping[str, Any], temporary: Path) -> None:
+    import torch
+    import zstandard
 
-    def save(self, state: Mapping[str, Any], path: Path) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        import torch
-        import zstandard
-
-        temporary = path.with_suffix(path.suffix + ".tmp")
-        with (
-            temporary.open("wb") as destination,
-            zstandard.ZstdCompressor(level=3).stream_writer(
-                destination, closefd=False
-            ) as compressed,
-        ):
+    with temporary.open("wb") as destination:
+        with zstandard.ZstdCompressor(level=3).stream_writer(
+            destination, closefd=False
+        ) as compressed:
             # The weights-only unpickler cannot parse pickle protocol >= 4;
             # torch's default protocol keeps checkpoints loadable safely.
             torch.save(dict(state), compressed)
-        temporary.replace(path)
+        destination.flush()
+        os.fsync(destination.fileno())
+
+
+class TorchCheckpointCodec:
+    """Atomically replace zstd-streamed Torch checkpoints on successful saves."""
+
+    def __init__(
+        self,
+        max_decompressed_bytes: int = _DEFAULT_MAX_DECOMPRESSED_CHECKPOINT_BYTES,
+    ) -> None:
+        if max_decompressed_bytes < 1:
+            raise ValueError("max_decompressed_bytes must be positive")
+        self.max_decompressed_bytes = max_decompressed_bytes
+
+    def save(self, state: Mapping[str, Any], path: Path) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_suffix(path.suffix + ".tmp")
+        try:
+            _write_zstd_checkpoint(state, temporary)
+            os.replace(temporary, path)
+        except BaseException:
+            # Clean up failures reported inside Python. Abrupt process exit or
+            # power loss can still leave this temporary behind.
+            temporary.unlink(missing_ok=True)
+            raise
+        sync_checkpoint_path(path)
 
     def load(self, path: Path) -> Mapping[str, Any]:
         import zstandard
@@ -171,7 +198,7 @@ class TorchCheckpointCodec:
         with path.open("rb") as source:
             compressed = source.read(4) == b"\x28\xb5\x2f\xfd"
         if not compressed:
-            return _load_torch_checkpoint(path)
+            raise ValueError(f"checkpoint is not a zstd stream: {path}")
         temporary = path.with_name(f".{path.name}.{uuid4().hex}.decompressed.tmp")
         try:
             with (
@@ -179,10 +206,36 @@ class TorchCheckpointCodec:
                 temporary.open("wb") as destination,
                 zstandard.ZstdDecompressor().stream_reader(source) as reader,
             ):
-                shutil.copyfileobj(reader, destination, length=8 * 1024**2)
+                _copy_checkpoint_limited(reader, destination, self.max_decompressed_bytes)
             return _load_torch_checkpoint(temporary)
         finally:
             temporary.unlink(missing_ok=True)
+
+
+def _copy_checkpoint_limited(source: BinaryIO, destination: BinaryIO, limit: int) -> None:
+    copied = 0
+    while chunk := source.read(min(_CHECKPOINT_COPY_CHUNK_BYTES, limit - copied + 1)):
+        copied += len(chunk)
+        if copied > limit:
+            raise ValueError(f"decompressed checkpoint exceeds configured limit of {limit} bytes")
+        destination.write(chunk)
+
+
+def sync_checkpoint_path(path: Path) -> None:
+    """Flush a replaced checkpoint before any durability-dependent callback."""
+
+    with path.open("rb+") as checkpoint:
+        os.fsync(checkpoint.fileno())
+    try:
+        directory = os.open(path.parent, os.O_RDONLY)
+    except OSError:
+        if os.name == "nt":
+            return
+        raise
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
 
 
 # JSON is retained as an explicit opt-in codec for non-tensor toy learners.
@@ -191,7 +244,13 @@ class JsonCheckpointCodec:
 
     def save(self, state: Mapping[str, Any], path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(dict(state), sort_keys=True), encoding="utf-8")
+        temporary = path.with_suffix(path.suffix + ".tmp")
+        with temporary.open("w", encoding="utf-8") as destination:
+            json.dump(dict(state), destination, sort_keys=True)
+            destination.flush()
+            os.fsync(destination.fileno())
+        os.replace(temporary, path)
+        sync_checkpoint_path(path)
 
     def load(self, path: Path) -> Mapping[str, Any]:
         return cast(Mapping[str, Any], json.loads(path.read_text(encoding="utf-8")))

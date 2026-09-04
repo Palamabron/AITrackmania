@@ -1,0 +1,87 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1080" viewBox="0 0 1600 1080">
+<defs><marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="context-stroke"/></marker><filter id="shadow" x="-20%" y="-20%" width="140%" height="140%"><feDropShadow dx="0" dy="2" stdDeviation="3" flood-opacity=".14"/></filter></defs>
+<rect width="100%" height="100%" fill="#ffffff"/>
+<text x="55" y="61" text-anchor="start" font-family="Inter,Arial,sans-serif" font-size="32" fill="#111827"><tspan x="55" dy="0">Imitation learning lifecycle and controlled RL handoff</tspan></text>
+<text x="55" y="99" text-anchor="start" font-family="Inter,Arial,sans-serif" font-size="18" fill="#64748b"><tspan x="55" dy="0">Behavior cloning is the supervised algorithm; imitation_learning owns the wider data, recovery, evaluation and warm-start workflow.</tspan></text>
+<rect x="55" y="125" width="500" height="690" rx="14" fill="#dcfce7" fill-opacity=".35" stroke="#2b8a3e" stroke-width="1.5" stroke-dasharray="8 7"/>
+<text x="73" y="154" text-anchor="start" font-family="Inter,Arial,sans-serif" font-size="19" fill="#2b8a3e"><tspan x="73" dy="0">Trusted demonstration data</tspan></text>
+<rect x="590" y="125" width="560" height="690" rx="14" fill="#dbeafe" fill-opacity=".35" stroke="#1864ab" stroke-width="1.5" stroke-dasharray="8 7"/>
+<text x="608" y="154" text-anchor="start" font-family="Inter,Arial,sans-serif" font-size="19" fill="#1864ab"><tspan x="608" dy="0">Behavior-cloning lifecycle</tspan></text>
+<rect x="1185" y="125" width="360" height="690" rx="14" fill="#ede9fe" fill-opacity=".35" stroke="#7048e8" stroke-width="1.5" stroke-dasharray="8 7"/>
+<text x="1203" y="154" text-anchor="start" font-family="Inter,Arial,sans-serif" font-size="19" fill="#7048e8"><tspan x="1203" dy="0">Closed-loop gate and RL</tspan><tspan x="1203" dy="23.75">experiment</tspan></text>
+<polyline points="195,287 195,370" fill="none" stroke="#2b8a3e" stroke-width="2.5" marker-end="url(#arrow)"/>
+<polyline points="415,287 415,370" fill="none" stroke="#d97706" stroke-width="2.5" marker-end="url(#arrow)"/>
+<polyline points="195,468 195,510 315,510 315,555" fill="none" stroke="#c92a2a" stroke-width="2.5" marker-end="url(#arrow)"/>
+<polyline points="415,468 415,510 315,510 315,555" fill="none" stroke="#475569" stroke-width="2.5" marker-end="url(#arrow)"/>
+<polyline points="315,651 315,690" fill="none" stroke="#2b8a3e" stroke-width="2.5" marker-end="url(#arrow)"/>
+<polyline points="425,731 575,731 575,243 630,243" fill="none" stroke="#2b8a3e" stroke-width="2.5" marker-end="url(#arrow)"/>
+<rect x="487" y="498" width="176" height="25" rx="5" fill="#ffffff" fill-opacity=".92"/>
+<text x="575.0" y="515" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#2b8a3e"><tspan x="575.0" dy="0">training set</tspan></text>
+<polyline points="425,603 575,603 575,443 630,443" fill="none" stroke="#087f8c" stroke-width="2.5" marker-end="url(#arrow)"/>
+<rect x="487" y="553" width="176" height="25" rx="5" fill="#ffffff" fill-opacity=".92"/>
+<text x="575.0" y="570" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#087f8c"><tspan x="575.0" dy="0">held-out laps</tspan></text>
+<polyline points="860,243.0 880,243.0" fill="none" stroke="#1864ab" stroke-width="2.5" marker-end="url(#arrow)"/>
+<polyline points="995,291 995,345 745,345 745,395" fill="none" stroke="#087f8c" stroke-width="2.5" marker-end="url(#arrow)"/>
+<rect x="782" y="323" width="176" height="25" rx="5" fill="#ffffff" fill-opacity=".92"/>
+<text x="870.0" y="340" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#087f8c"><tspan x="870.0" dy="0">epochs</tspan></text>
+<polyline points="860,443.0 880,443.0" fill="none" stroke="#2b8a3e" stroke-width="2.5" marker-end="url(#arrow)"/>
+<polyline points="995,491 995,545 870,545 870,595" fill="none" stroke="#1864ab" stroke-width="2.5" marker-end="url(#arrow)"/>
+<polyline points="1110,443 1165,443 1165,280 1240,280" fill="none" stroke="#d97706" stroke-width="2.5" marker-end="url(#arrow)"/>
+<rect x="1077" y="343" width="176" height="25" rx="5" fill="#ffffff" fill-opacity=".92"/>
+<text x="1165.0" y="360" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#d97706"><tspan x="1165.0" dy="0">candidate</tspan></text>
+<polyline points="1365,330 1365,425" fill="none" stroke="#d97706" stroke-width="2.5" marker-end="url(#arrow)"/>
+<rect x="1277" y="373" width="176" height="25" rx="5" fill="#ffffff" fill-opacity=".92"/>
+<text x="1365.0" y="390" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#d97706"><tspan x="1365.0" dy="0">metrics</tspan></text>
+<polyline points="1365,525 1365,630" fill="none" stroke="#7048e8" stroke-width="2.5" marker-end="url(#arrow)"/>
+<rect x="1277" y="578" width="176" height="25" rx="5" fill="#ffffff" fill-opacity=".92"/>
+<text x="1365.0" y="595" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#7048e8"><tspan x="1365.0" dy="0">pass</tspan></text>
+<polyline points="1240,475 1165,475 1165,855 415,855 415,287" fill="none" stroke="#d97706" stroke-width="2.5" stroke-dasharray="8 7" marker-end="url(#arrow)"/>
+<rect x="702" y="833" width="176" height="25" rx="5" fill="#ffffff" fill-opacity=".92"/>
+<text x="790.0" y="850" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#d97706"><tspan x="790.0" dy="0">fail / intervene</tspan></text>
+<rect x="95" y="195" width="200" height="92" rx="12" fill="#dcfce7" stroke="#2b8a3e" stroke-width="2.5" filter="url(#shadow)"/>
+<text x="195.0" y="223.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="20" fill="#111827"><tspan x="195.0" dy="0">record-demo</tspan></text>
+<text x="195.0" y="251.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#475569"><tspan x="195.0" dy="0">whole laps ·</tspan><tspan x="195.0" dy="22.5">outlier filtering</tspan></text>
+<rect x="315" y="195" width="200" height="92" rx="12" fill="#ffedd5" stroke="#d97706" stroke-width="2.5" filter="url(#shadow)"/>
+<text x="415.0" y="223.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="20" fill="#111827"><tspan x="415.0" dy="0">DAgger recovery</tspan></text>
+<text x="415.0" y="251.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#475569"><tspan x="415.0" dy="0">student states ·</tspan><tspan x="415.0" dy="22.5">expert labels</tspan></text>
+<rect x="95" y="370" width="200" height="98" rx="12" fill="#fee2e2" stroke="#c92a2a" stroke-width="2.5" filter="url(#shadow)"/>
+<text x="195.0" y="401.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="20" fill="#111827"><tspan x="195.0" dy="0">Dataset quality</tspan></text>
+<text x="195.0" y="429.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#475569"><tspan x="195.0" dy="0">complete laps ·</tspan><tspan x="195.0" dy="22.5">timing</tspan></text>
+<rect x="315" y="370" width="200" height="98" rx="12" fill="#f1f5f9" stroke="#475569" stroke-width="2.5" filter="url(#shadow)"/>
+<text x="415.0" y="401.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="20" fill="#111827"><tspan x="415.0" dy="0">Dataset manifest</tspan></text>
+<text x="415.0" y="429.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#475569"><tspan x="415.0" dy="0">fingerprint ·</tspan><tspan x="415.0" dy="22.5">provenance</tspan></text>
+<rect x="205" y="555" width="220" height="96" rx="12" fill="#cffafe" stroke="#087f8c" stroke-width="2.5" filter="url(#shadow)"/>
+<text x="315.0" y="585.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="20" fill="#111827"><tspan x="315.0" dy="0">Lap-level split</tspan></text>
+<text x="315.0" y="613.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#475569"><tspan x="315.0" dy="0">train / validation;</tspan><tspan x="315.0" dy="22.5">no leakage</tspan></text>
+<rect x="205" y="690" width="220" height="82" rx="12" fill="#dcfce7" stroke="#2b8a3e" stroke-width="2.5" filter="url(#shadow)"/>
+<text x="315.0" y="717" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="20" fill="#111827"><tspan x="315.0" dy="0">Safe augmentation</tspan></text>
+<text x="315.0" y="745" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#475569"><tspan x="315.0" dy="0">horizontal flip;</tspan><tspan x="315.0" dy="22.5">preserve unknowns</tspan></text>
+<rect x="630" y="195" width="230" height="96" rx="12" fill="#dbeafe" stroke="#1864ab" stroke-width="2.5" filter="url(#shadow)"/>
+<text x="745.0" y="225.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="20" fill="#111827"><tspan x="745.0" dy="0">BehaviorCloningModel</tspan></text>
+<text x="745.0" y="253.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#475569"><tspan x="745.0" dy="0">encoder · temporal ·</tspan><tspan x="745.0" dy="22.5">actor head</tspan></text>
+<rect x="880" y="195" width="230" height="96" rx="12" fill="#cffafe" stroke="#087f8c" stroke-width="2.5" filter="url(#shadow)"/>
+<text x="995.0" y="225.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="20" fill="#111827"><tspan x="995.0" dy="0">Offline learner</tspan></text>
+<text x="995.0" y="253.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#475569"><tspan x="995.0" dy="0">contiguous batches ·</tspan><tspan x="995.0" dy="22.5">AMP · scaler</tspan></text>
+<rect x="630" y="395" width="230" height="96" rx="12" fill="#dcfce7" stroke="#2b8a3e" stroke-width="2.5" filter="url(#shadow)"/>
+<text x="745.0" y="422" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="20" fill="#111827"><tspan x="745.0" dy="0">Validation</tspan><tspan x="745.0" dy="25.0">aggregate</tspan></text>
+<text x="745.0" y="475" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#475569"><tspan x="745.0" dy="0">loss numerator /</tspan><tspan x="745.0" dy="22.5">sample count</tspan></text>
+<rect x="880" y="395" width="230" height="96" rx="12" fill="#dbeafe" stroke="#1864ab" stroke-width="2.5" filter="url(#shadow)"/>
+<text x="995.0" y="436.75" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="20" fill="#111827"><tspan x="995.0" dy="0">BC checkpoint</tspan></text>
+<text x="995.0" y="464.75" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#475569"><tspan x="995.0" dy="0">exact trainer state</tspan></text>
+<rect x="755" y="595" width="230" height="92" rx="12" fill="#f1f5f9" stroke="#475569" stroke-width="2.5" filter="url(#shadow)"/>
+<text x="870.0" y="623.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="20" fill="#111827"><tspan x="870.0" dy="0">Exact resume</tspan></text>
+<text x="870.0" y="651.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#475569"><tspan x="870.0" dy="0">same split, order</tspan><tspan x="870.0" dy="22.5">and next update</tspan></text>
+<rect x="1240" y="230" width="250" height="100" rx="12" fill="#ffedd5" stroke="#d97706" stroke-width="2.5" filter="url(#shadow)"/>
+<text x="1365.0" y="262.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="20" fill="#111827"><tspan x="1365.0" dy="0">Closed-loop eval</tspan></text>
+<text x="1365.0" y="290.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#475569"><tspan x="1365.0" dy="0">finish · pace ·</tspan><tspan x="1365.0" dy="22.5">intervention rate</tspan></text>
+<polygon points="1365.0,425 1490,475.0 1365.0,525 1240,475.0" fill="#fee2e2" stroke="#c92a2a" stroke-width="2.5" filter="url(#shadow)"/>
+<text x="1365.0" y="457.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="20" fill="#111827"><tspan x="1365.0" dy="0">Promotion gate</tspan></text>
+<text x="1365.0" y="485.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#475569"><tspan x="1365.0" dy="0">named criteria, never</tspan><tspan x="1365.0" dy="22.5">implicit</tspan></text>
+<rect x="1240" y="630" width="250" height="96" rx="12" fill="#ede9fe" stroke="#7048e8" stroke-width="2.5" filter="url(#shadow)"/>
+<text x="1365.0" y="660.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="20" fill="#111827"><tspan x="1365.0" dy="0">Warm-start RL</tspan></text>
+<text x="1365.0" y="688.5" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" fill="#475569"><tspan x="1365.0" dy="0">encoder + temporal;</tspan><tspan x="1365.0" dy="22.5">new value head</tspan></text>
+<rect x="115" y="900" width="1370" height="62" rx="10" fill="#dbeafe" stroke="#1864ab" stroke-width="1.5"/>
+<text x="129" y="931" text-anchor="start" font-family="Inter,Arial,sans-serif" font-size="18" fill="#1f2937"><tspan x="129" dy="0">Package boundary: trackmaniarl.trackmania.imitation_learning. Public classes include LidarBehaviorCloningModelFactory and</tspan><tspan x="129" dy="22.5">BehaviorCloningLearner.</tspan></text>
+<rect x="115" y="980" width="1370" height="62" rx="10" fill="#ede9fe" stroke="#7048e8" stroke-width="1.5"/>
+<text x="129" y="1011" text-anchor="start" font-family="Inter,Arial,sans-serif" font-size="18" fill="#1f2937"><tspan x="129" dy="0">Warm-start is partial loading with an explicit match report; it is not a resume and it does not transfer optimizer state or episodic</tspan><tspan x="129" dy="22.5">hidden state.</tspan></text>
+</svg>

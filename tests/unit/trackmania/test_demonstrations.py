@@ -1,141 +1,158 @@
 from __future__ import annotations
 
-from dataclasses import replace
+from collections.abc import Mapping
+from dataclasses import dataclass, replace
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import numpy as np
 import pytest
+import torch
 
-from trackmaniarl.core.data import Transition
+from tests.unit.trackmania._demonstration_fixtures import (
+    _config,
+    _demonstration,
+    _frames,
+    _geometry,
+    _IdentityPipeline,
+)
+from trackmaniarl.commands.diagnostics import _expert_diagnostics, _ExpertContext
+from trackmaniarl.models.composite import CompositeModules, CompositeValueModel
+from trackmaniarl.models.contracts import RiskSpec
+from trackmaniarl.models.heads import ImplicitQuantileHead, ImplicitQuantileHeadConfig
+from trackmaniarl.models.strategies import RandomQuantileStrategy
+from trackmaniarl.models.temporal import GruTemporalCore
+from trackmaniarl.models.track_graphs import TrackNeighborGraph
 from trackmaniarl.trackmania.actions import (
+    BRAKE_TAP_SENTINEL,
     build_brake_tap_action_table,
-    continuous_control_to_discrete_index,
+    continuous_control_to_discrete_indices_batch,
 )
 from trackmaniarl.trackmania.demonstrations import (
     Demonstration,
+    DemonstrationResamplingConfig,
+    DemonstrationResamplingRequest,
+    DemonstrationTransitionContext,
+    _control,
     demonstration_transitions,
     load_demonstration,
-    record_demonstration,
-    record_demonstration_session,
-    reject_outliers,
     resample_demonstration,
-    resolve_demonstration_paths,
+    resample_demonstration_for_environment,
     save_demonstration,
 )
+from trackmaniarl.trackmania.diagnostics import (
+    ExpertActionDiagnostics,
+    ExpertDiagnosticRecord,
+    aggregate_expert_actions,
+)
 from trackmaniarl.trackmania.environment import TrackmaniaEnvironmentConfig
-from trackmaniarl.trackmania.geometry import BoundaryGeometry, build_geometry_asset
+from trackmaniarl.trackmania.geometry import BoundaryGeometry
 from trackmaniarl.trackmania.telemetry import TelemetryFrame
 
+DEFAULT_RESAMPLING_CONFIG = DemonstrationResamplingConfig()
 
-class _IdentityPipeline:
+
+class _DictTensorPipeline:
     def reset_episode(self) -> None:
         return
 
-    def transform_observation(self, observation: Any) -> np.ndarray:
-        return np.asarray(observation, dtype=np.float32).copy()
-
-    def collate(self, transitions: list[Transition]) -> list[Transition]:
-        return transitions
-
-
-class _TelemetryClient:
-    def __init__(self, frames: list[np.ndarray]) -> None:
-        self.frames = list(frames)
-        self.cursor = 0
-
-    def read(self) -> TelemetryFrame:
-        frame = self.frames[min(self.cursor, len(self.frames) - 1)]
-        self.cursor += 1
-        return TelemetryFrame(frame)
-
-    def read_next(self) -> TelemetryFrame:
-        return self.read()
+    def transform_observation(self, observation: Any) -> dict[str, torch.Tensor]:
+        values = torch.as_tensor(np.asarray(observation, dtype=np.float32).copy())
+        physics = torch.zeros(60, dtype=torch.float32)
+        physics[: len(values)] = values
+        return {"physics": physics, "track": torch.zeros(3, 88)}
 
 
-class _EventTelemetryClient:
-    def __init__(self, events: list[np.ndarray | TimeoutError]) -> None:
-        self.events = list(events)
-        self.cursor = 0
+class _GraphDictEncoder(torch.nn.Module):
+    output_dim = 8
 
-    def read(self) -> TelemetryFrame:
-        event = self.events[min(self.cursor, len(self.events) - 1)]
-        self.cursor += 1
-        if isinstance(event, TimeoutError):
-            raise event
-        return TelemetryFrame(event)
+    def __init__(self) -> None:
+        super().__init__()
+        self.graph = TrackNeighborGraph(hidden_dim=8, layer_count=1)
+        self.physics = torch.nn.Linear(60, 8)
 
-    def read_next(self) -> TelemetryFrame:
-        return self.read()
+    def forward(self, observation: Mapping[str, torch.Tensor]) -> torch.Tensor:
+        return self.graph(observation["track"]) + self.physics(observation["physics"])
 
 
-def _geometry(tmp_path: Path) -> BoundaryGeometry:
-    left = np.asarray([[float(x), 0.0, -5.0] for x in range(101)], dtype=np.float32)
-    right = left + np.asarray([0.0, 0.0, 10.0], dtype=np.float32)
-    np.save(tmp_path / "left.npy", left)
-    np.save(tmp_path / "right.npy", right)
-    map_path = tmp_path / "map.Map.Gbx"
-    map_path.write_bytes(b"map")
-    asset = build_geometry_asset(
-        tmp_path / "geometry.npz",
-        tmp_path / "left.npy",
-        tmp_path / "right.npy",
-        map_uid="test-map",
-        map_path=map_path,
-        spacing_m=1.0,
-        lookahead_points=0,
-    )
-    return BoundaryGeometry(asset, expected_map_uid="test-map")
+@dataclass(frozen=True, slots=True)
+class _ExpertDiagnosticCase:
+    path: Path
+    context: _ExpertContext
+    source_count: int
+    evaluated_count: int
 
 
-def _config(
-    geometry: BoundaryGeometry,
-    *,
-    action_repeat_frames: int = 2,
-    decision_interval_ms: float | None = None,
-    start_timeout_s: float = 15.0,
-) -> TrackmaniaEnvironmentConfig:
-    return TrackmaniaEnvironmentConfig(
-        geometry_path=geometry.path,
-        expected_map_uid=geometry.map_uid,
-        action_repeat_frames=action_repeat_frames,
-        decision_interval_ms=decision_interval_ms,
-        start_timeout_s=start_timeout_s,
-        start_poll_s=0.0,
-        velocity_to_mps_scale=1.0,
-        minimum_finish_steps=50,
-        no_progress_steps=100,
-        slow_progress_window_steps=80,
-        minimum_progress_per_window_m=1.0,
+def _resample(
+    demonstration: Demonstration,
+    decision_interval_ms: float | None,
+    config: DemonstrationResamplingConfig = DEFAULT_RESAMPLING_CONFIG,
+) -> tuple[np.ndarray, np.ndarray]:
+    return resample_demonstration(
+        DemonstrationResamplingRequest(demonstration, decision_interval_ms, config)
     )
 
 
-def _frames(count: int = 61) -> np.ndarray:
-    frames = np.zeros((count, 33), dtype=np.float32)
-    frames[:, 3] = np.linspace(0.0, 36_000.0, count)
-    frames[:, 4] = np.linspace(0.0, 100.0, count)
-    frames[:, 7] = 40.0
-    frames[:, 10] = 1.0
-    frames[:, 31] = 1.0
+def _short_demonstration(tmp_path: Path) -> tuple[Demonstration, np.ndarray]:
+    demonstration = _demonstration(_geometry(tmp_path))
+    frames = demonstration.frames[:6].copy()
+    frames[:, 3] = np.arange(len(frames), dtype=np.float32) * 10.0
     frames[-1, 2] = 1.0
-    return frames
+    return demonstration, frames
 
 
-def _demonstration(geometry: BoundaryGeometry) -> Demonstration:
-    frames = _frames()
+def _lead_demonstration(tmp_path: Path) -> tuple[Demonstration, np.ndarray]:
+    demonstration, frames = _short_demonstration(tmp_path)
+    actions = np.asarray([0, 1, 3, 39, 75], dtype=np.int64)
     _, table = build_brake_tap_action_table()
-    action = continuous_control_to_discrete_index(
-        np.asarray([1.0, 0.0, 0.0], dtype=np.float32), table
-    )
-    return Demonstration(
-        map_uid=geometry.map_uid,
-        geometry_sha256=geometry.sha256,
-        action_repeat_frames=2,
+    updated = replace(
+        demonstration,
         frames=frames,
-        actions=np.full(len(frames) - 1, action, dtype=np.int64),
-        controls=np.tile(np.asarray([1.0, 0.0, 0.0], dtype=np.float32), (len(frames) - 1, 1)),
-        finish_time_s=36.0,
+        actions=actions,
+        controls=np.asarray([table[action] for action in actions], dtype=np.float32),
+        finish_time_s=0.05,
     )
+    return updated, frames
+
+
+def _controlled_demonstration(
+    tmp_path: Path, controls: np.ndarray
+) -> tuple[Demonstration, list[np.ndarray]]:
+    demonstration, frames = _short_demonstration(tmp_path)
+    _, table = build_brake_tap_action_table()
+    updated = replace(
+        demonstration,
+        frames=frames,
+        actions=continuous_control_to_discrete_indices_batch(controls, table),
+        controls=controls,
+        finish_time_s=0.05,
+        control_alignment="frame_start",
+    )
+    return updated, table
+
+
+def _pwm_controls() -> np.ndarray:
+    return np.asarray(
+        [
+            [1.0, 0.0, -1.0],
+            [1.0, 1.0, -1.0],
+            [1.0, 0.0, 1.0],
+            [1.0, 0.0, 1.0],
+            [1.0, 0.0, 1.0],
+        ],
+        dtype=np.float32,
+    )
+
+
+def test_recorded_control_preserves_openplanet_steering_direction() -> None:
+    values = np.zeros(33, dtype=np.float32)
+    values[30] = -1.0
+    values[31] = 1.0
+
+    control = _control(TelemetryFrame(values))
+
+    np.testing.assert_array_equal(control, np.asarray([1.0, 0.0, -1.0], dtype=np.float32))
 
 
 def test_demonstration_round_trip_and_transition_conversion(tmp_path: Path) -> None:
@@ -143,7 +160,8 @@ def test_demonstration_round_trip_and_transition_conversion(tmp_path: Path) -> N
     path = save_demonstration(tmp_path / "lap", _demonstration(geometry))
 
     loaded = load_demonstration(path)
-    transitions = demonstration_transitions(path, _IdentityPipeline(), _config(geometry), geometry)
+    context = DemonstrationTransitionContext(_config(geometry), geometry)
+    transitions = demonstration_transitions(path, _IdentityPipeline(), context)
 
     assert loaded.finish_time_s == 36.0
     assert loaded.decision_interval_ms is None
@@ -151,6 +169,41 @@ def test_demonstration_round_trip_and_transition_conversion(tmp_path: Path) -> N
     assert transitions[-1].terminated
     assert transitions[-1].info["is_demo"] is True
     assert transitions[-1].info["sampling/projected_lap_time_s"] == 36.0
+    _assert_demonstration_switches(loaded, transitions)
+
+
+def _assert_demonstration_switches(demonstration: Demonstration, transitions: list[Any]) -> None:
+    switches = [bool(item.info["demonstration_steering_switch"]) for item in transitions]
+    distances = [int(item.info["demonstration_steering_switch_distance"]) for item in transitions]
+    expected = [False]
+    expected.extend(
+        left // 6 != right // 6
+        for left, right in zip(demonstration.actions[:-1], demonstration.actions[1:], strict=True)
+    )
+    assert switches == expected
+    switch_indices = [index for index, value in enumerate(expected) if value]
+    expected_distances = [60] * 60
+    if switch_indices:
+        expected_distances = [
+            min(abs(index - switch) for switch in switch_indices) for index in range(60)
+        ]
+    assert distances == expected_distances
+
+
+def _archive_values(path: Path) -> dict[str, np.ndarray]:
+    with np.load(path, allow_pickle=False) as data:
+        return {name: data[name].copy() for name in data.files}
+
+
+def test_demonstration_loader_rejects_an_outdated_archive(tmp_path: Path) -> None:
+    geometry = _geometry(tmp_path)
+    path = save_demonstration(tmp_path / "lap", _demonstration(geometry))
+    values = _archive_values(path)
+    values["format"] = np.asarray("trackmaniarl-trackmania-demo-v4")
+    np.savez_compressed(path, **values)
+
+    with pytest.raises(ValueError, match="unsupported"):
+        load_demonstration(path)
 
 
 def test_resample_demonstration_uses_the_online_decision_interval(tmp_path: Path) -> None:
@@ -160,198 +213,166 @@ def test_resample_demonstration_uses_the_online_decision_interval(tmp_path: Path
     frames[:, 3] = np.arange(len(frames), dtype=np.float32) * 10.0
     demonstration = replace(demonstration, frames=frames, finish_time_s=0.6)
 
-    selected_frames, selected_actions = resample_demonstration(demonstration, 20.0)
+    selected_frames, selected_actions = _resample(demonstration, 20.0)
 
     assert np.array_equal(selected_frames[:, 3], frames[::2, 3])
     assert len(selected_actions) == len(selected_frames) - 1
 
 
-def test_resolve_demonstration_paths_expands_directories(tmp_path: Path) -> None:
-    geometry = _geometry(tmp_path)
-    folder = tmp_path / "demos"
-    first = save_demonstration(folder / "demo-01-36.000s", _demonstration(geometry))
-    second = save_demonstration(folder / "demo-02-36.500s", _demonstration(geometry))
-    (folder / "notes.txt").write_text("ignore", encoding="utf-8")
+def test_resample_demonstration_leads_actions_by_race_time(tmp_path: Path) -> None:
+    demonstration, _ = _lead_demonstration(tmp_path)
 
-    resolved = resolve_demonstration_paths([folder, first])
+    selected_frames, selected_actions = _resample(
+        demonstration, 20.0, DemonstrationResamplingConfig(action_lead_ms=20.0)
+    )
 
-    assert resolved == (first.resolve(), second.resolve())
+    assert selected_frames[:, 3].tolist() == [0.0, 20.0, 40.0, 50.0]
+    assert selected_actions.tolist() == [3, 75, 75]
 
 
-def test_demonstration_rejects_action_repeat_mismatch(tmp_path: Path) -> None:
-    geometry = _geometry(tmp_path)
-    path = save_demonstration(tmp_path / "lap.npz", _demonstration(geometry))
+def test_resample_demonstration_aggregates_keyboard_pwm_into_analog_action(
+    tmp_path: Path,
+) -> None:
+    demonstration, table = _controlled_demonstration(tmp_path, _pwm_controls())
 
-    with pytest.raises(ValueError, match="action repeat"):
-        demonstration_transitions(
-            path,
-            _IdentityPipeline(),
-            _config(geometry, action_repeat_frames=4),
-            geometry,
+    _, default_actions = _resample(demonstration, 50.0)
+    _, aggregated_actions = _resample(
+        demonstration, 50.0, DemonstrationResamplingConfig(aggregate_controls=True)
+    )
+
+    assert int(default_actions[0]) == int(demonstration.actions[0])
+    gas, brake, steer = table[int(aggregated_actions[0])]
+    assert gas == pytest.approx(1.0)
+    assert brake == pytest.approx(BRAKE_TAP_SENTINEL)
+    assert steer == pytest.approx(1.0 / 6.0)
+
+
+def test_expert_action_diagnostics_report_switch_and_steady_accuracy() -> None:
+    diagnostics = _expert_action_diagnostics()
+    summary = diagnostics.action_summary()
+
+    _assert_expert_action_summary(summary)
+    aggregate = aggregate_expert_actions((summary, summary))
+    assert aggregate["count"] == 10
+    assert aggregate["steering_bin_accuracy"] == pytest.approx(0.8)
+
+
+def _expert_action_diagnostics() -> ExpertActionDiagnostics:
+    diagnostics = ExpertActionDiagnostics(bin_count=1)
+    actions = ((6, 6), (7, 8), (13, 8), (13, 14), (13, 13))
+    for expert, greedy in actions:
+        diagnostics.record(
+            ExpertDiagnosticRecord(
+                50.0,
+                1.0,
+                2.0,
+                2,
+                expert,
+                greedy,
+                expert // 6,
+                greedy // 6,
+            )
         )
+    return diagnostics
 
 
-def test_demonstration_import_preserves_completed_recovery_lap(tmp_path: Path) -> None:
+def _assert_expert_action_summary(summary: dict[str, float]) -> None:
+    assert summary["count"] == 5
+    assert summary["exact_action_accuracy"] == pytest.approx(0.4)
+    assert summary["steering_bin_accuracy"] == pytest.approx(0.8)
+    assert summary["expert_action_switch_count"] == 2
+    assert summary["policy_action_switch_count"] == 3
+    assert summary["action_switch_recall"] == pytest.approx(0.5)
+    assert summary["expert_steering_switch_count"] == 1
+    assert summary["policy_steering_switch_count"] == 1
+    assert summary["steering_switch_recall"] == 0.0
+    assert summary["expert_steering_switch_step_accuracy"] == 0.0
+    assert summary["expert_steering_steady_step_accuracy"] == 1.0
+    assert summary["expert_action_steady_step_exact_accuracy"] == pytest.approx(0.5)
+
+
+def test_expert_diagnostics_use_composite_model_with_dict_observations(
+    tmp_path: Path,
+) -> None:
+    case = _expert_diagnostic_case(tmp_path)
+
+    _, diagnostics = _expert_diagnostics(case.path, case.context)
+    _, repeated = _expert_diagnostics(case.path, case.context)
+
+    summary = diagnostics.action_summary()
+    assert case.source_count == 60
+    assert summary["count"] == case.evaluated_count == 12
+    assert 0.0 <= summary["exact_action_accuracy"] <= 1.0
+    assert 0.0 <= summary["steering_bin_accuracy"] <= 1.0
+    assert repeated.action_summary() == summary
+
+
+def _expert_diagnostic_case(tmp_path: Path) -> _ExpertDiagnosticCase:
     geometry = _geometry(tmp_path)
+    demonstration = _expert_contract_demonstration(geometry)
+    path = save_demonstration(tmp_path / "expert", demonstration)
+    config, evaluated_count = _expert_contract_config(geometry, demonstration)
+    context = _expert_policy_context(config)
+    return _ExpertDiagnosticCase(path, context, len(demonstration.actions), evaluated_count)
+
+
+def _expert_contract_demonstration(geometry: BoundaryGeometry) -> Demonstration:
     demonstration = _demonstration(geometry)
-    frames = demonstration.frames.copy()
-    frames[:21, 4] = 0.0
-    frames[21:, 4] = np.linspace(0.0, 100.0, len(frames) - 21)
-    recovery = Demonstration(
-        map_uid=demonstration.map_uid,
-        geometry_sha256=demonstration.geometry_sha256,
-        action_repeat_frames=demonstration.action_repeat_frames,
-        frames=frames,
-        actions=demonstration.actions,
-        controls=demonstration.controls,
-        finish_time_s=demonstration.finish_time_s,
-    )
-    path = save_demonstration(tmp_path / "recovery.npz", recovery)
-    config = _config(geometry).model_copy(update={"no_progress_steps": 10})
-
-    transitions = demonstration_transitions(path, _IdentityPipeline(), config, geometry)
-
-    assert len(transitions) == len(recovery.actions)
-    assert transitions[-1].terminated
-
-
-def test_recorder_waits_for_restart_and_quantizes_human_control(tmp_path: Path) -> None:
-    geometry = _geometry(tmp_path)
-    baseline = _frames(1)[0]
-    baseline[2] = 0.0
-    baseline[3] = 1_000.0
-    reset = baseline.copy()
-    reset[3] = 0.0
-    start = baseline.copy()
-    start[3] = 16.0
-    start[31] = 1.0
-    repeated = start.copy()
-    repeated[3] = 32.0
-    finish = repeated.copy()
-    finish[2] = 1.0
-    finish[3] = 48.0
-
-    demo = record_demonstration(
-        _TelemetryClient([baseline, reset, start, repeated, finish]),
-        _config(geometry),
-        geometry,
-        max_duration_s=1.0,
-        status=lambda _message: None,
-    )
-
-    assert demo.frames.shape == (2, 33)
+    frames = _frames()
+    frames[:, 3] = np.arange(len(frames), dtype=np.float32) * 10.0
+    actions = np.resize(np.asarray([3, 39, 75], dtype=np.int64), len(frames) - 1)
     _, table = build_brake_tap_action_table()
-    expected = continuous_control_to_discrete_index(
-        np.asarray([1.0, 0.0, 0.0], dtype=np.float32), table
-    )
-    assert demo.actions.tolist() == [expected]
-    assert demo.finish_time_s == pytest.approx(0.048)
-
-
-def test_recorder_aligns_each_control_with_the_transition_start_frame(
-    tmp_path: Path,
-) -> None:
-    geometry = _geometry(tmp_path)
-    baseline, reset, start, middle, finish = _lap_frames(10.0, 20.0, 30.0)
-    start[30] = 0.0
-    middle[30] = 1.0
-    finish[30] = -1.0
-
-    demo = record_demonstration(
-        _TelemetryClient([baseline, reset, start, middle, finish]),
-        _config(geometry),
-        geometry,
-        max_duration_s=1.0,
-        sampling_interval_ms=0.0,
-        status=lambda _message: None,
+    return replace(
+        demonstration,
+        action_repeat_frames=1,
+        frames=frames,
+        actions=actions,
+        controls=np.asarray([table[action] for action in actions], dtype=np.float32),
+        finish_time_s=0.6,
     )
 
-    assert demo.controls[:, 2].tolist() == [-0.0, -1.0]
+
+def _expert_contract_config(
+    geometry: BoundaryGeometry, demonstration: Demonstration
+) -> tuple[TrackmaniaEnvironmentConfig, int]:
+    config = _config(geometry, action_repeat_frames=1).model_copy(
+        update={
+            "decision_interval_ms": 50.0,
+            "demonstration_action_lead_ms": 20.0,
+            "demonstration_control_aggregation": True,
+            "minimum_finish_steps": 1,
+            "limit_progress_by_kinematics": False,
+        }
+    )
+    _, selected_actions = resample_demonstration_for_environment(demonstration, config)
+    compact_ids = tuple(sorted(int(action) for action in np.unique(selected_actions)))
+    config = config.model_copy(update={"compact_action_ids": compact_ids})
+    return config, len(selected_actions)
 
 
-def test_recorder_estimates_native_finish_between_telemetry_frames(tmp_path: Path) -> None:
-    geometry = _geometry(tmp_path)
-    baseline, reset, before, finish = _lap_frames(37_780.0, 37_790.0)
+def _expert_policy_context(config: TrackmaniaEnvironmentConfig) -> _ExpertContext:
+    compact_ids = config.compact_action_ids
+    if compact_ids is None:
+        raise RuntimeError("expert test requires compact actions")
+    learner = SimpleNamespace(
+        model=_expert_value_model(len(compact_ids)),
+        device=torch.device("cpu"),
+        evaluation_risk=RiskSpec(),
+    )
+    geometry = _geometry_from_config(config)
+    return _ExpertContext(learner, _DictTensorPipeline(), config, geometry)
 
-    demo = record_demonstration(
-        _TelemetryClient([baseline, reset, before, finish]),
-        _config(geometry),
-        geometry,
-        max_duration_s=1.0,
-        sampling_interval_ms=0.0,
-        status=lambda _message: None,
+
+def _expert_value_model(action_count: int) -> CompositeValueModel:
+    return CompositeValueModel(
+        CompositeModules(
+            _GraphDictEncoder(),
+            GruTemporalCore(8, 8),
+            ImplicitQuantileHead(ImplicitQuantileHeadConfig(8, action_count, 8, True)),
+            RandomQuantileStrategy(4, 5, 6),
+        )
     )
 
-    assert demo.finish_time_s == pytest.approx(37.785)
 
-
-def _lap_frames(*race_times_ms: float) -> list[np.ndarray]:
-    """Frames for one full-throttle run: an idle frame, a reset, then the driven lap."""
-
-    baseline = _frames(1)[0]
-    baseline[2] = 0.0
-    baseline[31] = 1.0
-    idle = baseline.copy()
-    idle[3] = 1_000.0
-    reset = baseline.copy()
-    reset[3] = 0.0
-    driven = []
-    for race_time_ms in race_times_ms:
-        frame = baseline.copy()
-        frame[3] = race_time_ms
-        driven.append(frame)
-    driven[-1][2] = 1.0
-    return [idle, reset, *driven]
-
-
-def test_recorder_discards_partial_lap_after_mid_lap_restart(tmp_path: Path) -> None:
-    geometry = _geometry(tmp_path)
-    frames = _lap_frames(16.0, 32.0)
-    restarted = frames[2].copy()
-    restarted[3] = 5.0
-    restarted[2] = 0.0
-    continued = restarted.copy()
-    continued[3] = 15.0
-    finish = continued.copy()
-    finish[2] = 1.0
-    finish[3] = 25.0
-    frames = [*frames[:4], restarted, continued, finish]
-    frames[3][2] = 0.0
-
-    demo = record_demonstration(
-        _TelemetryClient(frames),
-        _config(geometry),
-        geometry,
-        max_duration_s=1.0,
-        status=lambda _message: None,
-    )
-
-    assert demo.frames[:, 3].tolist() == [5.0, 25.0]
-    assert demo.finish_time_s == pytest.approx(0.025)
-
-
-def test_session_records_each_lap_and_reject_outliers_drops_slow_laps(
-    tmp_path: Path,
-) -> None:
-    geometry = _geometry(tmp_path)
-    frames = (
-        _lap_frames(16.0, 32.0, 36_000.0)
-        + _lap_frames(10.0, 20.0, 36_500.0)
-        + _lap_frames(10.0, 20.0, 38_000.0)
-    )
-
-    demos = record_demonstration_session(
-        _TelemetryClient(frames),
-        _config(geometry),
-        geometry,
-        count=3,
-        max_duration_s=1.0,
-        status=lambda _message: None,
-    )
-
-    assert [demo.finish_time_s for demo in demos] == pytest.approx([36.0, 36.5, 38.0])
-    kept = reject_outliers(demos, max_gap_s=1.0)
-    assert kept == [demos[0], demos[1]]
-    assert reject_outliers(demos, max_gap_s=0.0) == [demos[0]]
-    with pytest.raises(ValueError, match="max_gap_s must be non-negative"):
-        reject_outliers(demos, max_gap_s=-0.1)
+def _geometry_from_config(config: TrackmaniaEnvironmentConfig) -> BoundaryGeometry:
+    return BoundaryGeometry(config.geometry_path, expected_map_uid=config.expected_map_uid)

@@ -2,162 +2,63 @@
 
 from __future__ import annotations
 
-from math import isfinite
+from dataclasses import dataclass
 from pathlib import Path
-from time import monotonic, sleep
-from typing import Any, Literal
+from time import monotonic, perf_counter, sleep
+from typing import Any
 
 import numpy as np
-from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+import trackmaniarl.trackmania.environment_step as environment_step
 from trackmaniarl.core.contracts import FeaturePipeline
 from trackmaniarl.core.data import Transition
-from trackmaniarl.trackmania.actions import (
-    BRAKE_TAP_DURATION_S,
-    BRAKE_TAP_SENTINEL,
-    select_brake_tap_actions,
-)
+from trackmaniarl.trackmania.actions import select_brake_tap_actions
 from trackmaniarl.trackmania.control import Controller, GamepadController, KeyboardController
+from trackmaniarl.trackmania.environment_config import (
+    TrackmaniaEnvironmentConfig as TrackmaniaEnvironmentConfig,
+)
 from trackmaniarl.trackmania.geometry import BoundaryGeometry
-from trackmaniarl.trackmania.pace import ReferencePaceProfile
+from trackmaniarl.trackmania.pace import PaceDemonstrationRequest, ReferencePaceProfile
 from trackmaniarl.trackmania.reward import TrajectoryReward
 from trackmaniarl.trackmania.session import OpenPlanetSessionClient
 from trackmaniarl.trackmania.telemetry import (
-    DEFAULT_POSITION_INDICES,
-    DEFAULT_TELEMETRY_FIELD_COUNT,
-    DEFAULT_VELOCITY_INDICES,
     OpenPlanetClient,
+    OpenPlanetClientConfig,
     TelemetryFrame,
 )
 
 
-class TrackmaniaEnvironmentConfig(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    trajectory_path: Path | None = None
-    geometry_path: Path | None = None
-    use_racing_line: bool = False
-    expected_map_uid: str | None = None
-    host: str = "127.0.0.1"
-    port: int = Field(default=9000, ge=1, le=65535)
-    session_port: int = Field(default=9001, ge=1, le=65535)
-    field_count: int = Field(default=DEFAULT_TELEMETRY_FIELD_COUNT, ge=3)
-    timeout_s: float = Field(default=10.0, gt=0)
-    reset_settle_s: float = Field(default=0.0, ge=0.0)
-    start_timeout_s: float = Field(default=15.0, gt=0.0)
-    start_poll_s: float = Field(default=0.01, ge=0.0)
-    action_repeat_frames: int = Field(default=4, ge=1, le=20)
-    decision_interval_ms: float | None = Field(default=None, gt=0.0, le=250.0)
-    compact_action_ids: tuple[int, ...] | None = None
-    control_backend: Literal["gamepad", "keyboard"] = "gamepad"
-    position_indices: tuple[int, int, int] = DEFAULT_POSITION_INDICES
-    velocity_indices: tuple[int, int, int] = DEFAULT_VELOCITY_INDICES
-    crash_distance: float = Field(default=25.0, gt=0)
-    no_progress_steps: int = Field(default=200, ge=1)
-    slow_progress_window_steps: int = Field(default=80, ge=2)
-    minimum_progress_per_window_m: float = Field(default=2.0, ge=0.0)
-    terminal_failure_penalty: float = Field(default=1.0, ge=0.0)
-    collision_penalty: float = Field(default=0.05, ge=0.0)
-    collision_cooldown_s: float = Field(default=0.0, ge=0.0)
-    minimum_finish_steps: int = Field(default=50, ge=1)
-    nearest_forward_points: int = Field(default=500, ge=1)
-    nearest_backward_points: int = Field(default=10, ge=0)
-    time_penalty_per_second: float = Field(default=0.1, ge=0.0)
-    max_time_delta_s: float = Field(default=1.0, gt=0.0)
-    progress_reward_full_lap: float = Field(default=10.0, ge=0.0)
-    finish_reward: float = Field(default=30.0, ge=0.0)
-    potential_progress_weight: float = Field(default=2.0, ge=0.0)
-    max_projected_speed_mps: float = Field(default=100.0, gt=0.0)
-    velocity_to_mps_scale: float = Field(default=0.001, gt=0.0)
-    projected_velocity_scale: float = Field(default=0.0, ge=0.0)
-    projected_speed_bonus_scale: float = Field(default=0.0, ge=0.0)
-    steering_delta_penalty: float = Field(default=0.0, ge=0.0)
-    time_attack_target_s: float | None = Field(default=None, gt=0.0)
-    time_attack_bonus_scale: float = Field(default=0.0, ge=0.0)
-    time_attack_linear_scale: float = Field(default=0.0, ge=0.0)
-    pace_reference_path: Path | None = None
-    pace_reward_scale: float = Field(default=0.0, ge=0.0)
-    pace_debt_clip_s: float = Field(default=10.0, gt=0.0)
-    pace_step_delta_clip_s: float = Field(default=0.25, gt=0.0)
-    reward_gamma: float = Field(default=0.995, ge=0.0, le=1.0)
-
-    @model_validator(mode="after")
-    def _reward_contract_is_valid(self) -> TrackmaniaEnvironmentConfig:
-        if self.trajectory_path is None and self.geometry_path is None:
-            raise ValueError("either trajectory_path or geometry_path is required")
-        for name, indices in (
-            ("position_indices", self.position_indices),
-            ("velocity_indices", self.velocity_indices),
-        ):
-            if len(set(indices)) != 3 or any(
-                index < 0 or index >= self.field_count for index in indices
-            ):
-                raise ValueError(f"{name} must be three unique indices inside the telemetry packet")
-        values = (
-            self.time_penalty_per_second,
-            self.max_time_delta_s,
-            self.progress_reward_full_lap,
-            self.finish_reward,
-            self.potential_progress_weight,
-            self.max_projected_speed_mps,
-            self.velocity_to_mps_scale,
-            self.projected_velocity_scale,
-            self.projected_speed_bonus_scale,
-            self.steering_delta_penalty,
-            self.time_attack_bonus_scale,
-            self.time_attack_linear_scale,
-            self.pace_reward_scale,
-            self.pace_debt_clip_s,
-            self.pace_step_delta_clip_s,
-            self.collision_cooldown_s,
-            self.reward_gamma,
+def _validated_live_map_uid(expected_map_uid: str | None, geometry: BoundaryGeometry) -> str:
+    map_uid = (expected_map_uid or "").strip()
+    if not map_uid or _is_placeholder_uid(map_uid):
+        raise ValueError(
+            "Trackmania live runs require the real expected_map_uid; replace the scaffold "
+            "placeholder with the UID reported by `trackmaniarl track check`"
         )
-        if not all(isfinite(value) for value in values):
-            raise ValueError("reward values must be finite")
-        if (
-            self.time_attack_bonus_scale or self.time_attack_linear_scale
-        ) and self.time_attack_target_s is None:
-            raise ValueError("time-attack reward scales require time_attack_target_s")
-        if self.decision_interval_ms is not None and self.action_repeat_frames != 1:
-            raise ValueError("decision_interval_ms requires action_repeat_frames=1")
-        if self.pace_reference_path is not None and self.geometry_path is None:
-            raise ValueError("pace_reference_path requires geometry_path")
-        if self.pace_reward_scale and self.pace_reference_path is None:
-            raise ValueError("pace_reward_scale requires pace_reference_path")
-        select_brake_tap_actions(self.compact_action_ids)
-        return self
+    _validate_geometry_identity(map_uid, geometry)
+    return map_uid
 
-    def reward_kwargs(self) -> dict[str, Any]:
-        names = (
-            "crash_distance",
-            "no_progress_steps",
-            "slow_progress_window_steps",
-            "minimum_progress_per_window_m",
-            "terminal_failure_penalty",
-            "collision_penalty",
-            "collision_cooldown_s",
-            "minimum_finish_steps",
-            "nearest_forward_points",
-            "nearest_backward_points",
-            "time_penalty_per_second",
-            "max_time_delta_s",
-            "progress_reward_full_lap",
-            "finish_reward",
-            "potential_progress_weight",
-            "max_projected_speed_mps",
-            "velocity_to_mps_scale",
-            "projected_velocity_scale",
-            "projected_speed_bonus_scale",
-            "steering_delta_penalty",
-            "time_attack_target_s",
-            "time_attack_bonus_scale",
-            "time_attack_linear_scale",
-            "pace_reward_scale",
-            "pace_debt_clip_s",
-            "pace_step_delta_clip_s",
-            "reward_gamma",
+
+def _is_placeholder_uid(map_uid: str) -> bool:
+    return map_uid.startswith("REPLACE_") or (map_uid.startswith("<") and map_uid.endswith(">"))
+
+
+def _validate_geometry_identity(map_uid: str, geometry: BoundaryGeometry) -> None:
+    if not geometry.map_uid.strip():
+        raise ValueError("geometry asset is missing its source map UID")
+    if geometry.map_uid != map_uid:
+        raise ValueError("geometry asset map UID does not match the configured expected_map_uid")
+    if not geometry.map_sha256.strip():
+        raise ValueError(
+            "geometry asset is missing its source map checksum; rebuild it with "
+            "`trackmaniarl track build-geometry --map-path ...`"
         )
-        return {name: getattr(self, name) for name in names}
+
+
+@dataclass(frozen=True, slots=True)
+class _MapContext:
+    geometry: BoundaryGeometry
+    expected_map_uid: str
 
 
 class OpenPlanetEnvironment:
@@ -169,55 +70,70 @@ class OpenPlanetEnvironment:
         evaluation_map: Any | None = None,
     ) -> None:
         self.config, self.controller = config, controller
-        self.client = OpenPlanetClient(
-            config.host, config.port, field_count=config.field_count, timeout_s=config.timeout_s
-        )
-        reward_kwargs = config.reward_kwargs()
-        geometry_path = (
-            evaluation_map.geometry_path if evaluation_map is not None else config.geometry_path
-        )
-        expected_map_uid = (
-            evaluation_map.expected_map_uid
-            if evaluation_map is not None
-            else config.expected_map_uid
-        )
-        self.geometry = (
-            BoundaryGeometry(geometry_path, expected_map_uid=expected_map_uid)
-            if geometry_path is not None
-            else None
-        )
-        if self.geometry is not None:
-            reference = (
-                self.geometry.racing_line if config.use_racing_line else self.geometry.reward_center
-            )
-            pace_profile = (
-                ReferencePaceProfile.from_demonstration(
-                    config.pace_reference_path, self.geometry, reference
-                )
-                if config.pace_reference_path is not None
-                else None
-            )
-            self.reward = TrajectoryReward(reference, pace_profile=pace_profile, **reward_kwargs)
-        else:
-            assert config.trajectory_path is not None
-            self.reward = TrajectoryReward.from_file(config.trajectory_path, **reward_kwargs)
+        self.client = self._create_client(config)
+        map_context = self._map_context(config, evaluation_map)
+        self.geometry = map_context.geometry
+        self._expected_map_uid = map_context.expected_map_uid
+        self.reward = self._create_reward(config, self.geometry)
         self.evaluation_map = evaluation_map
-        self._session = (
-            OpenPlanetSessionClient(config.host, config.session_port, timeout_s=config.timeout_s)
-            if evaluation_map is not None
-            else None
-        )
+        self._session = self._create_session(config)
         self._action_count, self._action_table = select_brake_tap_actions(config.compact_action_ids)
         self._finish_confirmation_pending = True
+        self._last_race_time_ms: float | None = None
+
+    @staticmethod
+    def _create_client(config: TrackmaniaEnvironmentConfig) -> OpenPlanetClient:
+        client = OpenPlanetClientConfig(
+            config.host,
+            config.port,
+            config.timeout_s,
+        )
+        return OpenPlanetClient(client)
+
+    @staticmethod
+    def _create_session(config: TrackmaniaEnvironmentConfig) -> OpenPlanetSessionClient:
+        return OpenPlanetSessionClient(config.host, config.session_port, timeout_s=config.timeout_s)
+
+    @staticmethod
+    def _map_context(
+        config: TrackmaniaEnvironmentConfig, evaluation_map: Any | None
+    ) -> _MapContext:
+        geometry_path = evaluation_map.geometry_path if evaluation_map else config.geometry_path
+        expected_uid = (
+            evaluation_map.expected_map_uid if evaluation_map else config.expected_map_uid
+        )
+        geometry = BoundaryGeometry(geometry_path)
+        return _MapContext(geometry, _validated_live_map_uid(expected_uid, geometry))
+
+    @staticmethod
+    def _create_reward(
+        config: TrackmaniaEnvironmentConfig, geometry: BoundaryGeometry
+    ) -> TrajectoryReward:
+        reference = geometry.racing_line if config.use_racing_line else geometry.reward_center
+        pace_profile = OpenPlanetEnvironment._pace_profile(config, geometry, reference)
+        return TrajectoryReward(reference, config.reward_config(pace_profile))
+
+    @staticmethod
+    def _pace_profile(
+        config: TrackmaniaEnvironmentConfig,
+        geometry: BoundaryGeometry,
+        reference: np.ndarray,
+    ) -> ReferencePaceProfile | None:
+        if config.pace_reference_path is None:
+            return None
+        request = PaceDemonstrationRequest(
+            config.pace_reference_path,
+            geometry,
+            reference,
+            config.velocity_to_mps_scale,
+        )
+        return ReferencePaceProfile.from_demonstration(request)
 
     def reset(self, *, seed: int | None = None) -> tuple[np.ndarray, dict[str, Any]]:
         del seed
         if self.evaluation_map is not None:
-            if self._session is None:
-                raise RuntimeError("evaluation map requires an OpenPlanet session channel")
-            assert self.geometry is not None
             self.geometry.validate_map(self.evaluation_map.map_path)
-            self._session.verify_loaded_map(self.evaluation_map.expected_map_uid)
+        self._session.verify_loaded_map(self._expected_map_uid)
         frame = self._restart_race()
         if self.config.reset_settle_s:
             sleep(self.config.reset_settle_s)
@@ -232,19 +148,18 @@ class OpenPlanetEnvironment:
         return frame.values, {"telemetry_health": "ok"}
 
     def _restart_race(self) -> TelemetryFrame:
-        previous_race_time_ms = getattr(self, "_last_race_time_ms", None)
+        previous_race_time_ms = self._last_race_time_ms
         for attempt in range(2):
             self._confirm_finish_if_needed()
             if previous_race_time_ms is None:
                 previous_race_time_ms = float(self.client.read().values[3])
             self.controller.reset()
-            if self.evaluation_map is not None:
-                assert self._session is not None
-                self._session.confirm_ready(self.evaluation_map.expected_map_uid)
+            self._session.confirm_ready(self._expected_map_uid)
             try:
                 frame = self._wait_for_active_run(previous_race_time_ms)
             except TimeoutError:
                 self._finish_confirmation_pending = True
+                self._recover_reset_timeout()
                 if attempt:
                     raise
             else:
@@ -252,8 +167,15 @@ class OpenPlanetEnvironment:
                 return frame
         raise AssertionError("unreachable")
 
+    def _recover_reset_timeout(self) -> None:
+        self.client.close()
+        self.controller.confirm_finish()
+        sleep(0.25)
+        self.controller.reset()
+        sleep(0.25)
+
     def _confirm_finish_if_needed(self) -> None:
-        if not getattr(self, "_finish_confirmation_pending", False):
+        if not self._finish_confirmation_pending:
             return
         self.controller.confirm_finish()
 
@@ -277,103 +199,7 @@ class OpenPlanetEnvironment:
                 sleep(self.config.start_poll_s)
 
     def step(self, action: Any) -> tuple[np.ndarray, float, bool, bool, dict[str, Any]]:
-        if isinstance(action, (int, np.integer)):
-            index = int(action)
-            if not 0 <= index < self._action_count:
-                raise ValueError(f"TrackMania discrete action must be in [0, {self._action_count})")
-            control = self._action_table[index]
-            discrete_apply = getattr(self.controller, "apply_discrete", None)
-            if callable(discrete_apply):
-                discrete_apply(control)
-            else:
-                self.controller.apply(np.where(control == -1.0, 1.0, control))
-        else:
-            control = np.asarray(action, dtype=np.float32).reshape(-1)
-            if control.shape != (3,):
-                raise ValueError("TrackMania action must be index or [gas, brake, steer]")
-            self.controller.apply(control)
-        frame = None
-        # Holding a command for several rendered frames prevents an
-        # untrained epsilon-greedy policy from flickering throttle and steering
-        # every frame, while preserving one replay transition per decision.
-        for _ in range(self.config.action_repeat_frames):
-            frame = self.client.read()
-        assert frame is not None
-        decision_interval_ms = getattr(self.config, "decision_interval_ms", None)
-        if decision_interval_ms is not None:
-            target_race_time_ms = self._last_race_time_ms + decision_interval_ms
-            for _ in range(64):
-                if float(frame.values[3]) >= target_race_time_ms or bool(frame.values[2]):
-                    break
-                frame = self.client.read()
-            else:
-                raise TimeoutError(
-                    "TrackMania telemetry did not reach the configured decision interval"
-                )
-        position = frame.values[list(self.config.position_indices)]
-        collision = self.controller.consume_collision()
-        race_time_ms = float(frame.values[3])
-        step_race_time_ms = max(0.0, race_time_ms - self._last_race_time_ms)
-        self._last_race_time_ms = race_time_ms
-        brake_tap = float(control[1]) == BRAKE_TAP_SENTINEL
-        applied_brake = (
-            min(1.0, BRAKE_TAP_DURATION_S * 1_000.0 / max(step_race_time_ms, 1.0))
-            if brake_tap
-            else float(np.clip(control[1], 0.0, 1.0))
-        )
-        result = self.reward.step(
-            position,
-            finish_ui_active=bool(frame.values[2]),
-            velocity=frame.values[list(self.config.velocity_indices)],
-            race_time_ms=race_time_ms,
-            collision=collision,
-            steering=float(control[2]),
-        )
-        if result.reason == "finished":
-            self._finish_confirmation_pending = True
-        return (
-            frame.values,
-            result.reward,
-            result.terminated,
-            False,
-            {
-                "termination_reason": result.reason,
-                "telemetry_health": "ok",
-                "position": position.tolist(),
-                "race_time_ms": race_time_ms,
-                "step_race_time_ms": step_race_time_ms,
-                "decision_interval_ms": float(decision_interval_ms or 0.0),
-                "decision_interval_error_ms": (
-                    step_race_time_ms - decision_interval_ms if decision_interval_ms else 0.0
-                ),
-                "control_gas": float(control[0]),
-                "control_brake": applied_brake,
-                "control_brake_tap": float(brake_tap),
-                "control_steer": float(control[2]),
-                "episode_elapsed_s": monotonic() - self._episode_started_at,
-                "progress_m": self.reward.progress_m,
-                "progress_pct": self.reward.progress_pct,
-                "reward_time": result.time_reward,
-                "reward_pbrs": result.pbrs_reward,
-                "reward_progress": result.progress_reward,
-                "reward_projected_velocity": result.projected_velocity_reward,
-                "reward_projected_speed": result.projected_speed_reward,
-                "reward_steering_delta": result.steering_delta_reward,
-                "reward_time_attack_terminal": float(
-                    getattr(result, "time_attack_terminal_reward", 0.0)
-                ),
-                "reward_pace": result.pace_reward,
-                "reward_collision": result.collision_reward,
-                "collision": result.collided,
-                "collision_detected": result.collision_detected,
-                "reward_terminal": result.terminal_reward,
-                "potential_progress": result.potential_progress,
-                "reference_time_s": result.reference_time_s,
-                "time_debt_s": result.time_debt_s,
-                "projected_velocity_mps": result.projected_velocity_mps,
-                "projected_velocity_ratio": result.projected_velocity_ratio,
-            },
-        )
+        return environment_step.step(self, action, perf_counter)
 
     def close(self) -> None:
         self.controller.close()
@@ -389,22 +215,7 @@ class OpenPlanetEnvironmentFactory:
         base_dir: str | Path = ".",
     ) -> None:
         parsed = TrackmaniaEnvironmentConfig.model_validate(config)
-        trajectory_path = parsed.trajectory_path
-        if trajectory_path is not None and not trajectory_path.is_absolute():
-            parsed = parsed.model_copy(
-                update={"trajectory_path": (Path(base_dir) / trajectory_path).resolve()}
-            )
-        geometry_path = parsed.geometry_path
-        if geometry_path is not None and not geometry_path.is_absolute():
-            parsed = parsed.model_copy(
-                update={"geometry_path": (Path(base_dir) / geometry_path).resolve()}
-            )
-        pace_reference_path = parsed.pace_reference_path
-        if pace_reference_path is not None and not pace_reference_path.is_absolute():
-            parsed = parsed.model_copy(
-                update={"pace_reference_path": (Path(base_dir) / pace_reference_path).resolve()}
-            )
-        self.config = parsed
+        self.config = _resolve_environment_paths(parsed, Path(base_dir))
         self._controller = controller
 
     def create(self, *, seed: int, evaluation_map: Any | None = None) -> OpenPlanetEnvironment:
@@ -419,11 +230,24 @@ class OpenPlanetEnvironmentFactory:
         return OpenPlanetEnvironment(self.config, controller, evaluation_map=evaluation_map)
 
     def load_demonstration(self, path: str | Path, pipeline: FeaturePipeline) -> list[Transition]:
-        from trackmaniarl.trackmania.demonstrations import demonstration_transitions
+        from trackmaniarl.trackmania.demonstrations import (
+            DemonstrationTransitionContext,
+            demonstration_transitions,
+        )
 
-        if self.config.geometry_path is None:
-            raise ValueError("TrackMania demonstrations require environment.geometry_path")
         geometry = BoundaryGeometry(
             self.config.geometry_path, expected_map_uid=self.config.expected_map_uid
         )
-        return demonstration_transitions(path, pipeline, self.config, geometry)
+        context = DemonstrationTransitionContext(self.config, geometry)
+        return demonstration_transitions(path, pipeline, context)
+
+
+def _resolve_environment_paths(
+    config: TrackmaniaEnvironmentConfig, base_dir: Path
+) -> TrackmaniaEnvironmentConfig:
+    resolved = config
+    for name in ("geometry_path", "pace_reference_path"):
+        path = getattr(resolved, name)
+        if path is not None and not path.is_absolute():
+            resolved = resolved.model_copy(update={name: (base_dir / path).resolve()})
+    return resolved

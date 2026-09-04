@@ -3,14 +3,13 @@
 from __future__ import annotations
 
 import subprocess
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from typing import Any, Literal, cast
 
 import torch
 
 type RequestedDevice = Literal["auto", "cuda", "rocm", "mps", "cpu"]
 type RequestedPrecision = Literal["auto", "bfloat16", "float16", "float32"]
-type CompileMode = Literal["default", "reduce-overhead", "max-autotune"]
 type ResolvedBackend = Literal["cuda", "rocm", "mps", "cpu"]
 
 
@@ -22,16 +21,13 @@ class TorchExecutionError(ValueError):
 class TorchExecutionConfig:
     device: RequestedDevice = "auto"
     precision: RequestedPrecision = "auto"
-    compile: bool = False
-    compile_mode: CompileMode = "default"
+    deterministic: bool = True
 
     def __post_init__(self) -> None:
         if self.device not in {"auto", "cuda", "rocm", "mps", "cpu"}:
             raise TorchExecutionError(f"Unsupported Torch device {self.device!r}")
         if self.precision not in {"auto", "bfloat16", "float16", "float32"}:
             raise TorchExecutionError(f"Unsupported Torch precision {self.precision!r}")
-        if self.compile_mode not in {"default", "reduce-overhead", "max-autotune"}:
-            raise TorchExecutionError(f"Unsupported torch.compile mode {self.compile_mode!r}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,19 +38,7 @@ class ResolvedTorchExecution:
     torch_device: torch.device
     precision: Literal["bfloat16", "float16", "float32"]
     scaler_enabled: bool
-    compile_requested: bool
-    compile_effective: bool
-    compile_mode: CompileMode
-    fallback_reason: str | None = None
-
-    def with_compile_result(
-        self, *, effective: bool, fallback_reason: str | None = None
-    ) -> ResolvedTorchExecution:
-        return replace(
-            self,
-            compile_effective=effective,
-            fallback_reason=fallback_reason,
-        )
+    deterministic: bool
 
     def manifest(self) -> dict[str, object]:
         return {
@@ -64,10 +48,7 @@ class ResolvedTorchExecution:
             "torch_device": str(self.torch_device),
             "precision": self.precision,
             "scaler_enabled": self.scaler_enabled,
-            "compile_requested": self.compile_requested,
-            "compile_effective": self.compile_effective,
-            "compile_mode": self.compile_mode,
-            "fallback_reason": self.fallback_reason,
+            "deterministic": self.deterministic,
         }
 
 
@@ -105,13 +86,18 @@ def resolve_torch_execution(config: TorchExecutionConfig) -> ResolvedTorchExecut
         torch_device=device,
         precision=precision,
         scaler_enabled=precision == "float16" and backend in {"cuda", "rocm"},
-        compile_requested=config.compile,
-        compile_effective=False,
-        compile_mode=config.compile_mode,
+        deterministic=config.deterministic,
     )
 
 
 def _resolve_device(requested: RequestedDevice) -> tuple[ResolvedBackend, torch.device]:
+    available = _available_backends()
+    if requested != "auto":
+        return _required_device(requested, available)
+    return _automatic_device(available)
+
+
+def _available_backends() -> dict[str, bool]:
     hip_available = bool(torch.version.hip) and torch.cuda.is_available()
     cuda_available = bool(torch.version.cuda) and torch.cuda.is_available()
     mps_available = bool(
@@ -119,19 +105,26 @@ def _resolve_device(requested: RequestedDevice) -> tuple[ResolvedBackend, torch.
         and torch.backends.mps.is_built()
         and torch.backends.mps.is_available()
     )
-    available: dict[str, bool] = {
+    return {
         "rocm": hip_available,
         "cuda": cuda_available,
         "mps": mps_available,
         "cpu": True,
     }
-    if requested != "auto":
-        if not available[requested]:
-            raise TorchExecutionError(
-                f"Torch device {requested!r} was requested but is unavailable; "
-                f"installed build is {torch.__version__}"
-            )
-        return _backend_device(requested)
+
+
+def _required_device(
+    requested: RequestedDevice, available: dict[str, bool]
+) -> tuple[ResolvedBackend, torch.device]:
+    if not available[requested]:
+        raise TorchExecutionError(
+            f"Torch device {requested!r} was requested but is unavailable; "
+            f"installed build is {torch.__version__}"
+        )
+    return _backend_device(requested)
+
+
+def _automatic_device(available: dict[str, bool]) -> tuple[ResolvedBackend, torch.device]:
     for backend in ("rocm", "cuda", "mps"):
         if available[backend]:
             return _backend_device(backend)

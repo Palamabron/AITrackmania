@@ -5,7 +5,11 @@ from __future__ import annotations
 from typing import Any
 
 from trackmaniarl.core.builtins import IdentityFeaturePipeline, ZeroPolicy
-from trackmaniarl.core.collector import EpisodeCollector
+from trackmaniarl.core.collector import (
+    EpisodeCollector,
+    FixedStepRolloutCollector,
+    RolloutCollectionConfig,
+)
 from trackmaniarl.core.replay import InMemoryReplayStore
 
 
@@ -15,6 +19,7 @@ class FakeTrackmania:
 
     def reset(self, *, seed: int | None = None) -> tuple[dict[str, float], dict[str, Any]]:
         del seed
+        self.step_index = 0
         return {"speed": 0.0}, {}
 
     def step(self, action: Any) -> tuple[dict[str, float], float, bool, bool, dict[str, Any]]:
@@ -29,14 +34,6 @@ class FakeTrackmania:
         )
 
 
-class ResettableZeroPolicy(ZeroPolicy):
-    def __init__(self) -> None:
-        self.reset_count = 0
-
-    def reset_episode(self) -> None:
-        self.reset_count += 1
-
-
 def test_collector_stores_transitions_and_keeps_only_observation_refs() -> None:
     store = InMemoryReplayStore()
     collector = EpisodeCollector(store, IdentityFeaturePipeline(), ZeroPolicy())
@@ -46,16 +43,20 @@ def test_collector_stores_transitions_and_keeps_only_observation_refs() -> None:
     assert result.artifact.observation_refs == ["frame-1", "frame-2"]
 
 
-def test_collector_resets_policy_and_truncates_at_the_step_limit() -> None:
+def test_fixed_rollout_continues_episode_across_collection_boundaries() -> None:
+    environment = FakeTrackmania()
     store = InMemoryReplayStore()
-    policy = ResettableZeroPolicy()
-    collector = EpisodeCollector(store, IdentityFeaturePipeline(), policy)
+    collector = FixedStepRolloutCollector(
+        store,
+        IdentityFeaturePipeline(),
+        RolloutCollectionConfig(ZeroPolicy(), environment, max_episode_steps=10),
+    )
 
-    result = collector.collect(FakeTrackmania(), "episode", max_steps=1)
-    transition = store.get(store.available_ids())[0]
-
-    assert result.transitions == 1
-    assert policy.reset_count == 1
-    assert transition.truncated
-    assert transition.info["termination_reason"] == "max_steps"
-    assert result.artifact.metadata["termination"] == "max_steps"
+    first = collector.collect(1, "rollout-0")
+    second = collector.collect(2, "rollout-1")
+    transitions = store.get(store.available_ids())
+    assert first.transitions == 1
+    assert second.transitions == 2
+    episode_ids = ["episode-00000000", "episode-00000000", "episode-00000001"]
+    assert [item.episode_id for item in transitions] == episode_ids
+    assert [item.step for item in transitions] == [0, 1, 0]

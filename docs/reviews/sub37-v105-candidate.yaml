@@ -1,0 +1,181 @@
+# DESIGN REFERENCE ONLY: do not run this documentation-relative file directly.
+# It changes reward, horizon, observations, exploration, termination and runtime settings at once,
+# so it is a discovery bundle rather than a causal A/B experiment. Relative asset paths work only
+# after copying it into my-trackmania-agent; validation from docs/reviews fails. Use the corrected,
+# gated runnable configuration recorded in SUB37.md instead.
+api_version: "2.0"
+run_id: sub37-iqn-gnn-simba-v105a-s17-online-scratch
+seed: 17
+artifacts_dir: artifacts
+distributed:
+  port: 8787
+  rollout_chunk_transitions: 32
+  rollout_flush_s: 1.0
+  policy_refresh_s: 1.0
+  heartbeat_s: 5.0
+  actor_timeout_s: 30.0
+  actor_stall_timeout_s: 300.0          # F015: stop (then hard-exit) an actor whose collection thread made no step for 5 min
+  max_inflight_chunks: 2
+  spool_max_bytes: 2147483648
+  soft_policy_lag_updates: 250
+  hard_policy_lag_updates: 2000        # F033: 2x (max episode steps / 20 Hz) x 5 upd/s so learner bursts never discard episode tails
+  max_update_credit: 4096
+  epsilon_profiles: [1.0]
+  epsilon_start: 0.30
+  epsilon_final: 0.01                  # F034/F007: keep a floor (Linesight 0.03) instead of 0.002 for the last 78% of the budget
+  epsilon_decay_transitions: 500000    # single authoritative axis; decay_updates removed (it silently overrode this one)
+  epsilon_decay_updates: null
+  actor_execution:
+    device: cpu
+    precision: float32
+    torch_threads: 2
+components:
+  learner:
+    class_path: trackmaniarl.algorithms.value_based:DiscreteValueLearner
+    kwargs:
+      learning_rate: 1.0e-4
+      gradient_clip_norm: 10.0
+      adaptive_gradient_clipper: null  # F043: clip_factor 1.0 damped 39.6% of v104f updates (mean coefficient 0.876); main never used it
+      target_tau: 0.0
+      target_update_interval: 1000
+      diagnostics_interval_updates: 100
+      burn_in: 0
+      exploration_epsilon: 0.30        # dead in distributed runs (overridden by the schedule); kept equal to epsilon_start for clarity
+      value_rescaling: false
+      action_selector:
+        class_path: trackmaniarl.trackmania.actions:TrackmaniaActionSelector
+        kwargs:
+          config:
+            minimum_action_hold_steps: 1
+            exploration_hold_steps: 6          # F007: 300 ms holds; the selector adjusts event probability so epsilon remains a step fraction
+            switch_q_margin: 0.0
+            global_exploration_probability: 0.5  # F038: half the exploration events are neighbour-steering moves instead of uniform
+            exploration_weights_preset: expert_keyboard  # F008: empirical joint controls from all 23 accepted keyboard laps
+      online_quantile_distortion: neutral
+      evaluation_quantile_distortion: neutral
+      upper_cvar_alpha: 0.25
+      execution:
+        device: cuda
+        precision: float32
+  environment:
+    class_path: trackmaniarl.trackmania.environment:OpenPlanetEnvironmentFactory
+    kwargs:
+      config:
+        geometry_path: assets/trackmaniarl-test.geometry.npz
+        use_racing_line: false           # F019: the computed racing line hugs a 12% margin; using it as reward reference would kill legal laps
+        expected_map_uid: oqIJ5rQDRrNwLPTh9H2p_W4tLof
+        reset_settle_s: 0.0
+        action_repeat_frames: 1
+        decision_interval_ms: 50.0
+        demonstration_action_lead_ms: 0.0
+        demonstration_control_aggregation: true
+        control_backend: gamepad
+        nearest_forward_points: 100
+        nearest_backward_points: 40      # F025: a bounce/spin >37 m behind the max index was a false off_track kill
+        limit_progress_by_kinematics: false
+        crash_distance: 15.0
+        slow_progress_window_steps: 120  # F024: stuck episodes burned 12-16 s each; cut at ~6 s
+        no_progress_steps: 100           # F024: 5 s without a new station instead of 12 s
+        minimum_progress_per_window_m: 3.0
+        maximum_race_time_s: 150.0
+        terminal_failure_penalty: 2.0
+        collision_penalty: 0.15          # F023: per contact step (~3 per second of contact) ...
+        collision_cooldown_s: 0.0        # ... with no hidden 2 s cooldown state the policy cannot observe
+        time_penalty_per_second: 1.0     # F001: 37 s vs 45 s laps now differ by 8 of ~330 (2.4%) undiscounted instead of 0.06%;
+                                         # per-step net reward is positive above about 6.7 m/s (0.36/step at 55 m/s, 0.025 at 10 m/s),
+                                         # so terminating is never preferable to driving (the failure mode of a large time penalty)
+        max_time_delta_s: 1.0
+        progress_reward_full_lap: 200.0
+        finish_reward: 70.0              # F022: = continuation value at the line, 0.364/step / (1 - 0.995); re-derive if gamma changes
+        potential_progress_weight: 0.0
+        max_projected_speed_mps: 100.0
+        velocity_to_mps_scale: 1.0
+        projected_velocity_scale: 0.0576
+        projected_speed_bonus_scale: 0.0
+        steering_delta_penalty: 0.0
+        time_attack_target_s: 35.0
+        time_attack_bonus_scale: 0.0
+        time_attack_linear_scale: 0.0
+        pace_reward_scale: 0.0
+        reward_gamma: 0.995
+  model_factory:
+    class_path: trackmaniarl.models.factory:CompositeValueModelFactory
+    kwargs:
+      encoder:
+        class_path: trackmaniarl.experiments.graph_iqn_v2:TrackGnnSimbaEncoderV2   # F002/F006/F052: no control masking, no joint LayerNorm
+      temporal:
+        class_path: trackmaniarl.models.temporal:IdentityTemporalCore
+        kwargs:
+          input_dim: 192
+      head:
+        class_path: trackmaniarl.experiments.graph_iqn:DuelingImplicitQuantileHead
+      strategy:
+        class_path: trackmaniarl.models.strategies:RandomQuantileStrategy
+        kwargs:
+          train_quantile_count: 64
+          target_quantile_count: 64
+          evaluation_quantile_count: 32
+  replay_store:
+    class_path: trackmaniarl.core.replay:InMemoryReplayStore
+    kwargs:
+      capacity: 1000000
+  sampler:
+    class_path: trackmaniarl.core.replay:PrioritizedSampler
+    kwargs:
+      alpha: 0.4
+      beta: 0.4
+  feature_pipeline:
+    class_path: trackmaniarl.experiments.graph_iqn_v2:BoundaryGraphFeaturePipelineV2  # F004/F005/F006/F051: body-frame velocity, yaw rate, input echo, relative heading
+    kwargs:
+      geometry_path: assets/trackmaniarl-test.geometry.npz
+      expected_map_uid: oqIJ5rQDRrNwLPTh9H2p_W4tLof
+  evaluator:
+    class_path: trackmaniarl.trackmania.evaluation:TrackmaniaEvaluator
+  additional_loggers:
+    - class_path: trackmaniarl.observability.trackers:WandbTracker
+      kwargs:
+        project: my-trackmania-agent
+evaluation:
+  name: sub37-trackmaniarl-test
+  version: "105a"
+  maps:
+    - id: trackmaniarl-test
+      map_path: maps/trackmaniarl-test.Map.Gbx
+      geometry_path: assets/trackmaniarl-test.geometry.npz
+      expected_map_uid: oqIJ5rQDRrNwLPTh9H2p_W4tLof
+  trials_per_map: 5
+  target_median_s: 37.0
+  min_finish_rate: 0.6
+  time_buckets_s: [150.0, 100.0, 80.0, 60.0, 50.0, 45.0, 40.0, 38.0, 37.0, 36.0, 35.0]
+training:
+  total_transitions: 2500000
+  max_episode_steps: 3000
+  batch_size: 512
+  sequence_length: 1
+  n_step: 5                            # F001/F036: 250 ms multi-step target (Linesight 3, R2D2 5, best 1.x lines 5-8)
+  gamma: 0.995                         # F001: 10 s discounted horizon; 3 s is weighted 0.74 instead of 0.55
+  beta: 0.4
+  per_beta_final: 1.0
+  per_beta_anneal_transitions: 1500000 # F045: anneal over the realistic budget (v35a needed 1.44M transitions), not the nominal 2.5M
+  warmup_transitions: 10000            # F031: 42 min of untrained driving -> 8 min
+  offline_pretrain_updates: 0
+  updates_per_transition: 0.25         # F009: keep until replay sampling (90% of update time) is off the critical path; then 0.5
+  checkpoint_interval_updates: 5000    # F048/F016: a durable checkpoint every ~17 min instead of every 2.8 h
+  checkpoint_keep_last: 3
+  save_final_checkpoint: true
+  metrics_interval_updates: 100
+  evaluate_every_episodes: 50          # F017: halve the collector time lost to evaluation (13.4% of active time in v104f)
+  evaluation_stop_min_finish_rate: 1.0
+  evaluation_stop_median_s: 37.0
+  evaluation_stop_consecutive_batches: 2
+metadata:
+  experiment: sub37-iqn-graph-simba
+  variant: v105a-gnn-s17-online-scratch
+  historical_reference: v104f-gnn-s17-online-scratch
+  actual_algorithm: iqn
+  initialization: random-online-scratch
+  architecture: gnn128x2-simba192x4-iqn64-dueling-78-featuresv2
+  control: vgamepad-78-actions-20hz
+  observation: canonical-map-geometry-plus-body-frame-physics-v2
+  objective: time-sensitive-progress-gamma0.995
+  audit: docs/reviews/2026-09-02-lap-time-audit.md

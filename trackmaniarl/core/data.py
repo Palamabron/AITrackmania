@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+from math import isfinite
+from numbers import Real
 from typing import Any
 
 from trackmaniarl.core.pytree import PyTree
@@ -38,9 +40,9 @@ class BatchRequest:
     batch_size: int
     sequence_length: int = 1
     beta: float | None = None
-    source: str | None = None
     n_step: int = 1
     gamma: float = 0.99
+    transition_count: int = 0
 
     def __post_init__(self) -> None:
         if self.batch_size < 1:
@@ -53,6 +55,8 @@ class BatchRequest:
             raise ValueError("n_step must be positive")
         if not 0.0 <= self.gamma <= 1.0:
             raise ValueError("gamma must be between 0 and 1")
+        if self.transition_count < 0:
+            raise ValueError("transition_count must be non-negative")
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,21 +76,6 @@ class TrainingBatch:
     masks: PyTree | None = None
     metadata: Mapping[str, Any] = field(default_factory=dict)
 
-    @property
-    def indices(self) -> Sequence[TransitionId]:
-        """Compatibility spelling for integrations that have not adopted transition IDs."""
-
-        return self.transition_ids
-
-    @property
-    def weights(self) -> PyTree | None:
-        """Compatibility spelling for PER importance weights."""
-
-        return self.importance_weights
-
-
-SampleBatch = TrainingBatch
-
 
 @dataclass(frozen=True, slots=True)
 class PriorityUpdate:
@@ -98,12 +87,11 @@ class PriorityUpdate:
     def __post_init__(self) -> None:
         if len(self.transition_ids) != len(self.priorities):
             raise ValueError("transition_ids and priorities must have equal length")
-
-    @property
-    def indices(self) -> Sequence[TransitionId]:
-        """Compatibility spelling for callers still using replay-index terminology."""
-
-        return self.transition_ids
+        for priority in self.priorities:
+            if not isinstance(priority, Real):
+                raise TypeError("priorities must contain scalar real numbers")
+            if not isfinite(float(priority)):
+                raise ValueError("priorities must be finite")
 
 
 @dataclass(frozen=True, slots=True)

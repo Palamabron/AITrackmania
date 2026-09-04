@@ -1,44 +1,55 @@
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 import torch
-from torch import nn
 
-from trackmaniarl.algorithms import ImplicitQuantileQLearning
+from tests.unit.learning._algorithm_fixtures import (
+    ContinuousModel,
+    ContinuousPpoModel,
+    DiscreteSacModel,
+    RedqModel,
+)
+from trackmaniarl.algorithms import (
+    ProximalPolicyOptimization,
+    RandomizedEnsembleSAC,
+    SoftActorCritic,
+    StableDiscreteSoftActorCritic,
+    TruncatedQuantileCritic,
+)
 from trackmaniarl.algorithms.execution import (
     TorchExecutionConfig,
     TorchExecutionError,
     _supported_precisions,
     resolve_torch_execution,
 )
-from trackmaniarl.core.data import TrainingBatch
-from trackmaniarl.models.critics import DiscreteQuantileNetwork
 
 
-class _Encoder(nn.Module):
-    def __init__(self) -> None:
-        super().__init__()
-        self.linear = nn.Linear(4, 8)
-
-    def forward(self, observation: torch.Tensor) -> torch.Tensor:
-        return torch.relu(self.linear(observation))
-
-
-def _batch() -> TrainingBatch:
-    return TrainingBatch(
-        data={},
-        observations=torch.randn(4, 4),
-        actions=torch.zeros(4, dtype=torch.int64),
-        rewards=torch.ones(4),
-        next_observations=torch.randn(4, 4),
-        terminated=torch.zeros(4, dtype=torch.bool),
-        truncated=torch.zeros(4, dtype=torch.bool),
-        bootstrap_discounts=torch.full((4,), 0.99),
-        transition_ids=list(range(4)),
-    )
+def _new_checkpoint_learner(name: str) -> Any:
+    match name:
+        case "ppo":
+            return ProximalPolicyOptimization(ContinuousPpoModel())
+        case "redq":
+            return RandomizedEnsembleSAC(RedqModel())
+        case "sac":
+            return SoftActorCritic(ContinuousModel())
+        case "sd_sac":
+            return StableDiscreteSoftActorCritic(DiscreteSacModel())
+        case "tqc":
+            return TruncatedQuantileCritic(ContinuousModel(quantiles=5))
+        case _:
+            raise ValueError(f"unknown checkpoint learner: {name}")
 
 
-def test_auto_execution_resolves_cpu_when_no_accelerator_is_visible(monkeypatch) -> None:
+def _checkpoint_learner(name: str) -> Any:
+    learner = _new_checkpoint_learner(name)
+    learner.execution = TorchExecutionConfig(device="cpu", precision="float32")
+    learner.setup({"seed": 0})
+    return learner
+
+
+def _hide_accelerators(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
     monkeypatch.setattr(torch.backends.mps, "is_built", lambda: False)
     monkeypatch.setattr(
@@ -46,14 +57,28 @@ def test_auto_execution_resolves_cpu_when_no_accelerator_is_visible(monkeypatch)
         lambda: set(),
     )
 
+
+def test_auto_execution_resolves_cpu_when_no_accelerator_is_visible(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _hide_accelerators(monkeypatch)
     resolved = resolve_torch_execution(TorchExecutionConfig())
+    learner = SoftActorCritic(ContinuousModel())
+    learner.setup({"seed": 0})
+    manifest = learner.execution_manifest()
 
-    assert resolved.backend == "cpu"
-    assert resolved.precision == "float32"
-    assert not resolved.scaler_enabled
+    assert (resolved.backend, resolved.precision, resolved.scaler_enabled) == (
+        "cpu",
+        "float32",
+        False,
+    )
+    assert manifest["resolved"] is True
+    assert manifest["backend"] == "cpu"
 
 
-def test_auto_execution_rejects_accelerator_build_mismatch(monkeypatch) -> None:
+def test_auto_execution_rejects_accelerator_build_mismatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
     monkeypatch.setattr(torch.backends.mps, "is_built", lambda: False)
     monkeypatch.setattr(
@@ -65,14 +90,16 @@ def test_auto_execution_rejects_accelerator_build_mismatch(monkeypatch) -> None:
         resolve_torch_execution(TorchExecutionConfig())
 
 
-def test_explicit_unavailable_accelerator_fails_without_cpu_fallback(monkeypatch) -> None:
+def test_explicit_unavailable_accelerator_fails_without_cpu_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
 
     with pytest.raises(TorchExecutionError, match="unavailable"):
         resolve_torch_execution(TorchExecutionConfig(device="cuda"))
 
 
-def test_modern_cuda_prefers_bfloat16(monkeypatch) -> None:
+def test_modern_cuda_prefers_bfloat16(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(torch.cuda, "get_device_capability", lambda device: (8, 9))
     monkeypatch.setattr(torch.cuda, "is_bf16_supported", lambda: True)
     monkeypatch.setattr(
@@ -84,7 +111,7 @@ def test_modern_cuda_prefers_bfloat16(monkeypatch) -> None:
     assert supported == {"bfloat16", "float16", "float32"}
 
 
-def test_legacy_cuda_uses_float16(monkeypatch) -> None:
+def test_pre_ampere_cuda_uses_float16(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(torch.cuda, "get_device_capability", lambda device: (7, 5))
     monkeypatch.setattr(torch.cuda, "is_bf16_supported", lambda: False)
     monkeypatch.setattr(
@@ -96,7 +123,7 @@ def test_legacy_cuda_uses_float16(monkeypatch) -> None:
     assert supported == {"float16", "float32"}
 
 
-def test_rocm_supports_native_bfloat16_and_float16(monkeypatch) -> None:
+def test_rocm_supports_native_bfloat16_and_float16(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(torch.cuda, "is_bf16_supported", lambda: True)
     monkeypatch.setattr(
         "trackmaniarl.algorithms.execution._precision_probe", lambda device, dtype: True
@@ -107,7 +134,7 @@ def test_rocm_supports_native_bfloat16_and_float16(monkeypatch) -> None:
     assert supported == {"bfloat16", "float16", "float32"}
 
 
-def test_failed_mps_probe_falls_back_to_float32(monkeypatch) -> None:
+def test_failed_mps_probe_falls_back_to_float32(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         "trackmaniarl.algorithms.execution._precision_probe", lambda device, dtype: False
     )
@@ -117,35 +144,82 @@ def test_failed_mps_probe_falls_back_to_float32(monkeypatch) -> None:
     assert supported == {"float32"}
 
 
-def test_compile_failure_retries_iqn_update_eagerly(monkeypatch) -> None:
-    class BrokenCompiled:
-        def __call__(self, *args, **kwargs):
-            del args, kwargs
-            raise RuntimeError("compiler unavailable")
+def _assert_checkpoint_requires_execution_field(name: str, field: str) -> None:
+    learner = _checkpoint_learner(name)
+    incomplete = dict(learner.state_dict())
+    incomplete.pop(field)
 
-        def q_values(self, *args, **kwargs):
-            del args, kwargs
-            raise RuntimeError("compiler unavailable")
+    with pytest.raises((KeyError, ValueError), match=field):
+        learner.load_state_dict(incomplete)
 
-    monkeypatch.setattr(torch, "compile", lambda model, mode: BrokenCompiled())
-    model = DiscreteQuantileNetwork(_Encoder(), 8, 2, cosine_count=4)
-    learner = ImplicitQuantileQLearning(
-        model,
-        train_quantile_count=4,
-        target_quantile_count=4,
-        evaluation_quantile_count=4,
-        execution={
-            "device": "cpu",
-            "precision": "float32",
-            "compile": True,
-        },
-    )
+
+def test_torch_checkpoint_requires_execution_state() -> None:
+    for name in ("ppo", "redq", "sac", "sd_sac", "tqc"):
+        for field in ("scaler", "rng"):
+            _assert_checkpoint_requires_execution_field(name, field)
+
+
+def _assert_ppo_checkpoint_requires_runtime_field(field: str) -> None:
+    learner = _checkpoint_learner("ppo")
+    incomplete = dict(learner.state_dict())
+    incomplete.pop(field)
+
+    with pytest.raises(KeyError, match=field):
+        learner.load_state_dict(incomplete)
+
+
+def test_ppo_checkpoint_requires_runtime_state() -> None:
+    for field in ("observation_normalizer", "reward_normalizer", "processed_transitions"):
+        _assert_ppo_checkpoint_requires_runtime_field(field)
+
+
+def _assert_entropy_checkpoint_requires_field(name: str, field: str) -> None:
+    learner = _checkpoint_learner(name)
+    incomplete = dict(learner.state_dict())
+    incomplete.pop(field)
+
+    with pytest.raises(KeyError, match=field):
+        learner.load_state_dict(incomplete)
+
+
+def test_entropy_checkpoint_requires_nullable_fields() -> None:
+    for name in ("sac", "sd_sac", "tqc"):
+        for field in ("log_alpha", "alpha_optimizer"):
+            _assert_entropy_checkpoint_requires_field(name, field)
+
+
+def test_redq_checkpoint_requires_target_rng_state() -> None:
+    learner = _checkpoint_learner("redq")
+    incomplete = dict(learner.state_dict())
+    incomplete.pop("target_rng")
+
+    with pytest.raises(KeyError, match="target_rng"):
+        learner.load_state_dict(incomplete)
+
+
+def _assert_checkpoint_requires_rng_field(field: str) -> None:
+    learner = _checkpoint_learner("sac")
+    incomplete = dict(learner.state_dict())
+    rng = dict(incomplete["rng"])
+    rng.pop(field)
+    incomplete["rng"] = rng
+
+    with pytest.raises(ValueError, match=field):
+        learner.load_state_dict(incomplete)
+
+
+def test_torch_checkpoint_requires_complete_rng_state() -> None:
+    for field in ("python", "numpy", "torch"):
+        _assert_checkpoint_requires_rng_field(field)
+
+
+def test_fixed_entropy_checkpoint_preserves_nullable_state() -> None:
+    learner = SoftActorCritic(ContinuousModel(), learn_entropy_coefficient=False)
+    learner.execution = TorchExecutionConfig(device="cpu", precision="float32")
     learner.setup({"seed": 0})
+    state = learner.state_dict()
 
-    metrics, priorities = learner.update(_batch())
+    learner.load_state_dict(state)
 
-    assert torch.isfinite(torch.tensor(list(metrics.values()))).all()
-    assert len(priorities.priorities) == 4
-    assert learner.resolved_execution is not None
-    assert not learner.resolved_execution.compile_effective
-    assert "compiler unavailable" in str(learner.resolved_execution.fallback_reason)
+    assert state["log_alpha"] is None
+    assert state["alpha_optimizer"] is None
