@@ -26,17 +26,21 @@ from trackmaniarl.models.encoders import (
 )
 from trackmaniarl.models.factory import CompositeValueModelFactory
 from trackmaniarl.models.track_graphs import (
+    ArcLengthTrackNeighborGraph,
+    DirectionalTrackNeighborGraph,
     TrackGraphTransformer,
     TrackGraphTransformerConfig,
     TrackNeighborGraph,
 )
 
 __all__ = [
+    "ArcLengthTrackNeighborGraph",
     "CategoricalActor",
     "CompositeValueModel",
     "CompositeValueModelFactory",
     "ContinuousQCritic",
     "ContinuousValueCritic",
+    "DirectionalTrackNeighborGraph",
     "FrameBatchAdapter",
     "GaussianActor",
     "GaussianActorConfig",

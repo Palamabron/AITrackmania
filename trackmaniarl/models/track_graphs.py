@@ -10,6 +10,20 @@ import torch
 from torch import nn
 
 
+def _linear_layers(hidden_dim: int, layer_count: int) -> nn.ModuleList:
+    return nn.ModuleList(nn.Linear(hidden_dim, hidden_dim) for _ in range(layer_count))
+
+
+def _biasless_linear_layers(hidden_dim: int, layer_count: int) -> nn.ModuleList:
+    return nn.ModuleList(nn.Linear(hidden_dim, hidden_dim, bias=False) for _ in range(layer_count))
+
+
+def _neighbor_degree(point_count: int) -> torch.Tensor:
+    degree = torch.full((point_count,), 2.0)
+    degree[0] = degree[-1] = 1.0
+    return degree
+
+
 class TrackNeighborGraph(nn.Module):
     """Bidirectional neighbor-aggregation graph over ordered track features."""
 
@@ -34,13 +48,16 @@ class TrackNeighborGraph(nn.Module):
         self.readout = nn.Linear(hidden_dim, hidden_dim)
 
     def forward(self, value: torch.Tensor) -> torch.Tensor:
-        if value.ndim != 3 or value.shape[1:] != (3, self.point_count * 2):
-            raise ValueError("track graph expects paired XZ coordinates for each point")
-        paired = value.reshape(value.shape[0], 3, self.point_count, 2)
-        hidden = self.node_in(paired.permute(0, 2, 1, 3).flatten(2))
+        hidden = self.node_in(self._node_features(value))
         for linear, norm in zip(self.layers, self.norms, strict=True):
             hidden = self._message_step(hidden, cast(nn.Linear, linear), cast(nn.LayerNorm, norm))
         return cast(torch.Tensor, self.readout(hidden).mean(dim=1))
+
+    def _node_features(self, value: torch.Tensor) -> torch.Tensor:
+        if value.ndim != 3 or value.shape[1:] != (3, self.point_count * 2):
+            raise ValueError("track graph expects paired XZ coordinates for each point")
+        paired = value.reshape(value.shape[0], 3, self.point_count, 2)
+        return paired.permute(0, 2, 1, 3).flatten(2)
 
     def _message_step(
         self, hidden: torch.Tensor, linear: nn.Linear, norm: nn.LayerNorm
@@ -53,6 +70,84 @@ class TrackNeighborGraph(nn.Module):
         aggregate = aggregate / degree.view(1, -1, 1)
         updated = norm(linear(torch.cat((hidden, aggregate), dim=-1)).relu())
         return cast(torch.Tensor, updated)
+
+
+class ArcLengthTrackNeighborGraph(TrackNeighborGraph):
+    """Neighbor graph with normalized lookahead distance on every node."""
+
+    def __init__(self, point_count: int = 44, hidden_dim: int = 128, layer_count: int = 2) -> None:
+        super().__init__(point_count, hidden_dim, layer_count)
+        arc_length = torch.arange(1, point_count + 1, dtype=torch.float32) / point_count
+        self.register_buffer("normalized_arc_length", arc_length, persistent=False)
+        self.node_in = nn.Sequential(nn.Linear(7, hidden_dim), nn.LayerNorm(hidden_dim))
+
+    def _node_features(self, value: torch.Tensor) -> torch.Tensor:
+        geometry = super()._node_features(value)
+        arc_length = cast(torch.Tensor, self.normalized_arc_length).to(dtype=value.dtype)
+        position = arc_length.view(1, -1, 1).expand(value.shape[0], -1, -1)
+        return torch.cat((geometry, position), dim=-1)
+
+
+class DirectionalTrackNeighborGraph(nn.Module):
+    """Typed graph where predecessor is nearer and successor is farther ahead."""
+
+    def __init__(self, point_count: int = 44, hidden_dim: int = 128, layer_count: int = 2) -> None:
+        super().__init__()
+        if point_count < 2 or hidden_dim < 1 or layer_count < 1:
+            raise ValueError("directional track graph dimensions must be positive")
+        self.point_count = point_count
+        self.hidden_dim = hidden_dim
+        self.node_in = nn.Sequential(nn.Linear(6, hidden_dim), nn.LayerNorm(hidden_dim))
+        self.self_layers = _linear_layers(hidden_dim, layer_count)
+        self.predecessor_layers = _biasless_linear_layers(hidden_dim, layer_count)
+        self.successor_layers = _biasless_linear_layers(hidden_dim, layer_count)
+        self._match_baseline_initialization()
+        self.norms = nn.ModuleList(nn.LayerNorm(hidden_dim) for _ in range(layer_count))
+        self.readout = nn.Linear(hidden_dim, hidden_dim)
+        self.register_buffer("degree", _neighbor_degree(point_count), persistent=False)
+
+    def _match_baseline_initialization(self) -> None:
+        scale = 2.0**-0.5
+        with torch.no_grad():
+            for layers in (
+                self.self_layers,
+                self.predecessor_layers,
+                self.successor_layers,
+            ):
+                for module in layers:
+                    linear = cast(nn.Linear, module)
+                    linear.weight.mul_(scale)
+                    if linear.bias is not None:
+                        linear.bias.mul_(scale)
+
+    def forward(self, value: torch.Tensor) -> torch.Tensor:
+        hidden = self.node_in(self._node_features(value))
+        for layer_index in range(len(self.self_layers)):
+            hidden = self._message_step(hidden, layer_index)
+        return cast(torch.Tensor, self.readout(hidden).mean(dim=1))
+
+    def _node_features(self, value: torch.Tensor) -> torch.Tensor:
+        if value.ndim != 3 or value.shape[1:] != (3, self.point_count * 2):
+            raise ValueError("directional track graph expects paired XZ coordinates")
+        paired = value.reshape(value.shape[0], 3, self.point_count, 2)
+        return paired.permute(0, 2, 1, 3).flatten(2)
+
+    def _message_step(self, hidden: torch.Tensor, layer_index: int) -> torch.Tensor:
+        predecessor, successor = self._directional_neighbors(hidden)
+        self_message = cast(nn.Linear, self.self_layers[layer_index])(hidden)
+        predecessor_message = cast(nn.Linear, self.predecessor_layers[layer_index])(predecessor)
+        successor_message = cast(nn.Linear, self.successor_layers[layer_index])(successor)
+        degree = cast(torch.Tensor, self.degree).to(dtype=hidden.dtype)
+        neighbor_message = (predecessor_message + successor_message) / degree.view(1, -1, 1)
+        updated = (self_message + neighbor_message).relu()
+        return cast(torch.Tensor, cast(nn.LayerNorm, self.norms[layer_index])(updated))
+
+    @staticmethod
+    def _directional_neighbors(hidden: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        zero = torch.zeros_like(hidden[:, :1])
+        predecessor = torch.cat((zero, hidden[:, :-1]), dim=1)
+        successor = torch.cat((hidden[:, 1:], zero), dim=1)
+        return predecessor, successor
 
 
 def _graph_attention_mask(point_count: int) -> torch.Tensor:

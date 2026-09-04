@@ -7,6 +7,7 @@ from queue import Empty
 from time import monotonic
 from typing import TYPE_CHECKING, Any
 
+from trackmaniarl.distributed import coordinator_episode_ingest
 from trackmaniarl.distributed.coordinator_evaluation import (
     _bucket_key,
     _progress_bin_metrics,
@@ -82,7 +83,7 @@ def ingest(coordinator: Coordinator, value: Mapping[str, Any], row_id: int) -> N
     _append_transitions(batch)
     _credit_updates(coordinator, before)
     _record_actor_sequence(coordinator, value)
-    _ingest_episode_summaries(coordinator, value)
+    coordinator_episode_ingest.ingest_episode_summaries(coordinator, value)
     evaluations = [dict(summary) for summary in value["evaluations"]]
     _ingest_evaluation_snapshot(coordinator, value, evaluations)
     _ingest_evaluation_summaries(coordinator, value, evaluations)
@@ -130,26 +131,6 @@ def _finish_ingest(batch: _IngestBatch, evaluations: list[dict[str, Any]]) -> No
         coordinator._finish_evaluation_batch(evaluations)
     if not coordinator._recovering:
         _log_ingest(batch)
-
-
-def _ingest_episode_summaries(coordinator: Coordinator, value: Mapping[str, Any]) -> None:
-    for summary in value["episodes"]:
-        coordinator.counters.episodes += 1
-        finished = bool(summary["finished"])
-        finish_time_s = float(summary["finish_time_s"])
-        if finished:
-            coordinator.counters.finishes += 1
-            if (
-                coordinator.counters.best_finish_time_s == 0.0
-                or finish_time_s < coordinator.counters.best_finish_time_s
-            ):
-                coordinator.counters.best_finish_time_s = finish_time_s
-        if not coordinator._recovering:
-            coordinator._log_episode(value, summary)
-            interval = coordinator.run.spec.training.evaluate_every_episodes
-            if interval is not None and coordinator.counters.episodes % interval == 0:
-                with coordinator._lock:
-                    coordinator._evaluation_due.add(str(value["actor_id"]))
 
 
 def _ingest_evaluation_snapshot(

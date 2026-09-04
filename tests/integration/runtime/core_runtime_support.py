@@ -7,6 +7,7 @@ from pathlib import Path
 import torch
 
 from trackmaniarl.core.contracts import EvaluatorRuntimeRequest
+from trackmaniarl.core.data import Transition, TransitionId
 from trackmaniarl.core.spec import RunSpec
 
 
@@ -87,6 +88,27 @@ class RecordingEvaluator:
 class CapturingLogger:
     def __init__(self, **kwargs: object) -> None:
         self.kwargs = kwargs
+
+
+class BasicReplayStore:
+    def __init__(self) -> None:
+        self.transitions: list[Transition] = []
+
+    def append(self, transition: Transition) -> TransitionId:
+        self.transitions.append(transition)
+        return len(self.transitions) - 1
+
+    def get(self, transition_ids: list[TransitionId]) -> list[Transition]:
+        return [self.transitions[index] for index in transition_ids]
+
+    def available_ids(self) -> list[TransitionId]:
+        return list(range(len(self.transitions)))
+
+    def contains(self, transition_id: TransitionId) -> bool:
+        return 0 <= transition_id < len(self.transitions)
+
+    def __len__(self) -> int:
+        return len(self.transitions)
 
 
 def runtime_spec(tmp_path: Path) -> RunSpec:

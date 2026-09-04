@@ -16,7 +16,12 @@ from trackmaniarl.builtins.features import GymnasiumObservationCollator
 from trackmaniarl.core.data import Transition
 from trackmaniarl.models.backbones import SimbaV2Backbone
 from trackmaniarl.models.contracts import ValueRepresentation, ValueSupport
-from trackmaniarl.models.track_graphs import TrackGraphTransformer, TrackNeighborGraph
+from trackmaniarl.models.track_graphs import (
+    ArcLengthTrackNeighborGraph,
+    DirectionalTrackNeighborGraph,
+    TrackGraphTransformer,
+    TrackNeighborGraph,
+)
 from trackmaniarl.trackmania.geometry import BoundaryGeometry
 
 
@@ -58,6 +63,52 @@ class TrackGnnSimbaEncoder(nn.Module):
         track, physics = _graph_observation(observation)
         joint = torch.cat((self.track_conv(track), self.physics_proj(physics)), dim=-1)
         return cast(torch.Tensor, self.backbone(self.layernorm_joint(joint)))
+
+
+class TrackArcLengthGnnSimbaEncoder(nn.Module):
+    """Order-aware neighbor GNN and physics encoder with a SimbaV2 backbone."""
+
+    output_dim = 192
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.track_encoder = nn.Sequential(
+            ArcLengthTrackNeighborGraph(),
+            nn.Linear(128, 192),
+            nn.LayerNorm(192),
+            nn.SiLU(),
+        )
+        self.physics_projection = nn.Sequential(nn.Linear(60, 192), nn.LayerNorm(192), nn.SiLU())
+        self.joint_norm = nn.LayerNorm(384)
+        self.backbone = SimbaV2Backbone(384, 192, block_count=4, expansion=4)
+
+    def forward(self, observation: Mapping[str, torch.Tensor]) -> torch.Tensor:
+        track, physics = _graph_observation(observation)
+        joint = torch.cat((self.track_encoder(track), self.physics_projection(physics)), dim=-1)
+        return cast(torch.Tensor, self.backbone(self.joint_norm(joint)))
+
+
+class TrackDirectionalGnnSimbaEncoder(nn.Module):
+    """Directional neighbor GNN and physics encoder with a SimbaV2 backbone."""
+
+    output_dim = 192
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.track_encoder = nn.Sequential(
+            DirectionalTrackNeighborGraph(),
+            nn.Linear(128, 192),
+            nn.LayerNorm(192),
+            nn.SiLU(),
+        )
+        self.physics_projection = nn.Sequential(nn.Linear(60, 192), nn.LayerNorm(192), nn.SiLU())
+        self.joint_norm = nn.LayerNorm(384)
+        self.backbone = SimbaV2Backbone(384, 192, block_count=4, expansion=4)
+
+    def forward(self, observation: Mapping[str, torch.Tensor]) -> torch.Tensor:
+        track, physics = _graph_observation(observation)
+        joint = torch.cat((self.track_encoder(track), self.physics_projection(physics)), dim=-1)
+        return cast(torch.Tensor, self.backbone(self.joint_norm(joint)))
 
 
 class TrackGtnSimbaEncoder(nn.Module):

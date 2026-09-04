@@ -164,7 +164,11 @@ def _crash_submit_request(coordinator: Coordinator) -> BytesValue:
         "session_id": "crashed-session",
         "sequence": 0,
         "policy_version": 0,
-        "transitions": [transition_to_wire(_transition(_TransitionSpec("crashed-actor", 7, 1.0)))],
+        "transitions": [
+            transition_to_wire(
+                _transition(_TransitionSpec("crashed-actor", 7, 1.0, session="crashed-session"))
+            )
+        ],
         "episodes": [],
         "evaluations": [],
         "evaluation_snapshot": b"",
@@ -188,6 +192,7 @@ class _TransitionSpec:
     step: int
     reward: float
     state: _TransitionState = _TransitionState.CONTINUES
+    session: str = "session"
 
 
 def _transition(spec: _TransitionSpec) -> Transition:
@@ -198,7 +203,7 @@ def _transition(spec: _TransitionSpec) -> Transition:
         next_observation=np.asarray([spec.step + 1], dtype=np.float32),
         terminated=spec.state is _TransitionState.TERMINATES,
         truncated=False,
-        episode_id=f"{spec.actor}/session/episode",
+        episode_id=f"{spec.actor}/{spec.session}/episode",
         step=spec.step,
         info={"policy_version": 7, "actor_epsilon": 0.1},
     )

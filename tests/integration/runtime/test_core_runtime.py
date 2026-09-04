@@ -173,6 +173,22 @@ def test_runtime_rejects_mismatched_trackmania_reward_discount(tmp_path: Path) -
         resolve_run(RunSpec.model_validate(config), base_dir=tmp_path)
 
 
+def test_runtime_rejects_elite_sampler_without_episode_pace_store(tmp_path: Path) -> None:
+    config = runtime_spec(tmp_path).model_dump(mode="json")
+    config["components"]["sampler"] = {
+        "class_path": "trackmaniarl.core.replay:PrioritizedSampler",
+        "kwargs": {"elite_time_s": 37.0},
+    }
+    supported = resolve_run(RunSpec.model_validate(config), base_dir=tmp_path)
+    supported.logger.close()
+    config["components"]["replay_store"] = {
+        "class_path": "tests.integration.runtime.core_runtime_support:BasicReplayStore"
+    }
+
+    with pytest.raises(TypeError, match="EpisodePaceReplayStore"):
+        resolve_run(RunSpec.model_validate(config), base_dir=tmp_path)
+
+
 def test_training_contract_rejects_invalid_sequence_configuration(tmp_path: Path) -> None:
     original = runtime_spec(tmp_path)
     for case in _TRAINING_CONTRACT_CASES:

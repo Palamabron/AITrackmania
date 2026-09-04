@@ -36,6 +36,7 @@ from trackmaniarl.distributed.actor_errors import (
     ActorRuntimeError as ActorRuntimeError,
 )
 from trackmaniarl.distributed.actor_requests import ActorProcessRequest
+from trackmaniarl.distributed.actor_watchdog import ProgressWatchdog
 from trackmaniarl.distributed.codec import WireCodec
 from trackmaniarl.distributed.protocol import (
     PROTOCOL_VERSION,
@@ -105,6 +106,7 @@ class ActorRuntime:
         self._spool_lock = threading.Lock()
         self._spool_bytes_total = self._scan_spool_bytes()
         self.sequence = self._next_sequence()
+        self.watchdog = ProgressWatchdog()
 
     def _initialize_transport(self) -> None:
         self.client = actor_transport.Client(self.target, self.token, self.codec)

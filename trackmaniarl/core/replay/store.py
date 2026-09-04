@@ -15,6 +15,7 @@ import numpy as np
 
 import trackmaniarl.core.replay.store_index as store_index
 import trackmaniarl.core.replay.store_materialization as store_materialization
+import trackmaniarl.core.replay.store_pace as store_pace
 import trackmaniarl.core.replay.store_queries as store_queries
 import trackmaniarl.core.replay.store_state as store_state
 from trackmaniarl.core.data import BatchRequest, Transition, TransitionId
@@ -79,6 +80,7 @@ class InMemoryReplayStore:
         self._episode_steps: dict[int, dict[int, TransitionId]] = {}
         self._episode_terminal_steps: dict[int, int] = {}
         self._episode_refcounts: dict[int, int] = {}
+        self._episode_sampling_paces: dict[str, float] = {}
         self._next_episode_code = 0
         self._demo_flags = np.zeros(self.capacity, dtype=np.bool_)
         self._demo_count = 0
@@ -104,7 +106,7 @@ class InMemoryReplayStore:
         previous_id = self._previous_transition(transition, episode_code)
         transition_id = self._next_index
         slot = transition_id % self.capacity
-        evicted = self._evict_slot(slot)
+        evicted = self._evict_slot(slot, episode_code)
         context = _AppendContext(transition_id, slot, episode_code, previous_id, evicted)
         self._allocate_columns(transition)
         self._write_transition(context, transition)
@@ -113,7 +115,7 @@ class InMemoryReplayStore:
         resurrected = None if evicted is None else evicted.resurrected
         return transition_id, resurrected
 
-    def _evict_slot(self, slot: int) -> _EvictedSlot | None:
+    def _evict_slot(self, slot: int, retained_episode_code: int) -> _EvictedSlot | None:
         evicted = int(self._ids[slot]) if self._ids[slot] >= 0 else None
         if evicted is None:
             return None
@@ -122,7 +124,7 @@ class InMemoryReplayStore:
         resurrected = self._protected_demo(evicted, slot)
         self._info.pop(evicted, None)
         self._next_overrides.pop(evicted, None)
-        self._release_episode_reference(int(self._episode_codes[slot]))
+        self._release_episode_reference(int(self._episode_codes[slot]), retained_episode_code)
         return _EvictedSlot(evicted, previous_id, next_id, resurrected)
 
     def _protected_demo(self, evicted: TransitionId, slot: int) -> Transition | None:
@@ -150,8 +152,8 @@ class InMemoryReplayStore:
 
     def _write_transition_metadata(self, context: _AppendContext, transition: Transition) -> None:
         transition_info = cast(dict[str, Any], tree_snapshot(dict(transition.info)))
-        self._sampling_pace[context.slot] = float(
-            transition_info.pop("sampling/projected_lap_time_s", np.inf)
+        self._sampling_pace[context.slot] = store_pace.transition_sampling_pace(
+            self, transition.episode_id, transition_info
         )
         is_demo = _is_demo(transition_info)
         self._demo_flags[context.slot] = is_demo
@@ -191,7 +193,7 @@ class InMemoryReplayStore:
             info={**resurrected.info, "sampling/projected_lap_time_s": pace},
         )
 
-    def _release_episode_reference(self, episode_code: int) -> None:
+    def _release_episode_reference(self, episode_code: int, retained_episode_code: int) -> None:
         if episode_code < 0:
             return
         remaining = self._episode_refcounts.get(episode_code, 0) - 1
@@ -199,9 +201,11 @@ class InMemoryReplayStore:
             self._episode_refcounts[episode_code] = remaining
             return
         self._episode_refcounts.pop(episode_code, None)
-        name = self._episode_names.pop(episode_code, None)
-        if name is not None:
+        name = self._episode_names.get(episode_code)
+        if name is not None and episode_code != retained_episode_code:
+            self._episode_names.pop(episode_code)
             self._episode_codes_by_name.pop(name, None)
+            self._episode_sampling_paces.pop(name, None)
         self._episode_steps.pop(episode_code, None)
         self._episode_terminal_steps.pop(episode_code, None)
 
@@ -331,6 +335,9 @@ class InMemoryReplayStore:
 
     def sampling_pace_s(self, transition_id: TransitionId) -> float:
         return store_queries.sampling_pace_s(self, transition_id)
+
+    def label_episode_sampling_pace(self, episode_id: str, finish_time_s: float) -> int:
+        return store_pace.label_episode_sampling_pace(self, episode_id, finish_time_s)
 
     def demo_flags(self, transition_ids: list[TransitionId]) -> list[bool]:
         return store_queries.demo_flags(self, transition_ids)

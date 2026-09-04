@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from math import isclose
 from typing import Any, cast
 
 import numpy as np
 import torch
 
+from trackmaniarl.core.replay.store_pace import validated_sampling_pace
 from trackmaniarl.distributed.codec import WireCodec
 from trackmaniarl.distributed.protocol import transition_from_wire
 
@@ -15,6 +17,7 @@ def _validate_submit_payload(value: Mapping[str, Any], codec: WireCodec) -> None
     _validate_submit_identity(value)
     transitions, episodes, evaluations = _submit_collections(value)
     _validate_submit_collections(transitions, episodes, evaluations)
+    _validate_episode_owners(value, transitions, episodes)
     _validate_evaluation_snapshot(value, evaluations, codec)
 
 
@@ -43,6 +46,25 @@ def _validate_submit_collections(
         _validate_episode_summary(summary)
     for summary in evaluations:
         _validate_evaluation_summary(summary)
+
+
+def _validate_episode_owners(
+    value: Mapping[str, Any], transitions: list[Any], episodes: list[Any]
+) -> None:
+    prefix = f"{value['actor_id']}/{value['session_id']}/"
+    for transition in transitions:
+        _validate_episode_owner(transition["episode_id"], prefix)
+    for summary in episodes:
+        _validate_episode_owner(summary.get("episode_id"), prefix)
+
+
+def _validate_episode_owner(episode_id: Any, prefix: str) -> None:
+    if episode_id is None:
+        return
+    if not isinstance(episode_id, str) or not episode_id.startswith(prefix):
+        raise ValueError("episode_id must belong to the submitting actor session")
+    if len(episode_id) == len(prefix):
+        raise ValueError("episode_id must have a non-empty episode suffix")
 
 
 def _validate_evaluation_snapshot(
@@ -108,6 +130,8 @@ def _validate_episode_summary(value: object) -> None:
     missing = ({"finished", "termination"} | _EPISODE_NUMERIC_FIELDS) - value.keys()
     if missing:
         raise ValueError(f"episode summary is missing {sorted(missing)}")
+    if "episode_id" in value:
+        _required_nonempty_string(value, "episode_id")
     _validate_episode_fields(value)
     steps = _required_integer(value, "steps", minimum=1)
     _validate_observability_summary(value, "episode", steps)
@@ -120,6 +144,23 @@ def _validate_episode_fields(value: Mapping[str, Any]) -> None:
         raise TypeError("episode termination must be a string")
     for key in _EPISODE_NUMERIC_FIELDS:
         _validate_finite_number(value[key], f"episode {key}")
+    _validate_episode_outcome(value)
+
+
+def _validate_episode_outcome(value: Mapping[str, Any]) -> None:
+    finished = bool(value["finished"])
+    if finished != (value["termination"] == "finished"):
+        raise ValueError("episode finished flag and termination disagree")
+    finish_time_s = float(value["finish_time_s"])
+    if not finished:
+        if finish_time_s != 0.0:
+            raise ValueError("unfinished episode finish_time_s must be zero")
+        return
+    if finish_time_s <= 0.0:
+        raise ValueError("finished episode finish_time_s must be positive")
+    validated_sampling_pace(finish_time_s)
+    if not isclose(finish_time_s, float(value["race_time_s"])):
+        raise ValueError("finished episode finish_time_s must match race_time_s")
 
 
 def _validate_evaluation_summary(value: object) -> None:

@@ -110,25 +110,36 @@ def _apply_changes(
     changes: list[_ReplayChange],
 ) -> None:
     candidates: set[TransitionId] = set()
+    reclassified: set[TransitionId] = set()
     for change in changes:
         if change.evicted is not None:
             _deactivate(request.sampler, change.evicted)
         candidates.update(_affected_candidates(request, change))
+        reclassified.update(change.reclassified)
     for candidate in candidates:
         _refresh_candidate(request, candidate)
+    for candidate in reclassified:
+        _reclassify_candidate(request, candidate)
 
 
 def _affected_candidates(
     request: _SynchronizationRequest, change: _ReplayChange
 ) -> set[TransitionId]:
     store = request.store
-    candidates = set(store.affected_n_step_starts(change.appended, request.n_step))
-    candidates.update(store.n_step_ids(change.appended, request.sequence_length))
+    candidates: set[TransitionId] = set()
+    if change.appended is not None:
+        candidates.update(store.affected_n_step_starts(change.appended, request.n_step))
+        candidates.update(store.n_step_ids(change.appended, request.sequence_length))
     if change.evicted_previous is not None and request.n_step > 1:
         candidates.update(store.affected_n_step_starts(change.evicted_previous, request.n_step - 1))
     if change.evicted_next is not None and request.sequence_length > 1:
         candidates.update(store.n_step_ids(change.evicted_next, request.sequence_length - 1))
     return candidates
+
+
+def _reclassify_candidate(request: _SynchronizationRequest, candidate: TransitionId) -> None:
+    _deactivate(request.sampler, candidate)
+    _refresh_candidate(request, candidate)
 
 
 def _refresh_candidate(request: _SynchronizationRequest, candidate: TransitionId) -> None:

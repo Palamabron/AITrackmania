@@ -109,6 +109,7 @@ not encrypt; bind to loopback and use an encrypted tunnel.
 | `rollout_flush_s` | `2.0` | Seconds before a partial chunk is spooled. Lower values reduce latency but increase I/O/RPC overhead. |
 | `policy_refresh_s` | `5.0` | Minimum seconds between ordinary actor snapshot pulls. |
 | `heartbeat_s` / `actor_timeout_s` | `5.0` / `20.0` s | Liveness cadence and learner timeout; timeout should comfortably exceed heartbeat plus network jitter. |
+| `actor_stall_timeout_s` | `null` or positive seconds | Optional actor-side collection watchdog. When no environment step completes within the limit, the actor stops and hard-exits after a 60 s grace period so an external launcher can restart it. |
 | `max_inflight_chunks` | `4` | Parallel sender workers. Receipts make retries idempotent. |
 | `spool_max_bytes` | `2147483648` | Per-actor durable backpressure cap. One encoded chunk must fit this cap. |
 | `max_message_bytes` | `16777216` | Compressed and decompressed wire bound. |

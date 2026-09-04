@@ -13,6 +13,7 @@ from typing import Any
 from trackmaniarl.core.contracts import (
     CheckpointCodec,
     EnvironmentFactory,
+    EpisodePaceReplayStore,
     Evaluator,
     EvaluatorRuntimeRequest,
     FeaturePipeline,
@@ -79,6 +80,11 @@ def _validate_model_contract(learner: object, model_factory: object | None) -> N
             f"{type(learner).__name__} cannot train {type(model_factory).__name__}: "
             f"model contract is {provided_contract.value!r}, expected one of {expected}"
         )
+
+
+def _validate_episode_pace_contract(replay_store: object, sampler: object) -> None:
+    if getattr(sampler, "elite_time_s", None) is not None:
+        _require("replay_store", replay_store, EpisodePaceReplayStore)
 
 
 @dataclass(frozen=True, slots=True)
@@ -285,6 +291,7 @@ class _RunResolver:
             _require("environment", self.environment_factory, EnvironmentFactory)
         _require("replay_store", self.replay_store, ReplayStore)
         _require("sampler", self.sampler, Sampler)
+        _validate_episode_pace_contract(self.replay_store, self.sampler)
         _require("learner", self.learner, Learner)
         if self.model_factory is not None:
             _require("model_factory", self.model_factory, ModelFactory)

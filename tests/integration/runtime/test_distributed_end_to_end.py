@@ -103,7 +103,7 @@ def _clients(port: int, spec: RunSpec) -> list[Client]:
     return clients
 
 
-def _actor_transitions(actor_id: str) -> list[dict[str, object]]:
+def _actor_transitions(actor_id: str, session_id: str) -> list[dict[str, object]]:
     return [
         transition_to_wire(
             _transition(
@@ -112,6 +112,7 @@ def _actor_transitions(actor_id: str) -> list[dict[str, object]]:
                     step,
                     float(step),
                     _TransitionState.TERMINATES if step == 7 else _TransitionState.CONTINUES,
+                    session=session_id,
                 )
             )
         )
@@ -121,16 +122,17 @@ def _actor_transitions(actor_id: str) -> list[dict[str, object]]:
 
 def _send_actor(client: Client, actor_index: int) -> None:
     actor_id = f"actor-{actor_index}"
+    session_id = f"session-{actor_index}"
     base = {
         "protocol_version": PROTOCOL_VERSION,
         "fingerprint": "fingerprint",
         "actor_id": actor_id,
-        "session_id": f"session-{actor_index}",
+        "session_id": session_id,
     }
     client.call("Register", base)
     payload = {**base, "sequence": 0, "policy_version": 0}
     payload.update(
-        transitions=_actor_transitions(actor_id),
+        transitions=_actor_transitions(actor_id, session_id),
         episodes=[],
         evaluations=[],
         evaluation_snapshot=b"",

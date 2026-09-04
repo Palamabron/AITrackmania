@@ -1,24 +1,40 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from pathlib import Path
 
 import numpy as np
 import pytest
 import torch
 
+from trackmaniarl.algorithms.value_based import DiscreteValueLearner
+from trackmaniarl.core.data import TrainingBatch
 from trackmaniarl.experiments.graph_iqn import (
     BoundaryGraphFeaturePipeline,
     DuelingImplicitQuantileHead,
+    TrackArcLengthGnnSimbaEncoder,
+    TrackDirectionalGnnSimbaEncoder,
     TrackGnnSimbaEncoder,
     TrackGtnSimbaEncoder,
 )
+from trackmaniarl.models.composite import CompositeModules, CompositeValueModel
 from trackmaniarl.models.contracts import ValueSupport
-from trackmaniarl.models.track_graphs import TrackGraphTransformer, TrackNeighborGraph
+from trackmaniarl.models.strategies import RandomQuantileStrategy
+from trackmaniarl.models.temporal import IdentityTemporalCore
+from trackmaniarl.models.track_graphs import (
+    ArcLengthTrackNeighborGraph,
+    TrackGraphTransformer,
+    TrackNeighborGraph,
+)
 from trackmaniarl.trackmania.geometry import GEOMETRY_ASSET_VERSION
 
 
-def test_graph_iqn_model_contract() -> None:
-    encoder = TrackGnnSimbaEncoder()
+@pytest.mark.parametrize(
+    "encoder_type",
+    [TrackGnnSimbaEncoder, TrackArcLengthGnnSimbaEncoder, TrackDirectionalGnnSimbaEncoder],
+)
+def test_graph_iqn_model_contract(encoder_type: type[torch.nn.Module]) -> None:
+    encoder = encoder_type()
     head = DuelingImplicitQuantileHead()
     observation = {
         "track": torch.zeros(2, 3, 88),
@@ -149,6 +165,149 @@ def test_neighbor_graph_pairs_boundary_coordinates_per_point() -> None:
     torch.testing.assert_close(captured[0], expected)
 
 
+def test_arc_length_graph_preserves_lookahead_order() -> None:
+    torch.manual_seed(0)
+    track = torch.randn(2, 3, 88)
+    reversed_track = track.reshape(2, 3, 44, 2).flip(2).reshape(2, 3, 88)
+    baseline = TrackNeighborGraph().eval()
+    ordered = ArcLengthTrackNeighborGraph().eval()
+
+    with torch.inference_mode():
+        baseline_difference = (baseline(track) - baseline(reversed_track)).abs().max()
+        ordered_difference = (ordered(track) - ordered(reversed_track)).abs().max()
+
+    assert baseline_difference < 1.0e-6
+    assert ordered_difference > 1.0e-4
+
+
+def test_arc_length_graph_is_deterministic_and_differentiable() -> None:
+    torch.manual_seed(1)
+    graph = ArcLengthTrackNeighborGraph()
+    track = torch.randn(3, 3, 88, requires_grad=True)
+
+    first = graph(track)
+    second = graph(track)
+    first.square().mean().backward()
+
+    torch.testing.assert_close(first, second, rtol=0.0, atol=0.0)
+    assert track.grad is not None
+    assert torch.isfinite(track.grad).all()
+
+
+def test_arc_length_graph_uses_fixed_normalized_lookahead_distance() -> None:
+    graph = ArcLengthTrackNeighborGraph(point_count=4)
+
+    torch.testing.assert_close(
+        graph.normalized_arc_length,
+        torch.tensor([0.25, 0.5, 0.75, 1.0]),
+    )
+    assert not graph.normalized_arc_length.requires_grad
+
+
+def test_arc_length_graph_rejects_invalid_point_count() -> None:
+    with pytest.raises(ValueError, match="dimensions must be positive"):
+        ArcLengthTrackNeighborGraph(point_count=1)
+
+
+def _graph_value_model(encoder: torch.nn.Module) -> CompositeValueModel:
+    return CompositeValueModel(
+        CompositeModules(
+            encoder,
+            IdentityTemporalCore(192),
+            DuelingImplicitQuantileHead(),
+            RandomQuantileStrategy(64, 64, 32),
+        )
+    )
+
+
+def _graph_observations(generator: torch.Generator) -> dict[str, torch.Tensor]:
+    return {
+        "track": torch.randn(2, 3, 88, generator=generator),
+        "physics": torch.randn(2, 60, generator=generator),
+    }
+
+
+def _graph_batch() -> TrainingBatch:
+    generator = torch.Generator().manual_seed(31)
+    return TrainingBatch(
+        data={},
+        observations=_graph_observations(generator),
+        actions=torch.tensor([7, 70]),
+        rewards=torch.tensor([0.5, -0.25]),
+        next_observations=_graph_observations(generator),
+        terminated=torch.tensor([False, True]),
+        truncated=torch.zeros(2, dtype=torch.bool),
+        bootstrap_discounts=torch.tensor([0.99, 0.0]),
+        transition_ids=[0, 1],
+    )
+
+
+@pytest.mark.parametrize(
+    "encoder_type", [TrackArcLengthGnnSimbaEncoder, TrackDirectionalGnnSimbaEncoder]
+)
+def test_order_aware_model_checkpoint_and_policy_export_round_trip(
+    encoder_type: type[torch.nn.Module],
+) -> None:
+    baseline = _graph_value_model(TrackGnnSimbaEncoder())
+    learner = DiscreteValueLearner(_graph_value_model(encoder_type()))
+    learner.setup({"seed": 17})
+    checkpoint = learner.state_dict()
+    exported = learner.policy().export_state()
+    restored = DiscreteValueLearner(_graph_value_model(encoder_type()))
+    restored.setup({"seed": 23})
+
+    restored.load_state_dict(checkpoint)
+
+    assert baseline.architecture_fingerprint() != learner.model.architecture_fingerprint()
+    restored_export = restored.policy().export_state()
+    assert restored_export.keys() == exported.keys()
+    for name, value in exported.items():
+        torch.testing.assert_close(restored_export[name], value, rtol=0.0, atol=0.0)
+
+
+def test_graph_encoder_architecture_fingerprints_are_distinct() -> None:
+    encoder_types = (
+        TrackGnnSimbaEncoder,
+        TrackArcLengthGnnSimbaEncoder,
+        TrackDirectionalGnnSimbaEncoder,
+        TrackGtnSimbaEncoder,
+    )
+    fingerprints = {
+        _graph_value_model(encoder_type()).architecture_fingerprint()
+        for encoder_type in encoder_types
+    }
+
+    assert len(fingerprints) == len(encoder_types)
+
+
+def _cpu_graph_learner(seed: int, encoder_type: type[torch.nn.Module]) -> DiscreteValueLearner:
+    learner = DiscreteValueLearner(_graph_value_model(encoder_type()), execution={"device": "cpu"})
+    learner.setup({"seed": seed})
+    return learner
+
+
+@pytest.mark.parametrize(
+    "encoder_type", [TrackArcLengthGnnSimbaEncoder, TrackDirectionalGnnSimbaEncoder]
+)
+def test_order_aware_model_cpu_update_resumes_exactly(
+    encoder_type: type[torch.nn.Module],
+) -> None:
+    batch = _graph_batch()
+    learner = _cpu_graph_learner(17, encoder_type)
+    metrics, priorities = learner.update(batch)
+    checkpoint = deepcopy(learner.state_dict())
+    learner.update(batch)
+    expected = deepcopy(learner.model.state_dict())
+    restored = _cpu_graph_learner(23, encoder_type)
+    restored.load_state_dict(checkpoint)
+    restored.update(batch)
+    assert metrics["loss/total"] > 0.0
+    assert all(torch.isfinite(torch.tensor(priorities.priorities)))
+    assert restored.update_count == learner.update_count == 2
+    for name, value in restored.model.state_dict().items():
+        torch.testing.assert_close(value, expected[name], rtol=0.0, atol=0.0)
+
+
 def test_gtn_simba_encoder_matches_value_model_contract() -> None:
     observation = {"track": torch.zeros(2, 3, 88), "physics": torch.zeros(2, 60)}
 
@@ -158,7 +317,15 @@ def test_gtn_simba_encoder_matches_value_model_contract() -> None:
     assert torch.isfinite(features).all()
 
 
-@pytest.mark.parametrize("encoder_type", [TrackGnnSimbaEncoder, TrackGtnSimbaEncoder])
+@pytest.mark.parametrize(
+    "encoder_type",
+    [
+        TrackGnnSimbaEncoder,
+        TrackArcLengthGnnSimbaEncoder,
+        TrackDirectionalGnnSimbaEncoder,
+        TrackGtnSimbaEncoder,
+    ],
+)
 def test_graph_encoders_ignore_masked_control_label_features(
     encoder_type: type[torch.nn.Module],
 ) -> None:

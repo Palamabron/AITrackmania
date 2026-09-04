@@ -37,6 +37,7 @@ class TrackmaniaActionSelectorConfig:
     exploration_hold_steps: int = 1
     switch_q_margin: float = 0.0
     global_exploration_probability: float = 0.15
+    exploration_weights_preset: str = "throttle_biased"
 
     @classmethod
     def from_mapping(cls, values: Mapping[str, Any]) -> Self:
@@ -74,7 +75,9 @@ class TrackmaniaActionSelector:
 
     def _configure(self, config: TrackmaniaActionSelectorConfig) -> None:
         self.action_ids = config.action_ids
-        self.weights = torch.from_numpy(select_brake_tap_exploration_weights(config.action_ids))
+        self.weights = torch.from_numpy(
+            select_exploration_weights(config.action_ids, config.exploration_weights_preset)
+        )
         self.minimum_action_hold_steps = config.minimum_action_hold_steps
         self.exploration_hold_steps = config.exploration_hold_steps
         self.switch_q_margin = config.switch_q_margin
@@ -121,13 +124,15 @@ class TrackmaniaActionSelector:
         self._hold_steps += 1
         return greedy.new_tensor([self._previous_action]).reshape(greedy.shape)
 
-    @staticmethod
-    def _should_explore(request: _Selection) -> bool:
+    def _should_explore(self, request: _Selection) -> bool:
         selection = request.request
+        probability = _exploration_event_probability(
+            float(selection.epsilon), self.exploration_hold_steps
+        )
         return bool(
             selection.mode is PolicyMode.ONLINE
-            and selection.epsilon
-            and torch.rand((), device=request.greedy.device) < selection.epsilon
+            and probability
+            and torch.rand((), device=request.greedy.device) < probability
         )
 
     def _start_exploration_hold(self, selected: torch.Tensor) -> None:
@@ -196,6 +201,13 @@ def _validate_probability(probability: float) -> None:
         raise ValueError("global exploration probability must be inside [0, 1]")
 
 
+def _exploration_event_probability(step_fraction: float, hold_steps: int) -> float:
+    """Preserve the requested exploratory-step fraction when events are held."""
+
+    _validate_probability(step_fraction)
+    return step_fraction / (hold_steps - step_fraction * (hold_steps - 1))
+
+
 def build_brake_tap_action_table(
     n_steer: int = BRAKE_TAP_TABLE_N_STEER,
     n_gas: int = BRAKE_TAP_TABLE_N_GAS,
@@ -231,6 +243,57 @@ def build_brake_tap_exploration_weights() -> np.ndarray:
         steering_weight = 1.0 - 0.6 * abs(float(steer))
         weights.append(mode_weight * steering_weight)
     return np.asarray(weights, dtype=np.float32)
+
+
+# Joint counts measured on all 83,943 native controls in the 23 accepted
+# trackmaniarl-test keyboard demonstrations (36.035-36.995 s). A unit pseudo-count
+# keeps every compact action subset sampleable without materially changing the fit.
+EXPERT_KEYBOARD_CONTROL_COUNTS: dict[tuple[float, float, float], int] = {
+    (0.0, 0.0, -1.0): 5_238,
+    (0.0, 1.0, -1.0): 644,
+    (1.0, 0.0, -1.0): 18_067,
+    (0.0, 0.0, 0.0): 2,
+    (1.0, 0.0, 0.0): 29_290,
+    (0.0, 0.0, 1.0): 4_889,
+    (0.0, 1.0, 1.0): 3_875,
+    (1.0, 0.0, 1.0): 21_938,
+}
+_EXPERT_KEYBOARD_PSEUDO_COUNT = 1.0
+
+
+def build_expert_keyboard_exploration_weights() -> np.ndarray:
+    """Return exploration weights fitted to the expert's joint keyboard controls."""
+
+    _, table = build_brake_tap_action_table()
+    return np.asarray(
+        [
+            EXPERT_KEYBOARD_CONTROL_COUNTS.get(
+                (float(gas), float(brake), float(steer)),
+                _EXPERT_KEYBOARD_PSEUDO_COUNT,
+            )
+            for gas, brake, steer in table
+        ],
+        dtype=np.float32,
+    )
+
+
+EXPLORATION_WEIGHT_PRESETS = {
+    "throttle_biased": build_brake_tap_exploration_weights,
+    "expert_keyboard": build_expert_keyboard_exploration_weights,
+}
+
+
+def select_exploration_weights(action_ids: tuple[int, ...] | None, preset: str) -> np.ndarray:
+    """Return the preset exploration weights aligned with a compact action subset."""
+
+    builder = EXPLORATION_WEIGHT_PRESETS.get(preset)
+    if builder is None:
+        raise ValueError(
+            f"unknown exploration weights preset {preset!r}; "
+            f"choose one of {sorted(EXPLORATION_WEIGHT_PRESETS)}"
+        )
+    weights = builder()
+    return weights if action_ids is None else weights[list(action_ids)]
 
 
 def select_brake_tap_actions(action_ids: tuple[int, ...] | None) -> tuple[int, list[np.ndarray]]:

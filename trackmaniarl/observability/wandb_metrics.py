@@ -61,6 +61,8 @@ _DEBUG_METRICS = {
 }
 _REPLAY_METRICS = {
     "demo_sample_fraction",
+    "elite_active_fraction",
+    "elite_sample_fraction",
     "expert_demo_active_fraction",
     "expert_demo_sample_fraction",
     "expert_demo_target_fraction",
@@ -120,6 +122,7 @@ _EPISODE_METRICS = {
     "reward/time",
     "reward/time_attack_terminal",
     "reward_per_transition",
+    "replay/labeled_transitions",
     "steps",
     "telemetry/error",
     "termination/max_steps",

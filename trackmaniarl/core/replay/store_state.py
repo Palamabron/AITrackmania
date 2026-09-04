@@ -8,13 +8,15 @@ from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 
+from trackmaniarl.core.replay.store_pace import validate_episode_sampling_paces
 from trackmaniarl.core.replay.store_support import _is_demo, _TreeColumns
 
 if TYPE_CHECKING:
     from trackmaniarl.core.replay.store import InMemoryReplayStore
 
 
-_STATE_FORMAT = "columnar-v1"
+_STATE_FORMAT = "columnar-v2"
+_LEGACY_STATE_FORMAT = "columnar-v1"
 _BASE_STATE_FIELDS = frozenset(
     {
         "format",
@@ -63,6 +65,7 @@ def _empty_state(store: InMemoryReplayStore) -> dict[str, Any]:
         "size": store._size,
         "next_index": store._next_index,
         "episode_names": dict(store._episode_names),
+        "episode_sampling_paces": dict(store._episode_sampling_paces),
         "next_overrides": dict(store._next_overrides),
         "info": dict(store._info),
     }
@@ -128,8 +131,12 @@ def load_state_dict(store: InMemoryReplayStore, state: Mapping[str, Any]) -> Non
 
 def _validate_state(state: Mapping[str, Any]) -> None:
     _require_fields(state, _BASE_STATE_FIELDS, "replay checkpoint")
-    if state["format"] != _STATE_FORMAT:
+    state_format = state["format"]
+    if state_format not in {_STATE_FORMAT, _LEGACY_STATE_FORMAT}:
         raise ValueError(f"unsupported replay checkpoint format: {state['format']!r}")
+    if state_format == _STATE_FORMAT:
+        _require_fields(state, frozenset({"episode_sampling_paces"}), "replay checkpoint")
+        validate_episode_sampling_paces(state["episode_sampling_paces"])
     if int(state["size"]):
         _require_fields(state, _POPULATED_STATE_FIELDS, "populated replay checkpoint")
 
@@ -194,6 +201,9 @@ def _restore_metadata(store: InMemoryReplayStore, state: Mapping[str, Any]) -> N
     store._episode_names = {int(code): str(name) for code, name in names.items()}
     store._episode_codes_by_name = {name: code for code, name in store._episode_names.items()}
     store._next_episode_code = max(store._episode_names, default=-1) + 1
+    raw_paces = state["episode_sampling_paces"] if state["format"] == _STATE_FORMAT else {}
+    paces = cast(Mapping[str, float], raw_paces)
+    store._episode_sampling_paces = dict(paces)
     store._next_overrides = dict(state["next_overrides"])
     store._info = dict(state["info"])
 
@@ -214,6 +224,7 @@ def _reset_arrays(store: InMemoryReplayStore) -> None:
     store._episode_steps.clear()
     store._episode_terminal_steps.clear()
     store._episode_refcounts.clear()
+    store._episode_sampling_paces.clear()
 
 
 def _rebuild_reference_state(store: InMemoryReplayStore) -> None:

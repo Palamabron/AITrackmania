@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 import torch
 
+import trackmaniarl.core.builtins as core_builtins
 from trackmaniarl.core.builtins import JsonlRunLogger, TorchCheckpointCodec
 from trackmaniarl.observability.trackers import WandbTracker
 
@@ -93,6 +94,46 @@ def test_torch_checkpoints_are_zstd_streamed_and_round_trip(tmp_path: Path) -> N
     assert path.stat().st_size < state["tensor"].numel() * state["tensor"].element_size()
     assert torch.equal(restored["tensor"], state["tensor"])
     assert restored["counter"] == 3
+
+
+def test_torch_checkpoint_removes_temporary_after_write_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "checkpoint.pt"
+    temporary = path.with_suffix(".pt.tmp")
+
+    def fail_write(state: object, destination: Path) -> None:
+        del state
+        destination.write_bytes(b"incomplete")
+        raise OSError("injected write failure")
+
+    monkeypatch.setattr(core_builtins, "_write_zstd_checkpoint", fail_write)
+
+    with pytest.raises(OSError, match="injected write failure"):
+        TorchCheckpointCodec().save({}, path)
+
+    assert not path.exists()
+    assert not temporary.exists()
+
+
+def test_torch_checkpoint_removes_temporary_after_replace_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "checkpoint.pt"
+    path.write_bytes(b"previous checkpoint")
+    temporary = path.with_suffix(".pt.tmp")
+
+    def fail_replace(source: Path, destination: Path) -> None:
+        assert (source, destination) == (temporary, path)
+        raise PermissionError("injected replace failure")
+
+    monkeypatch.setattr(core_builtins.os, "replace", fail_replace)
+
+    with pytest.raises(PermissionError, match="injected replace failure"):
+        TorchCheckpointCodec().save({"counter": 1}, path)
+
+    assert path.read_bytes() == b"previous checkpoint"
+    assert not temporary.exists()
 
 
 def _assert_wandb_capture(capture: _WandbCapture) -> None:

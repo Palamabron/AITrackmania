@@ -128,6 +128,13 @@ class ReplayStore(Protocol):
 
 
 @runtime_checkable
+class EpisodePaceReplayStore(Protocol):
+    """Replay capability for relabeling completed online episodes."""
+
+    def label_episode_sampling_pace(self, episode_id: str, finish_time_s: float) -> int: ...
+
+
+@runtime_checkable
 class EnvironmentFactory(Protocol):
     """Creates an isolated TrackMania environment for collection or evaluation."""
 

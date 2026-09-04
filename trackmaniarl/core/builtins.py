@@ -153,8 +153,23 @@ def _load_torch_checkpoint(path: Path) -> Mapping[str, Any]:
         )
 
 
+def _write_zstd_checkpoint(state: Mapping[str, Any], temporary: Path) -> None:
+    import torch
+    import zstandard
+
+    with temporary.open("wb") as destination:
+        with zstandard.ZstdCompressor(level=3).stream_writer(
+            destination, closefd=False
+        ) as compressed:
+            # The weights-only unpickler cannot parse pickle protocol >= 4;
+            # torch's default protocol keeps checkpoints loadable safely.
+            torch.save(dict(state), compressed)
+        destination.flush()
+        os.fsync(destination.fileno())
+
+
 class TorchCheckpointCodec:
-    """Atomic zstd-streamed Torch checkpoints."""
+    """Atomically replace zstd-streamed Torch checkpoints on successful saves."""
 
     def __init__(
         self,
@@ -166,20 +181,15 @@ class TorchCheckpointCodec:
 
     def save(self, state: Mapping[str, Any], path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
-        import torch
-        import zstandard
-
         temporary = path.with_suffix(path.suffix + ".tmp")
-        with temporary.open("wb") as destination:
-            with zstandard.ZstdCompressor(level=3).stream_writer(
-                destination, closefd=False
-            ) as compressed:
-                # The weights-only unpickler cannot parse pickle protocol >= 4;
-                # torch's default protocol keeps checkpoints loadable safely.
-                torch.save(dict(state), compressed)
-            destination.flush()
-            os.fsync(destination.fileno())
-        os.replace(temporary, path)
+        try:
+            _write_zstd_checkpoint(state, temporary)
+            os.replace(temporary, path)
+        except BaseException:
+            # Clean up failures reported inside Python. Abrupt process exit or
+            # power loss can still leave this temporary behind.
+            temporary.unlink(missing_ok=True)
+            raise
         sync_checkpoint_path(path)
 
     def load(self, path: Path) -> Mapping[str, Any]:

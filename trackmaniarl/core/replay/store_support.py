@@ -17,10 +17,11 @@ from trackmaniarl.core.data import Transition, TransitionId
 
 @dataclass(frozen=True, slots=True)
 class _ReplayChange:
-    appended: TransitionId
+    appended: TransitionId | None
     evicted: TransitionId | None
     evicted_previous: TransitionId | None
     evicted_next: TransitionId | None
+    reclassified: tuple[TransitionId, ...] = ()
 
 
 class _IncrementalReplayStore(Protocol):

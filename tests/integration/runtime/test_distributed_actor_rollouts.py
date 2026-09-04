@@ -203,7 +203,37 @@ def test_actor_training_episode_freezes_one_policy_and_reports_action_gaps() -> 
     actor._collect(_TrainingEnvironment(actor.stop), _Pipeline())
 
     _assert_episode_versions(probe)
-    _assert_summary(probe.requests[0].summaries[0])
+    summary = probe.requests[0].summaries[0]
+    _assert_summary(summary)
+    assert summary["episode_id"] == "actor/session/00000000"
+
+
+def _assert_chunked_episode_requests(requests: list[SpoolRequest]) -> None:
+    transition_requests = [request for request in requests if request.transitions]
+    summary_requests = [request for request in requests if request.summaries]
+    assert len(transition_requests) == 6
+    assert len(summary_requests) == 2
+    assert all(not request.transitions for request in summary_requests)
+    transition_ids = {
+        transition.episode_id
+        for request in transition_requests
+        for transition in request.transitions
+    }
+    summary_ids = {
+        summary["episode_id"] for request in summary_requests for summary in request.summaries
+    }
+    expected = {"actor/session/00000000", "actor/session/00000001"}
+    assert summary_ids == transition_ids == expected
+
+
+def test_actor_sends_identified_summary_after_flushed_chunks() -> None:
+    probe = _TrainingProbe()
+    actor = _training_actor(probe)
+    actor.spec.distributed.rollout_chunk_transitions = 1
+
+    actor._collect(_TrainingEnvironment(actor.stop), _Pipeline())
+
+    _assert_chunked_episode_requests(probe.requests)
 
 
 class _PrewarmPolicy:

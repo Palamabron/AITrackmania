@@ -2,6 +2,8 @@
 
 from trackmaniarl.experiments.evaluation import EvaluationResult, aggregate_results
 from trackmaniarl.experiments.graph_iqn import (
+    TrackArcLengthGnnSimbaEncoder,
+    TrackDirectionalGnnSimbaEncoder,
     TrackGnnSimbaEncoder,
     TrackGtnSimbaEncoder,
 )
@@ -12,6 +14,8 @@ __all__ = [
     "FallbackStrategy",
     "StudyRunner",
     "StudySpec",
+    "TrackArcLengthGnnSimbaEncoder",
+    "TrackDirectionalGnnSimbaEncoder",
     "TrackGnnSimbaEncoder",
     "TrackGtnSimbaEncoder",
     "aggregate_results",

@@ -66,31 +66,46 @@ def _close(coordinator: Coordinator) -> None:
     coordinator.journal.close()
 
 
+def _apply_malformation(
+    coordinator: Coordinator, malformation: str, payload: dict[str, Any]
+) -> None:
+    transition = payload["transitions"][0]
+    if malformation == "transitions_not_list":
+        payload["transitions"] = {}
+        return
+    _apply_payload_malformation(coordinator, malformation, payload)
+    if malformation == "non_finite_reward":
+        transition["reward"] = torch.tensor(float("nan"))
+    elif malformation == "invalid_action":
+        transition["action"] = b"not-a-numeric-pytree"
+    elif malformation == "wrong_owner_transition":
+        transition["episode_id"] = "other/session/episode"
+
+
+def _apply_payload_malformation(
+    coordinator: Coordinator, malformation: str, payload: dict[str, Any]
+) -> None:
+    if malformation == "incomplete_episode":
+        _set_incomplete_episode(payload)
+    elif malformation == "missing_time_attack_reward":
+        _set_episode_without_time_attack_reward(payload)
+    elif malformation == "missing_evaluation_snapshot":
+        _set_evaluation_without_snapshot(payload)
+    elif malformation == "invalid_evaluation_snapshot":
+        _set_invalid_snapshot(coordinator, payload)
+
+
 def _malformed_payload(coordinator: Coordinator, malformation: str) -> dict[str, Any]:
-    payload, transition = _payload_with_transition()
-    match malformation:
-        case "transitions_not_list":
-            payload["transitions"] = {}
-        case "non_finite_reward":
-            transition["reward"] = torch.tensor(float("nan"))
-        case "invalid_action":
-            transition["action"] = b"not-a-numeric-pytree"
-        case "incomplete_episode":
-            _set_incomplete_episode(payload)
-        case "missing_time_attack_reward":
-            _set_episode_without_time_attack_reward(payload)
-        case "missing_evaluation_snapshot":
-            _set_evaluation_without_snapshot(payload)
-        case _:
-            _set_invalid_snapshot(coordinator, payload)
+    payload = _payload_with_transition()
+    _apply_malformation(coordinator, malformation, payload)
     return payload
 
 
-def _payload_with_transition() -> tuple[dict[str, Any], dict[str, Any]]:
+def _payload_with_transition() -> dict[str, Any]:
     transition = transition_to_wire(_transition(_TransitionSpec("actor", 0, 1.0)))
     payload = _base_payload(0)
     payload["transitions"] = [transition]
-    return payload, transition
+    return payload
 
 
 def _set_incomplete_episode(payload: dict[str, Any]) -> None:
@@ -105,6 +120,7 @@ def _set_episode_without_time_attack_reward(payload: dict[str, Any]) -> None:
         {"policy_version": 0, "termination_reason": "finished", "race_time_ms": 1_000.0},
         1,
     )
+    summary["episode_id"] = "actor/session/episode"
     summary.pop("reward/time_attack_terminal")
     payload["episodes"] = [summary]
 
@@ -151,25 +167,28 @@ def _induce_incidents(coordinator: Coordinator, monkeypatch: pytest.MonkeyPatch)
     return coordinator.codec.decode(rejected.value)
 
 
-def test_malformed_rollout_is_rejected_before_wal_append(tmp_path: Path) -> None:
-    malformations = (
-        "transitions_not_list",
-        "non_finite_reward",
-        "invalid_action",
-        "incomplete_episode",
-        "missing_time_attack_reward",
-        "missing_evaluation_snapshot",
-        "invalid_evaluation_snapshot",
-    )
-    for malformation in malformations:
-        coordinator = _coordinator(tmp_path, f"invalid-before-wal-{malformation}")
-        request = _request(coordinator, _malformed_payload(coordinator, malformation))
-        try:
-            with pytest.raises(RuntimeError, match="INVALID_ARGUMENT"):
-                _submit(coordinator, request)
-            assert not coordinator.journal.has_rows()
-        finally:
-            _close(coordinator)
+_MALFORMATIONS = (
+    "transitions_not_list",
+    "non_finite_reward",
+    "invalid_action",
+    "wrong_owner_transition",
+    "incomplete_episode",
+    "missing_time_attack_reward",
+    "missing_evaluation_snapshot",
+    "invalid_evaluation_snapshot",
+)
+
+
+@pytest.mark.parametrize("malformation", _MALFORMATIONS)
+def test_malformed_rollout_is_rejected_before_wal(tmp_path: Path, malformation: str) -> None:
+    coordinator = _coordinator(tmp_path, f"invalid-before-wal-{malformation}")
+    request = _request(coordinator, _malformed_payload(coordinator, malformation))
+    try:
+        with pytest.raises(RuntimeError, match="INVALID_ARGUMENT"):
+            _submit(coordinator, request)
+        assert not coordinator.journal.has_rows()
+    finally:
+        _close(coordinator)
 
 
 def test_evaluation_waits_for_the_first_trained_policy_snapshot(tmp_path: Path) -> None:
@@ -191,9 +210,7 @@ def test_evaluation_waits_for_the_first_trained_policy_snapshot(tmp_path: Path) 
         _close(coordinator)
 
 
-def test_rollout_rejection_and_wal_failure_emit_reasoned_events(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_rollout_and_wal_failure_events(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     coordinator = _coordinator(tmp_path, "runtime-incidents")
     try:
         _assert_incidents(coordinator, _induce_incidents(coordinator, monkeypatch))

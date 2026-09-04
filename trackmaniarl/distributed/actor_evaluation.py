@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from time import monotonic
 from typing import Any, cast
 
+import trackmaniarl.distributed.actor_watchdog as actor_watchdog
 from trackmaniarl.core.contracts import ExploratoryPolicy, PolicyMode, ReplicablePolicy
 from trackmaniarl.distributed.actor_collection import reset_pipeline, reset_policy
 from trackmaniarl.distributed.actor_metrics import EpisodeMetrics
@@ -225,6 +226,7 @@ def _evaluation_step(
     context: EvaluationContext, step_index: int, evaluated: EvaluatedAction
 ) -> EvaluationStep:
     observation, reward, terminated, truncated, info = context.environment.step(evaluated.value)
+    actor_watchdog.touch(context.runtime)
     stopped = bool(terminated or truncated or context.runtime.stop.is_set())
     return EvaluationStep(
         step_index,
