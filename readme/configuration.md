@@ -164,6 +164,8 @@ The paths below are under `components.environment.kwargs.config`.
 | --- | --- | --- |
 | `host`, `port`, `session_port` | `127.0.0.1`, `9000`, `9001` | OpenPlanet telemetry/control and session endpoints. |
 | `timeout_s`, `start_timeout_s`, `start_poll_s`, `reset_settle_s` | `10`, `15`, `.01`, `0` s | I/O timeout, start deadline, polling cadence and optional post-reset wait. |
+| `confirm_finish_before_reset` | `true` | Send Enter before reset for normal play result screens; set `false` when School Mode requires editor validation. |
+| `restart_input` | `gamepad` | With gamepad driving, use its Give Up binding or select `keyboard` to send Delete for editor validation. |
 | `action_repeat_frames` | `4` | Native telemetry frames per decision, `1..20`. Must be `1` when `decision_interval_ms` is set. |
 | `decision_interval_ms` | null | Physical decision grid `(0,250]` ms. The generated Trackmania template uses 50 ms and repeat 1. |
 | `control_backend` | `gamepad` | `gamepad` preserves analog controls; `keyboard` digitizes them. |

@@ -9,6 +9,20 @@ from trackmaniarl.trackmania.actions import BRAKE_TAP_DURATION_S, BRAKE_TAP_SENT
 from trackmaniarl.trackmania.control import GamepadController, KeyboardController
 
 
+class _ResetGamepad:
+    def __init__(self, calls: list[str]) -> None:
+        self.calls = calls
+
+    def reset(self) -> None:
+        self.calls.append("release")
+
+    def update(self) -> None:
+        self.calls.append("update")
+
+    def press_button(self, *, button: int) -> None:
+        raise AssertionError(f"unexpected gamepad restart button {button}")
+
+
 def test_keyboard_controller_maps_recorded_steering_sign_to_keys() -> None:
     events: list[tuple[int, bool]] = []
     controller = KeyboardController(lambda event: events.append((event.key, event.pressed)))
@@ -43,3 +57,20 @@ def test_gamepad_brake_tap_releases_synchronously(
     assert len(applied) == 2
     assert applied[0] == pytest.approx([1.0, 1.0, 0.5])
     assert applied[1] == pytest.approx([1.0, 0.0, 0.5])
+
+
+def test_gamepad_can_restart_with_keyboard(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[str] = []
+    controller = object.__new__(GamepadController)
+    controller._tap_lock = RLock()
+    controller._gamepad = _ResetGamepad(calls)
+    controller._restart_input = "keyboard"
+    monkeypatch.setattr(
+        "trackmaniarl.trackmania.control.restart_trackmania_race",
+        lambda: calls.append("delete"),
+    )
+    monkeypatch.setattr(controller, "consume_collision", lambda: False)
+
+    controller.reset()
+
+    assert calls == ["release", "update", "delete"]

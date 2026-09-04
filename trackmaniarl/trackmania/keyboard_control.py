@@ -116,6 +116,14 @@ def confirm_trackmania_finish() -> None:
     _windows_call(user32, "keybd_event", 0x0D, 0, 0x0002, 0)
 
 
+def restart_trackmania_race() -> None:
+    if not _focus_trackmania():
+        raise RuntimeError("Trackmania window was not found for keyboard restart")
+    KeyboardController._windows_key_event(KeyboardKeyEvent(0x2E, True))
+    sleep(0.1)
+    KeyboardController._windows_key_event(KeyboardKeyEvent(0x2E, False))
+
+
 class KeyboardController:
     """Digital W/S/A/D controller matching keyboard-recorded demonstrations."""
 
