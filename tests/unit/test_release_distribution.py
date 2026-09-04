@@ -263,7 +263,7 @@ def _assert_wheel_validation_rejects_post_build_source_mutation(
     monkeypatch.chdir(tmp_path)
     source = Path("trackmaniarl") / "module.py"
     source.parent.mkdir()
-    source.write_bytes(b"value = 'built'\n")
+    source.write_bytes(b"value = 'built'\r\n")
     archive = tmp_path / "package.whl"
     _write_wheel_source(archive, source)
     with zipfile.ZipFile(archive) as package:
@@ -279,7 +279,7 @@ def _assert_wheel_validation_rejects_post_build_source_mutation(
 
 def _write_wheel_source(archive: Path, source: Path) -> None:
     with zipfile.ZipFile(archive, "w") as package:
-        package.write(source, "trackmaniarl/module.py")
+        package.writestr("trackmaniarl/module.py", source.read_bytes().replace(b"\r\n", b"\n"))
 
 
 def _assert_sdist_validation_rejects_post_build_source_mutation(
