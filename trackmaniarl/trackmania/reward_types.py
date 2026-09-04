@@ -20,7 +20,7 @@ type TerminalReason = Literal[
 class RewardResult:
     reward: float
     terminated: bool
-    reason: str | None
+    reason: TerminalReason | None
     time_reward: float = 0.0
     pbrs_reward: float = 0.0
     progress_reward: float = 0.0
