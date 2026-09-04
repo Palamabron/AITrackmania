@@ -5,7 +5,7 @@ from __future__ import annotations
 from inspect import Parameter, Signature
 from threading import RLock
 from time import sleep
-from typing import ClassVar, Protocol, runtime_checkable
+from typing import ClassVar, Literal, Protocol, runtime_checkable
 
 import numpy as np
 
@@ -13,7 +13,10 @@ from trackmaniarl.trackmania.actions import BRAKE_TAP_DURATION_S, BRAKE_TAP_SENT
 from trackmaniarl.trackmania.keyboard_control import (
     KeyboardController as KeyboardController,
 )
-from trackmaniarl.trackmania.keyboard_control import confirm_trackmania_finish
+from trackmaniarl.trackmania.keyboard_control import (
+    confirm_trackmania_finish,
+    restart_trackmania_race,
+)
 
 
 @runtime_checkable
@@ -63,7 +66,7 @@ class GamepadController:
 
     _RESTART_BUTTON = 0x2000  # Xbox B; TrackMania's default Give Up binding.
 
-    def __init__(self) -> None:
+    def __init__(self, *, restart_input: Literal["gamepad", "keyboard"] = "gamepad") -> None:
         try:
             import vgamepad
         except ImportError as exc:
@@ -72,6 +75,7 @@ class GamepadController:
         self._tap_lock = RLock()
         self._collision_lock = RLock()
         self._collision_detected = False
+        self._restart_input = restart_input
         self._vibration_callback = _VibrationCallback(self)
         self._gamepad.register_notification(callback_function=self._vibration_callback)
 
@@ -120,11 +124,15 @@ class GamepadController:
 
         with self._tap_lock:
             self._gamepad.reset()
-            self._gamepad.press_button(button=self._RESTART_BUTTON)
             self._gamepad.update()
-            sleep(0.1)
-            self._gamepad.release_button(button=self._RESTART_BUTTON)
-            self._gamepad.update()
+            if self._restart_input == "keyboard":
+                restart_trackmania_race()
+            else:
+                self._gamepad.press_button(button=self._RESTART_BUTTON)
+                self._gamepad.update()
+                sleep(0.1)
+                self._gamepad.release_button(button=self._RESTART_BUTTON)
+                self._gamepad.update()
         self.consume_collision()
 
     def confirm_finish(self) -> None:

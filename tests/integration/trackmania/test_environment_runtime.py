@@ -155,6 +155,23 @@ def test_environment_waits_for_race_timer_restart() -> None:
     assert float(frame.values[3]) == 50.0
 
 
+def test_environment_confirms_ready_after_observing_timer_restart() -> None:
+    calls: list[str] = []
+    environment = object.__new__(OpenPlanetEnvironment)
+    environment.client = _RestartClient()
+    environment.controller = SimpleNamespace(reset=lambda: calls.append("reset"))
+    environment._session = SimpleNamespace(confirm_ready=lambda _: calls.append("ready"))
+    environment.config = SimpleNamespace(start_timeout_s=1.0, start_poll_s=0.0)
+    environment._expected_map_uid = "map"
+    environment._last_race_time_ms = 500.0
+    environment._finish_confirmation_pending = False
+
+    frame = environment._restart_race()
+
+    assert float(frame.values[3]) == 50.0
+    assert calls == ["reset", "ready"]
+
+
 def test_environment_recovers_reset_timeout_with_finish_confirmation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -162,9 +179,39 @@ def test_environment_recovers_reset_timeout_with_finish_confirmation(
     environment = object.__new__(OpenPlanetEnvironment)
     environment.client = _RecoveryClient(calls)
     environment.controller = _RecoveryController(calls)
+    environment.config = SimpleNamespace(confirm_finish_before_reset=True)
+    environment._finish_confirmation_pending = True
     monkeypatch.setattr("trackmaniarl.trackmania.environment.sleep", lambda _: None)
     environment._recover_reset_timeout()
     assert calls == ["close", "enter", "delete"]
+
+
+def test_environment_recovery_skips_finish_confirmation_for_editor_validation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+    environment = object.__new__(OpenPlanetEnvironment)
+    environment.client = _RecoveryClient(calls)
+    environment.controller = _RecoveryController(calls)
+    environment.config = SimpleNamespace(confirm_finish_before_reset=False)
+    environment._finish_confirmation_pending = True
+    monkeypatch.setattr("trackmaniarl.trackmania.environment.sleep", lambda _: None)
+
+    environment._recover_reset_timeout()
+
+    assert calls == ["close", "delete"]
+
+
+def test_environment_can_skip_finish_confirmation_for_editor_validation() -> None:
+    calls: list[str] = []
+    environment = object.__new__(OpenPlanetEnvironment)
+    environment.config = SimpleNamespace(confirm_finish_before_reset=False)
+    environment.controller = _RecoveryController(calls)
+    environment._finish_confirmation_pending = True
+
+    environment._confirm_finish_if_needed()
+
+    assert calls == []
 
 
 def test_openplanet_client_counts_only_complete_skipped_frames() -> None:

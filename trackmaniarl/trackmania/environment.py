@@ -154,7 +154,6 @@ class OpenPlanetEnvironment:
             if previous_race_time_ms is None:
                 previous_race_time_ms = float(self.client.read().values[3])
             self.controller.reset()
-            self._session.confirm_ready(self._expected_map_uid)
             try:
                 frame = self._wait_for_active_run(previous_race_time_ms)
             except TimeoutError:
@@ -163,19 +162,20 @@ class OpenPlanetEnvironment:
                 if attempt:
                     raise
             else:
+                self._session.confirm_ready(self._expected_map_uid)
                 self._finish_confirmation_pending = False
                 return frame
         raise AssertionError("unreachable")
 
     def _recover_reset_timeout(self) -> None:
         self.client.close()
-        self.controller.confirm_finish()
+        self._confirm_finish_if_needed()
         sleep(0.25)
         self.controller.reset()
         sleep(0.25)
 
     def _confirm_finish_if_needed(self) -> None:
-        if not self._finish_confirmation_pending:
+        if not self._finish_confirmation_pending or not self.config.confirm_finish_before_reset:
             return
         self.controller.confirm_finish()
 
@@ -225,7 +225,7 @@ class OpenPlanetEnvironmentFactory:
             controller = (
                 KeyboardController()
                 if self.config.control_backend == "keyboard"
-                else GamepadController()
+                else GamepadController(restart_input=self.config.restart_input)
             )
         return OpenPlanetEnvironment(self.config, controller, evaluation_map=evaluation_map)
 
