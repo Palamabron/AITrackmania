@@ -88,7 +88,7 @@ class TrackmaniaEnvironmentConfig(BaseModel):
     start_timeout_s: float = Field(default=15.0, gt=0.0)
     start_poll_s: float = Field(default=0.01, ge=0.0)
     confirm_finish_before_reset: bool = True
-    restart_input: Literal["gamepad", "keyboard"] = "gamepad"
+    restart_input: Literal["gamepad", "keyboard", "editor_validation"] = "gamepad"
     action_repeat_frames: int = Field(default=4, ge=1, le=20)
     decision_interval_ms: float | None = Field(default=None, gt=0.0, le=250.0)
     demonstration_action_lead_ms: float = Field(default=0.0, ge=0.0, le=250.0)

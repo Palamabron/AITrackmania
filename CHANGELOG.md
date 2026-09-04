@@ -41,7 +41,7 @@
   geometry mismatches, and make actor startup failures terminate nonzero
   instead of leaving the learner waiting indefinitely.
 - Allow School Mode runs in editor validation to skip the normal-play Enter
-  confirmation and use the keyboard restart binding while retaining gamepad driving.
+  confirmation and handle the editor's author-time result while retaining gamepad driving.
 - Add bounded asynchronous W&B projection with semantic axes and health events
   while keeping the local JSONL stream authoritative.
 - Rename the public offline-learning package from the too-narrow

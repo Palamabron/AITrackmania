@@ -59,14 +59,23 @@ def test_gamepad_brake_tap_releases_synchronously(
     assert applied[1] == pytest.approx([1.0, 0.0, 0.5])
 
 
-def test_gamepad_can_restart_with_keyboard(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize(
+    ("mode", "function"),
+    [
+        ("keyboard", "restart_trackmania_race"),
+        ("editor_validation", "restart_trackmania_editor_validation"),
+    ],
+)
+def test_gamepad_can_use_keyboard_restart_modes(
+    monkeypatch: pytest.MonkeyPatch, mode: str, function: str
+) -> None:
     calls: list[str] = []
     controller = object.__new__(GamepadController)
     controller._tap_lock = RLock()
     controller._gamepad = _ResetGamepad(calls)
-    controller._restart_input = "keyboard"
+    controller._restart_input = mode
     monkeypatch.setattr(
-        "trackmaniarl.trackmania.control.restart_trackmania_race",
+        f"trackmaniarl.trackmania.control.{function}",
         lambda: calls.append("delete"),
     )
     monkeypatch.setattr(controller, "consume_collision", lambda: False)

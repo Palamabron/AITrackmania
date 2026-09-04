@@ -110,10 +110,9 @@ def _focus_trackmania() -> bool:
 def confirm_trackmania_finish() -> None:
     if not _focus_trackmania():
         return
-    user32 = _windows_dll("user32")
-    _windows_call(user32, "keybd_event", 0x0D, 0, 0, 0)
+    KeyboardController._windows_key_event(KeyboardKeyEvent(0x0D, True))
     sleep(0.1)
-    _windows_call(user32, "keybd_event", 0x0D, 0, 0x0002, 0)
+    KeyboardController._windows_key_event(KeyboardKeyEvent(0x0D, False))
 
 
 def restart_trackmania_race() -> None:
@@ -122,6 +121,12 @@ def restart_trackmania_race() -> None:
     KeyboardController._windows_key_event(KeyboardKeyEvent(0x2E, True))
     sleep(0.1)
     KeyboardController._windows_key_event(KeyboardKeyEvent(0x2E, False))
+
+
+def restart_trackmania_editor_validation() -> None:
+    restart_trackmania_race()
+    sleep(0.5)
+    confirm_trackmania_finish()
 
 
 class KeyboardController:
