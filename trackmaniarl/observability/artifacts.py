@@ -10,10 +10,10 @@ import sys
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import asdict
 from datetime import UTC, datetime
-from importlib.metadata import version
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from trackmaniarl._version import __version__
 from trackmaniarl.core.data import EpisodeArtifact
 
 if TYPE_CHECKING:
@@ -102,7 +102,7 @@ def _torch_environment() -> dict[str, Any]:
 
 
 def _trackmaniarl_version() -> str:
-    return version("trackmaniarl")
+    return __version__
 
 
 def _environment_snapshot(run: ResolvedRun) -> dict[str, Any]:

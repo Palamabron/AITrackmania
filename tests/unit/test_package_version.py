@@ -4,7 +4,7 @@ import importlib.metadata
 
 import pytest
 
-import trackmaniarl
+from trackmaniarl import _version as package_version
 
 
 def test_source_version_falls_back_without_distribution_metadata(
@@ -13,6 +13,6 @@ def test_source_version_falls_back_without_distribution_metadata(
     def missing_distribution(_name: str) -> str:
         raise importlib.metadata.PackageNotFoundError
 
-    monkeypatch.setattr(trackmaniarl, "version", missing_distribution)
+    monkeypatch.setattr(package_version, "version", missing_distribution)
 
-    assert trackmaniarl._resolve_version() == "0+unknown"
+    assert package_version._resolve_version() == "0+unknown"
