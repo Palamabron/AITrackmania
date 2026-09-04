@@ -85,12 +85,19 @@ def _checkout_bytes(relative: PurePosixPath, archive: Path) -> bytes:
     return source.read_bytes()
 
 
+def _normalize_checkout_line_endings(content: bytes) -> bytes:
+    """Match Git's Windows checkout conversion without masking source changes."""
+    return content.replace(b"\r\n", b"\n")
+
+
 def _validate_wheel_checkout_files(package: zipfile.ZipFile, archive: Path) -> None:
     for member in package.infolist():
         relative = PurePosixPath(member.filename.replace("\\", "/"))
         if member.is_dir() or not relative.parts or relative.parts[0] != "trackmaniarl":
             continue
-        if package.read(member) != _checkout_bytes(relative, archive):
+        packaged = package.read(member)
+        checkout = _normalize_checkout_line_endings(_checkout_bytes(relative, archive))
+        if packaged != checkout:
             raise RuntimeError(
                 f"{archive} member {relative.as_posix()!r} differs from the checkout"
             )
