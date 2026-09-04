@@ -86,7 +86,11 @@ def _checkout_bytes(relative: PurePosixPath, archive: Path) -> bytes:
 
 
 def _normalize_checkout_line_endings(content: bytes) -> bytes:
-    """Match Git's Windows checkout conversion without masking source changes."""
+    """Match Git's Windows checkout conversion without touching binary assets."""
+    try:
+        content.decode("utf-8")
+    except UnicodeDecodeError:
+        return content
     return content.replace(b"\r\n", b"\n")
 
 
@@ -123,7 +127,8 @@ def _validate_sdist_checkout_files(package: tarfile.TarFile, archive: Path, root
         packaged = package.extractfile(member)
         if packaged is None:
             raise RuntimeError(f"{archive} cannot read member {member.name!r}")
-        if packaged.read() != _checkout_bytes(relative, archive):
+        checkout = _normalize_checkout_line_endings(_checkout_bytes(relative, archive))
+        if packaged.read() != checkout:
             raise RuntimeError(f"{archive} member {member.name!r} differs from the checkout")
 
 
