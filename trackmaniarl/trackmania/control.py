@@ -15,6 +15,7 @@ from trackmaniarl.trackmania.keyboard_control import (
 )
 from trackmaniarl.trackmania.keyboard_control import (
     confirm_trackmania_finish,
+    restart_trackmania_editor_validation,
     restart_trackmania_race,
 )
 
@@ -66,7 +67,11 @@ class GamepadController:
 
     _RESTART_BUTTON = 0x2000  # Xbox B; TrackMania's default Give Up binding.
 
-    def __init__(self, *, restart_input: Literal["gamepad", "keyboard"] = "gamepad") -> None:
+    def __init__(
+        self,
+        *,
+        restart_input: Literal["gamepad", "keyboard", "editor_validation"] = "gamepad",
+    ) -> None:
         try:
             import vgamepad
         except ImportError as exc:
@@ -125,15 +130,21 @@ class GamepadController:
         with self._tap_lock:
             self._gamepad.reset()
             self._gamepad.update()
-            if self._restart_input == "keyboard":
-                restart_trackmania_race()
-            else:
-                self._gamepad.press_button(button=self._RESTART_BUTTON)
-                self._gamepad.update()
-                sleep(0.1)
-                self._gamepad.release_button(button=self._RESTART_BUTTON)
-                self._gamepad.update()
+            match self._restart_input:
+                case "keyboard":
+                    restart_trackmania_race()
+                case "editor_validation":
+                    restart_trackmania_editor_validation()
+                case "gamepad":
+                    self._restart_with_gamepad()
         self.consume_collision()
+
+    def _restart_with_gamepad(self) -> None:
+        self._gamepad.press_button(button=self._RESTART_BUTTON)
+        self._gamepad.update()
+        sleep(0.1)
+        self._gamepad.release_button(button=self._RESTART_BUTTON)
+        self._gamepad.update()
 
     def confirm_finish(self) -> None:
         """Confirm TrackMania's personal-record screen with Enter."""
